@@ -133,6 +133,10 @@ export class RpcClient {
       case "editor.create": return { path: `${ws}/editors`, method: "POST", body };
       case "editor.close": return { path: `${ws}/editors/${editorId}/close`, method: "POST", body };
       case "query.execute": return { path: `${ws}/editors/${editorId}/executions`, method: "POST", body };
+      case "query.fetchRows": return {
+        path: `${ws}/editors/${editorId}/results/${encodeURIComponent(String(body.resultIndex ?? 0))}/page`,
+        method: "POST", body
+      };
       case "query.cancel": {
         const executionId = this.executions.get(String(body.editorId ?? "")) ?? "none";
         return { path: `${ws}/executions/${encodeURIComponent(executionId)}`, method: "DELETE" };

@@ -10,6 +10,7 @@ import com.dbstudio.desktop.persistence.QueryHistoryRepository.QueryHistoryEntry
 import com.dbstudio.desktop.persistence.SettingsRepository;
 import com.dbstudio.desktop.query.QueryExecution;
 import com.dbstudio.desktop.query.QueryResultListener;
+import com.dbstudio.desktop.query.QueryRunner.PageResult;
 import com.dbstudio.desktop.query.StatementResult;
 import com.dbstudio.desktop.security.SecretStore;
 import com.dbstudio.desktop.web.EditorSessionRegistry;
@@ -283,6 +284,32 @@ public final class DbStudioApiController {
             }
         }
         return ApiPayloads.map("cancelled", false);
+    }
+
+    @PostMapping("/workspaces/{workspaceId}/editors/{editorId}/results/{resultIndex}/page")
+    public Map<String, Object> fetchResultPage(@PathVariable String workspaceId,
+                                               @PathVariable String editorId,
+                                               @PathVariable int resultIndex,
+                                               @RequestBody Map<String, Object> body) throws Exception {
+        Workspace workspace = workspaces.require(workspaceId);
+        EditorSession editor = workspace.editors().require(editorId);
+        StatementResult source = result(editor, resultIndex);
+        if (!source.hasRows() || source.type() != StatementType.QUERY) {
+            throw new ApiException("RESULT_NOT_PAGEABLE", "只有只读查询结果支持继续加载数据");
+        }
+        int offset = integer(body, "offset", 0);
+        int limit = integer(body, "limit", 1_000);
+        if (offset < 0) throw new ApiException("INVALID_RESULT_OFFSET", "结果偏移量不能小于 0");
+        if (offset != source.rows().size()) {
+            throw new ApiException("STALE_RESULT_OFFSET", "结果数据已变化，请使用当前已加载行数继续获取");
+        }
+        if (limit < 1 || limit > 100_000) {
+            throw new ApiException("INVALID_RESULT_LIMIT", "单次加载行数必须在 1 到 100000 之间");
+        }
+        PageResult page = editor.runner().fetchPage(source.sql(), offset, limit).get(120, TimeUnit.SECONDS);
+        editor.appendResultRows(resultIndex, page.rows(), page.hasMore());
+        return ApiPayloads.map("resultIndex", resultIndex, "offset", offset, "rows", page.rows(),
+                "hasMore", page.hasMore(), "nextOffset", offset + page.rows().size());
     }
 
     @PostMapping("/workspaces/{workspaceId}/editors/{editorId}/transaction/{action}")
@@ -606,6 +633,16 @@ public final class DbStudioApiController {
     private static char delimiter(Map<String, Object> body) {
         String value = ApiPayloads.text(body, "delimiter");
         return "\\t".equals(value) || "\t".equals(value) ? '\t' : value.isEmpty() ? ',' : value.charAt(0);
+    }
+
+    private static int integer(Map<String, Object> body, String key, int defaultValue) {
+        Object value = body.get(key);
+        if (value == null) return defaultValue;
+        if (value instanceof Number) return ((Number) value).intValue();
+        try { return Integer.parseInt(String.valueOf(value)); }
+        catch (NumberFormatException exception) {
+            throw new ApiException("INVALID_NUMBER", key + " 必须是整数");
+        }
     }
 
     private static StatementResult result(EditorSession editor, int index) {

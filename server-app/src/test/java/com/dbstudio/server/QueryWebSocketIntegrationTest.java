@@ -75,6 +75,13 @@ class QueryWebSocketIntegrationTest {
             assertEquals(Arrays.asList(50, 50, 20), rowBatchSizes(first));
             assertTrue(resultComplete(first).get("truncated").equals(Boolean.TRUE));
             assertOrder(first);
+            Map<String, Object> pageBody = new HashMap<String, Object>();
+            pageBody.put("offset", 120); pageBody.put("limit", 100);
+            Map<String, Object> page = exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId
+                    + "/editors/" + editorId + "/results/0/page", pageBody, cookie);
+            assertEquals(100, ((List<?>) page.get("rows")).size());
+            assertEquals(Boolean.TRUE, page.get("hasMore"));
+            assertEquals(220, ((Number) page.get("nextOffset")).intValue());
 
             updateSetting(cookie, "result.maxRows", "250");
             updateSetting(cookie, "result.streamBatchRows", "100");

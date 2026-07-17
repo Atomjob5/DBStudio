@@ -98,6 +98,30 @@ class QueryRunnerTest {
         }
     }
 
+    @Test
+    void fetchesAdditionalPagesOnTheEditorSession() throws Exception {
+        final Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
+        connection.setAutoCommit(false);
+        try (QueryRunner runner = new QueryRunner(session(connection), 2, 100)) {
+            runner.execute(Arrays.asList(
+                    sql("CREATE TABLE page_sample(id INTEGER)", StatementType.DDL),
+                    sql("INSERT INTO page_sample VALUES (1), (2), (3), (4), (5)", StatementType.INSERT)), true).join();
+            StatementResult initial = runner.execute(Collections.singletonList(
+                    sql("SELECT id FROM page_sample ORDER BY id", StatementType.QUERY)), true).join().results().get(0);
+            assertEquals(Arrays.asList("1"), initial.rows().get(0));
+            assertEquals(Arrays.asList("2"), initial.rows().get(1));
+
+            QueryRunner.PageResult second = runner.fetchPage(initial.sql(), 2, 2).join();
+            assertEquals(Arrays.asList("3"), second.rows().get(0));
+            assertEquals(Arrays.asList("4"), second.rows().get(1));
+            assertTrue(second.hasMore());
+
+            QueryRunner.PageResult last = runner.fetchPage(initial.sql(), 4, 2).join();
+            assertEquals(Collections.singletonList(Arrays.asList("5")), last.rows());
+            assertFalse(last.hasMore());
+        }
+    }
+
     private StatementResult query(QueryRunner runner, int rows, final List<Integer> batches,
                                   final Runnable started) {
         String text = "WITH RECURSIVE numbers(id) AS (SELECT 1 UNION ALL SELECT id + 1 FROM numbers WHERE id < "

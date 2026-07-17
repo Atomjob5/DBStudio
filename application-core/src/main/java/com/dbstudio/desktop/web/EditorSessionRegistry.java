@@ -4,6 +4,7 @@ import com.dbstudio.desktop.DatabaseContext;
 import com.dbstudio.desktop.query.QueryExecution;
 import com.dbstudio.desktop.query.QueryResultListener;
 import com.dbstudio.desktop.query.QueryRunner;
+import com.dbstudio.desktop.query.StatementResult;
 import com.dbstudio.spi.SqlStatement;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -125,6 +126,17 @@ public final class EditorSessionRegistry implements AutoCloseable {
         public CompletableFuture<Void> commit() { return runner.commit(); }
         public CompletableFuture<Void> rollback() { return runner.rollback(); }
         public boolean cancel() { return runner.cancel(); }
+        public synchronized void appendResultRows(int resultIndex, List<List<String>> rows, boolean hasMore) {
+            QueryExecution execution = lastExecution;
+            if (execution == null || resultIndex < 0 || resultIndex >= execution.results().size()) return;
+            List<StatementResult> results = new ArrayList<StatementResult>(execution.results());
+            StatementResult source = results.get(resultIndex);
+            List<List<String>> combined = new ArrayList<List<String>>(source.rows());
+            combined.addAll(rows);
+            results.set(resultIndex, new StatementResult(source.sql(), source.type(), source.columns(), combined,
+                    source.updateCount(), hasMore, source.duration(), source.errorMessage()));
+            lastExecution = new QueryExecution(results, execution.duration(), execution.cancelled());
+        }
         @Override public void close() { runner.close(); }
     }
 

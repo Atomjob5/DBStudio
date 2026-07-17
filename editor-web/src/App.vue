@@ -102,7 +102,8 @@
               </section>
             </el-splitter-panel>
             <el-splitter-panel :min="150" collapsible>
-              <ResultPanel :execution="activeExecution" @export-loaded="exportLoaded" @export-full="exportFull" />
+              <ResultPanel v-model:active-result-index="activeResultIndex" :execution="activeExecution"
+                           @export-loaded="exportLoaded" @export-full="exportFull" />
             </el-splitter-panel>
           </el-splitter>
         </el-splitter-panel>
@@ -111,6 +112,16 @@
 
     <el-footer class="status-bar" height="24px" aria-live="polite">
       <span class="status-item"><i class="status-dot" :class="app.connected ? 'online' : 'offline'" />{{ app.status }}</span>
+      <div class="status-result-actions" role="toolbar" aria-label="结果数据加载工具栏">
+        <el-tooltip :content="nextPageTooltip" placement="top">
+          <el-button text :icon="ArrowRightBold" aria-label="下一页数据" :disabled="!canLoadMore"
+                     :loading="activeResultLoading?.mode === 'next'" @click="loadNextResultPage" />
+        </el-tooltip>
+        <el-tooltip :content="allRowsTooltip" placement="top">
+          <el-button text :icon="Bottom" aria-label="获取全部数据" :disabled="!canLoadMore"
+                     :loading="activeResultLoading?.mode === 'all'" @click="loadAllResultRows" />
+        </el-tooltip>
+      </div>
       <span class="status-spacer" />
       <span v-if="editors.active?.transactionDirty" class="status-item transaction-warning"><WarningFilled />未提交事务</span>
       <span class="status-item"><i class="status-dot" :class="editors.active?.busy ? 'busy' : 'neutral'" />
@@ -131,7 +142,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox, ElNotification } from "element-plus";
 import {
-  ArrowDown, Clock, Close, Coin, Connection, Document, DocumentChecked, FolderOpened, Moon, MoreFilled,
+  ArrowDown, ArrowRightBold, Bottom, Clock, Close, Coin, Connection, Document, DocumentChecked, FolderOpened, Moon, MoreFilled,
   Plus, RefreshLeft, Select, Setting, Sunny, SwitchButton, Upload, VideoPlay, WarningFilled
 } from "@element-plus/icons-vue";
 import { rpc } from "./bridge/rpc";
@@ -160,6 +171,16 @@ const objectExplorer = ref<InstanceType<typeof ObjectExplorer>>();
 const monacoEditor = ref<{ getValue(key?: string): string; setValue(value: string, key?: string): void }>();
 const recentHandles = new Map<string, FileSystemFileHandle>();
 const activeExecution = computed(() => editors.activeId ? queries.executions[editors.activeId] : undefined);
+const activeResultIndex = ref(0);
+const activeResult = computed(() => activeExecution.value?.results.find((result) => result.resultIndex === activeResultIndex.value)
+  ?? activeExecution.value?.results[0]);
+const resultLoading = ref<{ editorId: string; resultIndex: number; mode: "next" | "all" }>();
+const activeResultLoading = computed(() => resultLoading.value?.editorId === editors.activeId
+  ? { resultIndex: resultLoading.value.resultIndex, mode: resultLoading.value.mode } : undefined);
+const canLoadMore = computed(() => Boolean(activeResult.value?.columns.length && activeResult.value.complete
+  && activeResult.value.truncated && !activeExecution.value?.busy && !resultLoading.value));
+const nextPageTooltip = computed(() => resultLoadTooltip("next"));
+const allRowsTooltip = computed(() => resultLoadTooltip("all"));
 const canExecute = computed(() => Boolean(editors.active && !editors.active.busy));
 const disposers: Array<() => void> = [];
 const colorSchemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -197,6 +218,9 @@ onBeforeUnmount(() => {
 });
 
 watch(() => app.theme, (theme) => applyDocumentTheme(theme), { immediate: true });
+watch(() => activeExecution.value?.executionId, () => {
+  activeResultIndex.value = activeExecution.value?.results[0]?.resultIndex ?? 0;
+});
 
 function systemThemeChanged(event: MediaQueryListEvent): void {
   app.setSystemTheme(event.matches ? "dark" : "light");
@@ -287,6 +311,60 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
 async function cancelActive(): Promise<void> { if (editors.active) await rpc.request("query.cancel", { editorId: editors.active.id }); }
 async function commitActive(): Promise<void> { if (editors.active) await rpc.request("transaction.commit", { editorId: editors.active.id }); }
 async function rollbackActive(): Promise<void> { if (editors.active) await rpc.request("transaction.rollback", { editorId: editors.active.id }); }
+
+interface ResultPageResponse {
+  resultIndex: number;
+  offset: number;
+  rows: Array<Array<string | null>>;
+  hasMore: boolean;
+  nextOffset: number;
+}
+
+async function loadNextResultPage(): Promise<void> {
+  const result = activeResult.value;
+  if (result) await loadResultRows(result.resultIndex, result.rows.length, false);
+}
+
+async function loadAllResultRows(): Promise<void> {
+  const result = activeResult.value;
+  if (result) await loadResultRows(result.resultIndex, result.rows.length, true);
+}
+
+function resultLoadTooltip(mode: "next" | "all"): string {
+  if (!activeResult.value?.columns.length) return "暂无可加载的查询结果";
+  if (activeExecution.value?.busy || !activeResult.value.complete) return "查询尚未完成";
+  if (resultLoading.value) return resultLoading.value.mode === "next" ? "正在加载下一页数据…" : "正在获取全部数据…";
+  if (!activeResult.value.truncated) return "已获取全部数据";
+  return mode === "next"
+    ? `下一页数据 · 最多 ${settings.maxResultRows} 行；建议查询包含稳定的 ORDER BY`
+    : "获取全部数据；查询将重新执行，建议包含稳定的 ORDER BY";
+}
+
+async function loadResultRows(resultIndex: number, initialOffset: number, all: boolean): Promise<void> {
+  const tab = editors.active;
+  if (!tab || resultLoading.value) return;
+  const mode = all ? "all" : "next";
+  resultLoading.value = { editorId: tab.id, resultIndex, mode };
+  let offset = initialOffset;
+  const limit = all ? 5_000 : settings.maxResultRows;
+  try {
+    do {
+      const page = await rpc.request<ResultPageResponse>("query.fetchRows", {
+        editorId: tab.id, resultIndex, offset, limit
+      }, 120_000);
+      if (page.rows.length) queries.appendRows(tab.id, resultIndex, page.rows);
+      queries.completeResult(tab.id, resultIndex, { truncated: page.hasMore });
+      offset = page.nextOffset;
+      app.status = page.hasMore ? `已加载 ${offset} 行` : `已获取全部 ${offset} 行`;
+      if (!all || !page.hasMore || page.rows.length === 0) break;
+      await nextTick();
+    } while (true);
+  } catch (error) {
+    reportError(error);
+  } finally {
+    resultLoading.value = undefined;
+  }
+}
 
 function handleShortcut(event: KeyboardEvent): void {
   const shortcut = event.metaKey || event.ctrlKey;
@@ -522,6 +600,16 @@ function message(error: unknown): string { return error instanceof Error ? error
 }
 .status-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .status-item svg { width: 12px; height: 12px; }
+.status-result-actions {
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding-left: 7px;
+  border-left: 1px solid var(--db-border-soft);
+}
+.status-result-actions :deep(.el-button) { width: 20px; height: 20px; min-height: 20px; padding: 0; border-radius: 5px; }
+.status-result-actions :deep(.el-button .el-icon) { width: 12px; height: 12px; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--db-muted); }
 .status-dot.online { background: var(--db-success); }
 .status-dot.busy { background: var(--db-accent); box-shadow: 0 0 0 3px var(--db-accent-soft); }

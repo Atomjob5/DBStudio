@@ -14,7 +14,7 @@ describe("ResultPanel streaming rendering", () => {
     const Harness = defineComponent({
       components: { ResultPanel },
       setup() { return { execution: computed(() => queries.executions["editor-1"]) }; },
-      template: '<ResultPanel :execution="execution" />'
+      template: '<ResultPanel :execution="execution" :active-result-index="0" />'
     });
     const wrapper = mount(Harness, { global: { plugins: [ElementPlus] } });
     expect(wrapper.text()).toContain("执行查询后在这里查看结果");
@@ -34,5 +34,23 @@ describe("ResultPanel streaming rendering", () => {
     await nextTick();
     expect(wrapper.text()).toContain("2 行 · 7 ms");
     expect(wrapper.text()).not.toContain("执行查询后在这里查看结果");
+  });
+
+  it("removes the local data toolbar and synchronizes the active result", async () => {
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: 0, execution: {
+        executionId: "execution-1", editorId: "editor-1", busy: false, cancelled: false, failed: false, durationMs: 8,
+        results: [
+          { resultIndex: 0, sql: "select 1", type: "QUERY", columns: ["id"], rows: [["1"]],
+            updateCount: -1, truncated: true, durationMs: 7, complete: true },
+          { resultIndex: 1, sql: "select 2", type: "QUERY", columns: ["id"], rows: [["2"]],
+            updateCount: -1, truncated: false, durationMs: 8, complete: true }
+        ]
+      } },
+      global: { plugins: [ElementPlus] }
+    });
+    expect(wrapper.find(".result-data-toolbar").exists()).toBe(false);
+    await wrapper.findAll(".el-tabs__item")[1].trigger("click");
+    expect(wrapper.emitted("update:active-result-index")?.[0]).toEqual([1]);
   });
 });

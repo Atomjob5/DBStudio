@@ -54,9 +54,19 @@ import { CopyDocument, DataAnalysis, Download, SortDown, SortUp } from "@element
 import type { Column } from "element-plus";
 import type { QueryExecutionState } from "../types";
 
-const props = defineProps<{ execution?: QueryExecutionState }>();
-const emit = defineEmits<{ "export-loaded": [resultIndex: number]; "export-full": [resultIndex: number] }>();
-const activeIndex = ref(0);
+const props = defineProps<{
+  execution?: QueryExecutionState;
+  activeResultIndex: number;
+}>();
+const emit = defineEmits<{
+  "export-loaded": [resultIndex: number];
+  "export-full": [resultIndex: number];
+  "update:active-result-index": [resultIndex: number];
+}>();
+const activeIndex = computed({
+  get: () => props.activeResultIndex,
+  set: (value: number) => emit("update:active-result-index", value)
+});
 const sortColumn = ref<number | "">("");
 const descending = ref(false);
 const selectedCell = ref<{ row: number; column: number; value: string | null }>();
@@ -68,7 +78,7 @@ const summary = computed(() => {
   return result.columns.length ? `${result.rows.length} 行 · ${result.durationMs} ms` : `${result.updateCount} 行受影响 · ${result.durationMs} ms`;
 });
 
-watch(() => props.execution?.executionId, () => { activeIndex.value = 0; selectedCell.value = undefined; sortColumn.value = ""; });
+watch(() => props.execution?.executionId, () => { selectedCell.value = undefined; sortColumn.value = ""; });
 
 const tableRows = computed(() => {
   const source = activeResult.value?.rows ?? [];
@@ -106,8 +116,10 @@ async function copyCell(): Promise<void> {
 }
 
 function exportCommand(command: string): void {
-  if (command === "loaded") emit("export-loaded", activeIndex.value);
-  else if (command === "full") emit("export-full", activeIndex.value);
+  const resultIndex = activeResult.value?.resultIndex;
+  if (resultIndex === undefined) return;
+  if (command === "loaded") emit("export-loaded", resultIndex);
+  else if (command === "full") emit("export-full", resultIndex);
 }
 </script>
 

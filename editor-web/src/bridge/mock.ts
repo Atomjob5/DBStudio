@@ -37,10 +37,18 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
       const rows = Array.from({ length: 200 }, (_, index) => [String(index + 1), `Apple Studio ${index + 1} ✨`]);
       emit("query.rows", { editorId, resultIndex: 0, rows: rows.slice(0, 100) });
       emit("query.rows", { editorId, resultIndex: 0, rows: rows.slice(100) });
-      emit("query.resultComplete", { editorId, resultIndex: 0, durationMs: 38, truncated: false });
+      emit("query.resultComplete", { editorId, resultIndex: 0, durationMs: 38, truncated: true });
       emit("query.executionComplete", { editorId, executionId, cancelled: false, failed: false, durationMs: 38, transactionDirty: false });
     }, 0);
     return { executionId };
+  }
+  if (type === "query.fetchRows") {
+    const offset = Number(payload.offset ?? 0); const limit = Number(payload.limit ?? 100);
+    const total = 350; const end = Math.min(total, offset + limit);
+    const rows = Array.from({ length: Math.max(0, end - offset) }, (_, index) => {
+      const id = offset + index + 1; return [String(id), `Apple Studio ${id} ✨`];
+    });
+    return { resultIndex: Number(payload.resultIndex ?? 0), offset, rows, hasMore: end < total, nextOffset: end };
   }
   return {};
 };

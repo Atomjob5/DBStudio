@@ -87,6 +87,16 @@ public final class QueryRunner implements AutoCloseable {
         }, executor);
     }
 
+    /**
+     * Re-executes a read-only result on this editor's JDBC session and returns a window of rows.
+     * Keeping this work on the editor executor preserves connection and transaction isolation.
+     */
+    public CompletableFuture<PageResult> fetchPage(final String sql, final int offset, final int limit) {
+        if (offset < 0) throw new IllegalArgumentException("offset must not be negative");
+        if (limit < 1) throw new IllegalArgumentException("limit must be positive");
+        return CompletableFuture.supplyAsync(() -> fetchPageBlocking(sql, offset, limit), executor);
+    }
+
     public boolean cancel() {
         Statement statement = activeStatement.get();
         if (statement == null) return false;
@@ -102,6 +112,38 @@ public final class QueryRunner implements AutoCloseable {
     public boolean isTransactionDirty() { return transactionDirty.get(); }
     public void setMaxRows(int maxRows) { this.maxRows = Math.max(1, maxRows); }
     public void setStreamBatchRows(int streamBatchRows) { this.streamBatchRows = Math.max(1, streamBatchRows); }
+
+    private PageResult fetchPageBlocking(String sql, int offset, int limit) {
+        try (Statement statement = session.jdbcConnection().createStatement()) {
+            statement.setFetchSize(JDBC_FETCH_SIZE);
+            activeStatement.set(statement);
+            if (!statement.execute(sql)) {
+                throw new QueryExecutionException("该结果不是可分页的查询结果", null);
+            }
+            try (ResultSet resultSet = statement.getResultSet()) {
+                int skipped = 0;
+                while (skipped < offset && resultSet.next()) skipped++;
+                if (skipped < offset) return new PageResult(Collections.<List<String>>emptyList(), false);
+
+                ResultSetMetaData metadata = resultSet.getMetaData();
+                int columnCount = metadata.getColumnCount();
+                List<List<String>> rows = new ArrayList<List<String>>(limit);
+                while (rows.size() < limit && resultSet.next()) {
+                    List<String> row = new ArrayList<String>(columnCount);
+                    for (int index = 1; index <= columnCount; index++) {
+                        row.add(displayValue(resultSet.getObject(index)));
+                    }
+                    rows.add(Collections.unmodifiableList(row));
+                }
+                boolean hasMore = resultSet.next();
+                return new PageResult(rows, hasMore);
+            }
+        } catch (SQLException exception) {
+            throw new QueryExecutionException("加载更多结果失败：" + sanitize(exception), exception);
+        } finally {
+            activeStatement.set(null);
+        }
+    }
 
     private QueryExecution executeBlocking(List<SqlStatement> statements, boolean stopOnError,
                                            QueryResultListener listener) {
@@ -218,6 +260,19 @@ public final class QueryRunner implements AutoCloseable {
         List<List<String>> copied = new ArrayList<List<String>>(rows.size());
         for (List<String> row : rows) copied.add(Collections.unmodifiableList(new ArrayList<String>(row)));
         return Collections.unmodifiableList(copied);
+    }
+
+    public static final class PageResult {
+        private final List<List<String>> rows;
+        private final boolean hasMore;
+
+        private PageResult(List<List<String>> rows, boolean hasMore) {
+            this.rows = immutableRows(rows);
+            this.hasMore = hasMore;
+        }
+
+        public List<List<String>> rows() { return rows; }
+        public boolean hasMore() { return hasMore; }
     }
 
     public static String displayValue(Object value) throws SQLException {
