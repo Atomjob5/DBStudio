@@ -1,0 +1,308 @@
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
+  color-scheme: light;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+
+  --db-bg: #f5f5f7;
+  --db-bg-glow: rgba(0, 113, 227, 0.08);
+  --db-content: #ffffff;
+  --db-panel: #ffffff;
+  --db-panel-soft: #f5f5f7;
+  --db-surface: rgba(255, 255, 255, 0.82);
+  --db-surface-raised: rgba(255, 255, 255, 0.94);
+  --db-glass: rgba(255, 255, 255, 0.72);
+  --db-glass-flat: rgba(250, 250, 252, 0.96);
+  --db-glass-solid: #f7f7f9;
+  --db-control-bg: rgba(118, 118, 128, 0.1);
+  --db-control-hover: rgba(118, 118, 128, 0.16);
+  --db-control-active: rgba(118, 118, 128, 0.22);
+  --db-control-border: rgba(60, 60, 67, 0.13);
+  --db-border: rgba(60, 60, 67, 0.18);
+  --db-border-soft: rgba(60, 60, 67, 0.1);
+  --db-text: #1d1d1f;
+  --db-text-secondary: #6e6e73;
+  --db-muted: #86868b;
+  --db-accent: #0071e3;
+  --db-accent-hover: #0077ed;
+  --db-accent-soft: rgba(0, 113, 227, 0.12);
+  --db-success: #248a3d;
+  --db-warning: #b25000;
+  --db-danger: #d70015;
+  --db-editor-bg: #ffffff;
+  --db-table-header: rgba(245, 245, 247, 0.94);
+  --db-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05), 0 4px 14px rgba(0, 0, 0, 0.04);
+  --db-shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.18), 0 2px 10px rgba(0, 0, 0, 0.08);
+  --db-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  --el-color-primary: var(--db-accent);
+  --el-color-primary-light-3: #4094eb;
+  --el-color-primary-light-5: #80b8f1;
+  --el-color-primary-light-7: #bfdcf8;
+  --el-color-primary-light-8: #d9eafa;
+  --el-color-primary-light-9: #edf6ff;
+  --el-color-primary-dark-2: #005bb7;
+  --el-bg-color: var(--db-content);
+  --el-bg-color-page: var(--db-bg);
+  --el-bg-color-overlay: var(--db-surface-raised);
+  --el-text-color-primary: var(--db-text);
+  --el-text-color-regular: var(--db-text);
+  --el-text-color-secondary: var(--db-text-secondary);
+  --el-text-color-placeholder: var(--db-muted);
+  --el-border-color: var(--db-border);
+  --el-border-color-light: var(--db-border-soft);
+  --el-border-color-lighter: var(--db-border-soft);
+  --el-fill-color: var(--db-control-bg);
+  --el-fill-color-light: var(--db-panel-soft);
+  --el-fill-color-lighter: rgba(118, 118, 128, 0.06);
+  --el-fill-color-blank: transparent;
+  --el-mask-color: rgba(0, 0, 0, 0.24);
+  --el-font-size-base: 13px;
+  --el-font-family: inherit;
+  --el-component-size: 32px;
+  --el-component-size-small: 28px;
+  --el-border-radius-base: 10px;
+  --el-border-radius-small: 8px;
+  --el-box-shadow-light: var(--db-shadow-sm);
+  --el-box-shadow: var(--db-shadow-lg);
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --db-bg: #0b0b0d;
+  --db-bg-glow: rgba(41, 151, 255, 0.1);
+  --db-content: #151517;
+  --db-panel: #151517;
+  --db-panel-soft: #1c1c1e;
+  --db-surface: rgba(28, 28, 30, 0.82);
+  --db-surface-raised: rgba(38, 38, 41, 0.96);
+  --db-glass: rgba(28, 28, 30, 0.78);
+  --db-glass-flat: rgba(28, 28, 30, 0.96);
+  --db-glass-solid: #1c1c1e;
+  --db-control-bg: rgba(118, 118, 128, 0.18);
+  --db-control-hover: rgba(118, 118, 128, 0.28);
+  --db-control-active: rgba(118, 118, 128, 0.36);
+  --db-control-border: rgba(255, 255, 255, 0.1);
+  --db-border: rgba(255, 255, 255, 0.12);
+  --db-border-soft: rgba(255, 255, 255, 0.075);
+  --db-text: #f5f5f7;
+  --db-text-secondary: #a1a1a6;
+  --db-muted: #7d7d83;
+  --db-accent: #2997ff;
+  --db-accent-hover: #45a5ff;
+  --db-accent-soft: rgba(41, 151, 255, 0.16);
+  --db-success: #30d158;
+  --db-warning: #ff9f0a;
+  --db-danger: #ff453a;
+  --db-editor-bg: #111113;
+  --db-table-header: rgba(28, 28, 30, 0.94);
+  --db-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.18), 0 6px 18px rgba(0, 0, 0, 0.16);
+  --db-shadow-lg: 0 24px 70px rgba(0, 0, 0, 0.48), 0 2px 12px rgba(0, 0, 0, 0.28);
+
+  --el-color-primary-light-3: #63b1ff;
+  --el-color-primary-light-5: #87c3ff;
+  --el-color-primary-light-7: #173d61;
+  --el-color-primary-light-8: #15324e;
+  --el-color-primary-light-9: #12283e;
+  --el-color-primary-dark-2: #52abff;
+  --el-mask-color: rgba(0, 0, 0, 0.56);
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--db-bg);
+  color: var(--db-text);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+textarea,
+select { font: inherit; }
+
+input,
+textarea,
+.monaco-editor,
+.result-cell { user-select: text; }
+
+.fill { width: 100%; height: 100%; min-width: 0; min-height: 0; }
+.muted { color: var(--db-muted); }
+.null-value { color: #af52de; font-style: italic; }
+.binary-value { color: var(--db-warning); }
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.glass-surface,
+.el-dialog,
+.el-drawer,
+.el-message-box,
+.el-dropdown__popper .el-popper__arrow::before,
+.el-select__popper .el-popper__arrow::before {
+  background: var(--db-glass-solid);
+}
+
+@supports ((-webkit-backdrop-filter: blur(18px)) or (backdrop-filter: blur(18px))) {
+  .glass-surface,
+  .el-dialog,
+  .el-drawer,
+  .el-message-box {
+    background: var(--db-glass);
+    -webkit-backdrop-filter: saturate(160%) blur(18px);
+    backdrop-filter: saturate(160%) blur(18px);
+  }
+}
+
+.el-button {
+  min-height: 30px;
+  border-radius: 8px;
+  border-color: var(--db-control-border);
+  background: var(--db-control-bg);
+  color: var(--db-text);
+  font-weight: 500;
+  transition: color 120ms var(--db-ease), background-color 120ms var(--db-ease),
+              border-color 120ms var(--db-ease), transform 120ms var(--db-ease);
+}
+
+.el-button:hover,
+.el-button:focus-visible {
+  border-color: var(--db-control-border);
+  background: var(--db-control-hover);
+  color: var(--db-text);
+}
+
+.el-button:active { background: var(--db-control-active); transform: scale(0.97); }
+.el-button.is-text,
+.el-button.is-link { background: transparent; border-color: transparent; }
+.el-button.is-text:hover,
+.el-button.is-link:hover { background: var(--db-control-hover); color: var(--db-text); }
+.el-button--primary,
+.el-button--primary:hover,
+.el-button--primary:focus-visible {
+  color: #fff;
+  background: var(--db-accent);
+  border-color: var(--db-accent);
+}
+.el-button--primary:hover { background: var(--db-accent-hover); }
+.el-button.is-circle { width: 30px; padding: 0; }
+
+.el-input__wrapper,
+.el-select__wrapper,
+.el-input-number .el-input__wrapper,
+.el-textarea__inner {
+  border-radius: 10px;
+  background: var(--db-control-bg);
+  box-shadow: inset 0 0 0 1px var(--db-control-border) !important;
+  transition: background-color 120ms var(--db-ease), box-shadow 120ms var(--db-ease);
+}
+
+.el-input__wrapper:hover,
+.el-select__wrapper:hover,
+.el-textarea__inner:hover { background: var(--db-control-hover); }
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused,
+.el-textarea__inner:focus {
+  background: var(--db-content);
+  box-shadow: inset 0 0 0 1.5px var(--db-accent), 0 0 0 3px var(--db-accent-soft) !important;
+}
+
+.el-dialog,
+.el-message-box {
+  border: 1px solid var(--db-border);
+  border-radius: 16px;
+  box-shadow: var(--db-shadow-lg);
+  overflow: hidden;
+}
+.el-dialog__header,
+.el-message-box__header { padding: 18px 22px 12px; margin: 0; }
+.el-dialog__title,
+.el-message-box__title { font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
+.el-dialog__body { padding: 12px 22px 18px; }
+.el-dialog__footer { padding: 14px 22px 18px; border-top: 1px solid var(--db-border-soft); }
+.el-drawer { border-color: var(--db-border) !important; box-shadow: var(--db-shadow-lg); }
+.el-drawer__header { min-height: 56px; margin: 0; padding: 18px 20px 12px; color: var(--db-text); font-weight: 650; }
+.el-drawer__body { padding: 12px 20px 20px; }
+
+.el-dropdown__popper,
+.el-select__popper,
+.el-popper.is-light,
+.el-popper.is-dark {
+  border: 1px solid var(--db-border) !important;
+  border-radius: 12px !important;
+  background: var(--db-surface-raised) !important;
+  box-shadow: var(--db-shadow-lg) !important;
+}
+.el-dropdown-menu { padding: 5px; background: transparent; }
+.el-dropdown-menu__item { min-height: 30px; border-radius: 7px; }
+.el-dropdown-menu__item:not(.is-disabled):focus,
+.el-dropdown-menu__item:not(.is-disabled):hover { background: var(--db-accent-soft); color: var(--db-text); }
+
+.el-form-item { margin-bottom: 14px; }
+.el-form-item__label { color: var(--db-text-secondary); font-size: 12px; font-weight: 550; }
+.el-switch.is-checked .el-switch__core { background: var(--db-accent); border-color: var(--db-accent); }
+.el-radio-button__inner { background: var(--db-control-bg); border-color: var(--db-control-border); box-shadow: none !important; }
+
+.el-tabs__header { margin-bottom: 0 !important; }
+.el-tabs__nav-wrap::after { height: 1px !important; background: var(--db-border-soft) !important; }
+.el-tabs__item { color: var(--db-text-secondary); transition: color 120ms var(--db-ease), background-color 120ms var(--db-ease); }
+.el-tabs__item:hover { color: var(--db-text); }
+.el-tabs__item.is-active { color: var(--db-text); }
+.el-tabs__active-bar { background: var(--db-accent); height: 2px; border-radius: 2px; }
+
+.el-table,
+.el-table-v2 { --el-table-border-color: var(--db-border-soft); --el-table-row-hover-bg-color: var(--db-accent-soft); }
+.el-table::before { background: var(--db-border-soft); }
+.el-table th.el-table__cell { background: var(--db-table-header); color: var(--db-text-secondary); font-weight: 600; }
+.el-table td.el-table__cell { border-bottom-color: var(--db-border-soft); }
+.el-table-v2__header { background: var(--db-table-header); color: var(--db-text-secondary); font-weight: 600; }
+.el-table-v2__row { border-bottom: 1px solid var(--db-border-soft); }
+.el-table-v2__row:hover { background: var(--db-accent-soft); }
+.el-alert { border-radius: 12px; }
+.el-tag { border-radius: 999px; }
+.el-splitter-panel { overflow: hidden; }
+
+:focus-visible {
+  outline: 2px solid var(--db-accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass-surface,
+  .el-dialog,
+  .el-drawer,
+  .el-message-box {
+    background: var(--db-glass-solid) !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,16 @@
+.gradle/
+.mvn/local/
+.mvn/repository/
+.idea/
+**/build/
+**/target/
+**/node_modules/
+editor-web/dist/
+**/test-results/
+**/playwright-report/
+*.iml
+*.log
+.DS_Store
+out/
+dist/
+data/

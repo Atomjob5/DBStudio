@@ -1,0 +1,93 @@
+package com.dbstudio.server;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.UUID;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.mock.web.MockFilterChain;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.boot.web.server.LocalServerPort;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
+        "dbstudio.open-browser=false",
+        "dbstudio.data-directory=${java.io.tmpdir}/dbstudio-server-test-${random.uuid}"
+})
+class LocalServerSecurityTest {
+    @LocalServerPort int port;
+    @Autowired TestRestTemplate http;
+    @Autowired LocalAccessToken token;
+
+    @Test
+    void servesEmbeddedFrontendAndRejectsUnauthenticatedApi() {
+        ResponseEntity<String> index = http.getForEntity(url("/"), String.class);
+        assertEquals(HttpStatus.OK, index.getStatusCode());
+        assertTrue(index.getBody().contains("id=\"app\""));
+        assertNotNull(index.getHeaders().getFirst("Content-Security-Policy"));
+
+        ResponseEntity<String> denied = http.getForEntity(url("/api/v1/bootstrap"), String.class);
+        assertEquals(HttpStatus.UNAUTHORIZED, denied.getStatusCode());
+        assertTrue(denied.getBody().contains("UNAUTHORIZED"));
+    }
+
+    @Test
+    void exchangesLaunchTokenForStrictCookieAndCreatesWorkspace() {
+        Map<String, String> request = new HashMap<String, String>();
+        request.put("token", token.launchValue());
+        ResponseEntity<String> exchanged = http.postForEntity(url("/api/v1/auth/exchange"), request, String.class);
+        assertEquals(HttpStatus.OK, exchanged.getStatusCode());
+        String cookie = exchanged.getHeaders().getFirst(HttpHeaders.SET_COOKIE);
+        assertNotNull(cookie);
+        assertTrue(cookie.contains("HttpOnly"));
+        assertTrue(cookie.contains("SameSite=Strict"));
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.add(HttpHeaders.COOKIE, cookie.substring(0, cookie.indexOf(';')));
+        headers.add(HttpHeaders.ORIGIN, "http://127.0.0.1:" + port);
+        String workspaceId = UUID.randomUUID().toString();
+        ResponseEntity<String> created = http.exchange(url("/api/v1/workspaces/" + workspaceId),
+                HttpMethod.PUT, new HttpEntity<String>("{}", headers), String.class);
+        assertEquals(HttpStatus.OK, created.getStatusCode());
+        assertTrue(created.getBody().contains(workspaceId));
+    }
+
+    @Test
+    void rejectsForeignOrigin() throws Exception {
+        LocalRequestFilter filter = new LocalRequestFilter(token, new ObjectMapper());
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/bootstrap");
+        request.setLocalPort(33000);
+        request.addHeader(HttpHeaders.HOST, "127.0.0.1:33000");
+        request.addHeader(HttpHeaders.ORIGIN, "http://attacker.example");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        filter.doFilter(request, response, new MockFilterChain());
+        assertEquals(403, response.getStatus());
+        assertTrue(response.getContentAsString().contains("LOCAL_ACCESS_REQUIRED"));
+    }
+
+    @Test
+    void websocketHandshakeRequiresAnOrigin() throws Exception {
+        LocalRequestFilter filter = new LocalRequestFilter(token, new ObjectMapper());
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/events");
+        request.setLocalPort(33000);
+        request.addHeader(HttpHeaders.HOST, "127.0.0.1:33000");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        filter.doFilter(request, response, new MockFilterChain());
+        assertEquals(403, response.getStatus());
+        assertTrue(response.getContentAsString().contains("LOCAL_ACCESS_REQUIRED"));
+    }
+
+    private String url(String path) { return "http://127.0.0.1:" + port + path; }
+}

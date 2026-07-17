@@ -1,0 +1,206 @@
+package com.dbstudio.desktop.csv;
+
+import com.dbstudio.desktop.query.QueryRunner;
+import com.dbstudio.desktop.query.StatementResult;
+import com.dbstudio.spi.DatabaseSession;
+import com.dbstudio.spi.SqlDialect;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.IOException;
+import java.io.Writer;
+import java.nio.charset.Charset;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
+import java.sql.Savepoint;
+import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.function.LongConsumer;
+import java.util.stream.Collectors;
+import org.apache.commons.csv.CSVFormat;
+import org.apache.commons.csv.CSVParser;
+import org.apache.commons.csv.CSVPrinter;
+import org.apache.commons.csv.CSVRecord;
+
+public final class CsvService {
+    public static final String NULL_VALUE = "\\N";
+    public static final int DEFAULT_BATCH_SIZE = 500;
+
+    public Preview preview(Path file, Charset charset, char delimiter, int maxRows) throws IOException {
+        try (BufferedReader reader = Files.newBufferedReader(file, charset);
+             CSVParser parser = csvFormat(delimiter).parse(reader)) {
+            List<String> headers = new ArrayList<String>(parser.getHeaderNames());
+            List<List<String>> rows = new ArrayList<List<String>>();
+            for (CSVRecord record : parser) {
+                if (rows.size() >= Math.max(1, maxRows)) break;
+                List<String> row = new ArrayList<String>(headers.size());
+                for (String header : headers) row.add(record.isMapped(header) ? record.get(header) : "");
+                rows.add(row);
+            }
+            return new Preview(headers, rows);
+        }
+    }
+
+    public long importFile(DatabaseSession session, SqlDialect dialect, String catalog, String table,
+                           Path file, Charset charset, char delimiter,
+                           Map<String, String> sourceToTarget) throws SQLException, IOException {
+        return importFile(session, dialect, catalog, table, file, charset, delimiter, sourceToTarget,
+                new LongConsumer() { @Override public void accept(long value) { } });
+    }
+
+    public long importFile(DatabaseSession session, SqlDialect dialect, String catalog, String table,
+                           Path file, Charset charset, char delimiter, Map<String, String> sourceToTarget,
+                           LongConsumer progress) throws SQLException, IOException {
+        if (sourceToTarget.isEmpty()) throw new IllegalArgumentException("至少映射一个字段");
+        Map<String, String> mapping = new LinkedHashMap<String, String>(sourceToTarget);
+        String target = qualifiedName(dialect, catalog, table);
+        List<String> columns = mapping.values().stream().map(dialect::quoteIdentifier).collect(Collectors.toList());
+        List<String> placeholders = mapping.values().stream().map(value -> "?").collect(Collectors.toList());
+        String sql = "INSERT INTO " + target + " (" + String.join(", ", columns) + ") VALUES ("
+                + String.join(", ", placeholders) + ")";
+
+        Savepoint savepoint = session.jdbcConnection().setSavepoint("dbstudio_csv_import");
+        long count = 0;
+        try (BufferedReader reader = Files.newBufferedReader(file, charset);
+             CSVParser parser = csvFormat(delimiter).parse(reader);
+             PreparedStatement statement = session.jdbcConnection().prepareStatement(sql)) {
+            int pending = 0;
+            for (CSVRecord record : parser) {
+                int parameter = 1;
+                for (String source : mapping.keySet()) {
+                    String value = record.get(source);
+                    if (NULL_VALUE.equals(value)) statement.setObject(parameter++, null);
+                    else statement.setString(parameter++, value);
+                }
+                statement.addBatch();
+                pending++;
+                if (pending >= DEFAULT_BATCH_SIZE) {
+                    count += successfulRows(statement.executeBatch());
+                    progress.accept(count);
+                    pending = 0;
+                }
+            }
+            if (pending > 0) {
+                count += successfulRows(statement.executeBatch());
+                progress.accept(count);
+            }
+            session.jdbcConnection().releaseSavepoint(savepoint);
+            return count;
+        } catch (SQLException exception) {
+            session.jdbcConnection().rollback(savepoint);
+            throw exception;
+        } catch (IOException exception) {
+            session.jdbcConnection().rollback(savepoint);
+            throw exception;
+        } catch (RuntimeException exception) {
+            session.jdbcConnection().rollback(savepoint);
+            throw exception;
+        }
+    }
+
+    public void exportLoadedResult(StatementResult result, Path file, Charset charset, char delimiter)
+            throws IOException {
+        try (BufferedWriter writer = Files.newBufferedWriter(file, charset);
+             CSVPrinter printer = new CSVPrinter(writer, exportFormat(delimiter))) {
+            writeLoadedResult(result, printer);
+        }
+    }
+
+    public void exportLoadedResult(StatementResult result, Writer writer, char delimiter) throws IOException {
+        try (CSVPrinter printer = new CSVPrinter(writer, exportFormat(delimiter))) {
+            writeLoadedResult(result, printer);
+        }
+    }
+
+    private void writeLoadedResult(StatementResult result, CSVPrinter printer) throws IOException {
+            printer.printRecord(result.columns());
+            for (List<String> row : result.rows()) {
+                List<String> values = new ArrayList<String>(row.size());
+                for (String value : row) values.add(exportValue(value));
+                printer.printRecord(values);
+            }
+    }
+
+    public long exportQuery(DatabaseSession session, String sql, Path file, Charset charset, char delimiter)
+            throws SQLException, IOException {
+        try (BufferedWriter writer = Files.newBufferedWriter(file, charset)) {
+            return exportQuery(session, sql, writer, delimiter,
+                    new LongConsumer() { @Override public void accept(long value) { } });
+        }
+    }
+
+    public long exportQuery(DatabaseSession session, String sql, Path file, Charset charset, char delimiter,
+                            LongConsumer progress) throws SQLException, IOException {
+        try (BufferedWriter writer = Files.newBufferedWriter(file, charset)) {
+            return exportQuery(session, sql, writer, delimiter, progress);
+        }
+    }
+
+    /** Streams directly to the supplied HTTP writer without retaining result rows. */
+    public long exportQuery(DatabaseSession session, String sql, Writer writer, char delimiter,
+                            LongConsumer progress) throws SQLException, IOException {
+        try (Statement statement = session.jdbcConnection().createStatement();
+             CSVPrinter printer = new CSVPrinter(writer, exportFormat(delimiter))) {
+            statement.setFetchSize(QueryRunner.DEFAULT_FETCH_SIZE);
+            if (!statement.execute(sql)) throw new SQLException("该语句没有返回结果集");
+            try (ResultSet resultSet = statement.getResultSet()) {
+                ResultSetMetaData metadata = resultSet.getMetaData();
+                int columnCount = metadata.getColumnCount();
+                List<String> headers = new ArrayList<String>(columnCount);
+                for (int index = 1; index <= columnCount; index++) headers.add(metadata.getColumnLabel(index));
+                printer.printRecord(headers);
+                long rows = 0;
+                while (resultSet.next()) {
+                    List<String> values = new ArrayList<String>(columnCount);
+                    for (int index = 1; index <= columnCount; index++) {
+                        values.add(exportValue(QueryRunner.displayValue(resultSet.getObject(index))));
+                    }
+                    printer.printRecord(values);
+                    rows++;
+                    if (rows % DEFAULT_BATCH_SIZE == 0) { printer.flush(); progress.accept(rows); }
+                }
+                progress.accept(rows);
+                return rows;
+            }
+        }
+    }
+
+    private static CSVFormat csvFormat(char delimiter) {
+        return CSVFormat.DEFAULT.builder().setDelimiter(delimiter).setHeader().setSkipHeaderRecord(true)
+                .setIgnoreEmptyLines(false).get();
+    }
+    private static CSVFormat exportFormat(char delimiter) {
+        return CSVFormat.DEFAULT.builder().setDelimiter(delimiter).setRecordSeparator(System.lineSeparator()).get();
+    }
+    private static String qualifiedName(SqlDialect dialect, String catalog, String table) {
+        String quotedTable = dialect.quoteIdentifier(table);
+        return catalog == null || catalog.trim().isEmpty() ? quotedTable
+                : dialect.quoteIdentifier(catalog) + "." + quotedTable;
+    }
+    private static long successfulRows(int[] batchCounts) {
+        long count = 0;
+        for (int batchCount : batchCounts) count += batchCount >= 0 ? batchCount : 1;
+        return count;
+    }
+    private static String exportValue(String value) { return value == null ? NULL_VALUE : value; }
+
+    public static final class Preview {
+        private final List<String> headers;
+        private final List<List<String>> rows;
+        public Preview(List<String> headers, List<List<String>> rows) {
+            this.headers = Collections.unmodifiableList(new ArrayList<String>(headers));
+            List<List<String>> copied = new ArrayList<List<String>>(rows.size());
+            for (List<String> row : rows) copied.add(Collections.unmodifiableList(new ArrayList<String>(row)));
+            this.rows = Collections.unmodifiableList(copied);
+        }
+        public List<String> headers() { return headers; }
+        public List<List<String>> rows() { return rows; }
+    }
+}
