@@ -57,3 +57,4 @@ Open `http://127.0.0.1:5173/?mock=1` to use the development-only mock transport.
 Unit and server security tests do not require Docker. MySQL integration tests use fixed Testcontainers images `mysql:8.0.46` and `mysql:8.4.9` and cover connections, DDL/DML, transactions, metadata, procedures and CSV behavior.
 
 The Element Plus component policy is documented in [docs/element-plus-component-map.md](docs/element-plus-component-map.md). Theme, material and accessibility rules are documented in [docs/apple-ui-style.md](docs/apple-ui-style.md).
+The end-to-end SQL execution, JDBC streaming and result rendering flow is documented in [docs/sql-query-result-flow.md](docs/sql-query-result-flow.md).
