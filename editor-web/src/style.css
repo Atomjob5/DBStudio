@@ -249,7 +249,13 @@ textarea,
   border: 1px solid var(--db-border) !important;
   border-radius: 12px !important;
   background: var(--db-surface-raised) !important;
+  color: var(--db-text) !important;
   box-shadow: var(--db-shadow-lg) !important;
+}
+.el-popper.is-light .el-popper__arrow::before,
+.el-popper.is-dark .el-popper__arrow::before {
+  border-color: var(--db-border) !important;
+  background: var(--db-surface-raised) !important;
 }
 .el-dropdown-menu { padding: 5px; background: transparent; }
 .el-dropdown-menu__item { min-height: 30px; border-radius: 7px; }
