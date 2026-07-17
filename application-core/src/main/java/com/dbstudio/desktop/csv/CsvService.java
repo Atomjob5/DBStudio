@@ -148,7 +148,7 @@ public final class CsvService {
                             LongConsumer progress) throws SQLException, IOException {
         try (Statement statement = session.jdbcConnection().createStatement();
              CSVPrinter printer = new CSVPrinter(writer, exportFormat(delimiter))) {
-            statement.setFetchSize(QueryRunner.DEFAULT_FETCH_SIZE);
+            statement.setFetchSize(QueryRunner.JDBC_FETCH_SIZE);
             if (!statement.execute(sql)) throw new SQLException("该语句没有返回结果集");
             try (ResultSet resultSet = statement.getResultSet()) {
                 ResultSetMetaData metadata = resultSet.getMetaData();

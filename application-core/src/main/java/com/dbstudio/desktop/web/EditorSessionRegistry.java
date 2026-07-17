@@ -21,13 +21,17 @@ public final class EditorSessionRegistry implements AutoCloseable {
             new ConcurrentHashMap<UUID, EditorSession>();
     private final AtomicInteger sequence = new AtomicInteger(1);
     private volatile int maxRows;
+    private volatile int streamBatchRows;
 
-    public EditorSessionRegistry(int maxRows) { this.maxRows = Math.max(1, maxRows); }
+    public EditorSessionRegistry(int maxRows, int streamBatchRows) {
+        this.maxRows = Math.max(1, maxRows);
+        this.streamBatchRows = Math.max(1, streamBatchRows);
+    }
 
     public EditorSession create(DatabaseContext context) throws SQLException {
         UUID id = UUID.randomUUID();
         EditorSession session = new EditorSession(id, "查询 " + sequence.getAndIncrement(),
-                new QueryRunner(context.openEditorSession(), maxRows));
+                new QueryRunner(context.openEditorSession(), maxRows, streamBatchRows));
         sessions.put(id, session);
         return session;
     }
@@ -85,6 +89,11 @@ public final class EditorSessionRegistry implements AutoCloseable {
     public void setMaxRows(int maxRows) {
         this.maxRows = Math.max(1, maxRows);
         for (EditorSession session : sessions.values()) session.runner().setMaxRows(this.maxRows);
+    }
+
+    public void setStreamBatchRows(int streamBatchRows) {
+        this.streamBatchRows = Math.max(1, streamBatchRows);
+        for (EditorSession session : sessions.values()) session.runner().setStreamBatchRows(this.streamBatchRows);
     }
 
     @Override public void close() {

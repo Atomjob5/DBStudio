@@ -64,7 +64,7 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 @RequestMapping("/api/v1")
 public final class DbStudioApiController {
     private static final List<String> SETTING_KEYS = Arrays.asList(
-            "ui.theme", "result.maxRows", "layout.leftWidth", "layout.editorHeight");
+            "ui.theme", "result.maxRows", "result.streamBatchRows", "layout.leftWidth", "layout.editorHeight");
 
     private final ProviderRegistry providers;
     private final ConnectionProfileRepository profiles;
@@ -351,6 +351,15 @@ public final class DbStudioApiController {
                 throw new ApiException("INVALID_SETTING", "结果行数必须在 1 到 100000 之间");
             }
         }
+        if ("result.streamBatchRows".equals(key)) {
+            try {
+                int streamBatchRows = Integer.parseInt(value);
+                if (streamBatchRows < 1 || streamBatchRows > 1_000) throw new NumberFormatException();
+                workspaces.setStreamBatchRows(streamBatchRows);
+            } catch (NumberFormatException exception) {
+                throw new ApiException("INVALID_SETTING", "流式推送行数必须在 1 到 1000 之间");
+            }
+        }
         settings.put(key, value);
         return ApiPayloads.map("key", key, "value", value);
     }
@@ -534,6 +543,7 @@ public final class DbStudioApiController {
         }
         if (!result.containsKey("ui.theme")) result.put("ui.theme", "system");
         if (!result.containsKey("result.maxRows")) result.put("result.maxRows", "1000");
+        if (!result.containsKey("result.streamBatchRows")) result.put("result.streamBatchRows", "100");
         return result;
     }
 

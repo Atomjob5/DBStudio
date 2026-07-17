@@ -40,7 +40,7 @@ public final class WorkspaceRegistry implements AutoCloseable {
         validateId(id);
         Workspace existing = workspaces.get(id);
         if (existing != null) { cancelExpiry(id); return existing; }
-        Workspace created = new Workspace(id, configuredMaxRows(), mapper,
+        Workspace created = new Workspace(id, configuredMaxRows(), configuredStreamBatchRows(), mapper,
                 AppDirectories.dataDirectory().resolve("tmp").resolve(id));
         Workspace raced = workspaces.putIfAbsent(id, created);
         if (raced != null) { created.close(); return raced; }
@@ -61,6 +61,11 @@ public final class WorkspaceRegistry implements AutoCloseable {
     void setMaxRows(int maxRows) {
         int bounded = Math.max(1, Math.min(100_000, maxRows));
         for (Workspace workspace : workspaces.values()) workspace.editors().setMaxRows(bounded);
+    }
+
+    void setStreamBatchRows(int streamBatchRows) {
+        int bounded = Math.max(1, Math.min(1_000, streamBatchRows));
+        for (Workspace workspace : workspaces.values()) workspace.editors().setStreamBatchRows(bounded);
     }
 
     private void scheduleExpiry(final String id) {
@@ -88,6 +93,18 @@ public final class WorkspaceRegistry implements AutoCloseable {
             return QueryRunner.DEFAULT_MAX_ROWS;
         } catch (NumberFormatException exception) {
             return QueryRunner.DEFAULT_MAX_ROWS;
+        }
+    }
+
+    private int configuredStreamBatchRows() {
+        try {
+            String raw = settings.get("result.streamBatchRows").orElse(
+                    String.valueOf(QueryRunner.DEFAULT_STREAM_BATCH_ROWS));
+            return Math.max(1, Math.min(1_000, Integer.parseInt(raw)));
+        } catch (SQLException exception) {
+            return QueryRunner.DEFAULT_STREAM_BATCH_ROWS;
+        } catch (NumberFormatException exception) {
+            return QueryRunner.DEFAULT_STREAM_BATCH_ROWS;
         }
     }
 

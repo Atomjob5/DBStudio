@@ -4,6 +4,7 @@ import { useAppStore } from "./app";
 import { useConnectionStore } from "./connection";
 import { useEditorStore } from "./editor";
 import { useQueryStore } from "./query";
+import { useSettingsStore } from "./settings";
 
 beforeEach(() => setActivePinia(createPinia()));
 
@@ -61,6 +62,33 @@ describe("application stores", () => {
     expect(queries.executions["editor-1"].results[0].rows).toEqual([["1"]]);
   });
 
+  it("replaces execution, results and result references for every streamed update", () => {
+    const queries = useQueryStore();
+    queries.start("editor-1", "execution-1");
+    const started = queries.executions["editor-1"];
+    queries.addResult("editor-1", {
+      resultIndex: 0, sql: "select 1", type: "QUERY", columns: ["value"], rows: [],
+      updateCount: -1, truncated: false, durationMs: 0, complete: false
+    });
+    const withResult = queries.executions["editor-1"];
+    expect(withResult).not.toBe(started);
+    expect(withResult.results).not.toBe(started.results);
+    const result = withResult.results[0];
+
+    queries.appendRows("editor-1", 0, [["1"]]);
+    const withRows = queries.executions["editor-1"];
+    expect(withRows).not.toBe(withResult);
+    expect(withRows.results).not.toBe(withResult.results);
+    expect(withRows.results[0]).not.toBe(result);
+    expect(withRows.results[0].rows).not.toBe(result.rows);
+
+    queries.completeResult("editor-1", 0, { durationMs: 5 });
+    const resultComplete = queries.executions["editor-1"];
+    expect(resultComplete.results[0]).not.toBe(withRows.results[0]);
+    queries.complete("editor-1", { durationMs: 6 });
+    expect(queries.executions["editor-1"]).not.toBe(resultComplete);
+  });
+
   it("updates saved connection profiles without duplicates", () => {
     const connections = useConnectionStore();
     connections.initialize([], []);
@@ -69,5 +97,12 @@ describe("application stores", () => {
     connections.upsert({ ...first, name: "A" });
     expect(connections.profiles).toHaveLength(1);
     expect(connections.profiles[0].name).toBe("A");
+  });
+
+  it("initializes independent result limit and streaming batch settings", () => {
+    const settings = useSettingsStore();
+    settings.initialize({ "result.maxRows": "2500", "result.streamBatchRows": "75" }, []);
+    expect(settings.maxResultRows).toBe(2500);
+    expect(settings.streamBatchRows).toBe(75);
   });
 });

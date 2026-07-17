@@ -9,8 +9,10 @@ import com.dbstudio.spi.SqlStatement;
 import com.dbstudio.spi.StatementType;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class QueryRunnerTest {
@@ -48,6 +50,77 @@ class QueryRunnerTest {
             runner.rollback().join();
             assertFalse(runner.isTransactionDirty());
         }
+    }
+
+    @Test
+    void separatesDisplayLimitFromStreamingBatchSizeAndSnapshotsSettings() throws Exception {
+        final Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
+        connection.setAutoCommit(false);
+        DatabaseSession session = session(connection);
+        try (final QueryRunner runner = new QueryRunner(session, 1000, 100)) {
+            List<Integer> batches = new ArrayList<Integer>();
+            StatementResult result = query(runner, 250, batches, null);
+            assertEquals(Arrays.asList(100, 100, 50), batches);
+            assertEquals(250, result.rows().size());
+            assertFalse(result.truncated());
+
+            runner.setMaxRows(120);
+            runner.setStreamBatchRows(500);
+            batches.clear();
+            result = query(runner, 250, batches, null);
+            assertEquals(Collections.singletonList(120), batches);
+            assertEquals(120, result.rows().size());
+            assertTrue(result.truncated());
+
+            runner.setMaxRows(1000);
+            runner.setStreamBatchRows(1);
+            batches.clear();
+            query(runner, 3, batches, null);
+            assertEquals(Arrays.asList(1, 1, 1), batches);
+
+            runner.setMaxRows(1000);
+            runner.setStreamBatchRows(100);
+            batches.clear();
+            result = query(runner, 250, batches, new Runnable() {
+                @Override public void run() {
+                    runner.setMaxRows(1);
+                    runner.setStreamBatchRows(1);
+                }
+            });
+            assertEquals(Arrays.asList(100, 100, 50), batches);
+            assertEquals(250, result.rows().size());
+
+            batches.clear();
+            result = query(runner, 3, batches, null);
+            assertEquals(Collections.singletonList(1), batches);
+            assertEquals(1, result.rows().size());
+            assertTrue(result.truncated());
+        }
+    }
+
+    private StatementResult query(QueryRunner runner, int rows, final List<Integer> batches,
+                                  final Runnable started) {
+        String text = "WITH RECURSIVE numbers(id) AS (SELECT 1 UNION ALL SELECT id + 1 FROM numbers WHERE id < "
+                + rows + ") SELECT id FROM numbers";
+        return runner.execute(Collections.singletonList(sql(text, StatementType.QUERY)), true,
+                new QueryResultListener() {
+                    @Override public void resultStarted(int index, String sql, StatementType type,
+                                                        java.util.List<String> columns) {
+                        if (started != null) started.run();
+                    }
+                    @Override public void rows(int index, java.util.List<java.util.List<String>> values) {
+                        batches.add(values.size());
+                    }
+                    @Override public void resultCompleted(int index, StatementResult result) { }
+                }).join().results().get(0);
+    }
+
+    private DatabaseSession session(final Connection connection) {
+        return new DatabaseSession() {
+            @Override public Connection jdbcConnection() { return connection; }
+            @Override public String currentCatalog() { return ""; }
+            @Override public void close() throws java.sql.SQLException { connection.close(); }
+        };
     }
 
     private SqlStatement sql(String text, StatementType type) {

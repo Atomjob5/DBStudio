@@ -122,7 +122,8 @@
   <ConnectionDialog v-model="connectionDialog" :providers="connections.providers" :profiles="connections.profiles" @connected="connected" />
   <HistoryDrawer v-model="historyDrawer" @open="openHistory" />
   <SettingsDrawer v-model="settingsDrawer" :theme="app.themePreference" :resolved-theme="app.theme" :max-rows="settings.maxResultRows"
-                  @update:theme="updateTheme" @update:max-rows="updateMaxRows" />
+                  :stream-batch-rows="settings.streamBatchRows" @update:theme="updateTheme" @update:max-rows="updateMaxRows"
+                  @update:stream-batch-rows="updateStreamBatchRows" />
   <CsvImportDialog v-model="csvDialog" @imported="objectExplorer?.refresh()" />
 </template>
 
@@ -382,7 +383,16 @@ async function updateTheme(theme: ThemePreference): Promise<void> {
   app.setThemePreference(theme);
   await rpc.request("settings.update", { key: "ui.theme", value: theme });
 }
-async function updateMaxRows(value: number): Promise<void> { settings.maxResultRows = value; await rpc.request("settings.update", { key: "result.maxRows", value: String(value) }); }
+async function updateMaxRows(value: number): Promise<void> {
+  const previous = settings.maxResultRows; settings.maxResultRows = value;
+  try { await rpc.request("settings.update", { key: "result.maxRows", value: String(value) }); }
+  catch (error) { settings.maxResultRows = previous; reportError(error); }
+}
+async function updateStreamBatchRows(value: number): Promise<void> {
+  const previous = settings.streamBatchRows; settings.streamBatchRows = value;
+  try { await rpc.request("settings.update", { key: "result.streamBatchRows", value: String(value) }); }
+  catch (error) { settings.streamBatchRows = previous; reportError(error); }
+}
 function dataCommand(command: string): void {
   if (command === "import") csvDialog.value = true;
   else if (command === "history") historyDrawer.value = true;

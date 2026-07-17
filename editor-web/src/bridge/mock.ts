@@ -20,7 +20,7 @@ function metadata(payload: Record<string, unknown>): unknown[] {
 }
 
 export const developmentMockRequest: MockRequestHandler = async (type, payload, emit) => {
-  if (type === "app.bootstrap") return { providers, profiles, recentFiles: [], settings: { "ui.theme": "system", "result.maxRows": "1000" } };
+  if (type === "app.bootstrap") return { providers, profiles, recentFiles: [], settings: { "ui.theme": "system", "result.maxRows": "1000", "result.streamBatchRows": "100" } };
   if (type === "connection.test") return { success: true, message: "连接成功", serverVersion: "MySQL 8.4.9" };
   if (type === "connection.connect") return { ...payload, id: payload.id ?? profiles[0].id, rememberPassword: Boolean(payload.rememberPassword) };
   if (type === "editor.create") return { id: crypto.randomUUID(), title: `查询 ${++editorSequence}` };
@@ -34,9 +34,11 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
     window.setTimeout(() => {
       emit("query.started", { editorId, executionId });
       emit("query.resultMeta", { editorId, resultIndex: 0, sql: payload.text, type: "QUERY", columns: ["id", "name"], updateCount: -1, truncated: false, durationMs: 0 });
-      emit("query.rows", { editorId, resultIndex: 0, rows: Array.from({ length: 200 }, (_, index) => [String(index + 1), `测试数据 ${index + 1}`]) });
-      emit("query.resultComplete", { editorId, resultIndex: 0, durationMs: 18, truncated: false });
-      emit("query.executionComplete", { editorId, executionId, cancelled: false, failed: false, durationMs: 18, transactionDirty: false });
+      const rows = Array.from({ length: 200 }, (_, index) => [String(index + 1), `Apple Studio ${index + 1} ✨`]);
+      emit("query.rows", { editorId, resultIndex: 0, rows: rows.slice(0, 100) });
+      emit("query.rows", { editorId, resultIndex: 0, rows: rows.slice(100) });
+      emit("query.resultComplete", { editorId, resultIndex: 0, durationMs: 38, truncated: false });
+      emit("query.executionComplete", { editorId, executionId, cancelled: false, failed: false, durationMs: 38, transactionDirty: false });
     }, 0);
     return { executionId };
   }

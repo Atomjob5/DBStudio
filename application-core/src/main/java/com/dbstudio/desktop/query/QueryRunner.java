@@ -25,7 +25,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 public final class QueryRunner implements AutoCloseable {
-    public static final int DEFAULT_FETCH_SIZE = 500;
+    public static final int JDBC_FETCH_SIZE = 500;
+    public static final int DEFAULT_STREAM_BATCH_ROWS = 100;
     public static final int DEFAULT_MAX_ROWS = 1_000;
     private static final int MAX_LOB_CHARACTERS = 10_000;
     private static final AtomicInteger THREAD_SEQUENCE = new AtomicInteger();
@@ -35,10 +36,12 @@ public final class QueryRunner implements AutoCloseable {
     private final AtomicReference<Statement> activeStatement = new AtomicReference<Statement>();
     private final AtomicBoolean transactionDirty = new AtomicBoolean();
     private volatile int maxRows;
+    private volatile int streamBatchRows;
 
-    public QueryRunner(DatabaseSession session, int maxRows) {
+    public QueryRunner(DatabaseSession session, int maxRows, int streamBatchRows) {
         this.session = Objects.requireNonNull(session, "session");
         this.maxRows = Math.max(1, maxRows);
+        this.streamBatchRows = Math.max(1, streamBatchRows);
         this.executor = Executors.newSingleThreadExecutor(new ThreadFactory() {
             @Override public Thread newThread(Runnable runnable) {
                 Thread thread = new Thread(runnable, "dbstudio-query-" + THREAD_SEQUENCE.incrementAndGet());
@@ -48,7 +51,8 @@ public final class QueryRunner implements AutoCloseable {
         });
     }
 
-    public QueryRunner(DatabaseSession session) { this(session, DEFAULT_MAX_ROWS); }
+    public QueryRunner(DatabaseSession session, int maxRows) { this(session, maxRows, DEFAULT_STREAM_BATCH_ROWS); }
+    public QueryRunner(DatabaseSession session) { this(session, DEFAULT_MAX_ROWS, DEFAULT_STREAM_BATCH_ROWS); }
 
     public CompletableFuture<QueryExecution> execute(List<SqlStatement> statements, boolean stopOnError) {
         return execute(statements, stopOnError, QueryResultListener.NONE);
@@ -97,6 +101,7 @@ public final class QueryRunner implements AutoCloseable {
     public boolean isRunning() { return activeStatement.get() != null; }
     public boolean isTransactionDirty() { return transactionDirty.get(); }
     public void setMaxRows(int maxRows) { this.maxRows = Math.max(1, maxRows); }
+    public void setStreamBatchRows(int streamBatchRows) { this.streamBatchRows = Math.max(1, streamBatchRows); }
 
     private QueryExecution executeBlocking(List<SqlStatement> statements, boolean stopOnError,
                                            QueryResultListener listener) {
@@ -125,9 +130,11 @@ public final class QueryRunner implements AutoCloseable {
     private List<StatementResult> executeOne(SqlStatement sqlStatement, int firstResultIndex,
                                              QueryResultListener listener) {
         Instant started = Instant.now();
+        final int statementMaxRows = maxRows;
+        final int statementBatchRows = streamBatchRows;
         try (Statement statement = session.jdbcConnection().createStatement()) {
-            statement.setFetchSize(DEFAULT_FETCH_SIZE);
-            statement.setMaxRows(maxRows + 1);
+            statement.setFetchSize(JDBC_FETCH_SIZE);
+            statement.setMaxRows(statementMaxRows + 1);
             activeStatement.set(statement);
             boolean hasResult = statement.execute(sqlStatement.text());
             if (sqlStatement.type().modifiesData()) transactionDirty.set(true);
@@ -139,7 +146,8 @@ public final class QueryRunner implements AutoCloseable {
                 StatementResult output;
                 if (hasResult) {
                     try (ResultSet resultSet = statement.getResultSet()) {
-                        output = readResultSet(sqlStatement, resultSet, started, resultIndex, listener);
+                        output = readResultSet(sqlStatement, resultSet, started, resultIndex, listener,
+                                statementMaxRows, statementBatchRows);
                     }
                 } else {
                     int updateCount = statement.getUpdateCount();
@@ -175,7 +183,8 @@ public final class QueryRunner implements AutoCloseable {
     }
 
     private StatementResult readResultSet(SqlStatement sqlStatement, ResultSet resultSet, Instant started,
-                                          int resultIndex, QueryResultListener listener) throws SQLException {
+                                          int resultIndex, QueryResultListener listener,
+                                          int resultMaxRows, int resultBatchRows) throws SQLException {
         ResultSetMetaData metadata = resultSet.getMetaData();
         int columnCount = metadata.getColumnCount();
         List<String> columns = new ArrayList<String>(columnCount);
@@ -186,16 +195,16 @@ public final class QueryRunner implements AutoCloseable {
         listener.resultStarted(resultIndex, sqlStatement.text(), sqlStatement.type(),
                 Collections.unmodifiableList(new ArrayList<String>(columns)));
 
-        List<List<String>> rows = new ArrayList<List<String>>(Math.min(maxRows, DEFAULT_FETCH_SIZE));
-        List<List<String>> batch = new ArrayList<List<String>>(DEFAULT_FETCH_SIZE);
+        List<List<String>> rows = new ArrayList<List<String>>(Math.min(resultMaxRows, JDBC_FETCH_SIZE));
+        List<List<String>> batch = new ArrayList<List<String>>(Math.min(resultBatchRows, resultMaxRows));
         boolean truncated = false;
         while (resultSet.next()) {
-            if (rows.size() >= maxRows) { truncated = true; break; }
+            if (rows.size() >= resultMaxRows) { truncated = true; break; }
             List<String> row = new ArrayList<String>(columnCount);
             for (int index = 1; index <= columnCount; index++) row.add(displayValue(resultSet.getObject(index)));
             rows.add(row);
             batch.add(Collections.unmodifiableList(new ArrayList<String>(row)));
-            if (batch.size() == DEFAULT_FETCH_SIZE) {
+            if (batch.size() == resultBatchRows) {
                 listener.rows(resultIndex, immutableRows(batch));
                 batch.clear();
             }

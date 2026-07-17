@@ -31,9 +31,9 @@ final class Workspace implements AutoCloseable {
     private final AtomicInteger activeTasks = new AtomicInteger();
     private volatile DatabaseContext database;
 
-    Workspace(String id, int maxRows, ObjectMapper mapper, Path temporaryDirectory) {
+    Workspace(String id, int maxRows, int streamBatchRows, ObjectMapper mapper, Path temporaryDirectory) {
         this.id = id;
-        this.editors = new EditorSessionRegistry(maxRows);
+        this.editors = new EditorSessionRegistry(maxRows, streamBatchRows);
         this.events = new WorkspaceEventChannel(mapper, id);
         this.temporaryDirectory = temporaryDirectory;
         this.tasks = Executors.newFixedThreadPool(2, new ThreadFactory() {

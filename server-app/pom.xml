@@ -42,6 +42,16 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>mysql</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -53,9 +63,58 @@
                 <version>${spring-boot.version}</version>
                 <configuration>
                     <mainClass>com.dbstudio.server.DbStudioServerApplication</mainClass>
+                    <excludes>
+                        <exclude>
+                            <groupId>com.dbstudio</groupId>
+                            <artifactId>editor-web</artifactId>
+                        </exclude>
+                    </excludes>
                 </configuration>
                 <executions>
                     <execution><goals><goal>repackage</goal></goals></execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>embed-current-editor-web</id>
+                        <phase>prepare-package</phase>
+                        <goals><goal>run</goal></goals>
+                        <configuration>
+                            <target>
+                                <available file="${maven.multiModuleProjectDirectory}/editor-web/dist/index.html"
+                                           property="editor.web.built" />
+                                <fail unless="editor.web.built"
+                                      message="editor-web/dist/index.html is missing; build from the reactor root" />
+                                <copy todir="${project.build.outputDirectory}/META-INF/resources" overwrite="true">
+                                    <fileset dir="${maven.multiModuleProjectDirectory}/editor-web/dist" />
+                                </copy>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.5.1</version>
+                <executions>
+                    <execution>
+                        <id>verify-embedded-editor-web</id>
+                        <phase>verify</phase>
+                        <goals><goal>java</goal></goals>
+                        <configuration>
+                            <classpathScope>test</classpathScope>
+                            <mainClass>com.dbstudio.server.FatJarVerifier</mainClass>
+                            <arguments>
+                                <argument>${project.build.directory}/${project.build.finalName}.jar</argument>
+                                <argument>${maven.multiModuleProjectDirectory}/editor-web/dist/index.html</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
         </plugins>

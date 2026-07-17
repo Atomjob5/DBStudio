@@ -21,7 +21,12 @@
           <el-input-number :model-value="maxRows" :min="1" :max="100000" :step="500" controls-position="right"
                            @update:model-value="$emit('update:maxRows', $event ?? 1000)" />
         </el-form-item>
-        <el-alert title="完整导出会重新流式执行查询，不受展示行数限制。" type="info" show-icon :closable="false" />
+        <el-form-item label="每批流式推送行数">
+          <el-input-number :model-value="streamBatchRows" :min="1" :max="1000" :step="50" controls-position="right"
+                           @update:model-value="$emit('update:streamBatchRows', $event ?? 100)" />
+        </el-form-item>
+        <el-alert title="较小批次首屏更快，但会增加事件和界面更新次数。完整导出不受这些设置限制。"
+                  type="info" show-icon :closable="false" />
       </section>
     </el-form>
   </el-drawer>
@@ -31,8 +36,8 @@
 import { Monitor, Moon, Sunny } from "@element-plus/icons-vue";
 import type { ResolvedTheme, ThemePreference } from "../types";
 
-defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: ResolvedTheme; maxRows: number }>();
-const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme": [value: ThemePreference]; "update:maxRows": [value: number] }>();
+defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: ResolvedTheme; maxRows: number; streamBatchRows: number }>();
+const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme": [value: ThemePreference]; "update:maxRows": [value: number]; "update:streamBatchRows": [value: number] }>();
 function themeChanged(value: string | number | boolean | undefined): void {
   if (value === "system" || value === "dark" || value === "light") emit("update:theme", value);
 }
