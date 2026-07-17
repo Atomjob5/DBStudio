@@ -114,11 +114,11 @@
       <span class="status-item"><i class="status-dot" :class="app.connected ? 'online' : 'offline'" />{{ app.status }}</span>
       <div class="status-result-actions" role="toolbar" aria-label="结果数据加载工具栏">
         <el-tooltip :content="nextPageTooltip" placement="top">
-          <el-button text :icon="ArrowRightBold" aria-label="下一页数据" :disabled="!canLoadMore"
+          <el-button text :icon="ArrowDown" aria-label="下一页数据" :disabled="!canLoadMore"
                      :loading="activeResultLoading?.mode === 'next'" @click="loadNextResultPage" />
         </el-tooltip>
         <el-tooltip :content="allRowsTooltip" placement="top">
-          <el-button text :icon="Bottom" aria-label="获取全部数据" :disabled="!canLoadMore"
+          <el-button text :icon="DArrowRight" style="rotate: 90deg;" aria-label="获取全部数据" :disabled="!canLoadMore"
                      :loading="activeResultLoading?.mode === 'all'" @click="loadAllResultRows" />
         </el-tooltip>
       </div>
@@ -142,8 +142,28 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox, ElNotification } from "element-plus";
 import {
-  ArrowDown, ArrowRightBold, Bottom, Clock, Close, Coin, Connection, Document, DocumentChecked, FolderOpened, Moon, MoreFilled,
-  Plus, RefreshLeft, Select, Setting, Sunny, SwitchButton, Upload, VideoPlay, WarningFilled
+  ArrowDown,
+  ArrowRightBold,
+  Bottom,
+  Clock,
+  Close,
+  Coin,
+  Connection,
+  DArrowRight,
+  Document,
+  DocumentChecked,
+  FolderOpened,
+  Moon,
+  MoreFilled,
+  Plus,
+  RefreshLeft,
+  Select,
+  Setting,
+  Sunny,
+  SwitchButton,
+  Upload,
+  VideoPlay,
+  WarningFilled
 } from "@element-plus/icons-vue";
 import { rpc } from "./bridge/rpc";
 import ConnectionDialog from "./components/ConnectionDialog.vue";
