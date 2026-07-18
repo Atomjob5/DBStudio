@@ -11,13 +11,16 @@
           <el-tag v-if="activeResult?.truncated" size="small" type="warning" effect="plain">已截断</el-tag>
         </div>
         <div class="result-actions" aria-label="结果操作">
-          <el-select v-model="sortColumn" clearable placeholder="排序" size="small" aria-label="选择排序列">
-            <el-option v-for="(column, index) in activeResult?.columns" :key="index" :label="column" :value="index" />
+          <el-select v-model="selectedColumnIndices" multiple filterable clearable collapse-tags collapse-tags-tooltip
+                     :max-collapse-tags="1" :filter-method="filterColumns" placeholder="筛选字段" size="small"
+                     aria-label="筛选展示字段">
+            <el-option v-for="column in filteredColumnOptions" :key="column.index" :label="column.label" :value="column.index">
+              <div class="column-option">
+                <span>{{ column.label }}</span>
+                <small v-if="optionDetail(column)">{{ optionDetail(column) }}</small>
+              </div>
+            </el-option>
           </el-select>
-          <el-tooltip :content="descending ? '当前降序，点击切换升序' : '当前升序，点击切换降序'">
-            <el-button text :icon="descending ? SortDown : SortUp" aria-label="切换排序方向" :disabled="sortColumn === ''"
-                       @click="descending = !descending" />
-          </el-tooltip>
           <el-tooltip content="复制选中单元格">
             <el-button text :icon="CopyDocument" aria-label="复制选中单元格" :disabled="!selectedCell" @click="copyCell" />
           </el-tooltip>
@@ -50,9 +53,10 @@
 <script setup lang="ts">
 import { computed, h, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
-import { CopyDocument, DataAnalysis, Download, SortDown, SortUp } from "@element-plus/icons-vue";
+import { CopyDocument, DataAnalysis, Download } from "@element-plus/icons-vue";
 import type { Column } from "element-plus";
 import type { QueryExecutionState } from "../types";
+import { matchesColumnQuery, resultColumnOptions, type ColumnOption } from "../columnFilter";
 
 const props = defineProps<{
   execution?: QueryExecutionState;
@@ -67,10 +71,22 @@ const activeIndex = computed({
   get: () => props.activeResultIndex,
   set: (value: number) => emit("update:active-result-index", value)
 });
-const sortColumn = ref<number | "">("");
-const descending = ref(false);
+const selectedColumns = ref<Record<string, number[]>>({});
+const columnQuery = ref("");
 const selectedCell = ref<{ row: number; column: number; value: string | null }>();
 const activeResult = computed(() => props.execution?.results.find((item) => item.resultIndex === activeIndex.value) ?? props.execution?.results[0]);
+const resultKey = computed(() => String(activeResult.value?.resultIndex ?? 0));
+const selectedColumnIndices = computed<number[]>({
+  get: () => selectedColumns.value[resultKey.value] ?? [],
+  set: (value) => { selectedColumns.value = { ...selectedColumns.value, [resultKey.value]: value }; }
+});
+const columnOptions = computed(() => resultColumnOptions(activeResult.value?.columns ?? [], activeResult.value?.columnDetails));
+const filteredColumnOptions = computed(() => columnOptions.value.filter((column) => matchesColumnQuery(column, columnQuery.value)));
+const visibleColumnOptions = computed(() => {
+  if (!selectedColumnIndices.value.length) return columnOptions.value;
+  const selected = new Set(selectedColumnIndices.value);
+  return columnOptions.value.filter((column) => selected.has(column.index));
+});
 const summary = computed(() => {
   const result = activeResult.value;
   if (!result) return "";
@@ -78,31 +94,34 @@ const summary = computed(() => {
   return result.columns.length ? `${result.rows.length} 行 · ${result.durationMs} ms` : `${result.updateCount} 行受影响 · ${result.durationMs} ms`;
 });
 
-watch(() => props.execution?.executionId, () => { selectedCell.value = undefined; sortColumn.value = ""; });
-
-const tableRows = computed(() => {
-  const source = activeResult.value?.rows ?? [];
-  if (sortColumn.value === "") return source;
-  const rows = [...source];
-  const index = sortColumn.value;
-  return rows.sort((a, b) => {
-    const left = a[index]; const right = b[index];
-    const comparison = left === right ? 0 : left === null ? -1 : right === null ? 1 : left.localeCompare(right, undefined, { numeric: true });
-    return descending.value ? -comparison : comparison;
-  });
+watch(() => props.execution?.executionId, () => {
+  selectedCell.value = undefined;
+  selectedColumns.value = {};
+  columnQuery.value = "";
 });
+watch(activeIndex, () => { selectedCell.value = undefined; columnQuery.value = ""; });
 
-const tableColumns = computed<Column[]>(() => (activeResult.value?.columns ?? []).map((title, columnIndex) => ({
-  key: `c${columnIndex}`,
-  dataKey: columnIndex,
-  title,
-  width: Math.max(120, Math.min(320, title.length * 12 + 56)),
+const tableRows = computed(() => activeResult.value?.rows ?? []);
+
+const tableColumns = computed<Column[]>(() => visibleColumnOptions.value.map((column) => ({
+  key: `c${column.index}`,
+  dataKey: column.index,
+  title: column.label,
+  width: Math.max(120, Math.min(320, column.label.length * 12 + 56)),
   cellRenderer: ({ cellData, rowIndex }: { cellData: string | null; rowIndex: number }) => h("span", {
-    class: ["result-cell", cellData === null ? "null-value" : cellData.startsWith?.("0x") ? "binary-value" : "", selectedCell.value?.row === rowIndex && selectedCell.value?.column === columnIndex ? "selected" : ""],
+    class: ["result-cell", cellData === null ? "null-value" : cellData.startsWith?.("0x") ? "binary-value" : "", selectedCell.value?.row === rowIndex && selectedCell.value?.column === column.index ? "selected" : ""],
     title: cellData !== null && cellData.length >= 40 ? cellData : undefined,
-    onClick: () => { selectedCell.value = { row: rowIndex, column: columnIndex, value: cellData }; }
+    onClick: () => { selectedCell.value = { row: rowIndex, column: column.index, value: cellData }; }
   }, cellData === null ? "NULL" : cellData)
 })));
+
+function filterColumns(query: string): void { columnQuery.value = query; }
+function optionDetail(column: ColumnOption): string {
+  const values: string[] = [];
+  if (column.name && column.name !== column.label) values.push(column.name);
+  if (column.remarks) values.push(column.remarks);
+  return values.join(" · ");
+}
 
 async function copyCell(): Promise<void> {
   const text = selectedCell.value?.value ?? "NULL";
@@ -137,9 +156,12 @@ function exportCommand(command: string): void {
 .result-tabs { min-width: 100px; max-width: 38%; }
 .result-meta { display: inline-flex; align-items: center; gap: 7px; color: var(--db-muted); font-size: 11px; white-space: nowrap; }
 .result-actions { margin-left: auto; display: inline-flex; align-items: center; gap: 2px; }
-.result-actions .el-select { width: 118px; }
+.result-actions .el-select { width: 210px; }
 .result-actions :deep(.el-button) { width: 28px; min-height: 28px; padding: 0; }
 .result-actions :deep(.el-dropdown) { display: inline-flex; }
+.column-option { min-width: 0; display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
+.column-option span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.column-option small { overflow: hidden; color: var(--db-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .table-host { flex: 1; min-height: 0; }
 .result-empty { flex: 1; }
 .result-empty :deep(.el-empty__image) { width: auto; height: auto; }

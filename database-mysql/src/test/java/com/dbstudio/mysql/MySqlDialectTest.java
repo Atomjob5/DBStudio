@@ -1,6 +1,7 @@
 package com.dbstudio.mysql;
 
 import com.dbstudio.spi.StatementType;
+import java.util.Arrays;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -8,6 +9,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MySqlDialectTest {
     private final MySqlDialect dialect = new MySqlDialect();
+
+    @Test
+    void resolvesPhysicalNamesForSimpleSelectAliases() {
+        assertEquals(Arrays.asList("id", "amount", ""), new MySqlDialect().resultColumnNames(
+                "SELECT t.id AS order_id, amount, amount + 1 AS calculated FROM orders t"));
+    }
 
     @Test
     void ignoresSemicolonsInsideStringsAndComments() {

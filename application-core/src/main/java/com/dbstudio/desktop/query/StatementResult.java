@@ -10,6 +10,7 @@ public final class StatementResult {
     private final String sql;
     private final StatementType type;
     private final List<String> columns;
+    private final List<ResultColumn> columnDetails;
     private final List<List<String>> rows;
     private final long updateCount;
     private final boolean truncated;
@@ -18,10 +19,18 @@ public final class StatementResult {
 
     public StatementResult(String sql, StatementType type, List<String> columns, List<List<String>> rows,
                            long updateCount, boolean truncated, Duration duration, String errorMessage) {
+        this(sql, type, columns, defaultDetails(columns), rows, updateCount, truncated, duration, errorMessage);
+    }
+
+    public StatementResult(String sql, StatementType type, List<String> columns, List<ResultColumn> columnDetails,
+                           List<List<String>> rows, long updateCount, boolean truncated, Duration duration,
+                           String errorMessage) {
         this.sql = sql;
         this.type = type;
         this.columns = columns == null ? Collections.<String>emptyList()
                 : Collections.unmodifiableList(new ArrayList<String>(columns));
+        this.columnDetails = columnDetails == null ? Collections.<ResultColumn>emptyList()
+                : Collections.unmodifiableList(new ArrayList<ResultColumn>(columnDetails));
         if (rows == null) {
             this.rows = Collections.emptyList();
         } else {
@@ -40,6 +49,7 @@ public final class StatementResult {
     public String sql() { return sql; }
     public StatementType type() { return type; }
     public List<String> columns() { return columns; }
+    public List<ResultColumn> columnDetails() { return columnDetails; }
     public List<List<String>> rows() { return rows; }
     public long updateCount() { return updateCount; }
     public boolean truncated() { return truncated; }
@@ -47,4 +57,11 @@ public final class StatementResult {
     public String errorMessage() { return errorMessage; }
     public boolean hasRows() { return !columns.isEmpty(); }
     public boolean failed() { return errorMessage != null && !errorMessage.trim().isEmpty(); }
+
+    private static List<ResultColumn> defaultDetails(List<String> columns) {
+        if (columns == null) return Collections.emptyList();
+        List<ResultColumn> result = new ArrayList<ResultColumn>(columns.size());
+        for (String column : columns) result.add(new ResultColumn(column, column, "", "", "", "", ""));
+        return result;
+    }
 }

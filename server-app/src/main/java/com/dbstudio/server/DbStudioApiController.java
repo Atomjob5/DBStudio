@@ -11,6 +11,7 @@ import com.dbstudio.desktop.persistence.SettingsRepository;
 import com.dbstudio.desktop.query.QueryExecution;
 import com.dbstudio.desktop.query.QueryResultListener;
 import com.dbstudio.desktop.query.QueryRunner.PageResult;
+import com.dbstudio.desktop.query.ResultColumn;
 import com.dbstudio.desktop.query.StatementResult;
 import com.dbstudio.desktop.security.SecretStore;
 import com.dbstudio.desktop.web.EditorSessionRegistry;
@@ -155,6 +156,7 @@ public final class DbStudioApiController {
         synchronized (context.metadataSession()) {
             String kind = ApiPayloads.text(body, "kind");
             if (kind.isEmpty() || "root".equals(kind)) {
+                context.resultColumnResolver().invalidate();
                 List<Map<String, Object>> nodes = new ArrayList<Map<String, Object>>();
                 for (String catalog : context.provider().metadata().listCatalogs(context.metadataSession())) {
                     nodes.add(node("catalog", catalog, false, catalog, null, null, null,
@@ -251,10 +253,20 @@ public final class DbStudioApiController {
 
         final QueryResultListener listener = new QueryResultListener() {
             @Override public void resultStarted(int resultIndex, String sql, StatementType type, List<String> columns) {
-                workspace.events().emit("query.resultMeta", ApiPayloads.map("editorId", editorId,
-                        "resultIndex", resultIndex, "sql", sql, "type", type.name(), "columns", columns,
-                        "rows", Collections.emptyList(), "updateCount", -1, "truncated", false,
-                        "durationMs", 0, "complete", false));
+                emitResultMetadata(workspace, editorId, resultIndex, sql, type, columns,
+                        basicColumnDetails(columns));
+            }
+            @Override public void resultMetadata(int resultIndex, String sql, StatementType type,
+                                                 List<ResultColumn> columns) {
+                List<String> labels = new ArrayList<String>(columns.size());
+                List<Map<String, Object>> details = new ArrayList<Map<String, Object>>(columns.size());
+                for (ResultColumn column : columns) {
+                    labels.add(column.label());
+                    details.add(ApiPayloads.map("label", column.label(), "name", column.name(),
+                            "remarks", column.remarks(), "catalog", column.catalog(), "schema", column.schema(),
+                            "table", column.table(), "typeName", column.typeName()));
+                }
+                emitResultMetadata(workspace, editorId, resultIndex, sql, type, labels, details);
             }
             @Override public void rows(int resultIndex, List<List<String>> rows) {
                 workspace.events().emit("query.rows", ApiPayloads.map(
@@ -273,6 +285,23 @@ public final class DbStudioApiController {
                         "editorId", editorId, "executionId", id.toString())), listener,
                 (id, execution, failure) -> finishExecution(workspace, context, editorId, id, execution, failure));
         return ApiPayloads.map("executionId", executionId.toString());
+    }
+
+    private void emitResultMetadata(Workspace workspace, String editorId, int resultIndex, String sql,
+                                    StatementType type, List<String> columns,
+                                    List<Map<String, Object>> columnDetails) {
+        workspace.events().emit("query.resultMeta", ApiPayloads.map("editorId", editorId,
+                "resultIndex", resultIndex, "sql", sql, "type", type.name(), "columns", columns,
+                "columnDetails", columnDetails, "rows", Collections.emptyList(), "updateCount", -1,
+                "truncated", false, "durationMs", 0, "complete", false));
+    }
+
+    private List<Map<String, Object>> basicColumnDetails(List<String> columns) {
+        List<Map<String, Object>> details = new ArrayList<Map<String, Object>>(columns.size());
+        for (String column : columns) details.add(ApiPayloads.map(
+                "label", column, "name", column, "remarks", "", "catalog", "", "schema", "",
+                "table", "", "typeName", ""));
+        return details;
     }
 
     @DeleteMapping("/workspaces/{workspaceId}/executions/{executionId}")

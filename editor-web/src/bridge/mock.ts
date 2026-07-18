@@ -33,7 +33,11 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
     const editorId = String(payload.editorId); const executionId = crypto.randomUUID();
     window.setTimeout(() => {
       emit("query.started", { editorId, executionId });
-      emit("query.resultMeta", { editorId, resultIndex: 0, sql: payload.text, type: "QUERY", columns: ["id", "name"], updateCount: -1, truncated: false, durationMs: 0 });
+      emit("query.resultMeta", { editorId, resultIndex: 0, sql: payload.text, type: "QUERY", columns: ["id", "name"],
+        columnDetails: [
+          { label: "id", name: "id", remarks: "记录编号", catalog: "demo", schema: "", table: "sample", typeName: "BIGINT" },
+          { label: "name", name: "name", remarks: "产品名称", catalog: "demo", schema: "", table: "sample", typeName: "VARCHAR" }
+        ], updateCount: -1, truncated: false, durationMs: 0 });
       const rows = Array.from({ length: 200 }, (_, index) => [String(index + 1), `Apple Studio ${index + 1} ✨`]);
       emit("query.rows", { editorId, resultIndex: 0, rows: rows.slice(0, 100) });
       emit("query.rows", { editorId, resultIndex: 0, rows: rows.slice(100) });

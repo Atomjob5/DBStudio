@@ -53,4 +53,78 @@ describe("ResultPanel streaming rendering", () => {
     await wrapper.findAll(".el-tabs__item")[1].trigger("click");
     expect(wrapper.emitted("update:active-result-index")?.[0]).toEqual([1]);
   });
+
+  it("filters options by metadata and only renders selected columns in source order", async () => {
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: 0, execution: {
+        executionId: "execution-filter", editorId: "editor-1", busy: false, cancelled: false, failed: false, durationMs: 8,
+        results: [{ resultIndex: 0, sql: "select * from sample", type: "QUERY",
+          columns: ["id", "customer_name", "amount"],
+          columnDetails: [
+            { label: "id", name: "id", remarks: "订单编号", catalog: "db", schema: "", table: "sample", typeName: "BIGINT" },
+            { label: "customer_name", name: "customer_name", remarks: "客户名称", catalog: "db", schema: "", table: "sample", typeName: "VARCHAR" },
+            { label: "amount", name: "amount", remarks: "订单金额", catalog: "db", schema: "", table: "sample", typeName: "DECIMAL" }
+          ],
+          rows: [["1", "Apple", "12.30"]], updateCount: -1, truncated: false, durationMs: 7, complete: true }]
+      } },
+      global: { plugins: [ElementPlus] }
+    });
+    const select = wrapper.findComponent({ name: "ElSelect" });
+    const table = wrapper.findComponent({ name: "ElTableV2" });
+    expect((table.props("columns") as Array<{ title: string }>).map((column) => column.title))
+      .toEqual(["id", "customer_name", "amount"]);
+
+    (select.props("filterMethod") as (query: string) => void)("订单 金额");
+    await nextTick();
+    expect(wrapper.findAllComponents({ name: "ElOption" }).map((option) => option.props("label"))).toEqual(["amount"]);
+
+    select.vm.$emit("update:modelValue", [2, 0]);
+    await nextTick();
+    expect((table.props("columns") as Array<{ title: string }>).map((column) => column.title)).toEqual(["id", "amount"]);
+    select.vm.$emit("update:modelValue", []);
+    await nextTick();
+    expect((table.props("columns") as Array<{ title: string }>).map((column) => column.title))
+      .toEqual(["id", "customer_name", "amount"]);
+  });
+
+  it("keeps selections per result, supports duplicate labels and resets for a new execution", async () => {
+    const result = (resultIndex: number, rows: string[][]) => ({
+      resultIndex, sql: "select a.id, b.id", type: "QUERY", columns: ["id", "id"],
+      columnDetails: [
+        { label: "id", name: "id", remarks: "主表编号", catalog: "db", schema: "", table: "a", typeName: "BIGINT" },
+        { label: "id", name: "id", remarks: "明细编号", catalog: "db", schema: "", table: "b", typeName: "BIGINT" }
+      ],
+      rows, updateCount: -1, truncated: true, durationMs: 7, complete: true
+    });
+    const execution = {
+      executionId: "execution-a", editorId: "editor-1", busy: false, cancelled: false,
+      failed: false, durationMs: 8, results: [result(0, [["1", "11"]]), result(1, [["2", "22"]])]
+    };
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: 0, execution }, global: { plugins: [ElementPlus] }
+    });
+
+    let select = wrapper.findComponent({ name: "ElSelect" });
+    select.vm.$emit("update:modelValue", [1]);
+    await nextTick();
+    let table = wrapper.findComponent({ name: "ElTableV2" });
+    expect((table.props("columns") as Array<{ dataKey: number }>).map((column) => column.dataKey)).toEqual([1]);
+
+    await wrapper.setProps({ activeResultIndex: 1 });
+    select = wrapper.findComponent({ name: "ElSelect" });
+    expect(select.props("modelValue")).toEqual([]);
+    select.vm.$emit("update:modelValue", [0]);
+    await wrapper.setProps({ activeResultIndex: 0 });
+    expect(wrapper.findComponent({ name: "ElSelect" }).props("modelValue")).toEqual([1]);
+
+    execution.results[0] = result(0, [["1", "11"], ["3", "33"]]);
+    await wrapper.setProps({ execution: { ...execution, results: [...execution.results] } });
+    table = wrapper.findComponent({ name: "ElTableV2" });
+    expect(table.props("data")).toHaveLength(2);
+    expect((table.props("columns") as Array<{ dataKey: number }>)[0].dataKey).toBe(1);
+
+    await wrapper.setProps({ execution: { ...execution, executionId: "execution-b" } });
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ElSelect" }).props("modelValue")).toEqual([]);
+  });
 });

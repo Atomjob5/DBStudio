@@ -32,7 +32,7 @@ public final class EditorSessionRegistry implements AutoCloseable {
     public EditorSession create(DatabaseContext context) throws SQLException {
         UUID id = UUID.randomUUID();
         EditorSession session = new EditorSession(id, "查询 " + sequence.getAndIncrement(),
-                new QueryRunner(context.openEditorSession(), maxRows, streamBatchRows));
+                new QueryRunner(context.openEditorSession(), maxRows, streamBatchRows, context.resultColumnResolver()));
         sessions.put(id, session);
         return session;
     }
@@ -133,7 +133,7 @@ public final class EditorSessionRegistry implements AutoCloseable {
             StatementResult source = results.get(resultIndex);
             List<List<String>> combined = new ArrayList<List<String>>(source.rows());
             combined.addAll(rows);
-            results.set(resultIndex, new StatementResult(source.sql(), source.type(), source.columns(), combined,
+            results.set(resultIndex, new StatementResult(source.sql(), source.type(), source.columns(), source.columnDetails(), combined,
                     source.updateCount(), hasMore, source.duration(), source.errorMessage()));
             lastExecution = new QueryExecution(results, execution.duration(), execution.cancelled());
         }

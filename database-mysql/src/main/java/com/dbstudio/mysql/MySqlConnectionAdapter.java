@@ -51,6 +51,7 @@ public final class MySqlConnectionAdapter implements ConnectionAdapter {
         properties.setProperty("characterEncoding", "UTF-8");
         properties.setProperty("useCursorFetch", "true");
         properties.setProperty("useServerPrepStmts", "true");
+        properties.setProperty("useOldAliasMetadataBehavior", "false");
         properties.setProperty("serverTimezone", "UTC");
         properties.setProperty("sslMode", "DISABLED");
 

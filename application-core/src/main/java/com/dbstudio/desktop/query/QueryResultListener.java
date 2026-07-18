@@ -6,6 +6,11 @@ import java.util.List;
 /** Receives ordered query output on the editor session's dedicated query thread. */
 public interface QueryResultListener {
     void resultStarted(int resultIndex, String sql, StatementType type, List<String> columns);
+    default void resultMetadata(int resultIndex, String sql, StatementType type, List<ResultColumn> columns) {
+        java.util.ArrayList<String> labels = new java.util.ArrayList<String>(columns.size());
+        for (ResultColumn column : columns) labels.add(column.label());
+        resultStarted(resultIndex, sql, type, labels);
+    }
     void rows(int resultIndex, List<List<String>> rows);
     void resultCompleted(int resultIndex, StatementResult result);
 

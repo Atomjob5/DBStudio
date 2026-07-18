@@ -79,12 +79,23 @@ export interface QueryResult {
   sql: string;
   type: string;
   columns: string[];
+  columnDetails?: QueryColumn[];
   rows: Array<Array<string | null>>;
   updateCount: number;
   truncated: boolean;
   durationMs: number;
   errorMessage?: string;
   complete: boolean;
+}
+
+export interface QueryColumn {
+  label: string;
+  name: string;
+  remarks: string;
+  catalog: string;
+  schema: string;
+  table: string;
+  typeName: string;
 }
 
 export interface QueryExecutionState {

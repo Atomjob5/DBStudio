@@ -70,7 +70,8 @@ public final class MySqlMetadataAdapter implements MetadataAdapter {
                         resultSet.getInt("NULLABLE") != DatabaseMetaData.columnNoNulls,
                         resultSet.getString("COLUMN_DEF"),
                         primaryKeys.contains(name),
-                        resultSet.getInt("ORDINAL_POSITION")));
+                        resultSet.getInt("ORDINAL_POSITION"),
+                        resultSet.getString("REMARKS")));
             }
         }
         Collections.sort(columns, new Comparator<ColumnInfo>() {

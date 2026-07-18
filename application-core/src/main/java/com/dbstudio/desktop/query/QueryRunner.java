@@ -35,11 +35,14 @@ public final class QueryRunner implements AutoCloseable {
     private final ExecutorService executor;
     private final AtomicReference<Statement> activeStatement = new AtomicReference<Statement>();
     private final AtomicBoolean transactionDirty = new AtomicBoolean();
+    private final ResultColumnResolver columnResolver;
     private volatile int maxRows;
     private volatile int streamBatchRows;
 
-    public QueryRunner(DatabaseSession session, int maxRows, int streamBatchRows) {
+    public QueryRunner(DatabaseSession session, int maxRows, int streamBatchRows,
+                       ResultColumnResolver columnResolver) {
         this.session = Objects.requireNonNull(session, "session");
+        this.columnResolver = Objects.requireNonNull(columnResolver, "columnResolver");
         this.maxRows = Math.max(1, maxRows);
         this.streamBatchRows = Math.max(1, streamBatchRows);
         this.executor = Executors.newSingleThreadExecutor(new ThreadFactory() {
@@ -49,6 +52,10 @@ public final class QueryRunner implements AutoCloseable {
                 return thread;
             }
         });
+    }
+
+    public QueryRunner(DatabaseSession session, int maxRows, int streamBatchRows) {
+        this(session, maxRows, streamBatchRows, ResultColumnResolver.NONE);
     }
 
     public QueryRunner(DatabaseSession session, int maxRows) { this(session, maxRows, DEFAULT_STREAM_BATCH_ROWS); }
@@ -180,7 +187,10 @@ public final class QueryRunner implements AutoCloseable {
             activeStatement.set(statement);
             boolean hasResult = statement.execute(sqlStatement.text());
             if (sqlStatement.type().modifiesData()) transactionDirty.set(true);
-            else if (sqlStatement.type().implicitlyCommitsInMySql()) transactionDirty.set(false);
+            else if (sqlStatement.type().implicitlyCommitsInMySql()) {
+                transactionDirty.set(false);
+                columnResolver.invalidate();
+            }
 
             List<StatementResult> outputs = new ArrayList<StatementResult>();
             while (true) {
@@ -197,7 +207,7 @@ public final class QueryRunner implements AutoCloseable {
                     output = new StatementResult(sqlStatement.text(), sqlStatement.type(),
                             Collections.<String>emptyList(), Collections.<List<String>>emptyList(),
                             updateCount, false, Duration.between(started, Instant.now()), null);
-                    listener.resultStarted(resultIndex, sqlStatement.text(), sqlStatement.type(), output.columns());
+                    listener.resultMetadata(resultIndex, sqlStatement.text(), sqlStatement.type(), output.columnDetails());
                 }
                 outputs.add(output);
                 listener.resultCompleted(resultIndex, output);
@@ -207,7 +217,7 @@ public final class QueryRunner implements AutoCloseable {
                 StatementResult output = new StatementResult(sqlStatement.text(), sqlStatement.type(),
                         Collections.<String>emptyList(), Collections.<List<String>>emptyList(),
                         0, false, Duration.between(started, Instant.now()), null);
-                listener.resultStarted(firstResultIndex, sqlStatement.text(), sqlStatement.type(), output.columns());
+                listener.resultMetadata(firstResultIndex, sqlStatement.text(), sqlStatement.type(), output.columnDetails());
                 listener.resultCompleted(firstResultIndex, output);
                 outputs.add(output);
             }
@@ -216,7 +226,7 @@ public final class QueryRunner implements AutoCloseable {
             StatementResult failure = new StatementResult(sqlStatement.text(), sqlStatement.type(),
                     Collections.<String>emptyList(), Collections.<List<String>>emptyList(), -1, false,
                     Duration.between(started, Instant.now()), sanitize(exception));
-            listener.resultStarted(firstResultIndex, sqlStatement.text(), sqlStatement.type(), failure.columns());
+            listener.resultMetadata(firstResultIndex, sqlStatement.text(), sqlStatement.type(), failure.columnDetails());
             listener.resultCompleted(firstResultIndex, failure);
             return Collections.singletonList(failure);
         } finally {
@@ -230,12 +240,17 @@ public final class QueryRunner implements AutoCloseable {
         ResultSetMetaData metadata = resultSet.getMetaData();
         int columnCount = metadata.getColumnCount();
         List<String> columns = new ArrayList<String>(columnCount);
+        List<ResultColumn> columnDetails = new ArrayList<ResultColumn>(columnCount);
         for (int index = 1; index <= columnCount; index++) {
             String label = metadata.getColumnLabel(index);
-            columns.add(label == null || label.trim().isEmpty() ? metadata.getColumnName(index) : label);
+            String name = metadata.getColumnName(index);
+            String display = label == null || label.trim().isEmpty() ? name : label;
+            columns.add(display);
+            columnDetails.add(new ResultColumn(display, name, metadata.getCatalogName(index),
+                    metadata.getSchemaName(index), metadata.getTableName(index), metadata.getColumnTypeName(index), ""));
         }
-        listener.resultStarted(resultIndex, sqlStatement.text(), sqlStatement.type(),
-                Collections.unmodifiableList(new ArrayList<String>(columns)));
+        columnDetails = columnResolver.resolve(sqlStatement.text(), Collections.unmodifiableList(columnDetails));
+        listener.resultMetadata(resultIndex, sqlStatement.text(), sqlStatement.type(), columnDetails);
 
         List<List<String>> rows = new ArrayList<List<String>>(Math.min(resultMaxRows, JDBC_FETCH_SIZE));
         List<List<String>> batch = new ArrayList<List<String>>(Math.min(resultBatchRows, resultMaxRows));
@@ -252,7 +267,7 @@ public final class QueryRunner implements AutoCloseable {
             }
         }
         if (!batch.isEmpty()) listener.rows(resultIndex, immutableRows(batch));
-        return new StatementResult(sqlStatement.text(), sqlStatement.type(), columns, rows, -1, truncated,
+        return new StatementResult(sqlStatement.text(), sqlStatement.type(), columns, columnDetails, rows, -1, truncated,
                 Duration.between(started, Instant.now()), null);
     }
 

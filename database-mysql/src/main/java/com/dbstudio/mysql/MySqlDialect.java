@@ -2,6 +2,13 @@ package com.dbstudio.mysql;
 
 import com.alibaba.druid.DbType;
 import com.alibaba.druid.sql.SQLUtils;
+import com.alibaba.druid.sql.ast.SQLExpr;
+import com.alibaba.druid.sql.ast.SQLStatement;
+import com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr;
+import com.alibaba.druid.sql.ast.expr.SQLPropertyExpr;
+import com.alibaba.druid.sql.ast.statement.SQLSelectItem;
+import com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock;
+import com.alibaba.druid.sql.ast.statement.SQLSelectStatement;
 import com.dbstudio.spi.SqlDialect;
 import com.dbstudio.spi.SqlStatement;
 import com.dbstudio.spi.StatementType;
@@ -188,6 +195,27 @@ public final class MySqlDialect implements SqlDialect {
         } catch (RuntimeException exception) {
             throw new IllegalArgumentException("无法格式化当前 SQL：" + exception.getMessage(), exception);
         }
+    }
+
+    @Override
+    public List<String> resultColumnNames(String sql) {
+        try {
+            SQLStatement statement = SQLUtils.parseSingleMysqlStatement(sql);
+            if (!(statement instanceof SQLSelectStatement)) return Collections.emptyList();
+            SQLSelectQueryBlock block = ((SQLSelectStatement) statement).getSelect().getQueryBlock();
+            if (block == null || block.selectItemHasAllColumn()) return Collections.emptyList();
+            List<String> names = new ArrayList<String>(block.getSelectList().size());
+            for (SQLSelectItem item : block.getSelectList()) names.add(sourceColumnName(item.getExpr()));
+            return Collections.unmodifiableList(names);
+        } catch (RuntimeException ignored) {
+            return Collections.emptyList();
+        }
+    }
+
+    private static String sourceColumnName(SQLExpr expression) {
+        if (expression instanceof SQLIdentifierExpr) return ((SQLIdentifierExpr) expression).getName();
+        if (expression instanceof SQLPropertyExpr) return ((SQLPropertyExpr) expression).getName();
+        return "";
     }
 
     private void addStatement(List<SqlStatement> statements, String script, int rawStart, int rawEnd) {

@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.URI;
+import java.sql.Connection;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -69,6 +71,14 @@ class QueryWebSocketIntegrationTest {
                 .get(10, TimeUnit.SECONDS);
         try {
             awaitType(events, "workspace.ready", 10);
+            try (Connection connection = MYSQL.createConnection(""); Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE result_column_comment(id BIGINT COMMENT '订单编号', amount DECIMAL(10,2) COMMENT '订单金额')");
+                statement.execute("INSERT INTO result_column_comment VALUES (1, 12.30)");
+            }
+            List<Map<String, Object>> metadataEvents = executeSql(editorId, workspaceId, cookie, events,
+                    "SELECT id AS order_id, amount, amount + 1 AS calculated FROM result_column_comment");
+            assertColumnMetadata(metadataEvents);
+
             updateSetting(cookie, "result.maxRows", "120");
             updateSetting(cookie, "result.streamBatchRows", "50");
             List<Map<String, Object>> first = execute(editorId, workspaceId, cookie, events, 250);
@@ -95,13 +105,19 @@ class QueryWebSocketIntegrationTest {
 
     private List<Map<String, Object>> execute(String editorId, String workspaceId, String cookie,
                                                BlockingQueue<Map<String, Object>> events, int rows) throws Exception {
+        return executeSql(editorId, workspaceId, cookie, events,
+                "WITH RECURSIVE numbers(id) AS (SELECT 1 UNION ALL SELECT id + 1 FROM numbers WHERE id < "
+                        + rows + ") SELECT id FROM numbers");
+    }
+
+    private List<Map<String, Object>> executeSql(String editorId, String workspaceId, String cookie,
+                                                  BlockingQueue<Map<String, Object>> events, String sql) throws Exception {
         events.clear();
         Map<String, Object> body = new HashMap<String, Object>();
         body.put("editorId", editorId);
         body.put("scope", "script");
         body.put("stopOnError", true);
-        body.put("text", "WITH RECURSIVE numbers(id) AS (SELECT 1 UNION ALL SELECT id + 1 FROM numbers WHERE id < "
-                + rows + ") SELECT id FROM numbers");
+        body.put("text", sql);
         exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId + "/editors/" + editorId
                 + "/executions", body, cookie);
         List<Map<String, Object>> collected = new ArrayList<Map<String, Object>>();
@@ -113,6 +129,21 @@ class QueryWebSocketIntegrationTest {
             if ("query.executionComplete".equals(event.get("type"))) return collected;
         }
         throw new AssertionError("Timed out waiting for query.executionComplete");
+    }
+
+    @SuppressWarnings("unchecked")
+    private void assertColumnMetadata(List<Map<String, Object>> events) {
+        for (Map<String, Object> event : events) if ("query.resultMeta".equals(event.get("type"))) {
+            Map<String, Object> payload = (Map<String, Object>) event.get("payload");
+            List<Map<String, Object>> columns = (List<Map<String, Object>>) payload.get("columnDetails");
+            assertEquals("order_id", columns.get(0).get("label"));
+            assertEquals("id", columns.get(0).get("name"));
+            assertEquals("订单编号", columns.get(0).get("remarks"));
+            assertEquals("订单金额", columns.get(1).get("remarks"));
+            assertEquals("", columns.get(2).get("remarks"));
+            return;
+        }
+        throw new AssertionError("Missing query.resultMeta columnDetails");
     }
 
     private void connect(String workspaceId, String cookie) {
