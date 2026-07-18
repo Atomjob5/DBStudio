@@ -179,6 +179,27 @@ public final class DbStudioApiController {
         return saveConnectionProfile(workspaceId, profileId, body);
     }
 
+    @PutMapping("/workspaces/{workspaceId}/connection-profiles/{profileId}/location")
+    public Map<String, Object> moveConnectionProfile(@PathVariable String workspaceId,
+                                                      @PathVariable String profileId,
+                                                      @RequestBody Map<String, Object> body) throws Exception {
+        workspaces.require(workspaceId);
+        UUID id = profileId(profileId);
+        SavedProfile current = profiles.find(id).orElseThrow(
+                () -> new ApiException("PROFILE_NOT_FOUND", "数据库链接不存在或已删除"));
+        String environmentId = ApiPayloads.required(body, "environmentId");
+        if (!catalog.findEnvironment(environmentId).isPresent()) {
+            throw new ApiException("ENVIRONMENT_NOT_FOUND", "连接环境不存在或已删除");
+        }
+        if (!environmentId.equals(current.environmentId())) {
+            profiles.moveToEnvironment(id, environmentId);
+            connectionsChanged();
+        }
+        SavedProfile moved = profiles.find(id).orElseThrow(
+                () -> new ApiException("PROFILE_NOT_FOUND", "数据库链接不存在或已删除"));
+        return profileMap(moved);
+    }
+
     @DeleteMapping("/workspaces/{workspaceId}/connection-profiles/{profileId}")
     public Map<String, Object> deleteConnectionProfile(@PathVariable String workspaceId,
                                                         @PathVariable String profileId) throws Exception {

@@ -151,6 +151,64 @@ class LocalServerSecurityTest {
                 new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void movesConnectionProfileAcrossSystemsWithoutChangingRevision() {
+        HttpHeaders headers = authenticatedHeaders();
+        String workspaceId = UUID.randomUUID().toString();
+        assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/workspaces/" + workspaceId), HttpMethod.PUT,
+                new HttpEntity<String>("{}", headers), String.class).getStatusCode());
+
+        Map<String, Object> systemBody = new HashMap<String, Object>(); systemBody.put("name", "订单系统");
+        Map<String, Object> firstSystem = http.exchange(url("/api/v1/connection-systems"), HttpMethod.POST,
+                new HttpEntity<Map<String, Object>>(systemBody, headers), Map.class).getBody();
+        systemBody.put("name", "资金系统");
+        Map<String, Object> secondSystem = http.exchange(url("/api/v1/connection-systems"), HttpMethod.POST,
+                new HttpEntity<Map<String, Object>>(systemBody, headers), Map.class).getBody();
+        assertNotNull(firstSystem); assertNotNull(secondSystem);
+
+        Map<String, Object> environmentBody = new HashMap<String, Object>();
+        environmentBody.put("systemId", firstSystem.get("id")); environmentBody.put("name", "DEV");
+        Map<String, Object> firstEnvironment = http.exchange(url("/api/v1/connection-environments"), HttpMethod.POST,
+                new HttpEntity<Map<String, Object>>(environmentBody, headers), Map.class).getBody();
+        environmentBody.put("systemId", secondSystem.get("id")); environmentBody.put("name", "SIT");
+        Map<String, Object> secondEnvironment = http.exchange(url("/api/v1/connection-environments"), HttpMethod.POST,
+                new HttpEntity<Map<String, Object>>(environmentBody, headers), Map.class).getBody();
+        assertNotNull(firstEnvironment); assertNotNull(secondEnvironment);
+
+        Map<String, Object> profileBody = new HashMap<String, Object>();
+        profileBody.put("providerId", "mysql"); profileBody.put("name", "开发库");
+        profileBody.put("environmentId", firstEnvironment.get("id"));
+        profileBody.put("settings", new HashMap<String, String>()); profileBody.put("password", "");
+        profileBody.put("rememberPassword", false);
+        Map<String, Object> profile = http.exchange(url("/api/v1/workspaces/" + workspaceId
+                        + "/connection-profiles"), HttpMethod.POST,
+                new HttpEntity<Map<String, Object>>(profileBody, headers), Map.class).getBody();
+        assertNotNull(profile);
+
+        Map<String, Object> moveBody = new HashMap<String, Object>();
+        moveBody.put("environmentId", secondEnvironment.get("id"));
+        ResponseEntity<Map> movedResponse = http.exchange(url("/api/v1/workspaces/" + workspaceId
+                        + "/connection-profiles/" + profile.get("id") + "/location"), HttpMethod.PUT,
+                new HttpEntity<Map<String, Object>>(moveBody, headers), Map.class);
+        assertEquals(HttpStatus.OK, movedResponse.getStatusCode());
+        assertEquals(secondEnvironment.get("id"), movedResponse.getBody().get("environmentId"));
+        assertEquals(profile.get("revision"), movedResponse.getBody().get("revision"));
+
+        ResponseEntity<Map> idempotent = http.exchange(url("/api/v1/workspaces/" + workspaceId
+                        + "/connection-profiles/" + profile.get("id") + "/location"), HttpMethod.PUT,
+                new HttpEntity<Map<String, Object>>(moveBody, headers), Map.class);
+        assertEquals(HttpStatus.OK, idempotent.getStatusCode());
+        assertEquals(profile.get("revision"), idempotent.getBody().get("revision"));
+
+        moveBody.put("environmentId", "missing-environment");
+        ResponseEntity<String> rejected = http.exchange(url("/api/v1/workspaces/" + workspaceId
+                        + "/connection-profiles/" + profile.get("id") + "/location"), HttpMethod.PUT,
+                new HttpEntity<Map<String, Object>>(moveBody, headers), String.class);
+        assertEquals(HttpStatus.BAD_REQUEST, rejected.getStatusCode());
+        assertTrue(rejected.getBody().contains("ENVIRONMENT_NOT_FOUND"));
+    }
+
     private HttpHeaders authenticatedHeaders() {
         Map<String, String> request = new HashMap<String, String>();
         request.put("token", token.launchValue());

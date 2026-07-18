@@ -35,6 +35,11 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
     const value = { ...payload, id: String(payload.id ?? crypto.randomUUID()), revision: String(Date.now()), rememberPassword: Boolean(payload.rememberPassword) } as typeof profiles[number];
     const index = profiles.findIndex((item) => item.id === value.id); if (index >= 0) profiles[index] = value; else profiles.push(value); return value;
   }
+  if (type === "connection.profile.move") {
+    const value = profiles.find((item) => item.id === payload.id);
+    if (value) value.environmentId = String(payload.environmentId);
+    return value;
+  }
   if (type === "connection.profile.delete") { const index = profiles.findIndex((item) => item.id === payload.id); if (index >= 0) profiles.splice(index, 1); return { deleted: true }; }
   if (type === "connection.test") return { success: true, message: "连接成功", serverVersion: "MySQL 8.4.9" };
   if (type === "editor.create") { const profile = profiles.find((item) => item.id === payload.profileId);
@@ -49,6 +54,7 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
   if (type === "query.execute") {
     const editorId = String(payload.editorId); const executionId = crypto.randomUUID();
     window.setTimeout(() => {
+      emit("editor.connectionState", { editorId, state: "active" });
       emit("query.started", { editorId, executionId });
       emit("query.resultMeta", { editorId, resultIndex: 0, sql: payload.text, type: "QUERY", columns: ["id", "name"],
         columnDetails: [

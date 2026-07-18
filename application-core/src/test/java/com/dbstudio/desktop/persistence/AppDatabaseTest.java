@@ -2,6 +2,7 @@ package com.dbstudio.desktop.persistence;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.dbstudio.spi.ConnectionProfile;
@@ -86,6 +87,30 @@ class AppDatabaseTest {
             catalog.deleteSystem(system.id());
             assertFalse(catalog.findEnvironment(environment.id()).isPresent());
             assertFalse(profiles.find(profile.id()).isPresent());
+        }
+    }
+
+    @Test
+    void movesProfileBetweenEnvironmentsWithoutChangingConnectionRevision() throws Exception {
+        try (AppDatabase database = new AppDatabase(directory)) {
+            ConnectionCatalogRepository catalog = new ConnectionCatalogRepository(database);
+            ConnectionProfileRepository profiles = new ConnectionProfileRepository(database, new ObjectMapper());
+            ConnectionCatalogRepository.SystemEntry firstSystem = catalog.createSystem("订单系统");
+            ConnectionCatalogRepository.EnvironmentEntry first = catalog.createEnvironment(firstSystem.id(), "DEV");
+            ConnectionCatalogRepository.SystemEntry secondSystem = catalog.createSystem("资金系统");
+            ConnectionCatalogRepository.EnvironmentEntry second = catalog.createEnvironment(secondSystem.id(), "SIT");
+            ConnectionProfile profile = new ConnectionProfile(
+                    UUID.randomUUID(), "mysql", "开发库", new HashMap<String, String>(), "secret-ref");
+            profiles.save(profile, false, first.id());
+            String revision = profiles.find(profile.id()).get().revision();
+
+            profiles.moveToEnvironment(profile.id(), second.id());
+
+            ConnectionProfileRepository.SavedProfile moved = profiles.find(profile.id()).get();
+            assertEquals(second.id(), moved.environmentId());
+            assertEquals(revision, moved.revision());
+            assertThrows(java.sql.SQLException.class,
+                    () -> profiles.moveToEnvironment(profile.id(), "missing-environment"));
         }
     }
 }

@@ -134,6 +134,7 @@ export class RpcClient {
       case "connection.environment.delete": return { path: `/api/v1/connection-environments/${encodeURIComponent(String(body.id ?? ""))}`, method: "DELETE" };
       case "connection.profile.create": return { path: `${ws}/connection-profiles`, method: "POST", body };
       case "connection.profile.update": return { path: `${ws}/connection-profiles/${encodeURIComponent(String(body.id ?? ""))}`, method: "PUT", body };
+      case "connection.profile.move": return { path: `${ws}/connection-profiles/${encodeURIComponent(String(body.id ?? ""))}/location`, method: "PUT", body };
       case "connection.profile.delete": return { path: `${ws}/connection-profiles/${encodeURIComponent(String(body.id ?? ""))}`, method: "DELETE" };
       case "metadata.children": return { path: `${ws}/metadata/children`, method: "POST", body };
       case "metadata.definition": return { path: `${ws}/metadata/definition`, method: "POST", body };

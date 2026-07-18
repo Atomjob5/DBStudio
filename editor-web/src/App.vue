@@ -3,13 +3,15 @@
     <el-header class="app-toolbar glass-surface" height="48px" aria-label="应用工具栏">
       <el-tooltip :content="activeConnectionTooltip" placement="bottom">
         <div class="connection-pill-wrap" :class="{ connected: editors.active?.connectionState === 'active', suspended: editors.active?.connectionState === 'suspended', stale: editors.active?.connection?.stale || editors.active?.connection?.unavailable }">
-          <el-icon class="connection-prefix"><Connection /></el-icon>
           <el-cascader ref="connectionCascader" class="connection-pill" :model-value="activeConnectionValue"
                        :options="connections.cascaderOptions" :props="connectionCascaderProps"
                        :show-all-levels="false" filterable clearable :disabled="!editors.active || editors.active.busy"
-                       :placeholder="editors.active?.connection?.name ?? '选择数据库链接'" aria-label="当前编辑标签的数据库链接"
-                       @change="connectionSelectionChanged" />
-          <span class="connection-indicator" aria-hidden="true" />
+                       :placeholder="activeConnectionDisplay" aria-label="当前编辑标签的数据库链接"
+                       @change="connectionSelectionChanged">
+            <template #default="{ data }">
+              <span>{{ data.menuLabel ?? data.label }}</span>
+            </template>
+          </el-cascader>
         </div>
       </el-tooltip>
 
@@ -78,9 +80,9 @@
     <el-main class="workspace">
       <nav class="activity-bar" aria-label="工作区工具导航">
         <el-tooltip content="数据库对象" placement="right"><el-button text :icon="Coin" aria-label="数据库对象"
-          :class="{ active: activeTool === 'objects' && panelOpen }" :aria-pressed="activeTool === 'objects' && panelOpen" @click="selectTool('objects')" /></el-tooltip>
+          :class="{ active: activeTool === 'objects' && panelVisible }" :aria-pressed="activeTool === 'objects' && panelVisible" @click="selectTool('objects')" /></el-tooltip>
         <el-tooltip content="连接管理" placement="right"><el-button text :icon="Connection" aria-label="连接管理"
-          :class="{ active: activeTool === 'connections' && panelOpen }" :aria-pressed="activeTool === 'connections' && panelOpen" @click="selectTool('connections')" /></el-tooltip>
+          :class="{ active: activeTool === 'connections' && panelVisible }" :aria-pressed="activeTool === 'connections' && panelVisible" @click="selectTool('connections')" /></el-tooltip>
       </nav>
       <el-splitter class="workbench" lazy>
         <el-splitter-panel v-if="panelOpen" v-model:size="leftWidth" :min="210" :max="420" collapsible>
@@ -213,7 +215,7 @@ import type { BootstrapResponse, ConnectionCatalog, EditorConnectionBinding, Edi
 const app = useAppStore(); const connections = useConnectionStore(); const metadata = useMetadataStore();
 const editors = useEditorStore(); const queries = useQueryStore(); const settings = useSettingsStore();
 const connectionDialog = ref(false); const historyDrawer = ref(false); const settingsDrawer = ref(false); const csvDialog = ref(false);
-const leftWidth = ref(248); const editorHeight = ref("62%");
+const leftWidth = ref(248); const lastLeftWidth = ref(248); const editorHeight = ref("62%");
 const activeTool = ref<"objects" | "connections">("connections"); const panelOpen = ref(true);
 const editingProfile = ref<SavedProfile>(); const profileEnvironmentId = ref("");
 const connectionCascader = ref();
@@ -239,14 +241,26 @@ const activeConnected = computed(() => Boolean(editors.active?.connection));
 const activeConnectionKey = computed(() => editors.active?.connection ? `${editors.active.connection.id}@${editors.active.connection.revision}` : "unbound");
 const activeConnectionValue = computed(() => editors.active?.connection ? `${editors.active.connection.id}@${editors.active.connection.revision}` : undefined);
 const activeConnectionPath = computed(() => connections.pathFor(editors.active?.connection));
+const activeConnectionDisplay = computed(() => {
+  const connection = editors.active?.connection;
+  if (!connection) return "选择数据库链接";
+  const environment = connections.environments.find((item) => item.id === connection.environmentId);
+  return [environment?.name, connection.name].filter(Boolean).join(" / ");
+});
 const activeConnectionTooltip = computed(() => `${activeConnectionPath.value}${editors.active?.connection?.stale
   ? " · 配置已更新，重新选择后生效" : editors.active?.connection?.unavailable ? " · 配置已删除，当前会话仍可继续使用" : ""}`);
 const activeConnectionStatusClass = computed(() => !activeConnected.value ? "offline" : editors.active?.connectionState === "active" ? "online" : "neutral");
 const connectionCascaderProps: CascaderProps = { emitPath: false };
 const canExecute = computed(() => Boolean(editors.active?.connection && !editors.active.busy));
+const panelVisible = computed(() => panelOpen.value && numericPanelWidth(leftWidth.value) > 0);
 const disposers: Array<() => void> = [];
 const colorSchemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
 let layoutSaveTimer: number | undefined;
+
+watch(leftWidth, (value) => {
+  const width = numericPanelWidth(value);
+  if (width > 0) lastLeftWidth.value = width;
+});
 
 onMounted(async () => {
   app.setSystemTheme(colorSchemeQuery?.matches ? "dark" : "light");
@@ -435,10 +449,25 @@ async function loadResultRows(resultIndex: number, initialOffset: number, all: b
 }
 
 function selectTool(tool: "objects" | "connections"): void {
-  if (activeTool.value === tool && panelOpen.value) panelOpen.value = false;
-  else { activeTool.value = tool; panelOpen.value = true; }
+  if (activeTool.value === tool && panelVisible.value) {
+    panelOpen.value = false;
+    return;
+  }
+  expandTool(tool);
 }
-function openConnectionManager(): void { activeTool.value = "connections"; panelOpen.value = true; }
+function openConnectionManager(): void { expandTool("connections"); }
+function expandTool(tool: "objects" | "connections"): void {
+  activeTool.value = tool;
+  const wasUnmounted = !panelOpen.value;
+  panelOpen.value = true;
+  const restoreWidth = (): void => {
+    if (numericPanelWidth(leftWidth.value) <= 0) leftWidth.value = lastLeftWidth.value;
+  };
+  if (wasUnmounted) void nextTick(restoreWidth); else restoreWidth();
+}
+function numericPanelWidth(value: string | number): number {
+  return typeof value === "number" ? value : Number.parseFloat(value) || 0;
+}
 function openCreateProfile(environmentId: string): void {
   editingProfile.value = undefined; profileEnvironmentId.value = environmentId; connectionDialog.value = true;
 }
@@ -455,7 +484,8 @@ async function refreshConnectionCatalog(): Promise<void> {
     const unavailable = !current;
     const stale = Boolean(current && current.revision !== tab.connection.revision);
     const newlyChanged = (unavailable && !tab.connection.unavailable) || (stale && !tab.connection.stale);
-    editors.patch(tab.id, { connection: { ...tab.connection, unavailable, stale } });
+    editors.patch(tab.id, { connection: { ...tab.connection,
+      environmentId: current?.environmentId ?? tab.connection.environmentId, unavailable, stale } });
     if (newlyChanged && tab.id === editors.activeId) {
       app.status = unavailable ? "链接配置已删除，当前会话仍可继续使用" : "配置已更新，重新选择链接后生效";
       ElNotification.warning({ title: unavailable ? "链接配置已删除" : "链接配置已更新",
@@ -691,35 +721,90 @@ function message(error: unknown): string { return error instanceof Error ? error
   border-bottom: 1px solid var(--db-border);
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04);
 }
-.connection-pill-wrap { position: relative; flex: none; width: 198px; }
-.connection-pill { width: 100%; }
-.connection-pill :deep(.el-input__wrapper) { min-height: 34px; padding-left: 31px; padding-right: 24px; border-radius: 999px; background: var(--db-control-bg); box-shadow: inset 0 0 0 1px var(--db-border-soft); }
-.connection-pill-wrap.connected .connection-pill :deep(.el-input__wrapper) { background: var(--db-accent-soft); box-shadow: none; }
-.connection-prefix { position: absolute; z-index: 2; top: 9px; left: 11px; color: var(--db-text-secondary); pointer-events: none; }
-.connection-indicator {
-  position: absolute;
-  z-index: 2;
-  top: 13px;
-  right: 12px;
-  width: 7px;
-  height: 7px;
-  margin-left: 2px;
-  border-radius: 50%;
-  background: var(--db-muted);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--db-muted) 13%, transparent);
+.connection-pill-wrap {
+  position: relative;
+  isolation: isolate;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  width: auto;
+  height: 32px;
+  border-radius: 10px;
+  background: var(--db-control-bg);
+  box-shadow: inset 0 0 0 1px var(--db-control-border);
+  transition: background-color 120ms var(--db-ease), box-shadow 120ms var(--db-ease);
 }
-.connection-pill-wrap.connected .connection-indicator {
-  background: var(--db-success);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--db-success) 15%, transparent);
+.connection-pill-wrap:hover { background: var(--db-control-hover); }
+.connection-pill-wrap.connected:not(.stale) {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--db-spectrum-cyan) 70%, var(--db-control-border));
 }
-.connection-pill-wrap.suspended .connection-pill :deep(.el-input__wrapper) { background: var(--db-control-bg); }
-.connection-pill-wrap.suspended .connection-indicator {
-  background: var(--db-warning);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--db-warning) 15%, transparent);
+.connection-pill-wrap.suspended { background: var(--db-control-bg); }
+.connection-pill-wrap.stale {
+  background: color-mix(in srgb, var(--db-warning) 12%, var(--db-control-bg));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--db-warning) 32%, var(--db-control-border));
 }
-.connection-pill-wrap.stale .connection-indicator {
-  background: var(--db-warning);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--db-warning) 15%, transparent);
+.connection-pill {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  width: clamp(200px, 21vw, 280px);
+  min-width: 0;
+}
+.connection-pill :deep(.el-input__wrapper) {
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 10px;
+  background: transparent;
+  box-shadow: none !important;
+}
+.connection-pill :deep(.el-input__wrapper:hover) { background: transparent; }
+.connection-pill :deep(.el-input__wrapper.is-focus) {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--db-accent), 0 0 0 3px var(--db-accent-soft) !important;
+}
+.connection-pill :deep(.el-input__inner) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+@supports ((mask-composite: exclude) or (-webkit-mask-composite: xor)) {
+  .connection-pill-wrap.connected:not(.stale) { box-shadow: inset 0 0 0 1px var(--db-control-border); }
+  .connection-pill-wrap.connected:not(.stale)::before {
+    content: "";
+    position: absolute;
+    z-index: 2;
+    inset: 0;
+    padding: 1px;
+    border-radius: inherit;
+    pointer-events: none;
+    opacity: 0.7;
+    background: linear-gradient(90deg,
+      var(--db-spectrum-green) 0%,
+      var(--db-spectrum-cyan) 25%,
+      var(--db-spectrum-blue) 50%,
+      var(--db-spectrum-cyan) 75%,
+      var(--db-spectrum-green) 100%);
+    background-size: 220% 100%;
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    animation: connection-spectrum 5.6s linear infinite;
+  }
+  .connection-pill-wrap.connected:not(.stale):focus-within::before {
+    opacity: 0.28;
+    animation-play-state: paused;
+  }
+}
+
+@keyframes connection-spectrum {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .connection-pill-wrap { background: var(--db-glass-solid); }
+  .connection-pill-wrap:hover { background: var(--db-glass-solid); }
+  .connection-pill-wrap.stale {
+    background: color-mix(in srgb, var(--db-warning) 12%, var(--db-glass-solid));
+  }
 }
 .toolbar-cluster {
   display: inline-flex;
@@ -745,8 +830,8 @@ function message(error: unknown): string { return error instanceof Error ? error
   font: 11px/1.2 "SF Mono", Menlo, monospace;
 }
 .toolbar-spacer, .status-spacer { flex: 1; }
-.workspace { display: flex; gap: 6px; padding: 8px 8px 6px; min-height: 0; overflow: hidden; }
-.activity-bar { width: 40px; flex:none; display:flex; flex-direction:column; align-items:center; gap:4px; padding:5px 3px; border:1px solid var(--db-border); border-radius:11px; background:var(--db-panel-soft); box-shadow:var(--db-shadow-sm); }
+.workspace { display: flex; gap: 6px; padding: 8px 8px 6px 0; min-height: 0; overflow: hidden; }
+.activity-bar { width: 40px; flex:none; display:flex; flex-direction:column; align-items:center; gap:4px; padding:5px 3px; border:1px solid var(--db-border); border-left:0; border-radius:0 11px 11px 0; background:var(--db-panel-soft); box-shadow:var(--db-shadow-sm); }
 .activity-bar :deep(.el-button) { position:relative; width:32px; height:32px; margin:0; padding:0; border-radius:8px; color:var(--db-text-secondary); }
 .activity-bar :deep(.el-button:hover) { background:var(--db-control-hover); color:var(--db-text); }
 .activity-bar :deep(.el-button.active) { background:var(--db-accent-soft); color:var(--db-accent); }
@@ -828,14 +913,19 @@ function message(error: unknown): string { return error instanceof Error ? error
 
 @media (max-width: 1080px) {
   .app-toolbar { gap: 5px; padding-inline: 7px; }
-  .connection-pill-wrap { width: 150px; }
+  .connection-pill { width: 220px; }
   .toolbar-cluster { gap: 0; }
 }
 
 @media (max-width: 980px) {
-  .connection-pill-wrap { width: 42px; }
-  .connection-pill :deep(input) { color: transparent; }
-  .connection-indicator { display: none; }
-  .workspace { padding-inline: 6px; }
+  .connection-pill { width: 200px; }
+  .workspace { padding-right: 6px; padding-left: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connection-pill-wrap.connected:not(.stale)::before {
+    animation: none !important;
+    background-position: 50% 50%;
+  }
 }
 </style>

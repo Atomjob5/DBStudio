@@ -1,23 +1,125 @@
 import { expect, test, type Page } from "@playwright/test";
 
 async function connectMock(page: Page): Promise<void> {
-  await expect(page.getByRole("heading", { name: "连接数据库", exact: true })).toBeVisible();
-  await page.getByRole("menuitem", { name: "本地开发库 127.0.0.1", exact: true }).click();
-  await expect(page.getByPlaceholder("例如：本地开发库", { exact: true })).toHaveValue("本地开发库");
-  await page.getByRole("button", { name: "连接", exact: true }).click();
-  await expect(page.getByText("查询 1", { exact: true })).toBeVisible();
+  const selector = page.locator(".connection-pill input");
+  await expect(selector).toBeVisible();
+  await selector.click();
+  const dropdown = page.locator(".el-cascader__dropdown:visible");
+  await dropdown.getByText("核心系统", { exact: true }).click();
+  await dropdown.getByText("DEV", { exact: true }).click();
+  await dropdown.getByText("本地开发库", { exact: true }).click();
+  await expect(selector).toHaveValue("DEV / 本地开发库");
 }
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/?mock=1");
 });
 
+test("keeps the activity bar flush, restores a collapsed panel and renders a compact connection selector", async ({ page }) => {
+  const activityBar = page.locator(".activity-bar");
+  await expect(page.locator(".connection-manager")).toBeVisible();
+  const activityStyle = await activityBar.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return { left: Math.round(bounds.left), topLeft: style.borderTopLeftRadius, bottomLeft: style.borderBottomLeftRadius };
+  });
+  expect(activityStyle).toEqual({ left: 0, topLeft: "0px", bottomLeft: "0px" });
+  await expect(page.getByRole("button", { name: "节点操作", exact: true })).toHaveCount(0);
+
+  await page.locator(".connection-manager").getByText("核心系统", { exact: true }).click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: "新增环境", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  const connectionActivity = page.getByRole("button", { name: "连接管理", exact: true });
+  const collapse = page.locator(".workbench > .el-splitter-bar .el-splitter-bar__collapse-icon").first();
+  await collapse.click();
+  await expect(connectionActivity).toHaveAttribute("aria-pressed", "false");
+  await connectionActivity.click();
+  await expect(connectionActivity).toHaveAttribute("aria-pressed", "true");
+  expect((await page.locator(".connection-manager").boundingBox())?.width ?? 0).toBeGreaterThan(200);
+
+  await expect(page.locator(".connection-prefix")).toHaveCount(0);
+  await expect(page.locator(".connection-indicator")).toHaveCount(0);
+  const pillParts = await page.locator(".connection-pill-wrap").evaluate((element) => {
+    const pill = element.getBoundingClientRect();
+    const cascader = element.querySelector(".connection-pill")?.getBoundingClientRect();
+    return cascader ? {
+      pillLeft: pill.left, pillRight: pill.right, pillWidth: pill.width,
+      cascaderLeft: cascader.left, cascaderRight: cascader.right, cascaderWidth: cascader.width
+    } : null;
+  });
+  expect(pillParts).not.toBeNull();
+  expect(pillParts!.cascaderLeft).toBeCloseTo(pillParts!.pillLeft, 1);
+  expect(pillParts!.cascaderRight).toBeCloseTo(pillParts!.pillRight, 1);
+  expect(pillParts!.cascaderWidth).toBeCloseTo(pillParts!.pillWidth, 1);
+});
+
 test("connects and renders a streamed query result with the development bridge", async ({ page }) => {
   await connectMock(page);
+  await expect(page.locator('.connection-pill input')).toHaveValue("DEV / 本地开发库");
+  await expect(page.locator(".connection-pill-wrap")).toHaveClass(/suspended/);
+  expect(await page.locator(".connection-pill-wrap").evaluate((element) => getComputedStyle(element, "::before").animationName)).toBe("none");
+  await page.locator(".connection-pill-wrap").hover();
+  await expect(page.getByText("核心系统 / DEV / 本地开发库", { exact: true })).toBeVisible();
+  await page.setViewportSize({ width: 1024, height: 640 });
+  const selectorLayout = await page.locator(".connection-pill").evaluate((element) => {
+    const input = element.querySelector("input")?.getBoundingClientRect();
+    const suffix = element.querySelector(".el-input__suffix")?.getBoundingClientRect();
+    return input && suffix ? { inputLeft: input.left, inputRight: input.right, suffixLeft: suffix.left, suffixRight: suffix.right } : null;
+  });
+  expect(selectorLayout).not.toBeNull();
+  expect(selectorLayout!.inputLeft).toBeLessThan(selectorLayout!.inputRight);
+  expect(selectorLayout!.inputRight).toBeLessThanOrEqual(selectorLayout!.suffixLeft);
+  expect(selectorLayout!.suffixRight).toBeLessThanOrEqual(1024);
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.getByRole("button", { name: "执行", exact: true }).click();
   await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
   await expect(page.getByRole("cell", { name: "Apple Studio 1 ✨", exact: true })).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect(page.locator(".connection-pill-wrap")).toHaveClass(/connected/);
+  const spectrum = await page.locator(".connection-pill-wrap").evaluate((element) => {
+    const style = getComputedStyle(element, "::before");
+    return { animationName: style.animationName, animationDuration: style.animationDuration, opacity: style.opacity };
+  });
+  expect(spectrum.animationName).toContain("connection-spectrum");
+  expect(spectrum.animationDuration).toBe("5.6s");
+  expect(Number(spectrum.opacity)).toBeCloseTo(0.7, 1);
+  await page.locator(".connection-pill-wrap").evaluate((element) => element.classList.add("stale"));
+  expect(await page.locator(".connection-pill-wrap").evaluate((element) => getComputedStyle(element, "::before").animationName)).toBe("none");
+  await page.locator(".connection-pill-wrap").evaluate((element) => element.classList.remove("stale"));
+  await page.locator(".connection-pill input").focus();
+  const focusedSpectrum = await page.locator(".connection-pill-wrap").evaluate((element) => {
+    const style = getComputedStyle(element, "::before");
+    return { playState: style.animationPlayState, opacity: style.opacity };
+  });
+  expect(focusedSpectrum.playState).toBe("paused");
+  expect(Number(focusedSpectrum.opacity)).toBeCloseTo(0.28, 2);
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("button", { name: "切换界面主题" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  const darkSpectrum = await page.locator(".connection-pill-wrap").evaluate((element) => ({
+    green: getComputedStyle(document.documentElement).getPropertyValue("--db-spectrum-green").trim(),
+    cyan: getComputedStyle(document.documentElement).getPropertyValue("--db-spectrum-cyan").trim(),
+    blue: getComputedStyle(document.documentElement).getPropertyValue("--db-spectrum-blue").trim(),
+    edge: getComputedStyle(element, "::before").backgroundImage
+  }));
+  expect(darkSpectrum).toMatchObject({ green: "#30d158", cyan: "#64d2ff", blue: "#0a84ff" });
+  expect(darkSpectrum.edge).toContain("linear-gradient");
+});
+
+test("uses a static spectrum edge when reduced motion is enabled", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.reload();
+  await connectMock(page);
+  await page.getByRole("button", { name: "执行", exact: true }).click();
+  await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
+  const motion = await page.locator(".connection-pill-wrap").evaluate((element) => {
+    const style = getComputedStyle(element, "::before");
+    return { animationName: style.animationName, background: style.backgroundImage };
+  });
+  expect(motion.animationName).toBe("none");
+  expect(motion.background).toContain("linear-gradient");
 });
 
 test("selects result headers, reorders columns and resizes with the header handle", async ({ page }) => {

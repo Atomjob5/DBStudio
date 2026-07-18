@@ -105,9 +105,24 @@ describe("application stores", () => {
       [{ id: "e1", systemId: "s1", name: "DEV", revision: "2" }]);
 
     expect(connections.cascaderOptions[0].children[0].children[0]).toMatchObject({
-      value: "p1@7", label: "开发库", leaf: true
+      value: "p1@7", label: "DEV / 开发库", menuLabel: "开发库", leaf: true
     });
     expect(connections.pathFor(profile)).toBe("核心系统 / DEV / 开发库");
+  });
+
+  it("distinguishes connections with the same name by environment", () => {
+    const connections = useConnectionStore();
+    const dev = { id: "p-dev", providerId: "mysql", name: "业务库", settings: {}, rememberPassword: false,
+      environmentId: "e-dev", revision: "1" };
+    const sit = { ...dev, id: "p-sit", environmentId: "e-sit" };
+    connections.initialize([], [dev, sit], [{ id: "s1", name: "核心系统", revision: "1" }], [
+      { id: "e-dev", systemId: "s1", name: "DEV", revision: "1" },
+      { id: "e-sit", systemId: "s1", name: "SIT", revision: "1" }
+    ]);
+
+    const environmentOptions = connections.cascaderOptions[0].children;
+    expect(environmentOptions[0].children[0]).toMatchObject({ label: "DEV / 业务库", menuLabel: "业务库" });
+    expect(environmentOptions[1].children[0]).toMatchObject({ label: "SIT / 业务库", menuLabel: "业务库" });
   });
 
   it("initializes independent result limit and streaming batch settings", () => {

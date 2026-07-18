@@ -13,19 +13,12 @@
     <div class="manager-search"><el-input v-model="filterText" :prefix-icon="Search" clearable size="small"
       placeholder="筛选系统、环境或链接" aria-label="筛选数据库链接" /></div>
     <el-tree ref="treeRef" class="connection-tree" node-key="key" :data="treeData" :props="treeProps"
-             default-expand-all highlight-current :filter-node-method="filterNode" @current-change="selectNode">
-      <template #default="{ data }"><el-dropdown trigger="contextmenu" @command="(command:string)=>nodeCommand(command,data)">
+             default-expand-all highlight-current draggable :allow-drag="allowDrag" :allow-drop="allowDrop"
+             :filter-node-method="filterNode" @current-change="selectNode" @node-drop="moveProfile"
+             @node-drag-over="updateDragHint" @node-drag-end="clearDragHint">
+      <template #default="{ data }"><el-dropdown class="catalog-node-menu" trigger="contextmenu" @command="(command:string)=>nodeCommand(command,data)">
         <span class="catalog-node"><el-icon><component :is="nodeIcon(data.kind)" /></el-icon>
           <span class="node-copy"><strong>{{ data.label }}</strong><small v-if="data.detail">{{ data.detail }}</small></span>
-          <el-dropdown trigger="click" @click.stop @command="(command:string)=>nodeCommand(command,data)">
-            <el-button class="node-more" text circle size="small" :icon="MoreFilled" aria-label="节点操作" @click.stop />
-            <template #dropdown><el-dropdown-menu>
-              <template v-if="data.kind==='system'"><el-dropdown-item command="add-environment">新增环境</el-dropdown-item><el-dropdown-item command="rename">重命名</el-dropdown-item></template>
-              <template v-if="data.kind==='environment'"><el-dropdown-item command="add-profile">新增链接</el-dropdown-item><el-dropdown-item command="rename">重命名</el-dropdown-item></template>
-              <template v-if="data.kind==='profile'"><el-dropdown-item command="edit">编辑 / 测试</el-dropdown-item></template>
-              <el-dropdown-item divided command="delete">删除</el-dropdown-item>
-            </el-dropdown-menu></template>
-          </el-dropdown>
         </span>
         <template #dropdown><el-dropdown-menu>
           <el-dropdown-item v-if="data.kind==='system'" command="add-environment">新增环境</el-dropdown-item>
@@ -36,6 +29,7 @@
         </el-dropdown-menu></template>
       </el-dropdown></template>
     </el-tree>
+    <div v-if="dragTargetPath" class="drag-target-hint" role="status">移动到 {{ dragTargetPath }}</div>
     <el-empty v-if="!systems.length" class="manager-empty" description="先新增一个系统，再配置环境和数据库链接" :image-size="36">
       <template #image><el-icon><Connection /></el-icon></template><el-button type="primary" round size="small" @click="createSystem">新增系统</el-button>
     </el-empty>
@@ -45,8 +39,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Coin, Connection, Folder, MoreFilled, Plus, Search } from "@element-plus/icons-vue";
-import type { ElTree } from "element-plus";
+import { Coin, Connection, Folder, Plus, Search } from "@element-plus/icons-vue";
+import type { AllowDragFunction, AllowDropFunction, ElTree } from "element-plus";
 import { rpc } from "../bridge/rpc";
 import type { ConnectionEnvironment, ConnectionSystem, SavedProfile } from "../types";
 
@@ -55,6 +49,7 @@ interface CatalogNode { key:string; id:string; kind:"system"|"environment"|"prof
 const props = defineProps<{ systems:ConnectionSystem[]; environments:ConnectionEnvironment[]; profiles:SavedProfile[] }>();
 const emit = defineEmits<{ changed:[]; "create-profile":[environmentId:string]; "edit-profile":[profile:SavedProfile] }>();
 const treeRef = ref<InstanceType<typeof ElTree>>(); const filterText=ref(""); const selected=ref<CatalogNode>();
+const dragTargetPath=ref("");
 const treeProps={label:"label",children:"children"};
 const treeData=computed<CatalogNode[]>(()=>props.systems.map((system)=>({key:`system:${system.id}`,id:system.id,kind:"system",label:system.name,
   children:props.environments.filter((environment)=>environment.systemId===system.id).map((environment)=>({key:`environment:${environment.id}`,id:environment.id,
@@ -67,6 +62,29 @@ watch(filterText,(value)=>treeRef.value?.filter(value.trim()));
 function filterNode(value:string,data:Record<string,unknown>):boolean { return !value||`${String(data.label??"")} ${String(data.detail??"")}`.toLocaleLowerCase().includes(value.toLocaleLowerCase()); }
 function selectNode(data:CatalogNode):void { selected.value=data; }
 function nodeIcon(kind:CatalogNode["kind"]):unknown { return kind==="system"?Coin:kind==="environment"?Folder:Connection; }
+const allowDrag:AllowDragFunction=(node)=>catalogNode(node)?.kind==="profile";
+const allowDrop:AllowDropFunction=(draggingNode,dropNode,type)=>{
+  const source=catalogNode(draggingNode);const target=catalogNode(dropNode);const environmentId=dropEnvironmentId(target);
+  if(source?.kind!=="profile"||!environmentId||environmentId===source.environmentId)return false;
+  return target?.kind==="profile"||type==="inner";
+};
+function catalogNode(node:{data:unknown}):CatalogNode|undefined{return node.data as CatalogNode|undefined;}
+function dropEnvironmentId(node:CatalogNode|undefined):string|undefined{return node?.kind==="environment"?node.id:node?.kind==="profile"?node.environmentId:undefined;}
+function environmentPath(environmentId:string|undefined):string{
+  const environment=props.environments.find((item)=>item.id===environmentId);const system=props.systems.find((item)=>item.id===environment?.systemId);
+  return [system?.name,environment?.name].filter(Boolean).join(" / ");
+}
+function updateDragHint(draggingNode:Parameters<AllowDragFunction>[0],dropNode:Parameters<AllowDragFunction>[0]):void{
+  const source=catalogNode(draggingNode);const target=catalogNode(dropNode);const environmentId=dropEnvironmentId(target);
+  dragTargetPath.value=source?.kind==="profile"&&environmentId&&environmentId!==source.environmentId?environmentPath(environmentId):"";
+}
+function clearDragHint():void{dragTargetPath.value="";}
+async function moveProfile(draggingNode:Parameters<AllowDragFunction>[0],dropNode:Parameters<AllowDragFunction>[0]):Promise<void>{
+  clearDragHint();const source=catalogNode(draggingNode);const environmentId=dropEnvironmentId(catalogNode(dropNode));
+  if(source?.kind!=="profile"||!environmentId||environmentId===source.environmentId){emit("changed");return;}
+  try{await rpc.request("connection.profile.move",{id:source.id,environmentId});emit("changed");ElMessage.success(`链接已移动到 ${environmentPath(environmentId)}`);}
+  catch(error){emit("changed");ElMessage.error(error instanceof Error?error.message:String(error));}
+}
 function createCommand(command:string):void { if(command==="system")void createSystem(); else if(command==="environment"&&selectedSystemId.value)void createEnvironment(selectedSystemId.value);
   else if(command==="profile"&&selectedEnvironmentId.value)emit("create-profile",selectedEnvironmentId.value); }
 async function createSystem():Promise<void>{const name=await promptName("新增系统","系统名称");if(!name)return;await run("connection.system.create",{name});}
@@ -86,10 +104,11 @@ async function run(type:string,payload:Record<string,unknown>):Promise<void>{try
 </script>
 
 <style scoped>
-.connection-manager{display:flex;flex-direction:column;background:var(--db-panel-soft)}.manager-header{min-height:52px;padding:9px 8px 7px 12px;display:flex;align-items:center;justify-content:space-between}
+.connection-manager{position:relative;display:flex;flex-direction:column;background:var(--db-panel-soft)}.manager-header{min-height:52px;padding:9px 8px 7px 12px;display:flex;align-items:center;justify-content:space-between}
 .manager-header>div{display:flex;flex-direction:column;gap:2px}.manager-header strong{font-size:13px}.manager-header span{color:var(--db-muted);font-size:11px}.manager-search{padding:0 8px 8px;border-bottom:1px solid var(--db-border-soft)}
-.connection-tree{flex:1;overflow:auto;padding:5px 6px 8px;background:transparent}.catalog-node{width:100%;min-width:0;display:flex;align-items:center;gap:6px}.node-copy{min-width:0;flex:1;display:flex;flex-direction:column;line-height:15px}
-.node-copy strong,.node-copy small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.node-copy strong{font-size:12px;font-weight:500}.node-copy small{color:var(--db-muted);font-size:9px}.node-more{opacity:0}.catalog-node:hover .node-more{opacity:1}
+.connection-tree{flex:1;overflow:auto;padding:5px 6px 8px;background:transparent}.catalog-node-menu{display:flex;width:100%;min-width:0}.catalog-node{width:100%;min-width:0;display:flex;align-items:center;gap:6px}.node-copy{min-width:0;flex:1;display:flex;flex-direction:column;line-height:15px}
+.node-copy strong,.node-copy small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.node-copy strong{font-size:12px;font-weight:500}.node-copy small{color:var(--db-muted);font-size:9px}
 :deep(.el-tree-node__content){min-height:30px;margin:1px 0;border-radius:7px}:deep(.el-tree-node__content:hover){background:var(--db-control-hover)}:deep(.el-tree-node.is-current>.el-tree-node__content){background:var(--db-accent-soft)}
+.drag-target-hint{position:absolute;z-index:3;left:50%;bottom:10px;max-width:calc(100% - 20px);transform:translateX(-50%);padding:5px 9px;border-radius:7px;background:var(--db-surface-raised);box-shadow:var(--db-shadow-sm);color:var(--db-text-secondary);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
 .manager-empty{position:absolute;inset:105px 8px 8px}.manager-empty :deep(.el-icon){font-size:34px;color:var(--db-muted)}
 </style>

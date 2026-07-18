@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import ElementPlus from "element-plus";
 import App from "./App.vue";
+import { useConnectionStore } from "./stores/connection";
 import { useEditorStore } from "./stores/editor";
 import { useQueryStore } from "./stores/query";
 
@@ -108,5 +109,71 @@ describe("App result loading status toolbar", () => {
 
     finishRequest?.({ resultIndex: 0, offset: 1, rows: [], hasMore: false, nextOffset: 1 });
     await flushPromises();
+  });
+
+  it("手动折叠左侧面板后可通过 Activity Bar 单击恢复", async () => {
+    await flushPromises();
+    const connectionButton = wrapper.find('button[aria-label="连接管理"]');
+    expect(connectionButton.classes()).toContain("active");
+
+    const appVm = wrapper.vm as unknown as { leftWidth: number; selectTool: (tool: "connections") => void };
+    appVm.leftWidth = 0;
+    appVm.selectTool("connections");
+    await nextTick();
+    expect(appVm.leftWidth).toBe(248);
+    expect(connectionButton.classes()).toContain("active");
+    expect(wrapper.find("connection-manager-panel-stub").exists()).toBe(true);
+  });
+
+  it("点击当前 Activity Bar 工具可折叠并再次展开", async () => {
+    await flushPromises();
+    const connectionButton = wrapper.find('button[aria-label="连接管理"]');
+    await connectionButton.trigger("click");
+    await nextTick();
+    expect(wrapper.find("connection-manager-panel-stub").exists()).toBe(false);
+
+    await connectionButton.trigger("click");
+    await nextTick();
+    expect(wrapper.find("connection-manager-panel-stub").exists()).toBe(true);
+    expect(connectionButton.classes()).toContain("active");
+  });
+
+  it("用环境和链接名展示连接并通过选择器背景表达状态", async () => {
+    await flushPromises();
+    const connections = useConnectionStore();
+    const editors = useEditorStore();
+    const profile = { id: "profile-1", providerId: "mysql", name: "业务库", settings: {}, rememberPassword: false,
+      environmentId: "environment-dev", revision: "1" };
+    connections.initialize([], [profile], [{ id: "system-1", name: "核心系统", revision: "1" }],
+      [{ id: "environment-dev", systemId: "system-1", name: "DEV", revision: "1" }]);
+    editors.add({ id: "connected-editor", title: "查询", content: "", dirty: false, transactionDirty: false, busy: false,
+      connection: profile, connectionState: "active" });
+    await nextTick();
+
+    const selector = wrapper.find(".connection-pill-wrap");
+    expect(wrapper.find(".connection-prefix").exists()).toBe(false);
+    expect(wrapper.find(".connection-indicator").exists()).toBe(false);
+    expect(selector.classes()).toContain("connected");
+    expect(selector.classes()).not.toContain("stale");
+    expect((wrapper.find('.connection-pill input').element as HTMLInputElement).value).toBe("DEV / 业务库");
+
+    editors.patch("connected-editor", { connectionState: "suspended" });
+    await nextTick();
+    expect(selector.classes()).toContain("suspended");
+    expect(selector.classes()).not.toContain("connected");
+
+    editors.patch("connected-editor", { connection: undefined, connectionState: "unbound" });
+    await nextTick();
+    expect(selector.classes()).not.toContain("connected");
+    expect(selector.classes()).not.toContain("suspended");
+
+    editors.patch("connected-editor", { connection: { ...profile, stale: true }, connectionState: "active" });
+    await nextTick();
+    expect(selector.classes()).toContain("connected");
+    expect(selector.classes()).toContain("stale");
+
+    editors.patch("connected-editor", { connection: { ...profile, unavailable: true }, connectionState: "active" });
+    await nextTick();
+    expect(selector.classes()).toContain("stale");
   });
 });

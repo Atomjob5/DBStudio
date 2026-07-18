@@ -34,7 +34,11 @@ export const useConnectionStore = defineStore("connection", () => {
     children: environments.value.filter((environment) => environment.systemId === system.id).map((environment) => ({
       value: environment.id, label: environment.name, selectable: false,
       children: profiles.value.filter((profile) => profile.environmentId === environment.id).map((profile) => ({
-        value: `${profile.id}@${profile.revision}`, label: profile.name, profileId: profile.id, leaf: true
+        value: `${profile.id}@${profile.revision}`,
+        label: `${environment.name} / ${profile.name}`,
+        menuLabel: profile.name,
+        profileId: profile.id,
+        leaf: true
       }))
     }))
   })));

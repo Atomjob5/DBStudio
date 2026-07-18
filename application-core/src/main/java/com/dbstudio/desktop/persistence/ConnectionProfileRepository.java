@@ -99,6 +99,26 @@ public final class ConnectionProfileRepository {
         }
     }
 
+    /** Moves a profile in the catalog without changing its connection revision. */
+    public synchronized void moveToEnvironment(UUID id, String environmentId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT 1 FROM connection_environment e JOIN connection_system s ON s.id=e.system_id "
+                        + "WHERE e.id=? AND e.deleted_at IS NULL AND s.deleted_at IS NULL")) {
+            statement.setString(1, environmentId);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) throw new SQLException("Connection environment not found: " + environmentId);
+            }
+        }
+        try (PreparedStatement statement = connection.prepareStatement(
+                "UPDATE connection_profile SET environment_id=? WHERE id=? AND deleted_at IS NULL")) {
+            statement.setString(1, environmentId);
+            statement.setString(2, id.toString());
+            if (statement.executeUpdate() == 0) {
+                throw new SQLException("Connection profile not found: " + id);
+            }
+        }
+    }
+
     public static final class SavedProfile {
         private final ConnectionProfile profile;
         private final boolean rememberPassword;
