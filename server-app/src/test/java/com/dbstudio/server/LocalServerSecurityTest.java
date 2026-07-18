@@ -89,5 +89,40 @@ class LocalServerSecurityTest {
         assertTrue(response.getContentAsString().contains("LOCAL_ACCESS_REQUIRED"));
     }
 
+    @Test
+    void validatesAndPersistsColumnLayoutScope() {
+        HttpHeaders headers = authenticatedHeaders();
+        ResponseEntity<String> defaults = http.exchange(url("/api/v1/settings"), HttpMethod.GET,
+                new HttpEntity<String>(headers), String.class);
+        assertEquals(HttpStatus.OK, defaults.getStatusCode());
+        assertTrue(defaults.getBody().contains("\"result.columnLayoutScope\":\"result\""));
+
+        Map<String, String> setting = new HashMap<String, String>();
+        setting.put("key", "result.columnLayoutScope");
+        setting.put("value", "editor");
+        ResponseEntity<String> saved = http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class);
+        assertEquals(HttpStatus.OK, saved.getStatusCode());
+        assertTrue(saved.getBody().contains("\"value\":\"editor\""));
+
+        setting.put("value", "global");
+        ResponseEntity<String> rejected = http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class);
+        assertEquals(HttpStatus.BAD_REQUEST, rejected.getStatusCode());
+        assertTrue(rejected.getBody().contains("INVALID_SETTING"));
+    }
+
+    private HttpHeaders authenticatedHeaders() {
+        Map<String, String> request = new HashMap<String, String>();
+        request.put("token", token.launchValue());
+        ResponseEntity<String> exchanged = http.postForEntity(url("/api/v1/auth/exchange"), request, String.class);
+        String cookie = exchanged.getHeaders().getFirst(HttpHeaders.SET_COOKIE);
+        assertNotNull(cookie);
+        HttpHeaders headers = new HttpHeaders();
+        headers.add(HttpHeaders.COOKIE, cookie.substring(0, cookie.indexOf(';')));
+        headers.add(HttpHeaders.ORIGIN, "http://127.0.0.1:" + port);
+        return headers;
+    }
+
     private String url(String path) { return "http://127.0.0.1:" + port + path; }
 }

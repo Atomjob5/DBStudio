@@ -25,6 +25,12 @@
           <el-input-number :model-value="streamBatchRows" :min="1" :max="1000" :step="50" controls-position="right"
                            @update:model-value="$emit('update:streamBatchRows', $event ?? 100)" />
         </el-form-item>
+        <el-form-item label="列布局保留范围">
+          <el-radio-group :model-value="columnLayoutScope" @update:model-value="layoutScopeChanged">
+            <el-radio-button value="result">当前结果集</el-radio-button>
+            <el-radio-button value="editor">当前编辑标签</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
         <el-alert title="较小批次首屏更快，但会增加事件和界面更新次数。完整导出不受这些设置限制。"
                   type="info" show-icon :closable="false" />
       </section>
@@ -35,11 +41,18 @@
 <script setup lang="ts">
 import { Monitor, Moon, Sunny } from "@element-plus/icons-vue";
 import type { ResolvedTheme, ThemePreference } from "../types";
+import type { ColumnLayoutScope } from "../columnLayout";
 
-defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: ResolvedTheme; maxRows: number; streamBatchRows: number }>();
-const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme": [value: ThemePreference]; "update:maxRows": [value: number]; "update:streamBatchRows": [value: number] }>();
+defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: ResolvedTheme; maxRows: number;
+  streamBatchRows: number; columnLayoutScope: ColumnLayoutScope }>();
+const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme": [value: ThemePreference];
+  "update:maxRows": [value: number]; "update:streamBatchRows": [value: number];
+  "update:columnLayoutScope": [value: ColumnLayoutScope] }>();
 function themeChanged(value: string | number | boolean | undefined): void {
   if (value === "system" || value === "dark" || value === "light") emit("update:theme", value);
+}
+function layoutScopeChanged(value: string | number | boolean | undefined): void {
+  if (value === "result" || value === "editor") emit("update:columnLayoutScope", value);
 }
 </script>
 

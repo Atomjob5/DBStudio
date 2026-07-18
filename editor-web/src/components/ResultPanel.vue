@@ -11,6 +11,9 @@
           <el-tag v-if="activeResult?.truncated" size="small" type="warning" effect="plain">已截断</el-tag>
         </div>
         <div class="result-actions" aria-label="结果操作">
+          <el-tooltip v-if="showRestoreLayout" content="复原列顺序和宽度">
+            <el-button text :icon="RefreshLeft" aria-label="复原列布局" @click="restoreLayout" />
+          </el-tooltip>
           <el-select v-model="selectedColumnIndices" multiple filterable clearable collapse-tags collapse-tags-tooltip
                      :max-collapse-tags="1" :filter-method="filterColumns" placeholder="筛选字段" size="small"
                      aria-label="筛选展示字段">
@@ -36,7 +39,7 @@
         </div>
       </div>
       <el-alert v-if="activeResult?.errorMessage" :title="activeResult.errorMessage" type="error" show-icon :closable="false" />
-      <div v-else-if="activeResult?.columns.length" class="table-host">
+      <div v-else-if="activeResult?.columns.length" ref="tableHost" class="table-host">
         <el-auto-resizer v-slot="{ width, height }">
           <el-table-v2 :columns="tableColumns" :data="tableRows" :width="width" :height="height"
                        :row-height="32" :header-height="32" fixed />
@@ -51,12 +54,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, h, ref, watch } from "vue";
+import { computed, h, onBeforeUnmount, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
-import { CopyDocument, DataAnalysis, Download } from "@element-plus/icons-vue";
+import { CopyDocument, DataAnalysis, Download, RefreshLeft } from "@element-plus/icons-vue";
 import type { Column } from "element-plus";
 import type { QueryExecutionState } from "../types";
 import { matchesColumnQuery, resultColumnOptions, type ColumnOption } from "../columnFilter";
+import { autoColumnWidth, clampColumnWidth, columnIdentityKeys, defaultColumnWidth, type DropSide } from "../columnLayout";
+import { useColumnLayoutStore } from "../stores/columnLayout";
+import { useSettingsStore } from "../stores/settings";
 
 const props = defineProps<{
   execution?: QueryExecutionState;
@@ -67,6 +73,14 @@ const emit = defineEmits<{
   "export-full": [resultIndex: number];
   "update:active-result-index": [resultIndex: number];
 }>();
+const columnLayouts = useColumnLayoutStore();
+const settings = useSettingsStore();
+const tableHost = ref<HTMLElement>();
+const activeLayout = ref<{ layoutKey: string; viewKey: string; identities: string[] }>();
+const dropTarget = ref<{ identity: string; side: DropSide }>();
+const resizing = ref<{ identity: string; startX: number; startWidth: number }>();
+let dragPreview: HTMLElement | undefined;
+let measureContext: CanvasRenderingContext2D | null | undefined;
 const activeIndex = computed({
   get: () => props.activeResultIndex,
   set: (value: number) => emit("update:active-result-index", value)
@@ -82,10 +96,21 @@ const selectedColumnIndices = computed<number[]>({
 });
 const columnOptions = computed(() => resultColumnOptions(activeResult.value?.columns ?? [], activeResult.value?.columnDetails));
 const filteredColumnOptions = computed(() => columnOptions.value.filter((column) => matchesColumnQuery(column, columnQuery.value)));
-const visibleColumnOptions = computed(() => {
+const selectedVisibleColumnOptions = computed(() => {
   if (!selectedColumnIndices.value.length) return columnOptions.value;
   const selected = new Set(selectedColumnIndices.value);
   return columnOptions.value.filter((column) => selected.has(column.index));
+});
+const defaultWidths = computed(() => columnOptions.value.map((column) => defaultColumnWidth(column.label)));
+const currentIdentities = computed(() => activeLayout.value?.identities
+  ?? columnIdentityKeys(activeResult.value?.columns ?? [], activeResult.value?.columnDetails));
+const visibleIdentities = computed(() => selectedVisibleColumnOptions.value.map((column) => currentIdentities.value[column.index]));
+const visibleColumnOptions = computed(() => {
+  const active = activeLayout.value;
+  if (!active) return selectedVisibleColumnOptions.value;
+  const byIdentity = new Map(selectedVisibleColumnOptions.value.map((column) => [currentIdentities.value[column.index], column]));
+  return columnLayouts.displayedOrder(active.layoutKey, active.viewKey, visibleIdentities.value,
+    selectedColumnIndices.value.length > 0).map((identity) => byIdentity.get(identity)).filter((column): column is ColumnOption => !!column);
 });
 const summary = computed(() => {
   const result = activeResult.value;
@@ -100,20 +125,209 @@ watch(() => props.execution?.executionId, () => {
   columnQuery.value = "";
 });
 watch(activeIndex, () => { selectedCell.value = undefined; columnQuery.value = ""; });
+watch([
+  () => props.execution?.executionId,
+  () => props.execution?.editorId,
+  () => activeResult.value?.resultIndex,
+  () => activeResult.value?.columns,
+  () => activeResult.value?.columnDetails,
+  () => settings.columnLayoutScope
+], activateLayout, { immediate: true });
+watch([() => activeLayout.value?.viewKey, () => selectedColumnIndices.value.join(",")], syncVisibleFilter);
 
 const tableRows = computed(() => activeResult.value?.rows ?? []);
 
 const tableColumns = computed<Column[]>(() => visibleColumnOptions.value.map((column) => ({
+  ...columnDefinition(column),
+})));
+
+function columnDefinition(column: ColumnOption): Column {
+  const identity = currentIdentities.value[column.index];
+  const stored = activeLayout.value ? columnLayouts.layout(activeLayout.value.layoutKey) : undefined;
+  return {
   key: `c${column.index}`,
   dataKey: column.index,
   title: column.label,
-  width: Math.max(120, Math.min(320, column.label.length * 12 + 56)),
+  width: stored?.widths[identity] ?? defaultColumnWidth(column.label),
+  minWidth: 72,
+  maxWidth: 800,
+  headerCellRenderer: () => renderHeader(column, identity),
   cellRenderer: ({ cellData, rowIndex }: { cellData: string | null; rowIndex: number }) => h("span", {
     class: ["result-cell", cellData === null ? "null-value" : cellData.startsWith?.("0x") ? "binary-value" : "", selectedCell.value?.row === rowIndex && selectedCell.value?.column === column.index ? "selected" : ""],
     title: cellData !== null && cellData.length >= 40 ? cellData : undefined,
     onClick: () => { selectedCell.value = { row: rowIndex, column: column.index, value: cellData }; }
   }, cellData === null ? "NULL" : cellData)
-})));
+  };
+}
+
+function activateLayout(): void {
+  const result = activeResult.value;
+  const execution = props.execution;
+  if (!result || !execution) { activeLayout.value = undefined; return; }
+  activeLayout.value = columnLayouts.ensure({
+    scope: settings.columnLayoutScope, executionId: execution.executionId, editorId: execution.editorId,
+    result, defaultWidths: result.columns.map((label) => defaultColumnWidth(label))
+  });
+  syncVisibleFilter();
+}
+
+function syncVisibleFilter(): void {
+  const active = activeLayout.value;
+  if (!active) return;
+  columnLayouts.setFilter(active.viewKey, visibleIdentities.value, selectedColumnIndices.value.length > 0);
+}
+
+function renderHeader(column: ColumnOption, identity: string) {
+  const active = activeLayout.value;
+  const view = active ? columnLayouts.view(active.viewKey) : undefined;
+  const selected = !!view?.selected.includes(identity);
+  const order = visibleColumnOptions.value.map((item) => currentIdentities.value[item.index]);
+  const firstSelected = view?.selected.find((item) => order.includes(item));
+  const drop = dropTarget.value?.identity === identity ? dropTarget.value.side : undefined;
+  return h("div", {
+    class: ["result-column-header", selected ? "selected" : "", drop ? `drop-${drop}` : ""],
+    style: { flex: "1 1 auto", alignSelf: "stretch", width: "100%", minWidth: 0 },
+    role: "button", tabindex: 0, draggable: !resizing.value,
+    "aria-selected": String(selected), "aria-label": `列 ${column.label}`,
+    title: "单击选择；Ctrl/Cmd 多选；Shift 连续选择；拖动改变位置",
+    onClick: (event: MouseEvent) => selectColumnHeader(event, identity),
+    onKeydown: (event: KeyboardEvent) => keyboardSelectHeader(event, identity),
+    onDragstart: (event: DragEvent) => startColumnDrag(event, identity),
+    onDragover: (event: DragEvent) => overColumn(event, identity),
+    onDrop: (event: DragEvent) => dropColumn(event, identity),
+    onDragend: endColumnDrag
+  }, [
+    h("span", { class: "result-column-title" }, column.label),
+    selected && view && view.selected.length > 1 && firstSelected === identity
+      ? h("span", { class: "column-selection-count" }, `${view.selected.length}列`) : undefined,
+    h("span", {
+      class: "column-resize-handle", role: "separator", tabindex: 0,
+      "aria-label": `调整 ${column.label} 列宽`, title: "拖动调整列宽，双击自动匹配",
+      onClick: (event: MouseEvent) => event.stopPropagation(),
+      onPointerdown: (event: PointerEvent) => startColumnResize(event, identity),
+      onDblclick: (event: MouseEvent) => fitColumnWidth(event, column, identity),
+      onKeydown: (event: KeyboardEvent) => keyboardResizeColumn(event, column, identity)
+    })
+  ]);
+}
+
+function selectColumnHeader(event: MouseEvent, identity: string): void {
+  const active = activeLayout.value;
+  if (!active || resizing.value) return;
+  const order = visibleColumnOptions.value.map((column) => currentIdentities.value[column.index]);
+  columnLayouts.choose(active.viewKey, order, identity, event.ctrlKey || event.metaKey, event.shiftKey);
+}
+
+function keyboardSelectHeader(event: KeyboardEvent, identity: string): void {
+  if (event.key !== " " && event.key !== "Enter") return;
+  event.preventDefault();
+  selectColumnHeader(event as unknown as MouseEvent, identity);
+}
+
+function startColumnDrag(event: DragEvent, identity: string): void {
+  const active = activeLayout.value;
+  if (!active || resizing.value || !event.dataTransfer) { event.preventDefault(); return; }
+  if (!columnLayouts.view(active.viewKey).selected.includes(identity)) columnLayouts.selectOnly(active.viewKey, identity);
+  const count = columnLayouts.view(active.viewKey).selected.length;
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", identity);
+  dragPreview = document.createElement("div");
+  dragPreview.className = "column-drag-preview";
+  dragPreview.textContent = count > 1 ? `移动 ${count} 列` : "移动列";
+  document.body.appendChild(dragPreview);
+  event.dataTransfer.setDragImage(dragPreview, 12, 12);
+}
+
+function overColumn(event: DragEvent, identity: string): void {
+  if (!activeLayout.value || !event.dataTransfer) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "move";
+  const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  dropTarget.value = { identity, side: event.clientX < bounds.left + bounds.width / 2 ? "before" : "after" };
+}
+
+function dropColumn(event: DragEvent, identity: string): void {
+  event.preventDefault();
+  const active = activeLayout.value;
+  const side = dropTarget.value?.identity === identity ? dropTarget.value.side : "before";
+  if (active) {
+    const order = visibleColumnOptions.value.map((column) => currentIdentities.value[column.index]);
+    columnLayouts.reorder(active.layoutKey, active.viewKey, order, identity, side, selectedColumnIndices.value.length > 0);
+  }
+  endColumnDrag();
+}
+
+function endColumnDrag(): void {
+  dropTarget.value = undefined;
+  dragPreview?.remove();
+  dragPreview = undefined;
+}
+
+function startColumnResize(event: PointerEvent, identity: string): void {
+  const active = activeLayout.value;
+  if (!active) return;
+  event.preventDefault(); event.stopPropagation();
+  const stored = columnLayouts.layout(active.layoutKey);
+  resizing.value = { identity, startX: event.clientX, startWidth: stored?.widths[identity] ?? 120 };
+  window.addEventListener("pointermove", resizeColumn);
+  window.addEventListener("pointerup", finishColumnResize, { once: true });
+}
+
+function resizeColumn(event: PointerEvent): void {
+  const active = activeLayout.value;
+  const state = resizing.value;
+  if (!active || !state) return;
+  columnLayouts.setWidth(active.layoutKey, state.identity,
+    clampColumnWidth(state.startWidth + event.clientX - state.startX));
+}
+
+function finishColumnResize(): void {
+  window.removeEventListener("pointermove", resizeColumn);
+  resizing.value = undefined;
+}
+
+function fitColumnWidth(event: MouseEvent, column: ColumnOption, identity: string): void {
+  event.preventDefault(); event.stopPropagation();
+  const active = activeLayout.value;
+  const rows = activeResult.value?.rows;
+  if (!active || !rows) return;
+  columnLayouts.setWidth(active.layoutKey, identity,
+    autoColumnWidth(column.label, rows, column.index, measureText));
+}
+
+function keyboardResizeColumn(event: KeyboardEvent, column: ColumnOption, identity: string): void {
+  const active = activeLayout.value;
+  if (!active) return;
+  if (event.key === "Enter") {
+    fitColumnWidth(event as unknown as MouseEvent, column, identity);
+    return;
+  }
+  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+  event.preventDefault(); event.stopPropagation();
+  const width = columnLayouts.layout(active.layoutKey)?.widths[identity] ?? defaultColumnWidth(column.label);
+  columnLayouts.setWidth(active.layoutKey, identity,
+    clampColumnWidth(width + (event.key === "ArrowRight" ? 10 : -10)));
+}
+
+function measureText(text: string): number {
+  if (measureContext === undefined) {
+    const canvas = document.createElement("canvas");
+    measureContext = canvas.getContext("2d");
+  }
+  if (!measureContext) return Array.from(text).length * 8;
+  measureContext.font = tableHost.value ? getComputedStyle(tableHost.value).font : "12px sans-serif";
+  return measureContext.measureText(text).width;
+}
+
+const showRestoreLayout = computed(() => settings.columnLayoutScope === "editor"
+  && !!activeLayout.value && columnLayouts.orderDirty(activeLayout.value.layoutKey));
+
+function restoreLayout(): void {
+  const active = activeLayout.value;
+  if (!active) return;
+  columnLayouts.reset(active.layoutKey, active.viewKey, active.identities, defaultWidths.value);
+  ElMessage.success("已复原列布局");
+}
 
 function filterColumns(query: string): void { columnQuery.value = query; }
 function optionDetail(column: ColumnOption): string {
@@ -140,6 +354,8 @@ function exportCommand(command: string): void {
   if (command === "loaded") emit("export-loaded", resultIndex);
   else if (command === "full") emit("export-full", resultIndex);
 }
+
+onBeforeUnmount(() => { finishColumnResize(); endColumnDrag(); });
 </script>
 
 <style scoped>
@@ -163,6 +379,7 @@ function exportCommand(command: string): void {
 .column-option span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .column-option small { overflow: hidden; color: var(--db-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .table-host { flex: 1; min-height: 0; }
+:deep(.el-table-v2__header-cell) { padding: 0; }
 .result-empty { flex: 1; }
 .result-empty :deep(.el-empty__image) { width: auto; height: auto; }
 .result-empty :deep(.el-empty__image .el-icon) {
@@ -191,5 +408,36 @@ function exportCommand(command: string): void {
 @media (max-width: 1080px) {
   .result-meta { display: none; }
   .result-tabs { max-width: 45%; }
+}
+</style>
+
+<style>
+.result-column-header {
+  position: relative; display: flex; width: 100%; height: 100%; align-items: center; gap: 5px;
+  padding: 0 10px; outline: none; user-select: none; cursor: grab;
+}
+.result-column-header:active { cursor: grabbing; }
+.result-column-header.selected { background: var(--db-accent-soft); color: var(--db-accent); }
+.result-column-header:focus-visible { box-shadow: inset 0 0 0 1.5px var(--db-accent); }
+.result-column-header.drop-before::before, .result-column-header.drop-after::after {
+  position: absolute; z-index: 2; top: 2px; bottom: 2px; width: 2px; border-radius: 2px;
+  background: var(--db-accent); content: "";
+}
+.result-column-header.drop-before::before { left: 0; }
+.result-column-header.drop-after::after { right: 0; }
+.result-column-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.column-selection-count {
+  flex: none; padding: 1px 5px; border-radius: 8px; background: var(--db-accent); color: #fff; font-size: 9px;
+}
+.column-resize-handle {
+  position: absolute; z-index: 3; top: 3px; right: -3px; bottom: 3px; width: 7px; cursor: col-resize;
+}
+.column-resize-handle::after {
+  position: absolute; top: 4px; right: 3px; bottom: 4px; width: 1px; background: var(--db-border-soft); content: "";
+}
+.column-drag-preview {
+  position: fixed; top: -1000px; left: -1000px; padding: 5px 9px; border: 1px solid var(--db-border-soft);
+  border-radius: 8px; background: var(--db-content); color: var(--db-text); font: 12px/1.2 sans-serif;
+  box-shadow: 0 6px 18px rgba(0,0,0,.16);
 }
 </style>

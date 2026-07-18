@@ -133,8 +133,9 @@
   <ConnectionDialog v-model="connectionDialog" :providers="connections.providers" :profiles="connections.profiles" @connected="connected" />
   <HistoryDrawer v-model="historyDrawer" @open="openHistory" />
   <SettingsDrawer v-model="settingsDrawer" :theme="app.themePreference" :resolved-theme="app.theme" :max-rows="settings.maxResultRows"
-                  :stream-batch-rows="settings.streamBatchRows" @update:theme="updateTheme" @update:max-rows="updateMaxRows"
-                  @update:stream-batch-rows="updateStreamBatchRows" />
+                  :stream-batch-rows="settings.streamBatchRows" :column-layout-scope="settings.columnLayoutScope"
+                  @update:theme="updateTheme" @update:max-rows="updateMaxRows"
+                  @update:stream-batch-rows="updateStreamBatchRows" @update:column-layout-scope="updateColumnLayoutScope" />
   <CsvImportDialog v-model="csvDialog" @imported="objectExplorer?.refresh()" />
 </template>
 
@@ -179,6 +180,7 @@ import { useEditorStore } from "./stores/editor";
 import { useMetadataStore } from "./stores/metadata";
 import { useQueryStore } from "./stores/query";
 import { useSettingsStore } from "./stores/settings";
+import type { ColumnLayoutScope } from "./columnLayout";
 import { applyDocumentTheme } from "./theme";
 import { openRecentSql, openSqlFile, recentSqlFiles, saveSqlFile } from "./files/browserFiles";
 import type { BootstrapResponse, EditorTab, HistoryEntry, MetadataNode, QueryResult, SavedProfile, Suggestion, ThemePreference } from "./types";
@@ -490,6 +492,11 @@ async function updateStreamBatchRows(value: number): Promise<void> {
   const previous = settings.streamBatchRows; settings.streamBatchRows = value;
   try { await rpc.request("settings.update", { key: "result.streamBatchRows", value: String(value) }); }
   catch (error) { settings.streamBatchRows = previous; reportError(error); }
+}
+async function updateColumnLayoutScope(value: ColumnLayoutScope): Promise<void> {
+  const previous = settings.columnLayoutScope; settings.columnLayoutScope = value;
+  try { await rpc.request("settings.update", { key: "result.columnLayoutScope", value }); }
+  catch (error) { settings.columnLayoutScope = previous; reportError(error); }
 }
 function dataCommand(command: string): void {
   if (command === "import") csvDialog.value = true;

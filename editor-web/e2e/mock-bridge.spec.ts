@@ -20,6 +20,45 @@ test("connects and renders a streamed query result with the development bridge",
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
 });
 
+test("selects result headers, reorders columns and resizes with the header handle", async ({ page }) => {
+  await connectMock(page);
+  await page.getByRole("button", { name: "执行", exact: true }).click();
+  await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
+
+  const id = page.getByRole("button", { name: "列 id", exact: true });
+  const name = page.getByRole("button", { name: "列 name", exact: true });
+  await id.click();
+  await name.click({ modifiers: ["ControlOrMeta"] });
+  await expect(id).toHaveAttribute("aria-selected", "true");
+  await expect(name).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByText("2列", { exact: true })).toBeVisible();
+
+  await name.click();
+  const idBounds = await id.boundingBox();
+  if (!idBounds) throw new Error("Drop target is not measurable");
+  const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+  await name.dispatchEvent("dragstart", { dataTransfer });
+  await id.dispatchEvent("dragover", { dataTransfer, clientX: idBounds.x + 2 });
+  await id.dispatchEvent("drop", { dataTransfer, clientX: idBounds.x + 2 });
+  const headers = page.locator(".result-column-title");
+  await expect(headers.first()).toHaveText("name");
+
+  const handle = page.getByRole("separator", { name: "调整 name 列宽", exact: true });
+  const before = await name.boundingBox();
+  const bounds = await handle.boundingBox();
+  if (!before || !bounds) throw new Error("Column header is not measurable");
+  await page.mouse.move(bounds.x + 1, bounds.y + bounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + 81, bounds.y + bounds.height / 2);
+  await page.mouse.up();
+  const after = await name.boundingBox();
+  expect(after?.width ?? 0).toBeGreaterThan(before.width + 60);
+  await handle.dblclick();
+  const fitted = await name.boundingBox();
+  expect(fitted?.width ?? 0).toBeGreaterThan(72);
+  expect(fitted?.width ?? 1000).toBeLessThanOrEqual(600);
+});
+
 test("supports Apple appearance, system theme settings and compact windows", async ({ page }) => {
   await expect(page).toHaveScreenshot("apple-connection-light.png");
   await connectMock(page);
@@ -36,6 +75,7 @@ test("supports Apple appearance, system theme settings and compact windows", asy
   await page.getByRole("menuitem", { name: "设置", exact: true }).click();
   await expect(page.getByRole("heading", { name: "设置", exact: true })).toBeVisible();
   await expect(page.getByRole("radio", { name: "跟随系统", exact: true })).toBeVisible();
+  await expect(page.getByRole("radio", { name: "当前结果集", exact: true })).toBeChecked();
   await page.getByRole("button", { name: "Close this dialog", exact: true }).click();
 
   await page.getByRole("button", { name: "更多操作", exact: true }).click();

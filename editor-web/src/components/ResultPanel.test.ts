@@ -1,10 +1,13 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { computed, defineComponent, nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { mount } from "@vue/test-utils";
 import ElementPlus from "element-plus";
 import ResultPanel from "./ResultPanel.vue";
 import { useQueryStore } from "../stores/query";
+import { useSettingsStore } from "../stores/settings";
+import type { Column } from "element-plus";
+import type { VNode } from "vue";
 
 describe("ResultPanel streaming rendering", () => {
   beforeEach(() => setActivePinia(createPinia()));
@@ -126,5 +129,53 @@ describe("ResultPanel streaming rendering", () => {
     await wrapper.setProps({ execution: { ...execution, executionId: "execution-b" } });
     await nextTick();
     expect(wrapper.findComponent({ name: "ElSelect" }).props("modelValue")).toEqual([]);
+  });
+
+  it("selects multiple headers, drags them as a group, resizes and restores editor layout", async () => {
+    useSettingsStore().columnLayoutScope = "editor";
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: 0, execution: {
+        executionId: "execution-layout", editorId: "editor-1", busy: false, cancelled: false, failed: false, durationMs: 8,
+        results: [{ resultIndex: 0, sql: "select id, name, amount", type: "QUERY",
+          columns: ["id", "name", "amount"], rows: [["1", "Apple", "12.30"]],
+          updateCount: -1, truncated: false, durationMs: 7, complete: true }]
+      } }, global: { plugins: [ElementPlus] }
+    });
+    const table = () => wrapper.findComponent({ name: "ElTableV2" });
+    const columns = () => table().props("columns") as Column[];
+    const header = (index: number) => columns()[index].headerCellRenderer?.({} as never) as VNode;
+
+    header(0).props?.onClick({ ctrlKey: false, metaKey: false, shiftKey: false });
+    header(2).props?.onClick({ ctrlKey: true, metaKey: false, shiftKey: false });
+    await nextTick();
+    expect(String(header(0).props?.class)).toContain("selected");
+    expect(String(header(2).props?.class)).toContain("selected");
+
+    const dataTransfer = { effectAllowed: "", dropEffect: "", setData: vi.fn(), setDragImage: vi.fn() };
+    header(0).props?.onDragstart({ dataTransfer, preventDefault: vi.fn() });
+    const target = header(1);
+    const dragEvent = { dataTransfer, clientX: 90, preventDefault: vi.fn(),
+      currentTarget: { getBoundingClientRect: () => ({ left: 0, width: 100 }) } };
+    target.props?.onDragover(dragEvent);
+    target.props?.onDrop(dragEvent);
+    await nextTick();
+    expect(columns().map((column) => column.title)).toEqual(["name", "id", "amount"]);
+    expect(wrapper.find('button[aria-label="复原列布局"]').exists()).toBe(true);
+
+    const resizedHeader = header(0);
+    const headerChildren = resizedHeader.children as VNode[];
+    const resizeHandle = headerChildren[headerChildren.length - 1];
+    resizeHandle.props?.onPointerdown({ clientX: 0, preventDefault: vi.fn(), stopPropagation: vi.fn() });
+    const move = new Event("pointermove") as Event & { clientX: number };
+    Object.defineProperty(move, "clientX", { value: 100 });
+    window.dispatchEvent(move);
+    window.dispatchEvent(new Event("pointerup"));
+    await nextTick();
+    expect(columns()[0].width).toBe(220);
+
+    await wrapper.find('button[aria-label="复原列布局"]').trigger("click");
+    await nextTick();
+    expect(columns().map((column) => column.title)).toEqual(["id", "name", "amount"]);
+    expect(columns()[1].width).toBe(120);
   });
 });

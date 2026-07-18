@@ -101,8 +101,11 @@ describe("application stores", () => {
 
   it("initializes independent result limit and streaming batch settings", () => {
     const settings = useSettingsStore();
-    settings.initialize({ "result.maxRows": "2500", "result.streamBatchRows": "75" }, []);
+    settings.initialize({ "result.maxRows": "2500", "result.streamBatchRows": "75", "result.columnLayoutScope": "editor" }, []);
     expect(settings.maxResultRows).toBe(2500);
     expect(settings.streamBatchRows).toBe(75);
+    expect(settings.columnLayoutScope).toBe("editor");
+    settings.initialize({ "result.columnLayoutScope": "legacy" }, []);
+    expect(settings.columnLayoutScope).toBe("result");
   });
 });
