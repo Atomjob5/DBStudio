@@ -106,6 +106,7 @@ test("copies result headers and loaded rows from the header context menu", async
 });
 
 test("supports Apple appearance, system theme settings and compact windows", async ({ page }) => {
+  test.setTimeout(45_000);
   await expect(page).toHaveScreenshot("apple-connection-light.png");
   await connectMock(page);
   await page.getByRole("button", { name: "执行", exact: true }).click();
@@ -123,10 +124,28 @@ test("supports Apple appearance, system theme settings and compact windows", asy
   await expect(page.getByRole("radio", { name: "跟随系统", exact: true })).toBeVisible();
   await expect(page.getByRole("radio", { name: "当前结果集", exact: true })).toBeChecked();
   await expect(page.getByText("双击表头复制列名", { exact: true })).toBeVisible();
-  await expect(page.getByText("复制多列时的分隔符", { exact: true })).toBeVisible();
+  await expect(page.getByText("多列复制分隔符", { exact: true })).toBeVisible();
+  const compactRows = page.locator(".settings-drawer .compact-setting-row");
+  await expect(compactRows).toHaveCount(5);
+  expect(await compactRows.evaluateAll((rows) => rows.every((row) => {
+    const style = getComputedStyle(row);
+    const label = row.querySelector(".el-form-item__label")?.getBoundingClientRect();
+    const control = row.querySelector(".el-form-item__content")?.getBoundingClientRect();
+    return style.display === "grid" && row.scrollWidth <= row.clientWidth
+      && !!label && !!control && Math.abs((label.top + label.bottom) / 2 - (control.top + control.bottom) / 2) <= 2;
+  }))).toBe(true);
+  for (const label of ["逗号分隔符", "Tab分隔符", "分号分隔符", "竖线分隔符"]) {
+    await expect(page.getByRole("radio", { name: label, exact: true })).toBeVisible();
+  }
+  await page.locator(".settings-drawer .separator-options .el-radio-button").filter({ hasText: "|" }).click();
+  await expect(page.getByRole("radio", { name: "竖线分隔符", exact: true })).toBeChecked();
+  await page.getByLabel("流式推送行数说明", { exact: true }).hover();
+  await expect(page.getByRole("tooltip").filter({ hasText: "值越小首屏越快" })).toBeVisible();
   await page.getByRole("button", { name: "Close this dialog", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "设置", exact: true })).toBeHidden();
 
-  await page.getByRole("button", { name: "更多操作", exact: true }).click();
+  await page.getByRole("button", { name: "更多操作", exact: true }).hover();
+  await expect(page.getByRole("menuitem", { name: "查询历史", exact: true })).toBeVisible();
   await page.getByRole("menuitem", { name: "查询历史", exact: true }).click();
   await expect(page.getByRole("heading", { name: "查询历史", exact: true })).toBeVisible();
   await expect(page.getByPlaceholder("筛选 SQL 或状态", { exact: true })).toBeVisible();
