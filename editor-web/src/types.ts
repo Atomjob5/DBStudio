@@ -24,20 +24,38 @@ export interface SavedProfile {
   name: string;
   settings: Record<string, string>;
   rememberPassword: boolean;
+  environmentId: string;
+  revision: string;
+}
+
+export interface ConnectionSystem { id: string; name: string; revision: string; }
+export interface ConnectionEnvironment { id: string; systemId: string; name: string; revision: string; }
+export type EditorConnectionState = "unbound" | "active" | "suspended";
+export interface EditorConnectionBinding extends SavedProfile {
+  unavailable?: boolean;
+  stale?: boolean;
+}
+
+export interface ConnectionCatalog {
+  systems: ConnectionSystem[];
+  environments: ConnectionEnvironment[];
+  profiles: SavedProfile[];
 }
 
 export interface BootstrapResponse {
   providers: ProviderInfo[];
   profiles: SavedProfile[];
+  systems?: ConnectionSystem[];
+  environments?: ConnectionEnvironment[];
   recentFiles: string[];
   settings: Record<string, string>;
-  connectedProfile?: SavedProfile;
 }
 
 export interface ConnectionInput {
   id?: string;
   providerId: string;
   name: string;
+  environmentId: string;
   settings: Record<string, string>;
   password: string;
   rememberPassword: boolean;
@@ -72,6 +90,8 @@ export interface EditorTab {
   dirty: boolean;
   transactionDirty: boolean;
   busy: boolean;
+  connection?: EditorConnectionBinding;
+  connectionState: EditorConnectionState;
 }
 
 export interface QueryResult {

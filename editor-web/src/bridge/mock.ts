@@ -8,7 +8,10 @@ const providers = [{ id: "mysql", displayName: "MySQL", capabilities: ["TABLES",
   { key: "password", label: "密码", type: "PASSWORD", required: false, defaultValue: "", description: "密码" },
   { key: "timeoutSeconds", label: "连接超时（秒）", type: "NUMBER", required: true, defaultValue: "10", description: "连接超时" }
 ] }];
-const profiles = [{ id: "c5d49b11-47bc-4c64-a31e-a17633e68a73", providerId: "mysql", name: "本地开发库", settings: { host: "127.0.0.1", port: "3306", database: "eastwealthcrawler", username: "root", timeoutSeconds: "10" }, rememberPassword: true }];
+const systems = [{ id: "system-demo", name: "核心系统", revision: "1" }];
+const environments = [{ id: "environment-dev", systemId: "system-demo", name: "DEV", revision: "1" }];
+const profiles = [{ id: "c5d49b11-47bc-4c64-a31e-a17633e68a73", providerId: "mysql", name: "本地开发库", environmentId: "environment-dev", revision: "1",
+  settings: { host: "127.0.0.1", port: "3306", database: "eastwealthcrawler", username: "root", timeoutSeconds: "10" }, rememberPassword: true }];
 let editorSequence = 0;
 
 function metadata(payload: Record<string, unknown>): unknown[] {
@@ -20,10 +23,24 @@ function metadata(payload: Record<string, unknown>): unknown[] {
 }
 
 export const developmentMockRequest: MockRequestHandler = async (type, payload, emit) => {
-  if (type === "app.bootstrap") return { providers, profiles, recentFiles: [], settings: { "ui.theme": "system", "result.maxRows": "1000", "result.streamBatchRows": "100", "result.columnLayoutScope": "result", "result.copyHeaderOnDoubleClick": "true", "result.copySeparator": "comma" } };
+  if (type === "app.bootstrap") return { providers, systems, environments, profiles, recentFiles: [], settings: { "ui.theme": "system", "result.maxRows": "1000", "result.streamBatchRows": "100", "result.columnLayoutScope": "result", "result.copyHeaderOnDoubleClick": "true", "result.copySeparator": "comma", "connection.maxActiveSessions": "10", "connection.idleTimeoutMinutes": "10" } };
+  if (type === "connection.catalog") return { systems, environments, profiles };
+  if (type === "connection.system.create") { const value = { id: crypto.randomUUID(), name: String(payload.name), revision: String(Date.now()) }; systems.push(value); return value; }
+  if (type === "connection.system.update") { const value = systems.find((item) => item.id === payload.id); if (value) { value.name = String(payload.name); value.revision = String(Date.now()); } return value; }
+  if (type === "connection.system.delete") { const index = systems.findIndex((item) => item.id === payload.id); if (index >= 0) { const systemId = systems[index].id; systems.splice(index, 1); for (let i = environments.length - 1; i >= 0; i--) if (environments[i].systemId === systemId) environments.splice(i, 1); } return { deleted: true }; }
+  if (type === "connection.environment.create") { const value = { id: crypto.randomUUID(), systemId: String(payload.systemId), name: String(payload.name), revision: String(Date.now()) }; environments.push(value); return value; }
+  if (type === "connection.environment.update") { const value = environments.find((item) => item.id === payload.id); if (value) { value.name = String(payload.name); value.revision = String(Date.now()); } return value; }
+  if (type === "connection.environment.delete") { const index = environments.findIndex((item) => item.id === payload.id); if (index >= 0) environments.splice(index, 1); return { deleted: true }; }
+  if (type === "connection.profile.create" || type === "connection.profile.update") {
+    const value = { ...payload, id: String(payload.id ?? crypto.randomUUID()), revision: String(Date.now()), rememberPassword: Boolean(payload.rememberPassword) } as typeof profiles[number];
+    const index = profiles.findIndex((item) => item.id === value.id); if (index >= 0) profiles[index] = value; else profiles.push(value); return value;
+  }
+  if (type === "connection.profile.delete") { const index = profiles.findIndex((item) => item.id === payload.id); if (index >= 0) profiles.splice(index, 1); return { deleted: true }; }
   if (type === "connection.test") return { success: true, message: "连接成功", serverVersion: "MySQL 8.4.9" };
-  if (type === "connection.connect") return { ...payload, id: payload.id ?? profiles[0].id, rememberPassword: Boolean(payload.rememberPassword) };
-  if (type === "editor.create") return { id: crypto.randomUUID(), title: `查询 ${++editorSequence}` };
+  if (type === "editor.create") { const profile = profiles.find((item) => item.id === payload.profileId);
+    return { id: crypto.randomUUID(), title: `查询 ${++editorSequence}`, connection: profile, connectionState: profile ? "suspended" : "unbound" }; }
+  if (type === "editor.bind") return { connection: profiles.find((item) => item.id === payload.profileId), connectionState: "suspended" };
+  if (type === "editor.unbind") return { connectionState: "unbound" };
   if (type === "sql.complete") return [];
   if (type === "sql.format") return { text: payload.text };
   if (type === "metadata.children") return metadata(payload);

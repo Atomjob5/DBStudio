@@ -5,6 +5,7 @@ import com.dbstudio.desktop.ProviderRegistry;
 import com.dbstudio.desktop.csv.CsvService;
 import com.dbstudio.desktop.persistence.AppDatabase;
 import com.dbstudio.desktop.persistence.ConnectionProfileRepository;
+import com.dbstudio.desktop.persistence.ConnectionCatalogRepository;
 import com.dbstudio.desktop.persistence.QueryHistoryRepository;
 import com.dbstudio.desktop.persistence.SettingsRepository;
 import com.dbstudio.desktop.security.SecretStore;
@@ -30,6 +31,9 @@ public class AppConfiguration {
     }
     @Bean public ConnectionProfileRepository connectionProfiles(AppDatabase database, ObjectMapper mapper) {
         return new ConnectionProfileRepository(database, mapper);
+    }
+    @Bean public ConnectionCatalogRepository connectionCatalog(AppDatabase database) {
+        return new ConnectionCatalogRepository(database);
     }
     @Bean public QueryHistoryRepository queryHistory(AppDatabase database) {
         return new QueryHistoryRepository(database);

@@ -4,7 +4,6 @@ import { createPinia, setActivePinia } from "pinia";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import ElementPlus from "element-plus";
 import App from "./App.vue";
-import { useAppStore } from "./stores/app";
 import { useEditorStore } from "./stores/editor";
 import { useQueryStore } from "./stores/query";
 
@@ -26,6 +25,7 @@ describe("App result loading status toolbar", () => {
     rpcRequest.mockReset();
     rpcRequest.mockImplementation(async (type: string, payload: Record<string, unknown>) => {
       if (type === "app.bootstrap") return { providers: [], profiles: [], recentFiles: [], settings: {} };
+      if (type === "editor.create") return { id: "bootstrap-editor", title: "查询 1", connectionState: "unbound" };
       if (type === "query.fetchRows") {
         const offset = Number(payload.offset);
         return { resultIndex: payload.resultIndex, offset, rows: [[String(offset + 1)]], hasMore: true, nextOffset: offset + 1 };
@@ -36,7 +36,7 @@ describe("App result loading status toolbar", () => {
       global: {
         plugins: [ElementPlus],
         stubs: {
-          ConnectionDialog: true, CsvImportDialog: true, HistoryDrawer: true, MonacoEditor: true,
+          ConnectionDialog: true, ConnectionManagerPanel: true, CsvImportDialog: true, HistoryDrawer: true, MonacoEditor: true,
           ObjectExplorer: true, SettingsDrawer: true
         }
       }
@@ -56,11 +56,9 @@ describe("App result loading status toolbar", () => {
     expect(allButton.find("svg").exists()).toBe(true);
     expect(nextButton.attributes("disabled")).toBeDefined();
 
-    const app = useAppStore();
     const editors = useEditorStore();
     const queries = useQueryStore();
-    app.connectedProfile = { id: "profile-1", providerId: "mysql", name: "test", settings: {}, rememberPassword: false };
-    editors.add({ id: "editor-1", title: "查询 1", content: "", dirty: false, transactionDirty: false, busy: false });
+    editors.add({ id: "editor-1", title: "查询 1", content: "", dirty: false, transactionDirty: false, busy: false, connectionState: "unbound" });
     queries.start("editor-1", "execution-1");
     queries.addResult("editor-1", { resultIndex: 0, sql: "select 1", type: "QUERY", columns: ["id"], rows: [["1"], ["2"]],
       updateCount: -1, truncated: true, durationMs: 3, complete: true });
@@ -91,11 +89,9 @@ describe("App result loading status toolbar", () => {
       });
     });
 
-    const app = useAppStore();
     const editors = useEditorStore();
     const queries = useQueryStore();
-    app.connectedProfile = { id: "profile-1", providerId: "mysql", name: "test", settings: {}, rememberPassword: false };
-    editors.add({ id: "editor-1", title: "查询 1", content: "", dirty: false, transactionDirty: false, busy: false });
+    editors.add({ id: "editor-1", title: "查询 1", content: "", dirty: false, transactionDirty: false, busy: false, connectionState: "unbound" });
     queries.start("editor-1", "execution-1");
     queries.addResult("editor-1", { resultIndex: 0, sql: "select 1", type: "QUERY", columns: ["id"], rows: [["1"]],
       updateCount: -1, truncated: true, durationMs: 3, complete: true });

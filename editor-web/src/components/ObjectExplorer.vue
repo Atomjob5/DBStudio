@@ -46,7 +46,7 @@ const emit = defineEmits<{
   open: [node: MetadataNode, execute: boolean];
   definition: [node: MetadataNode];
 }>();
-defineProps<{ connectionName?: string }>();
+const props = defineProps<{ connectionName?: string; editorId: string; connectionKey: string }>();
 const metadata = useMetadataStore();
 const treeRef = ref<InstanceType<typeof ElTree>>();
 const treeKey = ref(0);
@@ -56,9 +56,9 @@ const treeProps = { label: "label", children: "children", isLeaf: "leaf" };
 const loadNode: LoadFunction = async (node, resolve) => {
   try {
     const data = node.data as unknown as MetadataNode;
-    const payload = node.level === 0 ? { kind: "root" } : data;
+    const payload = node.level === 0 ? { kind: "root", editorId: props.editorId } : { ...data, editorId: props.editorId };
     const nodes = await rpc.request<MetadataNode[]>("metadata.children", payload);
-    metadata.remember(nodes);
+    metadata.remember(nodes, props.connectionKey);
     if (node.level === 0) metadata.roots = nodes;
     resolve(nodes);
   } catch { resolve([]); }

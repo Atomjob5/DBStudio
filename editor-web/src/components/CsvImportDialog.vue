@@ -55,7 +55,7 @@ import { tasks } from "../bridge/tasks";
 import { chooseCsvFile } from "../files/browserFiles";
 import type { CsvPreview } from "../types";
 
-const props = defineProps<{ modelValue: boolean }>();
+const props = defineProps<{ modelValue: boolean; editorId?: string }>();
 const emit = defineEmits<{ "update:modelValue": [value: boolean]; imported: [rows: number] }>();
 const step = ref(0); const charset = ref("UTF-8"); const delimiter = ref(","); const table = ref("");
 const loading = ref(false); const importing = ref(false); const preview = ref<CsvPreview>();
@@ -89,7 +89,8 @@ async function runImport(): Promise<void> {
   importing.value = true;
   try {
     const mapping = Object.fromEntries(mappingRows.value.filter((item) => item.target.trim()).map((item) => [item.source, item.target.trim()]));
-    const result = await tasks.request<{ rows: number }>("csv.import", { uploadId: preview.value.uploadId, charset: charset.value, delimiter: delimiter.value, table: table.value.trim(), mapping });
+    if (!props.editorId) throw new Error("当前编辑标签尚未选择数据库链接");
+    const result = await tasks.request<{ rows: number }>("csv.import", { editorId: props.editorId, uploadId: preview.value.uploadId, charset: charset.value, delimiter: delimiter.value, table: table.value.trim(), mapping });
     if (!result) return;
     ElMessage.success(`成功导入 ${result.rows} 行`);
     emit("imported", result.rows); emit("update:modelValue", false);

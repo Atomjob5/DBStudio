@@ -13,15 +13,14 @@ public final class DatabaseContext implements AutoCloseable {
     private final DatabaseProvider provider;
     private final ConnectionProfile profile;
     private final char[] password;
-    private final DatabaseSession metadataSession;
-    private final ResultColumnResolver resultColumnResolver;
+    private volatile DatabaseSession metadataSession;
+    private volatile ResultColumnResolver resultColumnResolver;
 
     public DatabaseContext(DatabaseProvider provider, ConnectionProfile profile, char[] password) throws SQLException {
         this.provider = Objects.requireNonNull(provider, "provider");
         this.profile = Objects.requireNonNull(profile, "profile");
         this.password = Arrays.copyOf(password, password.length);
-        this.metadataSession = provider.connections().connect(profile, this.password);
-        this.resultColumnResolver = new MetadataResultColumnResolver(provider.metadata(), metadataSession, provider.dialect());
+        openMetadataSession();
     }
 
     public DatabaseProvider provider() {
@@ -32,23 +31,41 @@ public final class DatabaseContext implements AutoCloseable {
         return profile;
     }
 
-    public DatabaseSession metadataSession() {
+    public synchronized DatabaseSession metadataSession() throws SQLException {
+        if (metadataSession == null || metadataSession.isClosed()) openMetadataSession();
         return metadataSession;
     }
 
-    public ResultColumnResolver resultColumnResolver() { return resultColumnResolver; }
+    public synchronized ResultColumnResolver resultColumnResolver() throws SQLException {
+        metadataSession();
+        return resultColumnResolver;
+    }
 
     public DatabaseSession openEditorSession() throws SQLException {
         return provider.connections().connect(profile, password);
     }
 
+    /** Releases the auxiliary metadata connection; it is recreated on the next metadata access. */
+    public synchronized void suspendMetadata() {
+        DatabaseSession current = metadataSession;
+        metadataSession = null;
+        resultColumnResolver = null;
+        if (current != null) {
+            synchronized (current) {
+                try { current.close(); } catch (SQLException ignored) { }
+            }
+        }
+    }
+
+    private void openMetadataSession() throws SQLException {
+        DatabaseSession opened = provider.connections().connect(profile, password);
+        metadataSession = opened;
+        resultColumnResolver = new MetadataResultColumnResolver(provider.metadata(), opened, provider.dialect());
+    }
+
     @Override
     public void close() {
         Arrays.fill(password, '\0');
-        try {
-            metadataSession.close();
-        } catch (SQLException ignored) {
-            // Connection teardown is best effort.
-        }
+        suspendMetadata();
     }
 }

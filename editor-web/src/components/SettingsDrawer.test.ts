@@ -14,16 +14,18 @@ describe("SettingsDrawer compact result settings", () => {
         streamBatchRows: 100,
         columnLayoutScope: "result",
         copyHeaderOnDoubleClick: true,
-        copySeparator: "comma"
+        copySeparator: "comma",
+        maxActiveSessions: 10,
+        idleTimeoutMinutes: 10
       },
       global: { plugins: [ElementPlus], stubs: { teleport: true } }
     });
   }
 
-  it("renders five compact rows and four separator buttons without the old alert", async () => {
+  it("renders compact connection and result settings without the old alert", async () => {
     const wrapper = mountDrawer();
     await flushPromises();
-    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(5);
+    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(7);
     expect(wrapper.findComponent({ name: "ElAlert" }).exists()).toBe(false);
     const separator = wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "comma");
@@ -39,20 +41,24 @@ describe("SettingsDrawer compact result settings", () => {
     const tooltips = wrapper.findAllComponents({ name: "ElTooltip" });
     expect(tooltips.map((tooltip) => tooltip.props("content"))).toEqual(expect.arrayContaining([
       expect.stringContaining("完整导出不受影响"),
-      expect.stringContaining("界面更新次数越多"),
+      expect.stringContaining("事件触发更频繁"),
       expect.stringContaining("字段集合完全一致"),
       expect.stringContaining("自动转义")
     ]));
 
     const numbers = wrapper.findAllComponents({ name: "ElInputNumber" });
-    numbers[0].vm.$emit("update:modelValue", 2500);
-    numbers[1].vm.$emit("update:modelValue", 50);
+    numbers[0].vm.$emit("update:modelValue", 12);
+    numbers[1].vm.$emit("update:modelValue", 15);
+    numbers[2].vm.$emit("update:modelValue", 2500);
+    numbers[3].vm.$emit("update:modelValue", 50);
     wrapper.findComponent({ name: "ElSwitch" }).vm.$emit("update:modelValue", false);
     wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "result")!.vm.$emit("update:modelValue", "editor");
     wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "comma")!.vm.$emit("update:modelValue", "pipe");
 
+    expect(wrapper.emitted("update:maxActiveSessions")?.[0]).toEqual([12]);
+    expect(wrapper.emitted("update:idleTimeoutMinutes")?.[0]).toEqual([15]);
     expect(wrapper.emitted("update:maxRows")?.[0]).toEqual([2500]);
     expect(wrapper.emitted("update:streamBatchRows")?.[0]).toEqual([50]);
     expect(wrapper.emitted("update:copyHeaderOnDoubleClick")?.[0]).toEqual([false]);

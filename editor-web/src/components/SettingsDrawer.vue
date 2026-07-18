@@ -15,6 +15,32 @@
         </el-form-item>
       </section>
 
+      <section class="settings-section connection-settings">
+        <div class="section-heading"><div><strong>数据库连接</strong><span>控制活动会话与空闲回收</span></div></div>
+        <el-form-item class="compact-setting-row">
+          <template #label>
+            <div class="setting-label"><span>最大活动链接数</span>
+              <el-tooltip content="限制整个DBStudio进程持有的编辑器JDBC会话数量；同一链接的多个标签分别计数，保存配置不计数。" placement="top">
+                <el-icon class="setting-help" tabindex="0" aria-label="最大活动链接数说明"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </div>
+          </template>
+          <el-input-number class="compact-number" size="small" :model-value="maxActiveSessions" :min="1" :max="100" controls-position="right"
+                           @update:model-value="$emit('update:maxActiveSessions', $event ?? 10)" />
+        </el-form-item>
+        <el-form-item class="compact-setting-row">
+          <template #label>
+            <div class="setting-label"><span>空闲链接回收时间</span>
+              <el-tooltip content="仅释放未执行查询且没有未提交事务的空闲会话，再次使用时会自动重连。" placement="top">
+                <el-icon class="setting-help" tabindex="0" aria-label="空闲链接回收时间说明"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </div>
+          </template>
+          <div class="number-with-unit"><el-input-number class="compact-number" size="small" :model-value="idleTimeoutMinutes" :min="1" :max="1440" controls-position="right"
+                           @update:model-value="$emit('update:idleTimeoutMinutes', $event ?? 10)" /><span>分钟</span></div>
+        </el-form-item>
+      </section>
+
       <section class="settings-section result-settings">
         <div class="section-heading"><div><strong>结果集</strong><span>数据获取能力、列布局与复制</span></div></div>
         <el-form-item class="compact-setting-row">
@@ -85,11 +111,12 @@ import type { CopySeparator } from "../resultCopy";
 
 defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: ResolvedTheme; maxRows: number;
   streamBatchRows: number; columnLayoutScope: ColumnLayoutScope; copyHeaderOnDoubleClick: boolean;
-  copySeparator: CopySeparator }>();
+  copySeparator: CopySeparator; maxActiveSessions: number; idleTimeoutMinutes: number }>();
 const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme": [value: ThemePreference];
   "update:maxRows": [value: number]; "update:streamBatchRows": [value: number];
   "update:columnLayoutScope": [value: ColumnLayoutScope]; "update:copyHeaderOnDoubleClick": [value: boolean];
-  "update:copySeparator": [value: CopySeparator] }>();
+  "update:copySeparator": [value: CopySeparator]; "update:maxActiveSessions": [value: number];
+  "update:idleTimeoutMinutes": [value: number] }>();
 function themeChanged(value: string | number | boolean | undefined): void {
   if (value === "system" || value === "dark" || value === "light") emit("update:theme", value);
 }
@@ -162,5 +189,6 @@ function copyHeaderToggleChanged(value: string | number | boolean): void {
 .setting-help:hover, .setting-help:focus-visible { color: var(--db-accent); outline: none; }
 .compact-number { width: 132px; }
 .compact-setting-row :deep(.el-radio-button__inner) { padding-inline: 9px; }
+.number-with-unit { display: flex; align-items: center; gap: 6px; color: var(--db-muted); font-size: 11px; }
 .separator-options :deep(.el-radio-button__inner) { min-width: 38px; padding-inline: 8px; }
 </style>

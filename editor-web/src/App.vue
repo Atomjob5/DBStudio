@@ -1,21 +1,26 @@
 <template>
   <el-container class="app-shell fill" v-loading="app.loading">
     <el-header class="app-toolbar glass-surface" height="48px" aria-label="应用工具栏">
-      <el-button class="connection-pill" :class="{ connected: app.connected }" :icon="Connection"
-                 :aria-label="app.connected ? `当前连接：${app.connectedProfile?.name}` : '连接数据库'"
-                 @click="connectionDialog = true">
-        <span class="connection-name">{{ app.connectedProfile?.name ?? "连接数据库" }}</span>
-        <span class="connection-indicator" aria-hidden="true" />
-      </el-button>
+      <el-tooltip :content="activeConnectionTooltip" placement="bottom">
+        <div class="connection-pill-wrap" :class="{ connected: editors.active?.connectionState === 'active', suspended: editors.active?.connectionState === 'suspended', stale: editors.active?.connection?.stale || editors.active?.connection?.unavailable }">
+          <el-icon class="connection-prefix"><Connection /></el-icon>
+          <el-cascader ref="connectionCascader" class="connection-pill" :model-value="activeConnectionValue"
+                       :options="connections.cascaderOptions" :props="connectionCascaderProps"
+                       :show-all-levels="false" filterable clearable :disabled="!editors.active || editors.active.busy"
+                       :placeholder="editors.active?.connection?.name ?? '选择数据库链接'" aria-label="当前编辑标签的数据库链接"
+                       @change="connectionSelectionChanged" />
+          <span class="connection-indicator" aria-hidden="true" />
+        </div>
+      </el-tooltip>
 
       <div class="toolbar-cluster file-actions" aria-label="文件操作">
         <el-tooltip content="新建查询 · ⌘/Ctrl N" placement="bottom">
-          <el-button text :icon="Plus" aria-label="新建查询" :disabled="!app.connected" @click="newEditor()" />
+          <el-button text :icon="Plus" aria-label="新建查询" @click="newEditor()" />
         </el-tooltip>
         <el-tooltip content="打开 SQL · ⌘/Ctrl O" placement="bottom">
-          <el-button text :icon="FolderOpened" aria-label="打开 SQL 文件" :disabled="!app.connected" @click="openFile" />
+          <el-button text :icon="FolderOpened" aria-label="打开 SQL 文件" @click="openFile" />
         </el-tooltip>
-        <el-dropdown trigger="click" :disabled="!app.connected" @command="openRecent">
+        <el-dropdown trigger="click" @command="openRecent">
           <el-button text :icon="ArrowDown" aria-label="最近打开的 SQL 文件" />
           <template #dropdown>
             <el-dropdown-menu>
@@ -45,10 +50,10 @@
           <el-button text :icon="Close" aria-label="取消执行" :disabled="!editors.active?.busy" @click="cancelActive" />
         </el-tooltip>
         <el-tooltip content="提交事务 · ⌘/Ctrl Alt C" placement="bottom">
-          <el-button text :icon="Select" aria-label="提交事务" :disabled="!editors.active" @click="commitActive" />
+          <el-button text :icon="Select" aria-label="提交事务" :disabled="!editors.active?.connection" @click="commitActive" />
         </el-tooltip>
         <el-tooltip content="回滚事务 · ⌘/Ctrl Alt R" placement="bottom">
-          <el-button text :icon="RefreshLeft" aria-label="回滚事务" :disabled="!editors.active" @click="rollbackActive" />
+          <el-button text :icon="RefreshLeft" aria-label="回滚事务" :disabled="!editors.active?.connection" @click="rollbackActive" />
         </el-tooltip>
       </div>
 
@@ -57,7 +62,7 @@
         <el-button text circle :icon="MoreFilled" aria-label="更多操作" />
         <template #dropdown>
           <el-dropdown-menu>
-            <el-dropdown-item command="import" :icon="Upload" :disabled="!app.connected">导入 CSV / TSV</el-dropdown-item>
+            <el-dropdown-item command="import" :icon="Upload" :disabled="!activeConnected">导入 CSV / TSV</el-dropdown-item>
             <el-dropdown-item command="history" :icon="Clock">查询历史</el-dropdown-item>
             <el-dropdown-item divided command="settings" :icon="Setting">设置</el-dropdown-item>
             <el-dropdown-item divided command="exit" :icon="SwitchButton">退出 DBStudio</el-dropdown-item>
@@ -71,14 +76,24 @@
     </el-header>
 
     <el-main class="workspace">
+      <nav class="activity-bar" aria-label="工作区工具导航">
+        <el-tooltip content="数据库对象" placement="right"><el-button text :icon="Coin" aria-label="数据库对象"
+          :class="{ active: activeTool === 'objects' && panelOpen }" :aria-pressed="activeTool === 'objects' && panelOpen" @click="selectTool('objects')" /></el-tooltip>
+        <el-tooltip content="连接管理" placement="right"><el-button text :icon="Connection" aria-label="连接管理"
+          :class="{ active: activeTool === 'connections' && panelOpen }" :aria-pressed="activeTool === 'connections' && panelOpen" @click="selectTool('connections')" /></el-tooltip>
+      </nav>
       <el-splitter class="workbench" lazy>
-        <el-splitter-panel v-model:size="leftWidth" :min="210" :max="420" collapsible>
-          <ObjectExplorer v-if="app.connected" ref="objectExplorer" :connection-name="app.connectedProfile?.name"
-                          @open="openObject" @definition="openDefinition" />
-          <el-empty v-else class="workspace-empty" description="连接数据库后浏览对象">
+        <el-splitter-panel v-if="panelOpen" v-model:size="leftWidth" :min="210" :max="420" collapsible>
+          <ObjectExplorer v-if="activeTool === 'objects' && editors.active?.connection" ref="objectExplorer"
+                          :editor-id="editors.active.id" :connection-key="activeConnectionKey"
+                          :connection-name="editors.active.connection.name" @open="openObject" @definition="openDefinition" />
+          <el-empty v-else-if="activeTool === 'objects'" class="workspace-empty" description="当前编辑标签尚未选择数据库链接">
             <template #image><el-icon><Coin /></el-icon></template>
-            <el-button type="primary" round @click="connectionDialog = true">连接数据库</el-button>
+            <el-button type="primary" round @click="openConnectionManager">打开连接管理</el-button>
           </el-empty>
+          <ConnectionManagerPanel v-else :systems="connections.systems" :environments="connections.environments"
+                                  :profiles="connections.profiles" @changed="refreshConnectionCatalog"
+                                  @create-profile="openCreateProfile" @edit-profile="openEditProfile" />
         </el-splitter-panel>
         <el-splitter-panel :min="500">
           <el-splitter layout="vertical" lazy>
@@ -97,7 +112,7 @@
                               @dirty="markActiveDirty" @execute="executeFromEditor" @format="formatActive" />
                 <el-empty v-else class="workspace-empty" description="新建 SQL 标签开始查询">
                   <template #image><el-icon><Document /></el-icon></template>
-                  <el-button round :disabled="!app.connected" @click="newEditor()">新建查询</el-button>
+                  <el-button round @click="newEditor()">新建查询</el-button>
                 </el-empty>
               </section>
             </el-splitter-panel>
@@ -111,7 +126,7 @@
     </el-main>
 
     <el-footer class="status-bar" height="24px" aria-live="polite">
-      <span class="status-item"><i class="status-dot" :class="app.connected ? 'online' : 'offline'" />{{ app.status }}</span>
+      <span class="status-item"><i class="status-dot" :class="activeConnectionStatusClass" />{{ app.status }}</span>
       <div class="status-result-actions" role="toolbar" aria-label="结果数据加载工具栏">
         <el-tooltip :content="nextPageTooltip" placement="top">
           <el-button text :icon="ArrowDown" aria-label="下一页数据" :disabled="!canLoadMore"
@@ -125,26 +140,31 @@
       <span class="status-spacer" />
       <span v-if="editors.active?.transactionDirty" class="status-item transaction-warning"><WarningFilled />未提交事务</span>
       <span class="status-item"><i class="status-dot" :class="editors.active?.busy ? 'busy' : 'neutral'" />
-        {{ editors.active?.busy ? "正在执行" : app.connected ? "自动提交关闭" : "离线" }}
+        {{ editors.active?.busy ? "正在执行" : activeConnected ? editors.active?.connectionState === "suspended" ? "链接已暂停" : "自动提交关闭" : "未选择链接" }}
       </span>
     </el-footer>
   </el-container>
 
-  <ConnectionDialog v-model="connectionDialog" :providers="connections.providers" :profiles="connections.profiles" @connected="connected" />
+  <ConnectionDialog v-model="connectionDialog" :providers="connections.providers" :systems="connections.systems"
+                    :environments="connections.environments" :profile="editingProfile" :initial-environment-id="profileEnvironmentId"
+                    @saved="profileSaved" />
   <HistoryDrawer v-model="historyDrawer" @open="openHistory" />
   <SettingsDrawer v-model="settingsDrawer" :theme="app.themePreference" :resolved-theme="app.theme" :max-rows="settings.maxResultRows"
                   :stream-batch-rows="settings.streamBatchRows" :column-layout-scope="settings.columnLayoutScope"
                   :copy-header-on-double-click="settings.copyHeaderOnDoubleClick" :copy-separator="settings.copySeparator"
+                  :max-active-sessions="settings.maxActiveSessions" :idle-timeout-minutes="settings.idleTimeoutMinutes"
                   @update:theme="updateTheme" @update:max-rows="updateMaxRows"
                   @update:stream-batch-rows="updateStreamBatchRows" @update:column-layout-scope="updateColumnLayoutScope"
                   @update:copy-header-on-double-click="updateCopyHeaderOnDoubleClick"
-                  @update:copy-separator="updateCopySeparator" />
-  <CsvImportDialog v-model="csvDialog" @imported="objectExplorer?.refresh()" />
+                  @update:copy-separator="updateCopySeparator" @update:max-active-sessions="updateMaxActiveSessions"
+                  @update:idle-timeout-minutes="updateIdleTimeoutMinutes" />
+  <CsvImportDialog v-model="csvDialog" :editor-id="editors.active?.id" @imported="objectExplorer?.refresh()" />
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox, ElNotification } from "element-plus";
+import type { CascaderProps } from "element-plus";
 import {
   ArrowDown,
   ArrowRightBold,
@@ -171,6 +191,7 @@ import {
 } from "@element-plus/icons-vue";
 import { rpc } from "./bridge/rpc";
 import ConnectionDialog from "./components/ConnectionDialog.vue";
+import ConnectionManagerPanel from "./components/ConnectionManagerPanel.vue";
 import CsvImportDialog from "./components/CsvImportDialog.vue";
 import HistoryDrawer from "./components/HistoryDrawer.vue";
 import MonacoEditor from "./components/MonacoEditor.vue";
@@ -187,12 +208,15 @@ import type { ColumnLayoutScope } from "./columnLayout";
 import type { CopySeparator } from "./resultCopy";
 import { applyDocumentTheme } from "./theme";
 import { openRecentSql, openSqlFile, recentSqlFiles, saveSqlFile } from "./files/browserFiles";
-import type { BootstrapResponse, EditorTab, HistoryEntry, MetadataNode, QueryResult, SavedProfile, Suggestion, ThemePreference } from "./types";
+import type { BootstrapResponse, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryResult, SavedProfile, ThemePreference } from "./types";
 
 const app = useAppStore(); const connections = useConnectionStore(); const metadata = useMetadataStore();
 const editors = useEditorStore(); const queries = useQueryStore(); const settings = useSettingsStore();
 const connectionDialog = ref(false); const historyDrawer = ref(false); const settingsDrawer = ref(false); const csvDialog = ref(false);
 const leftWidth = ref(248); const editorHeight = ref("62%");
+const activeTool = ref<"objects" | "connections">("connections"); const panelOpen = ref(true);
+const editingProfile = ref<SavedProfile>(); const profileEnvironmentId = ref("");
+const connectionCascader = ref();
 const objectExplorer = ref<InstanceType<typeof ObjectExplorer>>();
 const monacoEditor = ref<{ getValue(key?: string): string; setValue(value: string, key?: string): void }>();
 const recentHandles = new Map<string, FileSystemFileHandle>();
@@ -201,13 +225,25 @@ const activeResultIndex = ref(0);
 const activeResult = computed(() => activeExecution.value?.results.find((result) => result.resultIndex === activeResultIndex.value)
   ?? activeExecution.value?.results[0]);
 const resultLoading = ref<{ editorId: string; resultIndex: number; mode: "next" | "all" }>();
-const activeResultLoading = computed(() => resultLoading.value?.editorId === editors.activeId
-  ? { resultIndex: resultLoading.value.resultIndex, mode: resultLoading.value.mode } : undefined);
+const activeResultLoading = computed(() => {
+  const loading = resultLoading.value;
+  return loading && loading.editorId === editors.activeId
+    ? { resultIndex: loading.resultIndex, mode: loading.mode }
+    : undefined;
+});
 const canLoadMore = computed(() => Boolean(activeResult.value?.columns.length && activeResult.value.complete
   && activeResult.value.truncated && !activeExecution.value?.busy && !resultLoading.value));
 const nextPageTooltip = computed(() => resultLoadTooltip("next"));
 const allRowsTooltip = computed(() => resultLoadTooltip("all"));
-const canExecute = computed(() => Boolean(editors.active && !editors.active.busy));
+const activeConnected = computed(() => Boolean(editors.active?.connection));
+const activeConnectionKey = computed(() => editors.active?.connection ? `${editors.active.connection.id}@${editors.active.connection.revision}` : "unbound");
+const activeConnectionValue = computed(() => editors.active?.connection ? `${editors.active.connection.id}@${editors.active.connection.revision}` : undefined);
+const activeConnectionPath = computed(() => connections.pathFor(editors.active?.connection));
+const activeConnectionTooltip = computed(() => `${activeConnectionPath.value}${editors.active?.connection?.stale
+  ? " · 配置已更新，重新选择后生效" : editors.active?.connection?.unavailable ? " · 配置已删除，当前会话仍可继续使用" : ""}`);
+const activeConnectionStatusClass = computed(() => !activeConnected.value ? "offline" : editors.active?.connectionState === "active" ? "online" : "neutral");
+const connectionCascaderProps: CascaderProps = { emitPath: false };
+const canExecute = computed(() => Boolean(editors.active?.connection && !editors.active.busy));
 const disposers: Array<() => void> = [];
 const colorSchemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
 let layoutSaveTimer: number | undefined;
@@ -219,7 +255,7 @@ onMounted(async () => {
   app.loading = true;
   try {
     const data = await rpc.request<BootstrapResponse>("app.bootstrap");
-    connections.initialize(data.providers, data.profiles);
+    connections.initialize(data.providers, data.profiles, data.systems ?? [], data.environments ?? []);
     settings.initialize(data.settings, data.recentFiles);
     for (const recent of await recentSqlFiles().catch(() => [])) {
       recentHandles.set(recent.name, recent.handle);
@@ -228,8 +264,8 @@ onMounted(async () => {
     app.applyBootstrap(data);
     leftWidth.value = Number(data.settings["layout.leftWidth"] ?? 248);
     editorHeight.value = data.settings["layout.editorHeight"] ?? "62%";
-    if (!app.connected) connectionDialog.value = true;
-    else await prepareConnectedWorkspace();
+    await newEditor();
+    activeTool.value = editors.active?.connection ? "objects" : "connections";
   } catch (error) {
     app.status = "启动失败";
     ElNotification.error({ title: "DBStudio 启动失败", message: message(error), duration: 0 });
@@ -246,6 +282,15 @@ onBeforeUnmount(() => {
 watch(() => app.theme, (theme) => applyDocumentTheme(theme), { immediate: true });
 watch(() => activeExecution.value?.executionId, () => {
   activeResultIndex.value = activeExecution.value?.results[0]?.resultIndex ?? 0;
+});
+watch(() => [editors.activeId, activeConnectionKey.value] as const, async () => {
+  metadata.activate(activeConnectionKey.value);
+  if (editors.active?.connection) {
+    try {
+      const suggestions = await rpc.request<import("./types").Suggestion[]>("sql.complete", { prefix: "", editorId: editors.active.id });
+      metadata.addSuggestions(suggestions, activeConnectionKey.value);
+    } catch { /* The object tree remains usable even if keyword loading fails. */ }
+  }
 });
 
 function systemThemeChanged(event: MediaQueryListEvent): void {
@@ -293,32 +338,28 @@ function installEventHandlers(): void {
     const data = raw as { message?: string };
     if (data.message) app.status = data.message;
   }));
-}
-
-async function connected(profile: SavedProfile): Promise<void> {
-  app.connectedProfile = profile; app.status = `已连接 ${profile.name}`; connections.upsert(profile);
-  editors.clear(); queries.clear(); metadata.clear();
-  await prepareConnectedWorkspace();
-}
-
-async function prepareConnectedWorkspace(): Promise<void> {
-  const suggestions = await rpc.request<Suggestion[]>("sql.complete", { prefix: "" });
-  metadata.addSuggestions(suggestions);
-  await newEditor();
-  await nextTick(); objectExplorer.value?.refresh();
+  disposers.push(rpc.on("editor.connectionState", (raw) => {
+    const data = raw as { editorId: string; state: EditorConnectionState; message?: string };
+    editors.patch(data.editorId, { connectionState: data.state });
+    if (data.message && data.editorId === editors.activeId) app.status = data.message;
+  }));
+  disposers.push(rpc.on("connections.changed", () => { void refreshConnectionCatalog(); }));
 }
 
 async function newEditor(content = "", filePath?: string, title?: string, fileHandle?: FileSystemFileHandle): Promise<EditorTab | undefined> {
-  if (!app.connected) { connectionDialog.value = true; return; }
-  const created = await rpc.request<{ id: string; title: string }>("editor.create", {});
-  const tab: EditorTab = { id: created.id, title: title ?? created.title, content, filePath, fileHandle, dirty: Boolean(content && !filePath), transactionDirty: false, busy: false };
+  const inherited = editors.active?.connection && connections.current(editors.active.connection.id) ? editors.active.connection.id : undefined;
+  const created = await rpc.request<{ id: string; title: string; connection?: EditorConnectionBinding; connectionState: EditorConnectionState }>("editor.create", inherited ? { profileId: inherited } : {});
+  const tab: EditorTab = { id: created.id, title: title ?? created.title, content, filePath, fileHandle,
+    dirty: Boolean(content && !filePath), transactionDirty: false, busy: false,
+    connection: created.connection, connectionState: created.connectionState ?? "unbound" };
   editors.add(tab); return tab;
 }
 
 function markActiveDirty(): void { if (editors.active) editors.patch(editors.active.id, { dirty: true }); }
 async function formatActive(): Promise<void> {
   const tab = editors.active; if (!tab) return;
-  const result = await rpc.request<{ text: string }>("sql.format", { text: monacoEditor.value?.getValue(tab.id) ?? tab.content });
+  if (!tab.connection) { ElMessage.warning("请先为当前编辑标签选择数据库链接"); return; }
+  const result = await rpc.request<{ text: string }>("sql.format", { editorId: tab.id, text: monacoEditor.value?.getValue(tab.id) ?? tab.content });
   monacoEditor.value?.setValue(result.text, tab.id);
   editors.patch(tab.id, { dirty: true });
 }
@@ -328,6 +369,7 @@ function executeCommand(command: string): void {
 }
 async function executeActive(scope: "current" | "script", selectedText = "", cursorOffset = 0): Promise<void> {
   const tab = editors.active; if (!tab || tab.busy) return;
+  if (!tab.connection) { ElMessage.warning("请先为当前编辑标签选择数据库链接"); return; }
   editors.patch(tab.id, { busy: true }); app.status = "正在执行…";
   try {
     const response = await rpc.request<{ executionId: string }>("query.execute", { editorId: tab.id, text: monacoEditor.value?.getValue(tab.id) ?? tab.content, selectedText, cursorOffset, scope, stopOnError: true });
@@ -335,8 +377,8 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
   } catch (error) { editors.patch(tab.id, { busy: false }); ElMessage.error(message(error)); }
 }
 async function cancelActive(): Promise<void> { if (editors.active) await rpc.request("query.cancel", { editorId: editors.active.id }); }
-async function commitActive(): Promise<void> { if (editors.active) await rpc.request("transaction.commit", { editorId: editors.active.id }); }
-async function rollbackActive(): Promise<void> { if (editors.active) await rpc.request("transaction.rollback", { editorId: editors.active.id }); }
+async function commitActive(): Promise<void> { if (editors.active?.connection) await rpc.request("transaction.commit", { editorId: editors.active.id }); }
+async function rollbackActive(): Promise<void> { if (editors.active?.connection) await rpc.request("transaction.rollback", { editorId: editors.active.id }); }
 
 interface ResultPageResponse {
   resultIndex: number;
@@ -392,6 +434,93 @@ async function loadResultRows(resultIndex: number, initialOffset: number, all: b
   }
 }
 
+function selectTool(tool: "objects" | "connections"): void {
+  if (activeTool.value === tool && panelOpen.value) panelOpen.value = false;
+  else { activeTool.value = tool; panelOpen.value = true; }
+}
+function openConnectionManager(): void { activeTool.value = "connections"; panelOpen.value = true; }
+function openCreateProfile(environmentId: string): void {
+  editingProfile.value = undefined; profileEnvironmentId.value = environmentId; connectionDialog.value = true;
+}
+function openEditProfile(profile: SavedProfile): void {
+  editingProfile.value = profile; profileEnvironmentId.value = profile.environmentId; connectionDialog.value = true;
+}
+async function profileSaved(profile: SavedProfile): Promise<void> { connections.upsert(profile); await refreshConnectionCatalog(); }
+async function refreshConnectionCatalog(): Promise<void> {
+  const catalog = await rpc.request<ConnectionCatalog>("connection.catalog");
+  connections.applyCatalog(catalog);
+  for (const tab of editors.tabs) {
+    if (!tab.connection) continue;
+    const current = connections.current(tab.connection.id);
+    const unavailable = !current;
+    const stale = Boolean(current && current.revision !== tab.connection.revision);
+    const newlyChanged = (unavailable && !tab.connection.unavailable) || (stale && !tab.connection.stale);
+    editors.patch(tab.id, { connection: { ...tab.connection, unavailable, stale } });
+    if (newlyChanged && tab.id === editors.activeId) {
+      app.status = unavailable ? "链接配置已删除，当前会话仍可继续使用" : "配置已更新，重新选择链接后生效";
+      ElNotification.warning({ title: unavailable ? "链接配置已删除" : "链接配置已更新",
+        message: unavailable ? "当前编辑标签继续使用原连接快照；该链接不能再绑定到新标签。" : "当前编辑标签继续使用旧配置，重新选择该链接后生效。" });
+    }
+  }
+}
+
+async function connectionSelectionChanged(value: unknown): Promise<void> {
+  const tab = editors.active; if (!tab) return;
+  const selected = typeof value === "string" ? value : "";
+  if (selected === activeConnectionValue.value) return;
+  const transactionAction = await transactionActionForSwitch(tab);
+  if (transactionAction === "cancel") return;
+  try {
+    if (!selected) {
+      await rpc.request("editor.unbind", { editorId: tab.id, transactionAction });
+      editors.patch(tab.id, { connection: undefined, connectionState: "unbound", transactionDirty: false });
+    } else {
+      const profileId = selected.split("@")[0];
+      let response: { connection: EditorConnectionBinding; connectionState: EditorConnectionState };
+      try {
+        response = await rpc.request("editor.bind", { editorId: tab.id, profileId, transactionAction }, 60_000);
+      } catch (error) {
+        if ((error as { code?: string }).code !== "PASSWORD_REQUIRED") throw error;
+        const password = await requestConnectionPassword();
+        if (!password) return;
+        response = await rpc.request("editor.bind", { editorId: tab.id, profileId, transactionAction,
+          password: password.password, rememberPassword: password.remember }, 60_000);
+      }
+      editors.patch(tab.id, { connection: response.connection, connectionState: response.connectionState,
+        transactionDirty: false });
+      app.status = `已绑定 ${response.connection.name}`;
+    }
+    queries.clearEditor(tab.id);
+    metadata.activate(activeConnectionKey.value);
+    await nextTick(); objectExplorer.value?.refresh();
+  } catch (error) { reportError(error); }
+}
+
+async function transactionActionForSwitch(tab: EditorTab): Promise<"commit" | "rollback" | "cancel" | ""> {
+  if (!tab.transactionDirty) return "";
+  try {
+    await ElMessageBox({ title: "未提交事务", message: "切换数据库链接前请选择提交或回滚。", type: "warning",
+      showCancelButton: true, showClose: true, distinguishCancelAndClose: true,
+      confirmButtonText: "提交并切换", cancelButtonText: "回滚并切换" });
+    return "commit";
+  } catch (choice) { return choice === "cancel" ? "rollback" : "cancel"; }
+}
+
+async function requestConnectionPassword(): Promise<{ password: string; remember: boolean } | undefined> {
+  try {
+    const result = await ElMessageBox.prompt("该链接没有可用的密码，请输入后继续。", "输入数据库密码", {
+      inputType: "password", confirmButtonText: "继续", cancelButtonText: "取消"
+    });
+    let remember = false;
+    try {
+      await ElMessageBox.confirm("是否将密码保存到系统密钥库？", "记住密码", {
+        confirmButtonText: "记住密码", cancelButtonText: "仅本次使用", distinguishCancelAndClose: true
+      }); remember = true;
+    } catch (choice) { if (choice !== "cancel") return undefined; }
+    return { password: result.value, remember };
+  } catch { return undefined; }
+}
+
 function handleShortcut(event: KeyboardEvent): void {
   const shortcut = event.metaKey || event.ctrlKey;
   if (!shortcut) return;
@@ -399,7 +528,7 @@ function handleShortcut(event: KeyboardEvent): void {
   let action: (() => void) | undefined;
   if (event.altKey && key === "c") action = () => { void commitActive().catch(reportError); };
   else if (event.altKey && key === "r") action = () => { void rollbackActive().catch(reportError); };
-  else if (event.shiftKey && key === "c") action = () => { connectionDialog.value = true; };
+  else if (event.shiftKey && key === "c") action = () => { if (!connections.profiles.length) openConnectionManager(); else connectionCascader.value?.focus?.(); };
   else if (key === "n") action = () => { void newEditor().catch(reportError); };
   else if (key === "o") action = () => { void openFile().catch(reportError); };
   else if (key === "s") action = () => { void saveActive(event.shiftKey).catch(reportError); };
@@ -449,8 +578,8 @@ async function closeTab(id: string): Promise<boolean> {
       action = "commit";
     } catch (choice) { if (choice !== "cancel") return false; action = "rollback"; }
     await rpc.request("editor.close", { editorId: id, action });
-  }
-  editors.remove(id); return true;
+  } else await rpc.request("editor.close", { editorId: id, action: "close" });
+  queries.clearEditor(id); editors.remove(id); return true;
 }
 
 async function closeApplication(activeTasks = 0): Promise<void> {
@@ -474,11 +603,13 @@ async function closeApplication(activeTasks = 0): Promise<void> {
 }
 
 async function openObject(node: MetadataNode, execute: boolean): Promise<void> {
-  const result = await rpc.request<{ sql: string }>("metadata.generateQuery", node);
+  if (!editors.active) return;
+  const result = await rpc.request<{ sql: string }>("metadata.generateQuery", { ...node, editorId: editors.active.id });
   const tab = await newEditor(result.sql); if (execute && tab) { editors.activeId = tab.id; await executeActive("script"); }
 }
 async function openDefinition(node: MetadataNode): Promise<void> {
-  const result = await rpc.request<{ definition: string }>("metadata.definition", node);
+  if (!editors.active) return;
+  const result = await rpc.request<{ definition: string }>("metadata.definition", { ...node, editorId: editors.active.id });
   await newEditor(`${result.definition};\n`, undefined, `${node.name ?? "对象"} 定义`);
 }
 async function openHistory(entry: HistoryEntry): Promise<void> { await newEditor(entry.sql, undefined, "历史查询"); }
@@ -512,8 +643,18 @@ async function updateCopySeparator(value: CopySeparator): Promise<void> {
   try { await rpc.request("settings.update", { key: "result.copySeparator", value }); }
   catch (error) { settings.copySeparator = previous; reportError(error); }
 }
+async function updateMaxActiveSessions(value: number): Promise<void> {
+  const previous = settings.maxActiveSessions; settings.maxActiveSessions = value;
+  try { await rpc.request("settings.update", { key: "connection.maxActiveSessions", value: String(value) }); }
+  catch (error) { settings.maxActiveSessions = previous; reportError(error); }
+}
+async function updateIdleTimeoutMinutes(value: number): Promise<void> {
+  const previous = settings.idleTimeoutMinutes; settings.idleTimeoutMinutes = value;
+  try { await rpc.request("settings.update", { key: "connection.idleTimeoutMinutes", value: String(value) }); }
+  catch (error) { settings.idleTimeoutMinutes = previous; reportError(error); }
+}
 function dataCommand(command: string): void {
-  if (command === "import") csvDialog.value = true;
+  if (command === "import" && editors.active?.connection) csvDialog.value = true;
   else if (command === "history") historyDrawer.value = true;
   else if (command === "exit") void closeApplication();
   else settingsDrawer.value = true;
@@ -550,15 +691,16 @@ function message(error: unknown): string { return error instanceof Error ? error
   border-bottom: 1px solid var(--db-border);
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04);
 }
-.connection-pill {
-  max-width: 190px;
-  padding: 0 12px;
-  border-radius: 999px;
-  background: var(--db-control-bg);
-}
-.connection-pill.connected { background: var(--db-accent-soft); border-color: transparent; }
-.connection-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.connection-pill-wrap { position: relative; flex: none; width: 198px; }
+.connection-pill { width: 100%; }
+.connection-pill :deep(.el-input__wrapper) { min-height: 34px; padding-left: 31px; padding-right: 24px; border-radius: 999px; background: var(--db-control-bg); box-shadow: inset 0 0 0 1px var(--db-border-soft); }
+.connection-pill-wrap.connected .connection-pill :deep(.el-input__wrapper) { background: var(--db-accent-soft); box-shadow: none; }
+.connection-prefix { position: absolute; z-index: 2; top: 9px; left: 11px; color: var(--db-text-secondary); pointer-events: none; }
 .connection-indicator {
+  position: absolute;
+  z-index: 2;
+  top: 13px;
+  right: 12px;
   width: 7px;
   height: 7px;
   margin-left: 2px;
@@ -566,9 +708,18 @@ function message(error: unknown): string { return error instanceof Error ? error
   background: var(--db-muted);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--db-muted) 13%, transparent);
 }
-.connection-pill.connected .connection-indicator {
+.connection-pill-wrap.connected .connection-indicator {
   background: var(--db-success);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--db-success) 15%, transparent);
+}
+.connection-pill-wrap.suspended .connection-pill :deep(.el-input__wrapper) { background: var(--db-control-bg); }
+.connection-pill-wrap.suspended .connection-indicator {
+  background: var(--db-warning);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--db-warning) 15%, transparent);
+}
+.connection-pill-wrap.stale .connection-indicator {
+  background: var(--db-warning);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--db-warning) 15%, transparent);
 }
 .toolbar-cluster {
   display: inline-flex;
@@ -594,8 +745,15 @@ function message(error: unknown): string { return error instanceof Error ? error
   font: 11px/1.2 "SF Mono", Menlo, monospace;
 }
 .toolbar-spacer, .status-spacer { flex: 1; }
-.workspace { padding: 8px 8px 6px; min-height: 0; overflow: hidden; }
+.workspace { display: flex; gap: 6px; padding: 8px 8px 6px; min-height: 0; overflow: hidden; }
+.activity-bar { width: 40px; flex:none; display:flex; flex-direction:column; align-items:center; gap:4px; padding:5px 3px; border:1px solid var(--db-border); border-radius:11px; background:var(--db-panel-soft); box-shadow:var(--db-shadow-sm); }
+.activity-bar :deep(.el-button) { position:relative; width:32px; height:32px; margin:0; padding:0; border-radius:8px; color:var(--db-text-secondary); }
+.activity-bar :deep(.el-button:hover) { background:var(--db-control-hover); color:var(--db-text); }
+.activity-bar :deep(.el-button.active) { background:var(--db-accent-soft); color:var(--db-accent); }
+.activity-bar :deep(.el-button.active::before) { content:""; position:absolute; left:-4px; width:2px; height:18px; border-radius:2px; background:var(--db-accent); }
 .workbench {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   border: 1px solid var(--db-border);
   border-radius: 12px;
@@ -670,13 +828,13 @@ function message(error: unknown): string { return error instanceof Error ? error
 
 @media (max-width: 1080px) {
   .app-toolbar { gap: 5px; padding-inline: 7px; }
-  .connection-pill { max-width: 130px; }
+  .connection-pill-wrap { width: 150px; }
   .toolbar-cluster { gap: 0; }
 }
 
 @media (max-width: 980px) {
-  .connection-pill { width: 34px; padding: 0; }
-  .connection-name,
+  .connection-pill-wrap { width: 42px; }
+  .connection-pill :deep(input) { color: transparent; }
   .connection-indicator { display: none; }
   .workspace { padding-inline: 6px; }
 }

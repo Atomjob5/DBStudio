@@ -9,15 +9,13 @@ import { useSettingsStore } from "./settings";
 beforeEach(() => setActivePinia(createPinia()));
 
 describe("application stores", () => {
-  it("applies theme and connection state from bootstrap", () => {
+  it("applies theme and starts without a workspace-wide connection", () => {
     const app = useAppStore();
     app.applyBootstrap({
-      providers: [], profiles: [], recentFiles: [], settings: { "ui.theme": "light" },
-      connectedProfile: { id: "p1", providerId: "mysql", name: "开发库", settings: {}, rememberPassword: false }
+      providers: [], profiles: [], recentFiles: [], settings: { "ui.theme": "light" }
     });
     expect(app.theme).toBe("light");
-    expect(app.connected).toBe(true);
-    expect(app.status).toContain("开发库");
+    expect(app.status).toBe("未选择链接");
   });
 
   it("follows the system theme until the user selects an override", () => {
@@ -43,7 +41,7 @@ describe("application stores", () => {
 
   it("keeps editor selection valid when a tab closes", () => {
     const editors = useEditorStore();
-    const tab = (id: string) => ({ id, title: id, content: "", dirty: false, transactionDirty: false, busy: false });
+    const tab = (id: string) => ({ id, title: id, content: "", dirty: false, transactionDirty: false, busy: false, connectionState: "unbound" as const });
     editors.add(tab("one"));
     editors.add(tab("two"));
     editors.remove("two");
@@ -92,25 +90,43 @@ describe("application stores", () => {
   it("updates saved connection profiles without duplicates", () => {
     const connections = useConnectionStore();
     connections.initialize([], []);
-    const first = { id: "p1", providerId: "mysql", name: "B", settings: {}, rememberPassword: false };
+    const first = { id: "p1", providerId: "mysql", name: "B", settings: {}, rememberPassword: false, environmentId: "e1", revision: "1" };
     connections.upsert(first);
     connections.upsert({ ...first, name: "A" });
     expect(connections.profiles).toHaveLength(1);
     expect(connections.profiles[0].name).toBe("A");
   });
 
+  it("builds the system, environment and connection cascader hierarchy", () => {
+    const connections = useConnectionStore();
+    const profile = { id: "p1", providerId: "mysql", name: "开发库", settings: {}, rememberPassword: false,
+      environmentId: "e1", revision: "7" };
+    connections.initialize([], [profile], [{ id: "s1", name: "核心系统", revision: "1" }],
+      [{ id: "e1", systemId: "s1", name: "DEV", revision: "2" }]);
+
+    expect(connections.cascaderOptions[0].children[0].children[0]).toMatchObject({
+      value: "p1@7", label: "开发库", leaf: true
+    });
+    expect(connections.pathFor(profile)).toBe("核心系统 / DEV / 开发库");
+  });
+
   it("initializes independent result limit and streaming batch settings", () => {
     const settings = useSettingsStore();
     settings.initialize({ "result.maxRows": "2500", "result.streamBatchRows": "75", "result.columnLayoutScope": "editor",
-      "result.copyHeaderOnDoubleClick": "false", "result.copySeparator": "tab" }, []);
+      "result.copyHeaderOnDoubleClick": "false", "result.copySeparator": "tab",
+      "connection.maxActiveSessions": "12", "connection.idleTimeoutMinutes": "30" }, []);
     expect(settings.maxResultRows).toBe(2500);
     expect(settings.streamBatchRows).toBe(75);
     expect(settings.columnLayoutScope).toBe("editor");
     expect(settings.copyHeaderOnDoubleClick).toBe(false);
     expect(settings.copySeparator).toBe("tab");
+    expect(settings.maxActiveSessions).toBe(12);
+    expect(settings.idleTimeoutMinutes).toBe(30);
     settings.initialize({ "result.columnLayoutScope": "legacy", "result.copySeparator": "legacy" }, []);
     expect(settings.columnLayoutScope).toBe("result");
     expect(settings.copyHeaderOnDoubleClick).toBe(true);
     expect(settings.copySeparator).toBe("comma");
+    expect(settings.maxActiveSessions).toBe(10);
+    expect(settings.idleTimeoutMinutes).toBe(10);
   });
 });

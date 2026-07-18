@@ -99,6 +99,8 @@ class LocalServerSecurityTest {
         assertTrue(defaults.getBody().contains("\"result.columnLayoutScope\":\"result\""));
         assertTrue(defaults.getBody().contains("\"result.copyHeaderOnDoubleClick\":\"true\""));
         assertTrue(defaults.getBody().contains("\"result.copySeparator\":\"comma\""));
+        assertTrue(defaults.getBody().contains("\"connection.maxActiveSessions\":\"10\""));
+        assertTrue(defaults.getBody().contains("\"connection.idleTimeoutMinutes\":\"10\""));
 
         Map<String, String> setting = new HashMap<String, String>();
         setting.put("key", "result.columnLayoutScope");
@@ -129,6 +131,22 @@ class LocalServerSecurityTest {
                     new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
         }
         setting.put("value", "space");
+        assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+
+        setting.put("key", "connection.maxActiveSessions");
+        setting.put("value", "12");
+        assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+        setting.put("value", "101");
+        assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+
+        setting.put("key", "connection.idleTimeoutMinutes");
+        setting.put("value", "30");
+        assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+        setting.put("value", "0");
         assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                 new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
     }

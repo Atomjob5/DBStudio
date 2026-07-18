@@ -23,10 +23,15 @@ public final class WorkspaceRegistry implements AutoCloseable {
     private final ScheduledExecutorService scheduler;
     private final ObjectMapper mapper;
     private final SettingsRepository settings;
+    private final EditorConnectionLimiter limiter;
+    private volatile int idleTimeoutMinutes;
 
-    public WorkspaceRegistry(ObjectMapper mapper, SettingsRepository settings) {
+    public WorkspaceRegistry(ObjectMapper mapper, SettingsRepository settings, EditorConnectionLimiter limiter) {
         this.mapper = mapper;
         this.settings = settings;
+        this.limiter = limiter;
+        this.limiter.setMaximum(configuredMaxActiveSessions());
+        this.idleTimeoutMinutes = configuredIdleTimeoutMinutes();
         this.scheduler = Executors.newSingleThreadScheduledExecutor(new ThreadFactory() {
             @Override public Thread newThread(Runnable runnable) {
                 Thread thread = new Thread(runnable, "dbstudio-workspace-expiry");
@@ -34,6 +39,9 @@ public final class WorkspaceRegistry implements AutoCloseable {
                 return thread;
             }
         });
+        this.scheduler.scheduleAtFixedRate(new Runnable() {
+            @Override public void run() { suspendIdleEditors(); }
+        }, 1L, 1L, TimeUnit.MINUTES);
     }
 
     Workspace create(String id) {
@@ -41,7 +49,7 @@ public final class WorkspaceRegistry implements AutoCloseable {
         Workspace existing = workspaces.get(id);
         if (existing != null) { cancelExpiry(id); return existing; }
         Workspace created = new Workspace(id, configuredMaxRows(), configuredStreamBatchRows(), mapper,
-                AppDirectories.dataDirectory().resolve("tmp").resolve(id));
+                AppDirectories.dataDirectory().resolve("tmp").resolve(id), limiter);
         Workspace raced = workspaces.putIfAbsent(id, created);
         if (raced != null) { created.close(); return raced; }
         scheduleExpiry(id);
@@ -66,6 +74,18 @@ public final class WorkspaceRegistry implements AutoCloseable {
     void setStreamBatchRows(int streamBatchRows) {
         int bounded = Math.max(1, Math.min(1_000, streamBatchRows));
         for (Workspace workspace : workspaces.values()) workspace.editors().setStreamBatchRows(bounded);
+    }
+
+    void setMaxActiveSessions(int maximum) { limiter.setMaximum(maximum); }
+    void setIdleTimeoutMinutes(int minutes) { idleTimeoutMinutes = Math.max(1, Math.min(1_440, minutes)); }
+
+    void broadcast(String type, Object payload) {
+        for (Workspace workspace : workspaces.values()) workspace.events().emit(type, payload);
+    }
+
+    private void suspendIdleEditors() {
+        long cutoff = System.currentTimeMillis() - TimeUnit.MINUTES.toMillis(idleTimeoutMinutes);
+        for (Workspace workspace : workspaces.values()) workspace.suspendIdle(cutoff);
     }
 
     private void scheduleExpiry(final String id) {
@@ -106,6 +126,20 @@ public final class WorkspaceRegistry implements AutoCloseable {
         } catch (NumberFormatException exception) {
             return QueryRunner.DEFAULT_STREAM_BATCH_ROWS;
         }
+    }
+
+    private int configuredMaxActiveSessions() {
+        try {
+            return Math.max(1, Math.min(100, Integer.parseInt(
+                    settings.get("connection.maxActiveSessions").orElse("10"))));
+        } catch (Exception exception) { return 10; }
+    }
+
+    private int configuredIdleTimeoutMinutes() {
+        try {
+            return Math.max(1, Math.min(1_440, Integer.parseInt(
+                    settings.get("connection.idleTimeoutMinutes").orElse("10"))));
+        } catch (Exception exception) { return 10; }
     }
 
     private static void validateId(String id) {

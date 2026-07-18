@@ -8,9 +8,11 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.Instant;
+import java.util.UUID;
 
 public final class AppDatabase implements AutoCloseable {
-    private static final int SCHEMA_VERSION = 2;
+    private static final int SCHEMA_VERSION = 3;
     private final Connection connection;
 
     public AppDatabase(Path dataDirectory) throws SQLException, IOException {
@@ -33,6 +35,7 @@ public final class AppDatabase implements AutoCloseable {
         int version = currentVersion();
         if (version == 0) { migrateToV1(); recordVersion(1); version = 1; }
         if (version == 1) { migrateToV2(); recordVersion(2); version = 2; }
+        if (version == 2) { migrateToV3(); recordVersion(3); version = 3; }
         if (version > SCHEMA_VERSION) {
             throw new SQLException("Local database schema is newer than this application: " + version);
         }
@@ -73,6 +76,54 @@ public final class AppDatabase implements AutoCloseable {
         try (Statement statement = connection.createStatement()) {
             statement.execute("CREATE TABLE IF NOT EXISTS recent_file (path TEXT PRIMARY KEY, opened_at TEXT NOT NULL)");
             statement.execute("CREATE INDEX IF NOT EXISTS idx_recent_file_opened_at ON recent_file(opened_at DESC)");
+        }
+    }
+
+    private void migrateToV3() throws SQLException {
+        boolean previousAutoCommit = connection.getAutoCommit();
+        connection.setAutoCommit(false);
+        String systemId = UUID.randomUUID().toString();
+        String environmentId = UUID.randomUUID().toString();
+        String now = Instant.now().toString();
+        try (Statement statement = connection.createStatement()) {
+            statement.execute("CREATE TABLE connection_system ("
+                    + "id TEXT PRIMARY KEY, name TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT)");
+            statement.execute("CREATE TABLE connection_environment ("
+                    + "id TEXT PRIMARY KEY, system_id TEXT NOT NULL, name TEXT NOT NULL, "
+                    + "updated_at TEXT NOT NULL, deleted_at TEXT, "
+                    + "FOREIGN KEY(system_id) REFERENCES connection_system(id))");
+            statement.execute("ALTER TABLE connection_profile ADD COLUMN environment_id TEXT");
+            statement.execute("ALTER TABLE connection_profile ADD COLUMN deleted_at TEXT");
+            statement.execute("CREATE UNIQUE INDEX idx_connection_system_active_name "
+                    + "ON connection_system(name COLLATE NOCASE) WHERE deleted_at IS NULL");
+            statement.execute("CREATE UNIQUE INDEX idx_connection_environment_active_name "
+                    + "ON connection_environment(system_id, name COLLATE NOCASE) WHERE deleted_at IS NULL");
+            statement.execute("CREATE INDEX idx_connection_profile_environment "
+                    + "ON connection_profile(environment_id)");
+            try (java.sql.PreparedStatement insertSystem = connection.prepareStatement(
+                    "INSERT INTO connection_system(id, name, updated_at) VALUES (?, ?, ?)");
+                 java.sql.PreparedStatement insertEnvironment = connection.prepareStatement(
+                         "INSERT INTO connection_environment(id, system_id, name, updated_at) VALUES (?, ?, ?, ?)");
+                 java.sql.PreparedStatement assignProfiles = connection.prepareStatement(
+                         "UPDATE connection_profile SET environment_id=? WHERE environment_id IS NULL")) {
+                insertSystem.setString(1, systemId);
+                insertSystem.setString(2, "未分类系统");
+                insertSystem.setString(3, now);
+                insertSystem.executeUpdate();
+                insertEnvironment.setString(1, environmentId);
+                insertEnvironment.setString(2, systemId);
+                insertEnvironment.setString(3, "默认环境");
+                insertEnvironment.setString(4, now);
+                insertEnvironment.executeUpdate();
+                assignProfiles.setString(1, environmentId);
+                assignProfiles.executeUpdate();
+            }
+            connection.commit();
+        } catch (SQLException exception) {
+            connection.rollback();
+            throw exception;
+        } finally {
+            connection.setAutoCommit(previousAutoCommit);
         }
     }
 

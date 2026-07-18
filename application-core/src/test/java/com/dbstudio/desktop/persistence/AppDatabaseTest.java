@@ -42,12 +42,12 @@ class AppDatabaseTest {
     }
 
     @Test
-    void createsVersionTwoSchemaAndKeepsRecentFileTableForMigrationCompatibility() throws Exception {
+    void createsVersionThreeCatalogSchemaAndKeepsRecentFileTableForMigrationCompatibility() throws Exception {
         try (AppDatabase database = new AppDatabase(directory)) {
             try (Statement statement = database.connection().createStatement();
                  ResultSet result = statement.executeQuery("SELECT MAX(version) FROM schema_version")) {
                 assertTrue(result.next());
-                assertEquals(2, result.getInt(1));
+                assertEquals(3, result.getInt(1));
             }
             try (Statement statement = database.connection().createStatement();
                  ResultSet result = statement.executeQuery(
@@ -55,6 +55,37 @@ class AppDatabaseTest {
                 assertTrue(result.next());
                 assertEquals(1, result.getInt(1));
             }
+            try (Statement statement = database.connection().createStatement();
+                 ResultSet result = statement.executeQuery(
+                         "SELECT s.name, e.name FROM connection_system s "
+                                 + "JOIN connection_environment e ON e.system_id=s.id")) {
+                assertTrue(result.next());
+                assertEquals("未分类系统", result.getString(1));
+                assertEquals("默认环境", result.getString(2));
+            }
+        }
+    }
+
+    @Test
+    void managesThreeLevelConnectionCatalogAndHidesSoftDeletedBranches() throws Exception {
+        try (AppDatabase database = new AppDatabase(directory)) {
+            ConnectionCatalogRepository catalog = new ConnectionCatalogRepository(database);
+            ConnectionProfileRepository profiles = new ConnectionProfileRepository(database, new ObjectMapper());
+            ConnectionCatalogRepository.SystemEntry system = catalog.createSystem("订单系统");
+            ConnectionCatalogRepository.EnvironmentEntry environment =
+                    catalog.createEnvironment(system.id(), "DEV");
+            Map<String, String> values = new HashMap<String, String>();
+            values.put("host", "127.0.0.1");
+            ConnectionProfile profile = new ConnectionProfile(
+                    UUID.randomUUID(), "mysql", "开发库", values, "secret-ref");
+            profiles.save(profile, false, environment.id());
+
+            assertEquals(environment.id(), profiles.find(profile.id()).get().environmentId());
+            assertTrue(catalog.findEnvironment(environment.id()).isPresent());
+
+            catalog.deleteSystem(system.id());
+            assertFalse(catalog.findEnvironment(environment.id()).isPresent());
+            assertFalse(profiles.find(profile.id()).isPresent());
         }
     }
 }

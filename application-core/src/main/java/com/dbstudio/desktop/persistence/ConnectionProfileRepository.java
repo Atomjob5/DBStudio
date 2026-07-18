@@ -11,6 +11,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 public final class ConnectionProfileRepository {
@@ -25,8 +26,12 @@ public final class ConnectionProfileRepository {
     public synchronized List<SavedProfile> findAll() throws SQLException {
         List<SavedProfile> profiles = new ArrayList<SavedProfile>();
         try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT id, provider_id, name, settings_json, secret_ref, remember_password "
-                        + "FROM connection_profile ORDER BY name COLLATE NOCASE");
+                "SELECT p.id, p.provider_id, p.name, p.settings_json, p.secret_ref, p.remember_password, "
+                        + "p.environment_id, p.updated_at FROM connection_profile p "
+                        + "JOIN connection_environment e ON e.id=p.environment_id "
+                        + "JOIN connection_system s ON s.id=e.system_id "
+                        + "WHERE p.deleted_at IS NULL AND e.deleted_at IS NULL AND s.deleted_at IS NULL "
+                        + "ORDER BY p.name COLLATE NOCASE");
              ResultSet resultSet = statement.executeQuery()) {
             while (resultSet.next()) {
                 try {
@@ -35,7 +40,8 @@ public final class ConnectionProfileRepository {
                     profiles.add(new SavedProfile(new ConnectionProfile(
                             UUID.fromString(resultSet.getString("id")),
                             resultSet.getString("provider_id"), resultSet.getString("name"), settings,
-                            resultSet.getString("secret_ref")), resultSet.getBoolean("remember_password")));
+                            resultSet.getString("secret_ref")), resultSet.getBoolean("remember_password"),
+                            resultSet.getString("environment_id"), resultSet.getString("updated_at")));
                 } catch (Exception exception) {
                     throw new SQLException("Invalid connection profile: " + resultSet.getString("id"), exception);
                 }
@@ -44,12 +50,19 @@ public final class ConnectionProfileRepository {
         return profiles;
     }
 
-    public synchronized void save(ConnectionProfile profile, boolean rememberPassword) throws SQLException {
+    public synchronized Optional<SavedProfile> find(UUID id) throws SQLException {
+        for (SavedProfile profile : findAll()) if (profile.profile().id().equals(id)) return Optional.of(profile);
+        return Optional.empty();
+    }
+
+    public synchronized void save(ConnectionProfile profile, boolean rememberPassword,
+                                  String environmentId) throws SQLException {
         String sql = "INSERT INTO connection_profile(id, provider_id, name, settings_json, secret_ref, "
-                + "remember_password, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                + "remember_password, updated_at, environment_id, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL) "
                 + "ON CONFLICT(id) DO UPDATE SET provider_id=excluded.provider_id, name=excluded.name, "
                 + "settings_json=excluded.settings_json, secret_ref=excluded.secret_ref, "
-                + "remember_password=excluded.remember_password, updated_at=excluded.updated_at";
+                + "remember_password=excluded.remember_password, updated_at=excluded.updated_at, "
+                + "environment_id=excluded.environment_id, deleted_at=NULL";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, profile.id().toString());
             statement.setString(2, profile.providerId());
@@ -59,19 +72,52 @@ public final class ConnectionProfileRepository {
             statement.setString(5, profile.secretRef());
             statement.setBoolean(6, rememberPassword);
             statement.setString(7, Instant.now().toString());
+            statement.setString(8, environmentId);
             statement.executeUpdate();
+        }
+    }
+
+    /** Compatibility helper used by callers that do not yet provide a catalog location. */
+    public synchronized void save(ConnectionProfile profile, boolean rememberPassword) throws SQLException {
+        String environmentId = null;
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT e.id FROM connection_environment e JOIN connection_system s ON s.id=e.system_id "
+                        + "WHERE e.deleted_at IS NULL AND s.deleted_at IS NULL ORDER BY e.updated_at LIMIT 1");
+             ResultSet rows = statement.executeQuery()) {
+            if (rows.next()) environmentId = rows.getString(1);
+        }
+        if (environmentId == null) throw new SQLException("No active connection environment");
+        save(profile, rememberPassword, environmentId);
+    }
+
+    public synchronized void softDelete(UUID id) throws SQLException {
+        String now = Instant.now().toString();
+        try (PreparedStatement statement = connection.prepareStatement(
+                "UPDATE connection_profile SET deleted_at=?, updated_at=? WHERE id=? AND deleted_at IS NULL")) {
+            statement.setString(1, now); statement.setString(2, now); statement.setString(3, id.toString());
+            if (statement.executeUpdate() == 0) throw new SQLException("Connection profile not found: " + id);
         }
     }
 
     public static final class SavedProfile {
         private final ConnectionProfile profile;
         private final boolean rememberPassword;
-        public SavedProfile(ConnectionProfile profile, boolean rememberPassword) {
+        private final String environmentId;
+        private final String revision;
+        public SavedProfile(ConnectionProfile profile, boolean rememberPassword,
+                            String environmentId, String revision) {
             this.profile = profile;
             this.rememberPassword = rememberPassword;
+            this.environmentId = environmentId;
+            this.revision = revision;
+        }
+        public SavedProfile(ConnectionProfile profile, boolean rememberPassword) {
+            this(profile, rememberPassword, "", "");
         }
         public ConnectionProfile profile() { return profile; }
         public boolean rememberPassword() { return rememberPassword; }
+        public String environmentId() { return environmentId; }
+        public String revision() { return revision; }
         @Override public String toString() { return profile.name(); }
     }
 }

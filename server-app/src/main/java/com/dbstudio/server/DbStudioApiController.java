@@ -5,6 +5,9 @@ import com.dbstudio.desktop.ProviderRegistry;
 import com.dbstudio.desktop.csv.CsvService;
 import com.dbstudio.desktop.persistence.ConnectionProfileRepository;
 import com.dbstudio.desktop.persistence.ConnectionProfileRepository.SavedProfile;
+import com.dbstudio.desktop.persistence.ConnectionCatalogRepository;
+import com.dbstudio.desktop.persistence.ConnectionCatalogRepository.EnvironmentEntry;
+import com.dbstudio.desktop.persistence.ConnectionCatalogRepository.SystemEntry;
 import com.dbstudio.desktop.persistence.QueryHistoryRepository;
 import com.dbstudio.desktop.persistence.QueryHistoryRepository.QueryHistoryEntry;
 import com.dbstudio.desktop.persistence.SettingsRepository;
@@ -14,7 +17,6 @@ import com.dbstudio.desktop.query.QueryRunner.PageResult;
 import com.dbstudio.desktop.query.ResultColumn;
 import com.dbstudio.desktop.query.StatementResult;
 import com.dbstudio.desktop.security.SecretStore;
-import com.dbstudio.desktop.web.EditorSessionRegistry;
 import com.dbstudio.desktop.web.EditorSessionRegistry.EditorSession;
 import com.dbstudio.spi.ColumnInfo;
 import com.dbstudio.spi.ConnectionField;
@@ -44,7 +46,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
-import javax.servlet.http.HttpServletResponse;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -68,10 +69,12 @@ public final class DbStudioApiController {
     private static final List<String> SETTING_KEYS = Arrays.asList(
             "ui.theme", "result.maxRows", "result.streamBatchRows", "result.columnLayoutScope",
             "result.copyHeaderOnDoubleClick", "result.copySeparator",
+            "connection.maxActiveSessions", "connection.idleTimeoutMinutes",
             "layout.leftWidth", "layout.editorHeight");
 
     private final ProviderRegistry providers;
     private final ConnectionProfileRepository profiles;
+    private final ConnectionCatalogRepository catalog;
     private final QueryHistoryRepository history;
     private final SettingsRepository settings;
     private final SecretStore secrets;
@@ -80,10 +83,11 @@ public final class DbStudioApiController {
     private final ConfigurableApplicationContext application;
 
     public DbStudioApiController(ProviderRegistry providers, ConnectionProfileRepository profiles,
+                                 ConnectionCatalogRepository catalog,
                                  QueryHistoryRepository history, SettingsRepository settings,
                                  SecretStore secrets, CsvService csv, WorkspaceRegistry workspaces,
                                  ConfigurableApplicationContext application) {
-        this.providers = providers; this.profiles = profiles; this.history = history;
+        this.providers = providers; this.profiles = profiles; this.catalog = catalog; this.history = history;
         this.settings = settings; this.secrets = secrets; this.csv = csv;
         this.workspaces = workspaces; this.application = application;
     }
@@ -99,15 +103,88 @@ public final class DbStudioApiController {
         List<Object> providerValues = new ArrayList<Object>();
         for (DatabaseProvider provider : providers.all()) providerValues.add(providerMap(provider));
         List<Object> profileValues = new ArrayList<Object>();
-        for (SavedProfile saved : profiles.findAll()) profileValues.add(profileMap(saved.profile(), saved.rememberPassword()));
+        for (SavedProfile saved : profiles.findAll()) profileValues.add(profileMap(saved));
+        List<Object> systemValues = new ArrayList<Object>();
+        for (SystemEntry system : catalog.systems()) systemValues.add(systemMap(system));
+        List<Object> environmentValues = new ArrayList<Object>();
+        for (EnvironmentEntry environment : catalog.environments()) environmentValues.add(environmentMap(environment));
         Map<String, String> settingValues = readSettings();
-        Map<String, Object> result = ApiPayloads.map("providers", providerValues, "profiles", profileValues,
+        return ApiPayloads.map("providers", providerValues, "profiles", profileValues,
+                "systems", systemValues, "environments", environmentValues,
                 "recentFiles", Collections.emptyList(), "settings", settingValues);
-        if (workspaceId != null && !workspaceId.trim().isEmpty()) {
-            ConnectionProfile connected = workspaces.require(workspaceId).connectedProfile();
-            if (connected != null) result.put("connectedProfile", profileMap(connected, isRemembered(connected.id())));
-        }
-        return result;
+    }
+
+    @GetMapping("/connections/catalog")
+    public Map<String, Object> connectionCatalog() throws SQLException {
+        List<Object> systems = new ArrayList<Object>();
+        for (SystemEntry value : catalog.systems()) systems.add(systemMap(value));
+        List<Object> environments = new ArrayList<Object>();
+        for (EnvironmentEntry value : catalog.environments()) environments.add(environmentMap(value));
+        List<Object> profileValues = new ArrayList<Object>();
+        for (SavedProfile value : profiles.findAll()) profileValues.add(profileMap(value));
+        return ApiPayloads.map("systems", systems, "environments", environments, "profiles", profileValues);
+    }
+
+    @PostMapping("/connection-systems")
+    public Map<String, Object> createConnectionSystem(@RequestBody Map<String, Object> body) throws SQLException {
+        SystemEntry created = catalog.createSystem(catalogName(body));
+        connectionsChanged();
+        return systemMap(created);
+    }
+
+    @PutMapping("/connection-systems/{id}")
+    public Map<String, Object> renameConnectionSystem(@PathVariable String id,
+                                                       @RequestBody Map<String, Object> body) throws SQLException {
+        SystemEntry updated = catalog.renameSystem(id, catalogName(body));
+        connectionsChanged();
+        return systemMap(updated);
+    }
+
+    @DeleteMapping("/connection-systems/{id}")
+    public Map<String, Object> deleteConnectionSystem(@PathVariable String id) throws SQLException {
+        catalog.deleteSystem(id); connectionsChanged(); return ApiPayloads.map("deleted", true);
+    }
+
+    @PostMapping("/connection-environments")
+    public Map<String, Object> createConnectionEnvironment(@RequestBody Map<String, Object> body) throws SQLException {
+        EnvironmentEntry created = catalog.createEnvironment(
+                ApiPayloads.required(body, "systemId"), catalogName(body));
+        connectionsChanged();
+        return environmentMap(created);
+    }
+
+    @PutMapping("/connection-environments/{id}")
+    public Map<String, Object> renameConnectionEnvironment(@PathVariable String id,
+                                                            @RequestBody Map<String, Object> body) throws SQLException {
+        EnvironmentEntry updated = catalog.renameEnvironment(id, catalogName(body));
+        connectionsChanged();
+        return environmentMap(updated);
+    }
+
+    @DeleteMapping("/connection-environments/{id}")
+    public Map<String, Object> deleteConnectionEnvironment(@PathVariable String id) throws SQLException {
+        catalog.deleteEnvironment(id); connectionsChanged(); return ApiPayloads.map("deleted", true);
+    }
+
+    @PostMapping("/workspaces/{workspaceId}/connection-profiles")
+    public Map<String, Object> createConnectionProfile(@PathVariable String workspaceId,
+                                                        @RequestBody Map<String, Object> body) throws Exception {
+        return saveConnectionProfile(workspaceId, null, body);
+    }
+
+    @PutMapping("/workspaces/{workspaceId}/connection-profiles/{profileId}")
+    public Map<String, Object> updateConnectionProfile(@PathVariable String workspaceId,
+                                                        @PathVariable String profileId,
+                                                        @RequestBody Map<String, Object> body) throws Exception {
+        return saveConnectionProfile(workspaceId, profileId, body);
+    }
+
+    @DeleteMapping("/workspaces/{workspaceId}/connection-profiles/{profileId}")
+    public Map<String, Object> deleteConnectionProfile(@PathVariable String workspaceId,
+                                                        @PathVariable String profileId) throws Exception {
+        profiles.softDelete(profileId(profileId));
+        connectionsChanged();
+        return ApiPayloads.map("deleted", true);
     }
 
     @PostMapping("/connections/test")
@@ -121,40 +198,11 @@ public final class DbStudioApiController {
         } finally { Arrays.fill(password, '\0'); }
     }
 
-    @PostMapping("/workspaces/{workspaceId}/connection")
-    public Map<String, Object> connect(@PathVariable String workspaceId,
-                                       @RequestBody Map<String, Object> body) throws Exception {
-        Workspace workspace = workspaces.require(workspaceId);
-        ConnectionProfile profile = profileFrom(body);
-        boolean remember = ApiPayloads.bool(body, "rememberPassword", false);
-        char[] password = passwordFor(body, profile);
-        DatabaseContext context = null;
-        try {
-            context = new DatabaseContext(providers.require(profile.providerId()), profile, password);
-            profiles.save(profile, remember);
-            if (remember) secrets.save(profile.secretRef(), password);
-            else {
-                try { secrets.delete(profile.secretRef()); } catch (Exception ignored) { }
-            }
-            workspace.connect(context);
-            context = null;
-            return profileMap(profile, remember);
-        } finally {
-            Arrays.fill(password, '\0');
-            if (context != null) context.close();
-        }
-    }
-
-    @DeleteMapping("/workspaces/{workspaceId}/connection")
-    public Map<String, Object> disconnect(@PathVariable String workspaceId) {
-        workspaces.require(workspaceId).disconnect();
-        return ApiPayloads.map("disconnected", true);
-    }
-
     @PostMapping("/workspaces/{workspaceId}/metadata/children")
     public List<Map<String, Object>> metadataChildren(@PathVariable String workspaceId,
                                                        @RequestBody Map<String, Object> body) throws SQLException {
-        DatabaseContext context = workspaces.require(workspaceId).requireDatabase();
+        Workspace workspace = workspaces.require(workspaceId);
+        DatabaseContext context = databaseFor(workspace, body);
         synchronized (context.metadataSession()) {
             String kind = ApiPayloads.text(body, "kind");
             if (kind.isEmpty() || "root".equals(kind)) {
@@ -197,7 +245,7 @@ public final class DbStudioApiController {
     @PostMapping("/workspaces/{workspaceId}/metadata/definition")
     public Map<String, Object> metadataDefinition(@PathVariable String workspaceId,
                                                    @RequestBody Map<String, Object> body) throws SQLException {
-        DatabaseContext context = workspaces.require(workspaceId).requireDatabase();
+        DatabaseContext context = databaseFor(workspaces.require(workspaceId), body);
         DatabaseObject object = objectFrom(body);
         synchronized (context.metadataSession()) {
             return ApiPayloads.map("definition",
@@ -208,7 +256,7 @@ public final class DbStudioApiController {
     @PostMapping("/workspaces/{workspaceId}/metadata/query")
     public Map<String, Object> metadataQuery(@PathVariable String workspaceId,
                                               @RequestBody Map<String, Object> body) {
-        DatabaseContext context = workspaces.require(workspaceId).requireDatabase();
+        DatabaseContext context = databaseFor(workspaces.require(workspaceId), body);
         String catalog = ApiPayloads.text(body, "catalog");
         String name = ApiPayloads.required(body, "name");
         String qualified = catalog.trim().isEmpty()
@@ -219,10 +267,39 @@ public final class DbStudioApiController {
     }
 
     @PostMapping("/workspaces/{workspaceId}/editors")
-    public Map<String, Object> createEditor(@PathVariable String workspaceId) throws SQLException {
+    public Map<String, Object> createEditor(@PathVariable String workspaceId,
+                                            @RequestBody(required = false) Map<String, Object> body) throws Exception {
         Workspace workspace = workspaces.require(workspaceId);
-        EditorSession editor = workspace.editors().create(workspace.requireDatabase());
-        return ApiPayloads.map("id", editor.id().toString(), "title", editor.title());
+        EditorSession editor = workspace.editors().create();
+        String requestedProfile = body == null ? "" : ApiPayloads.text(body, "profileId");
+        if (!requestedProfile.isEmpty()) bindEditor(workspace, editor, requestedProfile, body);
+        Map<String, Object> result = ApiPayloads.map("id", editor.id().toString(), "title", editor.title(),
+                "connectionState", editor.bound() ? "suspended" : "unbound");
+        SavedProfile binding = workspace.binding(editor);
+        if (binding != null) result.put("connection", profileMap(binding));
+        return result;
+    }
+
+    @PutMapping("/workspaces/{workspaceId}/editors/{editorId}/connection")
+    public Map<String, Object> bindEditorConnection(@PathVariable String workspaceId,
+                                                     @PathVariable String editorId,
+                                                     @RequestBody Map<String, Object> body) throws Exception {
+        Workspace workspace = workspaces.require(workspaceId);
+        EditorSession editor = workspace.editors().require(editorId);
+        resolveTransactionBeforeSwitch(editor, ApiPayloads.text(body, "transactionAction"));
+        SavedProfile binding = bindEditor(workspace, editor, ApiPayloads.required(body, "profileId"), body);
+        return ApiPayloads.map("connection", profileMap(binding), "connectionState", "suspended");
+    }
+
+    @DeleteMapping("/workspaces/{workspaceId}/editors/{editorId}/connection")
+    public Map<String, Object> unbindEditorConnection(@PathVariable String workspaceId,
+                                                       @PathVariable String editorId,
+                                                       @RequestParam(defaultValue = "") String transactionAction) throws Exception {
+        Workspace workspace = workspaces.require(workspaceId);
+        EditorSession editor = workspace.editors().require(editorId);
+        resolveTransactionBeforeSwitch(editor, transactionAction);
+        workspace.unbind(editor);
+        return ApiPayloads.map("connectionState", "unbound");
     }
 
     @PostMapping("/workspaces/{workspaceId}/editors/{editorId}/close")
@@ -239,7 +316,7 @@ public final class DbStudioApiController {
             else if ("rollback".equals(action)) editor.rollback().get(30, TimeUnit.SECONDS);
             else throw new ApiException("TRANSACTION_DECISION_REQUIRED", "关闭前必须提交或回滚事务");
         }
-        workspace.editors().close(editorId);
+        workspace.closeEditor(editorId);
         return ApiPayloads.map("closed", true, "requiresTransactionDecision", false);
     }
 
@@ -248,8 +325,9 @@ public final class DbStudioApiController {
                                        @PathVariable final String editorId,
                                        @RequestBody Map<String, Object> body) {
         final Workspace workspace = workspaces.require(workspaceId);
-        final DatabaseContext context = workspace.requireDatabase();
         final EditorSession editor = workspace.editors().require(editorId);
+        workspace.ensureActive(editor);
+        final DatabaseContext context = workspace.requireEditorDatabase(editor);
         final List<SqlStatement> statements = selectStatements(context.provider(), body);
         boolean stopOnError = ApiPayloads.bool(body, "stopOnError", true);
 
@@ -324,6 +402,7 @@ public final class DbStudioApiController {
                                                @RequestBody Map<String, Object> body) throws Exception {
         Workspace workspace = workspaces.require(workspaceId);
         EditorSession editor = workspace.editors().require(editorId);
+        workspace.ensureActive(editor);
         StatementResult source = result(editor, resultIndex);
         if (!source.hasRows() || source.type() != StatementType.QUERY) {
             throw new ApiException("RESULT_NOT_PAGEABLE", "只有只读查询结果支持继续加载数据");
@@ -348,6 +427,7 @@ public final class DbStudioApiController {
                                             @PathVariable String action) throws Exception {
         Workspace workspace = workspaces.require(workspaceId);
         EditorSession editor = workspace.editors().require(editorId);
+        workspace.ensureActive(editor);
         if ("commit".equals(action)) editor.commit().get(30, TimeUnit.SECONDS);
         else if ("rollback".equals(action)) editor.rollback().get(30, TimeUnit.SECONDS);
         else throw new ApiException("INVALID_TRANSACTION_ACTION", "事务操作无效");
@@ -360,14 +440,17 @@ public final class DbStudioApiController {
     @PostMapping("/workspaces/{workspaceId}/sql/format")
     public Map<String, Object> format(@PathVariable String workspaceId,
                                       @RequestBody Map<String, Object> body) {
-        DatabaseProvider provider = workspaces.require(workspaceId).requireDatabase().provider();
+        DatabaseProvider provider = databaseFor(workspaces.require(workspaceId), body).provider();
         return ApiPayloads.map("text", provider.dialect().format(ApiPayloads.text(body, "text")));
     }
 
     @GetMapping("/workspaces/{workspaceId}/sql/completions")
     public List<Map<String, Object>> completions(@PathVariable String workspaceId,
-                                                 @RequestParam(defaultValue = "") String prefix) {
-        DatabaseProvider provider = workspaces.require(workspaceId).requireDatabase().provider();
+                                                 @RequestParam(defaultValue = "") String prefix,
+                                                 @RequestParam(defaultValue = "") String editorId) {
+        Workspace workspace = workspaces.require(workspaceId);
+        if (editorId.isEmpty()) throw new ApiException("EDITOR_REQUIRED", "SQL补全需要编辑标签上下文");
+        DatabaseProvider provider = workspace.requireEditorDatabase(workspace.editors().require(editorId)).provider();
         String upper = prefix.toUpperCase(java.util.Locale.ROOT);
         List<Map<String, Object>> result = new ArrayList<Map<String, Object>>();
         for (String keyword : provider.dialect().keywords()) {
@@ -428,6 +511,24 @@ public final class DbStudioApiController {
                 && !Arrays.asList("comma", "tab", "semicolon", "pipe").contains(value)) {
             throw new ApiException("INVALID_SETTING", "复制分隔符设置无效");
         }
+        if ("connection.maxActiveSessions".equals(key)) {
+            try {
+                int maximum = Integer.parseInt(value);
+                if (maximum < 1 || maximum > 100) throw new NumberFormatException();
+                workspaces.setMaxActiveSessions(maximum);
+            } catch (NumberFormatException exception) {
+                throw new ApiException("INVALID_SETTING", "最大活动链接数必须在 1 到 100 之间");
+            }
+        }
+        if ("connection.idleTimeoutMinutes".equals(key)) {
+            try {
+                int minutes = Integer.parseInt(value);
+                if (minutes < 1 || minutes > 1_440) throw new NumberFormatException();
+                workspaces.setIdleTimeoutMinutes(minutes);
+            } catch (NumberFormatException exception) {
+                throw new ApiException("INVALID_SETTING", "空闲链接回收时间必须在 1 到 1440 分钟之间");
+            }
+        }
         settings.put(key, value);
         return ApiPayloads.map("key", key, "value", value);
     }
@@ -468,7 +569,9 @@ public final class DbStudioApiController {
         final char delimiter = delimiter(body);
         final Map<String, String> mapping = stringMap(ApiPayloads.object(body, "mapping"));
         String taskId = workspace.startTask("csv.import", id -> {
-            DatabaseContext context = workspace.requireDatabase();
+            String editorId = ApiPayloads.required(body, "editorId");
+            EditorSession editor = workspace.editors().require(editorId);
+            DatabaseContext context = workspace.requireEditorDatabase(editor);
             try (DatabaseSession session = context.openEditorSession()) {
                 long rows = csv.importFile(session, context.provider().dialect(),
                         context.profile().setting("database"), table, workspace.requireUpload(uploadId),
@@ -499,9 +602,10 @@ public final class DbStudioApiController {
                                                              @RequestParam String editorId,
                                                              @RequestParam int resultIndex) {
         final Workspace workspace = workspaces.require(workspaceId);
-        final String sql = result(workspace.editors().require(editorId), resultIndex).sql();
+        final EditorSession editor = workspace.editors().require(editorId);
+        final String sql = result(editor, resultIndex).sql();
         StreamingResponseBody body = output -> {
-            DatabaseContext context = workspace.requireDatabase();
+            DatabaseContext context = workspace.requireEditorDatabase(editor);
             try (DatabaseSession session = context.openEditorSession()) {
                 csv.exportQuery(session, sql, new OutputStreamWriter(output, StandardCharsets.UTF_8), ',', count -> { });
             } catch (SQLException exception) {
@@ -590,9 +694,108 @@ public final class DbStudioApiController {
         return secrets.load(profile.secretRef()).orElse(new char[0]);
     }
 
-    private boolean isRemembered(UUID id) throws SQLException {
-        for (SavedProfile saved : profiles.findAll()) if (saved.profile().id().equals(id)) return saved.rememberPassword();
-        return false;
+    private Map<String, Object> saveConnectionProfile(String workspaceId, String forcedId,
+                                                       Map<String, Object> body) throws Exception {
+        Workspace workspace = workspaces.require(workspaceId);
+        Map<String, Object> values = new LinkedHashMap<String, Object>(body);
+        if (forcedId != null) values.put("id", forcedId);
+        ConnectionProfile profile = profileFrom(values);
+        String environmentId = ApiPayloads.required(values, "environmentId");
+        if (!catalog.findEnvironment(environmentId).isPresent()) {
+            throw new ApiException("ENVIRONMENT_NOT_FOUND", "连接环境不存在或已删除");
+        }
+        boolean remember = ApiPayloads.bool(values, "rememberPassword", false);
+        char[] password = passwordForWorkspace(workspace, values, profile, false);
+        try {
+            profiles.save(profile, remember, environmentId);
+            if (remember && password != null) secrets.save(profile.secretRef(), password);
+            else if (!remember) {
+                try { secrets.delete(profile.secretRef()); } catch (Exception ignored) { }
+            }
+            if (password != null) workspace.cachePassword(profile.id(), password);
+        } finally {
+            if (password != null) Arrays.fill(password, '\0');
+        }
+        SavedProfile saved = profiles.find(profile.id()).orElseThrow(
+                () -> new ApiException("PROFILE_NOT_FOUND", "数据库链接保存失败"));
+        connectionsChanged();
+        return profileMap(saved);
+    }
+
+    private SavedProfile bindEditor(Workspace workspace, EditorSession editor, String rawProfileId,
+                                    Map<String, Object> body) throws Exception {
+        UUID id = profileId(rawProfileId);
+        SavedProfile saved = profiles.find(id).orElseThrow(
+                () -> new ApiException("PROFILE_NOT_FOUND", "数据库链接不存在或已删除"));
+        String key = Workspace.bindingKey(saved);
+        DatabaseContext context = workspace.context(key);
+        if (context == null) {
+            char[] password = passwordForWorkspace(workspace, body, saved.profile(), true);
+            if (password == null) throw new ApiException("PASSWORD_REQUIRED", "该链接需要输入数据库密码");
+            DatabaseContext created = null;
+            try {
+                created = new DatabaseContext(providers.require(saved.profile().providerId()), saved.profile(), password);
+                context = workspace.registerContext(key, created);
+                created = null;
+                workspace.cachePassword(id, password);
+                if (ApiPayloads.bool(body, "rememberPassword", saved.rememberPassword())) {
+                    secrets.save(saved.profile().secretRef(), password);
+                }
+            } catch (SQLException exception) {
+                throw new ApiException("CONNECTION_FAILED", "连接数据库失败：" + safeMessage(exception));
+            } finally {
+                Arrays.fill(password, '\0');
+                if (created != null) created.close();
+            }
+        }
+        try {
+            workspace.bind(editor, saved, context);
+            return saved;
+        } catch (RuntimeException exception) {
+            workspace.discardUnusedContext(key);
+            throw exception;
+        }
+    }
+
+    private char[] passwordForWorkspace(Workspace workspace, Map<String, Object> body,
+                                        ConnectionProfile profile, boolean required) throws Exception {
+        if (body.containsKey("password")) return ApiPayloads.text(body, "password").toCharArray();
+        char[] cached = workspace.cachedPassword(profile.id());
+        if (cached != null) return cached;
+        Optional<char[]> remembered = secrets.load(profile.secretRef());
+        if (remembered.isPresent()) return remembered.get();
+        return required ? null : null;
+    }
+
+    private void resolveTransactionBeforeSwitch(EditorSession editor, String action) throws Exception {
+        if (editor.activeExecutionId() != null) throw new ApiException("QUERY_BUSY", "查询执行期间不能切换数据库链接");
+        if (!editor.transactionDirty()) return;
+        if ("commit".equals(action)) editor.commit().get(30, TimeUnit.SECONDS);
+        else if ("rollback".equals(action)) editor.rollback().get(30, TimeUnit.SECONDS);
+        else throw new ApiException("TRANSACTION_DECISION_REQUIRED", "切换链接前必须提交或回滚事务");
+    }
+
+    private DatabaseContext databaseFor(Workspace workspace, Map<String, Object> body) {
+        String editorId = ApiPayloads.text(body, "editorId");
+        if (editorId.isEmpty()) throw new ApiException("EDITOR_REQUIRED", "数据库操作需要编辑标签上下文");
+        EditorSession editor = workspace.editors().require(editorId);
+        editor.touch();
+        return workspace.requireEditorDatabase(editor);
+    }
+
+    private void connectionsChanged() {
+        workspaces.broadcast("connections.changed", ApiPayloads.map("revision", Instant.now().toString()));
+    }
+
+    private static UUID profileId(String raw) {
+        try { return UUID.fromString(raw); }
+        catch (Exception exception) { throw new ApiException("INVALID_PROFILE_ID", "连接配置 ID 无效"); }
+    }
+
+    private static String catalogName(Map<String, Object> body) {
+        String value = ApiPayloads.required(body, "name").trim();
+        if (value.length() > 64) throw new ApiException("INVALID_CATALOG_NAME", "名称不能超过64个字符");
+        return value;
     }
 
     private static Map<String, String> stringMap(Map<String, Object> source) {
@@ -615,6 +818,8 @@ public final class DbStudioApiController {
         if (!result.containsKey("result.columnLayoutScope")) result.put("result.columnLayoutScope", "result");
         if (!result.containsKey("result.copyHeaderOnDoubleClick")) result.put("result.copyHeaderOnDoubleClick", "true");
         if (!result.containsKey("result.copySeparator")) result.put("result.copySeparator", "comma");
+        if (!result.containsKey("connection.maxActiveSessions")) result.put("connection.maxActiveSessions", "10");
+        if (!result.containsKey("connection.idleTimeoutMinutes")) result.put("connection.idleTimeoutMinutes", "10");
         return result;
     }
 
@@ -632,9 +837,21 @@ public final class DbStudioApiController {
                 "fields", fields, "capabilities", capabilities);
     }
 
-    private static Map<String, Object> profileMap(ConnectionProfile profile, boolean remember) {
+    private static Map<String, Object> profileMap(SavedProfile saved) {
+        ConnectionProfile profile = saved.profile();
         return ApiPayloads.map("id", profile.id().toString(), "providerId", profile.providerId(),
-                "name", profile.name(), "settings", profile.settings(), "rememberPassword", remember);
+                "name", profile.name(), "settings", profile.settings(),
+                "rememberPassword", saved.rememberPassword(), "environmentId", saved.environmentId(),
+                "revision", saved.revision());
+    }
+
+    private static Map<String, Object> systemMap(SystemEntry value) {
+        return ApiPayloads.map("id", value.id(), "name", value.name(), "revision", value.revision());
+    }
+
+    private static Map<String, Object> environmentMap(EnvironmentEntry value) {
+        return ApiPayloads.map("id", value.id(), "systemId", value.systemId(),
+                "name", value.name(), "revision", value.revision());
     }
 
     private static List<Map<String, Object>> metadataGroups(DatabaseProvider provider, String catalog) {

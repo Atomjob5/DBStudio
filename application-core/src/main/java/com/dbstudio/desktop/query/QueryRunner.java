@@ -347,6 +347,9 @@ public final class QueryRunner implements AutoCloseable {
     public void close() {
         try { cancel(); } catch (RuntimeException ignored) { }
         executor.shutdownNow();
+        if (transactionDirty.getAndSet(false)) {
+            try { session.rollback(); } catch (SQLException ignored) { }
+        }
         try { session.close(); } catch (SQLException ignored) { }
     }
 

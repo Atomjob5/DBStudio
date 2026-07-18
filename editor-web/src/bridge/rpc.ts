@@ -125,12 +125,22 @@ export class RpcClient {
     switch (type) {
       case "app.bootstrap": return { path: `/api/v1/bootstrap?workspaceId=${this.workspaceId}`, method: "GET" };
       case "connection.test": return { path: "/api/v1/connections/test", method: "POST", body };
-      case "connection.connect": return { path: `${ws}/connection`, method: "POST", body };
-      case "connection.disconnect": return { path: `${ws}/connection`, method: "DELETE" };
+      case "connection.catalog": return { path: "/api/v1/connections/catalog", method: "GET" };
+      case "connection.system.create": return { path: "/api/v1/connection-systems", method: "POST", body };
+      case "connection.system.update": return { path: `/api/v1/connection-systems/${encodeURIComponent(String(body.id ?? ""))}`, method: "PUT", body };
+      case "connection.system.delete": return { path: `/api/v1/connection-systems/${encodeURIComponent(String(body.id ?? ""))}`, method: "DELETE" };
+      case "connection.environment.create": return { path: "/api/v1/connection-environments", method: "POST", body };
+      case "connection.environment.update": return { path: `/api/v1/connection-environments/${encodeURIComponent(String(body.id ?? ""))}`, method: "PUT", body };
+      case "connection.environment.delete": return { path: `/api/v1/connection-environments/${encodeURIComponent(String(body.id ?? ""))}`, method: "DELETE" };
+      case "connection.profile.create": return { path: `${ws}/connection-profiles`, method: "POST", body };
+      case "connection.profile.update": return { path: `${ws}/connection-profiles/${encodeURIComponent(String(body.id ?? ""))}`, method: "PUT", body };
+      case "connection.profile.delete": return { path: `${ws}/connection-profiles/${encodeURIComponent(String(body.id ?? ""))}`, method: "DELETE" };
       case "metadata.children": return { path: `${ws}/metadata/children`, method: "POST", body };
       case "metadata.definition": return { path: `${ws}/metadata/definition`, method: "POST", body };
       case "metadata.generateQuery": return { path: `${ws}/metadata/query`, method: "POST", body };
       case "editor.create": return { path: `${ws}/editors`, method: "POST", body };
+      case "editor.bind": return { path: `${ws}/editors/${editorId}/connection`, method: "PUT", body };
+      case "editor.unbind": return { path: `${ws}/editors/${editorId}/connection?transactionAction=${encodeURIComponent(String(body.transactionAction ?? ""))}`, method: "DELETE" };
       case "editor.close": return { path: `${ws}/editors/${editorId}/close`, method: "POST", body };
       case "query.execute": return { path: `${ws}/editors/${editorId}/executions`, method: "POST", body };
       case "query.fetchRows": return {
@@ -144,7 +154,7 @@ export class RpcClient {
       case "transaction.commit": return { path: `${ws}/editors/${editorId}/transaction/commit`, method: "POST", body: {} };
       case "transaction.rollback": return { path: `${ws}/editors/${editorId}/transaction/rollback`, method: "POST", body: {} };
       case "sql.format": return { path: `${ws}/sql/format`, method: "POST", body };
-      case "sql.complete": return { path: `${ws}/sql/completions?prefix=${encodeURIComponent(String(body.prefix ?? ""))}`, method: "GET" };
+      case "sql.complete": return { path: `${ws}/sql/completions?prefix=${encodeURIComponent(String(body.prefix ?? ""))}&editorId=${encodeURIComponent(String(body.editorId ?? ""))}`, method: "GET" };
       case "history.list": return { path: `/api/v1/history?limit=${encodeURIComponent(String(body.limit ?? 200))}`, method: "GET" };
       case "settings.get": return { path: "/api/v1/settings", method: "GET" };
       case "settings.update": return { path: "/api/v1/settings", method: "PUT", body };

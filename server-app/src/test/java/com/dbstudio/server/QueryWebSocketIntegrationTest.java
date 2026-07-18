@@ -55,9 +55,11 @@ class QueryWebSocketIntegrationTest {
         String cookie = authenticate();
         String workspaceId = UUID.randomUUID().toString();
         exchange(HttpMethod.PUT, "/api/v1/workspaces/" + workspaceId, new HashMap<String, Object>(), cookie);
-        connect(workspaceId, cookie);
+        String profileId = createProfile(workspaceId, cookie);
+        Map<String, Object> editorBody = new HashMap<String, Object>();
+        editorBody.put("profileId", profileId);
         String editorId = String.valueOf(exchange(HttpMethod.POST,
-                "/api/v1/workspaces/" + workspaceId + "/editors", new HashMap<String, Object>(), cookie).get("id"));
+                "/api/v1/workspaces/" + workspaceId + "/editors", editorBody, cookie).get("id"));
 
         final BlockingQueue<Map<String, Object>> events = new LinkedBlockingQueue<Map<String, Object>>();
         WebSocketHttpHeaders socketHeaders = new WebSocketHttpHeaders();
@@ -146,7 +148,12 @@ class QueryWebSocketIntegrationTest {
         throw new AssertionError("Missing query.resultMeta columnDetails");
     }
 
-    private void connect(String workspaceId, String cookie) {
+    @SuppressWarnings("unchecked")
+    private String createProfile(String workspaceId, String cookie) {
+        Map<String, Object> bootstrap = exchange(HttpMethod.GET, "/api/v1/bootstrap?workspaceId=" + workspaceId,
+                null, cookie);
+        String environmentId = String.valueOf(((Map<String, Object>)
+                ((List<Object>) bootstrap.get("environments")).get(0)).get("id"));
         Map<String, Object> settings = new HashMap<String, Object>();
         settings.put("host", MYSQL.getHost());
         settings.put("port", String.valueOf(MYSQL.getMappedPort(3306)));
@@ -155,8 +162,10 @@ class QueryWebSocketIntegrationTest {
         settings.put("timeoutSeconds", "20");
         Map<String, Object> body = new HashMap<String, Object>();
         body.put("providerId", "mysql"); body.put("name", "WebSocket integration");
+        body.put("environmentId", environmentId);
         body.put("settings", settings); body.put("password", MYSQL.getPassword()); body.put("rememberPassword", false);
-        exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId + "/connection", body, cookie);
+        return String.valueOf(exchange(HttpMethod.POST,
+                "/api/v1/workspaces/" + workspaceId + "/connection-profiles", body, cookie).get("id"));
     }
 
     private void updateSetting(String cookie, String key, String value) {
@@ -177,7 +186,8 @@ class QueryWebSocketIntegrationTest {
     private Map<String, Object> exchange(HttpMethod method, String path, Object body, String cookie) {
         HttpHeaders headers = new HttpHeaders(); headers.setOrigin(origin()); headers.add(HttpHeaders.COOKIE, cookie);
         headers.setContentType(MediaType.APPLICATION_JSON);
-        ResponseEntity<Map> response = http.exchange(url(path), method, new HttpEntity<Object>(body, headers), Map.class);
+        HttpEntity<Object> entity = body == null ? new HttpEntity<Object>(headers) : new HttpEntity<Object>(body, headers);
+        ResponseEntity<Map> response = http.exchange(url(path), method, entity, Map.class);
         assertTrue(response.getStatusCode().is2xxSuccessful(), String.valueOf(response.getBody()));
         return response.getBody();
     }
