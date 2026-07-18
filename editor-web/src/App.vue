@@ -134,8 +134,11 @@
   <HistoryDrawer v-model="historyDrawer" @open="openHistory" />
   <SettingsDrawer v-model="settingsDrawer" :theme="app.themePreference" :resolved-theme="app.theme" :max-rows="settings.maxResultRows"
                   :stream-batch-rows="settings.streamBatchRows" :column-layout-scope="settings.columnLayoutScope"
+                  :copy-header-on-double-click="settings.copyHeaderOnDoubleClick" :copy-separator="settings.copySeparator"
                   @update:theme="updateTheme" @update:max-rows="updateMaxRows"
-                  @update:stream-batch-rows="updateStreamBatchRows" @update:column-layout-scope="updateColumnLayoutScope" />
+                  @update:stream-batch-rows="updateStreamBatchRows" @update:column-layout-scope="updateColumnLayoutScope"
+                  @update:copy-header-on-double-click="updateCopyHeaderOnDoubleClick"
+                  @update:copy-separator="updateCopySeparator" />
   <CsvImportDialog v-model="csvDialog" @imported="objectExplorer?.refresh()" />
 </template>
 
@@ -181,6 +184,7 @@ import { useMetadataStore } from "./stores/metadata";
 import { useQueryStore } from "./stores/query";
 import { useSettingsStore } from "./stores/settings";
 import type { ColumnLayoutScope } from "./columnLayout";
+import type { CopySeparator } from "./resultCopy";
 import { applyDocumentTheme } from "./theme";
 import { openRecentSql, openSqlFile, recentSqlFiles, saveSqlFile } from "./files/browserFiles";
 import type { BootstrapResponse, EditorTab, HistoryEntry, MetadataNode, QueryResult, SavedProfile, Suggestion, ThemePreference } from "./types";
@@ -497,6 +501,16 @@ async function updateColumnLayoutScope(value: ColumnLayoutScope): Promise<void> 
   const previous = settings.columnLayoutScope; settings.columnLayoutScope = value;
   try { await rpc.request("settings.update", { key: "result.columnLayoutScope", value }); }
   catch (error) { settings.columnLayoutScope = previous; reportError(error); }
+}
+async function updateCopyHeaderOnDoubleClick(value: boolean): Promise<void> {
+  const previous = settings.copyHeaderOnDoubleClick; settings.copyHeaderOnDoubleClick = value;
+  try { await rpc.request("settings.update", { key: "result.copyHeaderOnDoubleClick", value: String(value) }); }
+  catch (error) { settings.copyHeaderOnDoubleClick = previous; reportError(error); }
+}
+async function updateCopySeparator(value: CopySeparator): Promise<void> {
+  const previous = settings.copySeparator; settings.copySeparator = value;
+  try { await rpc.request("settings.update", { key: "result.copySeparator", value }); }
+  catch (error) { settings.copySeparator = previous; reportError(error); }
 }
 function dataCommand(command: string): void {
   if (command === "import") csvDialog.value = true;

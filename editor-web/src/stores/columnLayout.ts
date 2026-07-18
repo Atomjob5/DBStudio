@@ -1,8 +1,8 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import {
-  columnIdentityKeys, reorderColumns, sameColumnSet, selectHeader,
-  type ColumnLayoutScope, type DropSide
+  columnIdentityKeys, moveColumnsToEdge, reorderColumns, sameColumnSet, selectHeader,
+  type ColumnEdge, type ColumnLayoutScope, type DropSide
 } from "../columnLayout";
 import type { QueryResult } from "../types";
 
@@ -120,6 +120,19 @@ export const useColumnLayoutStore = defineStore("column-layout", () => {
     } };
   }
 
+  function moveToEdge(layoutKey: string, viewKey: string, visibleOrder: string[], edge: ColumnEdge,
+                      filtered: boolean): void {
+    const currentView = ensureView(viewKey);
+    const next = moveColumnsToEdge(visibleOrder, currentView.selected, edge);
+    if (next === visibleOrder) return;
+    if (filtered) {
+      views.value = { ...views.value, [viewKey]: { ...currentView, filteredOrder: next } };
+      return;
+    }
+    const stored = layouts.value[layoutKey];
+    if (stored) layouts.value = { ...layouts.value, [layoutKey]: { ...stored, order: next } };
+  }
+
   function reset(layoutKey: string, viewKey: string, identities: string[], defaultWidths: number[]): void {
     const widths: Record<string, number> = {};
     identities.forEach((identity, index) => { widths[identity] = defaultWidths[index]; });
@@ -136,5 +149,5 @@ export const useColumnLayoutStore = defineStore("column-layout", () => {
   }
 
   return { layouts, views, ensure, layout, view, setFilter, displayedOrder, choose, selectOnly,
-    reorder, setWidth, reset, orderDirty };
+    reorder, moveToEdge, setWidth, reset, orderDirty };
 });

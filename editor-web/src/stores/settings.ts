@@ -1,11 +1,14 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import type { ColumnLayoutScope } from "../columnLayout";
+import type { CopySeparator } from "../resultCopy";
 
 export const useSettingsStore = defineStore("settings", () => {
   const maxResultRows = ref(1000);
   const streamBatchRows = ref(100);
   const columnLayoutScope = ref<ColumnLayoutScope>("result");
+  const copyHeaderOnDoubleClick = ref(true);
+  const copySeparator = ref<CopySeparator>("comma");
   const recentFiles = ref<string[]>([]);
 
   function initialize(settings: Record<string, string>, recent: string[]): void {
@@ -14,8 +17,12 @@ export const useSettingsStore = defineStore("settings", () => {
     const batch = Number.parseInt(settings["result.streamBatchRows"] ?? "100", 10);
     streamBatchRows.value = Number.isFinite(batch) ? batch : 100;
     columnLayoutScope.value = settings["result.columnLayoutScope"] === "editor" ? "editor" : "result";
+    copyHeaderOnDoubleClick.value = settings["result.copyHeaderOnDoubleClick"] !== "false";
+    const separator = settings["result.copySeparator"];
+    copySeparator.value = separator === "tab" || separator === "semicolon" || separator === "pipe" ? separator : "comma";
     recentFiles.value = recent;
   }
 
-  return { maxResultRows, streamBatchRows, columnLayoutScope, recentFiles, initialize };
+  return { maxResultRows, streamBatchRows, columnLayoutScope, copyHeaderOnDoubleClick, copySeparator,
+    recentFiles, initialize };
 });

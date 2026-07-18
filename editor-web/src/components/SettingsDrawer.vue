@@ -31,6 +31,18 @@
             <el-radio-button value="editor">当前编辑标签</el-radio-button>
           </el-radio-group>
         </el-form-item>
+        <el-form-item label="双击表头复制列名">
+          <el-switch :model-value="copyHeaderOnDoubleClick"
+                     @update:model-value="copyHeaderToggleChanged" />
+        </el-form-item>
+        <el-form-item label="复制多列时的分隔符">
+          <el-select :model-value="copySeparator" @update:model-value="copySeparatorChanged">
+            <el-option label="逗号（,）" value="comma" />
+            <el-option label="Tab" value="tab" />
+            <el-option label="分号（;）" value="semicolon" />
+            <el-option label="竖线（|）" value="pipe" />
+          </el-select>
+        </el-form-item>
         <el-alert title="较小批次首屏更快，但会增加事件和界面更新次数。完整导出不受这些设置限制。"
                   type="info" show-icon :closable="false" />
       </section>
@@ -42,17 +54,28 @@
 import { Monitor, Moon, Sunny } from "@element-plus/icons-vue";
 import type { ResolvedTheme, ThemePreference } from "../types";
 import type { ColumnLayoutScope } from "../columnLayout";
+import type { CopySeparator } from "../resultCopy";
 
 defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: ResolvedTheme; maxRows: number;
-  streamBatchRows: number; columnLayoutScope: ColumnLayoutScope }>();
+  streamBatchRows: number; columnLayoutScope: ColumnLayoutScope; copyHeaderOnDoubleClick: boolean;
+  copySeparator: CopySeparator }>();
 const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme": [value: ThemePreference];
   "update:maxRows": [value: number]; "update:streamBatchRows": [value: number];
-  "update:columnLayoutScope": [value: ColumnLayoutScope] }>();
+  "update:columnLayoutScope": [value: ColumnLayoutScope]; "update:copyHeaderOnDoubleClick": [value: boolean];
+  "update:copySeparator": [value: CopySeparator] }>();
 function themeChanged(value: string | number | boolean | undefined): void {
   if (value === "system" || value === "dark" || value === "light") emit("update:theme", value);
 }
 function layoutScopeChanged(value: string | number | boolean | undefined): void {
   if (value === "result" || value === "editor") emit("update:columnLayoutScope", value);
+}
+function copySeparatorChanged(value: string | number | boolean | undefined): void {
+  if (value === "comma" || value === "tab" || value === "semicolon" || value === "pipe") {
+    emit("update:copySeparator", value);
+  }
+}
+function copyHeaderToggleChanged(value: string | number | boolean): void {
+  emit("update:copyHeaderOnDoubleClick", value === true);
 }
 </script>
 

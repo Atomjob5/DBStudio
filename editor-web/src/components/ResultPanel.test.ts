@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { computed, defineComponent, nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
-import { mount } from "@vue/test-utils";
+import { flushPromises, mount } from "@vue/test-utils";
 import ElementPlus from "element-plus";
 import ResultPanel from "./ResultPanel.vue";
 import { useQueryStore } from "../stores/query";
@@ -9,8 +9,11 @@ import { useSettingsStore } from "../stores/settings";
 import type { Column } from "element-plus";
 import type { VNode } from "vue";
 
+const clipboardWrite = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+vi.mock("../clipboard", () => ({ writeClipboardText: clipboardWrite }));
+
 describe("ResultPanel streaming rendering", () => {
-  beforeEach(() => setActivePinia(createPinia()));
+  beforeEach(() => { setActivePinia(createPinia()); clipboardWrite.mockClear(); });
 
   it("renders metadata, batches and completion after immutable store updates", async () => {
     const queries = useQueryStore();
@@ -177,5 +180,68 @@ describe("ResultPanel streaming rendering", () => {
     await nextTick();
     expect(columns().map((column) => column.title)).toEqual(["id", "name", "amount"]);
     expect(columns()[1].width).toBe(120);
+  });
+
+  it("copies headers and loaded data from the context menu and moves selected columns to an edge", async () => {
+    const settings = useSettingsStore();
+    settings.copySeparator = "comma";
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: 0, execution: {
+        executionId: "execution-copy", editorId: "editor-1", busy: false, cancelled: false, failed: false, durationMs: 8,
+        results: [{ resultIndex: 0, sql: "select", type: "QUERY", columns: ["id", "name", "amount"],
+          rows: [["1", "Apple, Inc.", "12.30"]], updateCount: -1, truncated: false, durationMs: 7, complete: true }]
+      } }, global: { plugins: [ElementPlus] }
+    });
+    const columns = () => wrapper.findComponent({ name: "ElTableV2" }).props("columns") as Column[];
+    const header = (index: number) => columns()[index].headerCellRenderer?.({} as never) as VNode;
+
+    header(0).props?.onClick({ ctrlKey: false, metaKey: false, shiftKey: false });
+    header(2).props?.onClick({ ctrlKey: true, metaKey: false, shiftKey: false });
+    await nextTick();
+    header(0).props?.onContextmenu({ preventDefault: vi.fn(), clientX: 20, clientY: 30 });
+    await nextTick();
+    const menu = wrapper.findComponent({ name: "ResultHeaderContextMenu" });
+    expect(menu.props("visible")).toBe(true);
+    menu.vm.$emit("command", "copy-all");
+    await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith("id,amount\n1,12.30");
+
+    menu.vm.$emit("command", "move-right");
+    await nextTick();
+    expect(columns().map((column) => column.title)).toEqual(["name", "id", "amount"]);
+
+    header(0).props?.onContextmenu({ preventDefault: vi.fn(), clientX: 20, clientY: 30 });
+    menu.vm.$emit("command", "copy-headers");
+    await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith("name");
+  });
+
+  it("copies only a double-clicked title when enabled and keeps resize double click independent", async () => {
+    const settings = useSettingsStore();
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: 0, execution: {
+        executionId: "execution-double", editorId: "editor-1", busy: false, cancelled: false, failed: false, durationMs: 8,
+        results: [{ resultIndex: 0, sql: "select id as alias_id", type: "QUERY", columns: ["alias_id"],
+          rows: [["1"]], updateCount: -1, truncated: false, durationMs: 7, complete: true }]
+      } }, global: { plugins: [ElementPlus] }
+    });
+    const column = (wrapper.findComponent({ name: "ElTableV2" }).props("columns") as Column[])[0];
+    const header = column.headerCellRenderer?.({} as never) as VNode;
+    const children = header.children as VNode[];
+    children[0].props?.onDblclick({ preventDefault: vi.fn(), stopPropagation: vi.fn() });
+    await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith("alias_id");
+
+    const resizeHandle = children[children.length - 1];
+    resizeHandle.props?.onDblclick({ preventDefault: vi.fn(), stopPropagation: vi.fn() });
+    await nextTick();
+    expect(clipboardWrite).toHaveBeenCalledTimes(1);
+
+    settings.copyHeaderOnDoubleClick = false;
+    const updatedHeader = (wrapper.findComponent({ name: "ElTableV2" }).props("columns") as Column[])[0]
+      .headerCellRenderer?.({} as never) as VNode;
+    (updatedHeader.children as VNode[])[0].props?.onDblclick({ preventDefault: vi.fn(), stopPropagation: vi.fn() });
+    await flushPromises();
+    expect(clipboardWrite).toHaveBeenCalledTimes(1);
   });
 });

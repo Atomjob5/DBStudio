@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import {
-  autoColumnWidth, clampColumnWidth, columnIdentityKeys, reorderColumns, sampledRowIndices,
+  autoColumnWidth, clampColumnWidth, columnIdentityKeys, moveColumnsToEdge, reorderColumns, sampledRowIndices,
   selectHeader
 } from "./columnLayout";
 import { useColumnLayoutStore, type LayoutContext } from "./stores/columnLayout";
@@ -19,6 +19,13 @@ describe("column layout helpers", () => {
     expect(reorderColumns(["a", "b", "c", "d", "e"], ["b", "d"], "e", "after"))
       .toEqual(["a", "c", "e", "b", "d"]);
     expect(reorderColumns(["a", "b", "c"], ["a", "b"], "b", "before")).toEqual(["a", "b", "c"]);
+  });
+
+  it("moves selected columns to either edge without changing their order", () => {
+    const order = ["a", "b", "c", "d"];
+    expect(moveColumnsToEdge(order, ["b", "d"], "left")).toEqual(["b", "d", "a", "c"]);
+    expect(moveColumnsToEdge(order, ["b", "d"], "right")).toEqual(["a", "c", "b", "d"]);
+    expect(moveColumnsToEdge(order, ["a", "b"], "left")).toBe(order);
   });
 
   it("creates distinct identities for duplicate labels", () => {
@@ -74,5 +81,20 @@ describe("column layout store", () => {
     expect(store.displayedOrder(first.layoutKey, first.viewKey, first.identities, false)).toEqual(first.identities);
     const next = store.ensure(context("result", "execution-2"));
     expect(next.layoutKey).not.toBe(first.layoutKey);
+  });
+
+  it("moves selections to an edge and keeps filtered moves temporary", () => {
+    const store = useColumnLayoutStore();
+    const active = store.ensure(context("editor", "execution-edge"));
+    store.selectOnly(active.viewKey, active.identities[1]);
+    store.moveToEdge(active.layoutKey, active.viewKey, active.identities, "right", false);
+    expect(store.layout(active.layoutKey)?.order).toEqual([active.identities[0], active.identities[2], active.identities[1]]);
+
+    const visible = [active.identities[0], active.identities[2]];
+    store.setFilter(active.viewKey, visible, true);
+    store.selectOnly(active.viewKey, active.identities[2]);
+    store.moveToEdge(active.layoutKey, active.viewKey, visible, "left", true);
+    expect(store.displayedOrder(active.layoutKey, active.viewKey, visible, true)).toEqual([active.identities[2], active.identities[0]]);
+    expect(store.layout(active.layoutKey)?.order).toEqual([active.identities[0], active.identities[2], active.identities[1]]);
   });
 });

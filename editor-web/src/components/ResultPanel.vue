@@ -50,6 +50,10 @@
     <el-empty v-else class="result-empty" description="执行查询后在这里查看结果">
       <template #image><el-icon><DataAnalysis /></el-icon></template>
     </el-empty>
+    <ResultHeaderContextMenu :visible="headerMenu.visible" :x="headerMenu.x" :y="headerMenu.y"
+                             :can-copy-data="canCopyHeaderData" :can-move-left="canMoveSelectionLeft"
+                             :can-move-right="canMoveSelectionRight" @close="closeHeaderMenu"
+                             @command="headerMenuCommand" />
   </section>
 </template>
 
@@ -60,9 +64,13 @@ import { CopyDocument, DataAnalysis, Download, RefreshLeft } from "@element-plus
 import type { Column } from "element-plus";
 import type { QueryExecutionState } from "../types";
 import { matchesColumnQuery, resultColumnOptions, type ColumnOption } from "../columnFilter";
-import { autoColumnWidth, clampColumnWidth, columnIdentityKeys, defaultColumnWidth, type DropSide } from "../columnLayout";
+import { autoColumnWidth, clampColumnWidth, columnIdentityKeys, defaultColumnWidth, moveColumnsToEdge,
+  type ColumnEdge, type DropSide } from "../columnLayout";
 import { useColumnLayoutStore } from "../stores/columnLayout";
 import { useSettingsStore } from "../stores/settings";
+import { resultCopyText, type ResultCopyMode } from "../resultCopy";
+import { writeClipboardText } from "../clipboard";
+import ResultHeaderContextMenu, { type HeaderMenuCommand } from "./ResultHeaderContextMenu.vue";
 
 const props = defineProps<{
   execution?: QueryExecutionState;
@@ -79,6 +87,7 @@ const tableHost = ref<HTMLElement>();
 const activeLayout = ref<{ layoutKey: string; viewKey: string; identities: string[] }>();
 const dropTarget = ref<{ identity: string; side: DropSide }>();
 const resizing = ref<{ identity: string; startX: number; startWidth: number }>();
+const headerMenu = ref({ visible: false, x: 0, y: 0 });
 let dragPreview: HTMLElement | undefined;
 let measureContext: CanvasRenderingContext2D | null | undefined;
 const activeIndex = computed({
@@ -123,8 +132,9 @@ watch(() => props.execution?.executionId, () => {
   selectedCell.value = undefined;
   selectedColumns.value = {};
   columnQuery.value = "";
+  closeHeaderMenu();
 });
-watch(activeIndex, () => { selectedCell.value = undefined; columnQuery.value = ""; });
+watch(activeIndex, () => { selectedCell.value = undefined; columnQuery.value = ""; closeHeaderMenu(); });
 watch([
   () => props.execution?.executionId,
   () => props.execution?.editorId,
@@ -189,15 +199,21 @@ function renderHeader(column: ColumnOption, identity: string) {
     style: { flex: "1 1 auto", alignSelf: "stretch", width: "100%", minWidth: 0 },
     role: "button", tabindex: 0, draggable: !resizing.value,
     "aria-selected": String(selected), "aria-label": `列 ${column.label}`,
-    title: "单击选择；Ctrl/Cmd 多选；Shift 连续选择；拖动改变位置",
+    title: settings.copyHeaderOnDoubleClick
+      ? "单击选择；双击复制列名；右键打开菜单；拖动改变位置"
+      : "单击选择；右键打开菜单；拖动改变位置",
     onClick: (event: MouseEvent) => selectColumnHeader(event, identity),
     onKeydown: (event: KeyboardEvent) => keyboardSelectHeader(event, identity),
+    onContextmenu: (event: MouseEvent) => openHeaderMenu(event, identity),
     onDragstart: (event: DragEvent) => startColumnDrag(event, identity),
     onDragover: (event: DragEvent) => overColumn(event, identity),
     onDrop: (event: DragEvent) => dropColumn(event, identity),
     onDragend: endColumnDrag
   }, [
-    h("span", { class: "result-column-title" }, column.label),
+    h("span", {
+      class: "result-column-title",
+      onDblclick: (event: MouseEvent) => copyDoubleClickedHeader(event, column)
+    }, column.label),
     selected && view && view.selected.length > 1 && firstSelected === identity
       ? h("span", { class: "column-selection-count" }, `${view.selected.length}列`) : undefined,
     h("span", {
@@ -219,9 +235,83 @@ function selectColumnHeader(event: MouseEvent, identity: string): void {
 }
 
 function keyboardSelectHeader(event: KeyboardEvent, identity: string): void {
+  if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+    event.preventDefault();
+    openHeaderMenu(event as unknown as MouseEvent, identity, event.currentTarget as HTMLElement);
+    return;
+  }
   if (event.key !== " " && event.key !== "Enter") return;
   event.preventDefault();
   selectColumnHeader(event as unknown as MouseEvent, identity);
+}
+
+function openHeaderMenu(event: MouseEvent, identity: string, keyboardTarget?: HTMLElement): void {
+  const active = activeLayout.value;
+  if (!active) return;
+  event.preventDefault();
+  const view = columnLayouts.view(active.viewKey);
+  if (!view.selected.includes(identity)) columnLayouts.selectOnly(active.viewKey, identity);
+  const bounds = keyboardTarget?.getBoundingClientRect();
+  const requestedX = bounds ? bounds.left + 16 : event.clientX;
+  const requestedY = bounds ? bounds.bottom : event.clientY;
+  headerMenu.value = {
+    visible: true,
+    x: Math.max(8, Math.min(requestedX, window.innerWidth - 188)),
+    // Reserve the fully expanded copy submenu height so opening it never leaves the viewport.
+    y: Math.max(8, Math.min(requestedY, window.innerHeight - 360))
+  };
+}
+
+function closeHeaderMenu(): void { headerMenu.value = { ...headerMenu.value, visible: false }; }
+
+function selectedOrderedColumns(): ColumnOption[] {
+  const active = activeLayout.value;
+  if (!active) return [];
+  const selected = new Set(columnLayouts.view(active.viewKey).selected);
+  return visibleColumnOptions.value.filter((column) => selected.has(currentIdentities.value[column.index]));
+}
+
+const canCopyHeaderData = computed(() => (activeResult.value?.rows.length ?? 0) > 0);
+const canMoveSelectionLeft = computed(() => canMoveSelection("left"));
+const canMoveSelectionRight = computed(() => canMoveSelection("right"));
+
+function canMoveSelection(edge: ColumnEdge): boolean {
+  const active = activeLayout.value;
+  if (!active) return false;
+  const order = visibleColumnOptions.value.map((column) => currentIdentities.value[column.index]);
+  const selected = columnLayouts.view(active.viewKey).selected;
+  return moveColumnsToEdge(order, selected, edge) !== order;
+}
+
+function headerMenuCommand(command: HeaderMenuCommand): void {
+  if (command === "move-left" || command === "move-right") {
+    moveSelectedColumns(command === "move-left" ? "left" : "right");
+    return;
+  }
+  const mode: ResultCopyMode = command === "copy-headers" ? "headers"
+    : command === "copy-data" ? "data" : "headers-and-data";
+  void copySelectedColumns(mode);
+}
+
+function moveSelectedColumns(edge: ColumnEdge): void {
+  const active = activeLayout.value;
+  if (!active) return;
+  const order = visibleColumnOptions.value.map((column) => currentIdentities.value[column.index]);
+  columnLayouts.moveToEdge(active.layoutKey, active.viewKey, order, edge, selectedColumnIndices.value.length > 0);
+}
+
+async function copySelectedColumns(mode: ResultCopyMode): Promise<void> {
+  const columns = selectedOrderedColumns();
+  if (!columns.length) return;
+  const text = resultCopyText(columns.map((column) => ({ label: column.label, index: column.index })),
+    activeResult.value?.rows ?? [], mode, settings.copySeparator);
+  await copyText(text, mode === "headers" ? "已复制列名" : mode === "data" ? "已复制列数据" : "已复制列名和数据");
+}
+
+function copyDoubleClickedHeader(event: MouseEvent, column: ColumnOption): void {
+  event.preventDefault(); event.stopPropagation();
+  if (!settings.copyHeaderOnDoubleClick) return;
+  void copyText(resultCopyText([{ label: column.label, index: column.index }], [], "headers", settings.copySeparator), "已复制列名");
 }
 
 function startColumnDrag(event: DragEvent, identity: string): void {
@@ -339,13 +429,16 @@ function optionDetail(column: ColumnOption): string {
 
 async function copyCell(): Promise<void> {
   const text = selectedCell.value?.value ?? "NULL";
+  await copyText(text, "已复制单元格");
+}
+
+async function copyText(text: string, successMessage: string): Promise<void> {
   try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    const input = document.createElement("textarea");
-    input.value = text; document.body.append(input); input.select(); document.execCommand("copy"); input.remove();
+    await writeClipboardText(text);
+    ElMessage.success(successMessage);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "复制失败");
   }
-  ElMessage.success("已复制单元格");
 }
 
 function exportCommand(command: string): void {
@@ -355,7 +448,7 @@ function exportCommand(command: string): void {
   else if (command === "full") emit("export-full", resultIndex);
 }
 
-onBeforeUnmount(() => { finishColumnResize(); endColumnDrag(); });
+onBeforeUnmount(() => { finishColumnResize(); endColumnDrag(); closeHeaderMenu(); });
 </script>
 
 <style scoped>

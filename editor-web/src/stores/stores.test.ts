@@ -101,11 +101,16 @@ describe("application stores", () => {
 
   it("initializes independent result limit and streaming batch settings", () => {
     const settings = useSettingsStore();
-    settings.initialize({ "result.maxRows": "2500", "result.streamBatchRows": "75", "result.columnLayoutScope": "editor" }, []);
+    settings.initialize({ "result.maxRows": "2500", "result.streamBatchRows": "75", "result.columnLayoutScope": "editor",
+      "result.copyHeaderOnDoubleClick": "false", "result.copySeparator": "tab" }, []);
     expect(settings.maxResultRows).toBe(2500);
     expect(settings.streamBatchRows).toBe(75);
     expect(settings.columnLayoutScope).toBe("editor");
-    settings.initialize({ "result.columnLayoutScope": "legacy" }, []);
+    expect(settings.copyHeaderOnDoubleClick).toBe(false);
+    expect(settings.copySeparator).toBe("tab");
+    settings.initialize({ "result.columnLayoutScope": "legacy", "result.copySeparator": "legacy" }, []);
     expect(settings.columnLayoutScope).toBe("result");
+    expect(settings.copyHeaderOnDoubleClick).toBe(true);
+    expect(settings.copySeparator).toBe("comma");
   });
 });

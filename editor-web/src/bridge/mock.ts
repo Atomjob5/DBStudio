@@ -20,7 +20,7 @@ function metadata(payload: Record<string, unknown>): unknown[] {
 }
 
 export const developmentMockRequest: MockRequestHandler = async (type, payload, emit) => {
-  if (type === "app.bootstrap") return { providers, profiles, recentFiles: [], settings: { "ui.theme": "system", "result.maxRows": "1000", "result.streamBatchRows": "100", "result.columnLayoutScope": "result" } };
+  if (type === "app.bootstrap") return { providers, profiles, recentFiles: [], settings: { "ui.theme": "system", "result.maxRows": "1000", "result.streamBatchRows": "100", "result.columnLayoutScope": "result", "result.copyHeaderOnDoubleClick": "true", "result.copySeparator": "comma" } };
   if (type === "connection.test") return { success: true, message: "连接成功", serverVersion: "MySQL 8.4.9" };
   if (type === "connection.connect") return { ...payload, id: payload.id ?? profiles[0].id, rememberPassword: Boolean(payload.rememberPassword) };
   if (type === "editor.create") return { id: crypto.randomUUID(), title: `查询 ${++editorSequence}` };

@@ -67,6 +67,7 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 public final class DbStudioApiController {
     private static final List<String> SETTING_KEYS = Arrays.asList(
             "ui.theme", "result.maxRows", "result.streamBatchRows", "result.columnLayoutScope",
+            "result.copyHeaderOnDoubleClick", "result.copySeparator",
             "layout.leftWidth", "layout.editorHeight");
 
     private final ProviderRegistry providers;
@@ -420,6 +421,13 @@ public final class DbStudioApiController {
         if ("result.columnLayoutScope".equals(key) && !Arrays.asList("result", "editor").contains(value)) {
             throw new ApiException("INVALID_SETTING", "列布局范围设置无效");
         }
+        if ("result.copyHeaderOnDoubleClick".equals(key) && !Arrays.asList("true", "false").contains(value)) {
+            throw new ApiException("INVALID_SETTING", "双击复制列名设置无效");
+        }
+        if ("result.copySeparator".equals(key)
+                && !Arrays.asList("comma", "tab", "semicolon", "pipe").contains(value)) {
+            throw new ApiException("INVALID_SETTING", "复制分隔符设置无效");
+        }
         settings.put(key, value);
         return ApiPayloads.map("key", key, "value", value);
     }
@@ -605,6 +613,8 @@ public final class DbStudioApiController {
         if (!result.containsKey("result.maxRows")) result.put("result.maxRows", "1000");
         if (!result.containsKey("result.streamBatchRows")) result.put("result.streamBatchRows", "100");
         if (!result.containsKey("result.columnLayoutScope")) result.put("result.columnLayoutScope", "result");
+        if (!result.containsKey("result.copyHeaderOnDoubleClick")) result.put("result.copyHeaderOnDoubleClick", "true");
+        if (!result.containsKey("result.copySeparator")) result.put("result.copySeparator", "comma");
         return result;
     }
 

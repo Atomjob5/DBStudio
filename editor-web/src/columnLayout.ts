@@ -2,6 +2,7 @@ import type { QueryColumn } from "./types";
 
 export type ColumnLayoutScope = "result" | "editor";
 export type DropSide = "before" | "after";
+export type ColumnEdge = "left" | "right";
 
 export interface HeaderSelection {
   selected: string[];
@@ -61,6 +62,16 @@ export function reorderColumns(order: string[], selected: string[], target: stri
   if (targetIndex < 0) return order;
   const insertAt = targetIndex + (side === "after" ? 1 : 0);
   const next = [...remaining.slice(0, insertAt), ...moving, ...remaining.slice(insertAt)];
+  return next.every((key, index) => key === order[index]) ? order : next;
+}
+
+export function moveColumnsToEdge(order: string[], selected: string[], edge: ColumnEdge): string[] {
+  const selectedSet = new Set(selected);
+  if (!selectedSet.size) return order;
+  const moving = order.filter((key) => selectedSet.has(key));
+  if (!moving.length) return order;
+  const remaining = order.filter((key) => !selectedSet.has(key));
+  const next = edge === "left" ? [...moving, ...remaining] : [...remaining, ...moving];
   return next.every((key, index) => key === order[index]) ? order : next;
 }
 

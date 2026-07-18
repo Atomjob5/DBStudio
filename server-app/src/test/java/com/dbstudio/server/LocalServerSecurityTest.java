@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -96,6 +97,8 @@ class LocalServerSecurityTest {
                 new HttpEntity<String>(headers), String.class);
         assertEquals(HttpStatus.OK, defaults.getStatusCode());
         assertTrue(defaults.getBody().contains("\"result.columnLayoutScope\":\"result\""));
+        assertTrue(defaults.getBody().contains("\"result.copyHeaderOnDoubleClick\":\"true\""));
+        assertTrue(defaults.getBody().contains("\"result.copySeparator\":\"comma\""));
 
         Map<String, String> setting = new HashMap<String, String>();
         setting.put("key", "result.columnLayoutScope");
@@ -110,6 +113,24 @@ class LocalServerSecurityTest {
                 new HttpEntity<Map<String, String>>(setting, headers), String.class);
         assertEquals(HttpStatus.BAD_REQUEST, rejected.getStatusCode());
         assertTrue(rejected.getBody().contains("INVALID_SETTING"));
+
+        setting.put("key", "result.copyHeaderOnDoubleClick");
+        setting.put("value", "false");
+        assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+        setting.put("value", "yes");
+        assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+
+        setting.put("key", "result.copySeparator");
+        for (String separator : Arrays.asList("comma", "tab", "semicolon", "pipe")) {
+            setting.put("value", separator);
+            assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                    new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+        }
+        setting.put("value", "space");
+        assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
     }
 
     private HttpHeaders authenticatedHeaders() {

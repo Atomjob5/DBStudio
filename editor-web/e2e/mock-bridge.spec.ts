@@ -59,6 +59,52 @@ test("selects result headers, reorders columns and resizes with the header handl
   expect(fitted?.width ?? 1000).toBeLessThanOrEqual(600);
 });
 
+test("copies result headers and loaded rows from the header context menu", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:4173" });
+  await connectMock(page);
+  await page.getByRole("button", { name: "执行", exact: true }).click();
+  await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
+
+  const id = page.getByRole("button", { name: "列 id", exact: true });
+  const name = page.getByRole("button", { name: "列 name", exact: true });
+  await name.locator(".result-column-title").dblclick();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("name");
+
+  await id.click();
+  await name.click({ modifiers: ["ControlOrMeta"] });
+  await name.click({ button: "right" });
+  const copy = page.getByRole("menuitem", { name: "复制", exact: true });
+  await copy.hover();
+  const copyAll = page.getByRole("menuitem", { name: "复制列名和数据", exact: true });
+  await expect(copyAll).toBeVisible();
+  const rootMenuBounds = await page.locator(".result-header-context-menu").boundingBox();
+  const copyMenuBounds = await page.locator(".el-popper.result-header-context-submenu").boundingBox();
+  if (!rootMenuBounds || !copyMenuBounds) throw new Error("Header menus are not measurable");
+  expect(copyMenuBounds.x).toBeGreaterThanOrEqual(rootMenuBounds.x + rootMenuBounds.width - 2);
+  await copyAll.click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("id,name\n1,Apple Studio 1 ✨\n2,Apple Studio 2 ✨");
+
+  await id.click();
+  await id.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "移动到最右", exact: true }).click();
+  await expect(page.locator(".result-column-title").first()).toHaveText("name");
+
+  const viewport = page.viewportSize();
+  if (!viewport) throw new Error("Viewport is unavailable");
+  await id.evaluate((element, point) => element.dispatchEvent(new MouseEvent("contextmenu", {
+    bubbles: true, cancelable: true, clientX: point.x, clientY: point.y
+  })), { x: viewport.width - 2, y: viewport.height - 2 });
+  await expect.poll(async () => {
+    const bounds = await page.locator(".result-header-context-menu").boundingBox();
+    if (!bounds) return Number.POSITIVE_INFINITY;
+    return Math.max(bounds.x + bounds.width - (viewport.width - 7),
+      bounds.y + bounds.height - (viewport.height - 7));
+  }).toBeLessThanOrEqual(0);
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".result-header-context-menu")).toBeHidden();
+});
+
 test("supports Apple appearance, system theme settings and compact windows", async ({ page }) => {
   await expect(page).toHaveScreenshot("apple-connection-light.png");
   await connectMock(page);
@@ -76,6 +122,8 @@ test("supports Apple appearance, system theme settings and compact windows", asy
   await expect(page.getByRole("heading", { name: "设置", exact: true })).toBeVisible();
   await expect(page.getByRole("radio", { name: "跟随系统", exact: true })).toBeVisible();
   await expect(page.getByRole("radio", { name: "当前结果集", exact: true })).toBeChecked();
+  await expect(page.getByText("双击表头复制列名", { exact: true })).toBeVisible();
+  await expect(page.getByText("复制多列时的分隔符", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Close this dialog", exact: true }).click();
 
   await page.getByRole("button", { name: "更多操作", exact: true }).click();
