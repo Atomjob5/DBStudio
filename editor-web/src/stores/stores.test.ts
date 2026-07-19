@@ -3,8 +3,10 @@ import { createPinia, setActivePinia } from "pinia";
 import { useAppStore } from "./app";
 import { useConnectionStore } from "./connection";
 import { useEditorStore } from "./editor";
+import { useMetadataStore } from "./metadata";
 import { useQueryStore } from "./query";
 import { useSettingsStore } from "./settings";
+import type { CompletionSnapshot, Suggestion } from "../types";
 
 beforeEach(() => setActivePinia(createPinia()));
 
@@ -125,6 +127,73 @@ describe("application stores", () => {
     expect(environmentOptions[1].children[0]).toMatchObject({ label: "SIT / 业务库", menuLabel: "业务库" });
   });
 
+  it("shares completion context by system and environment instead of connection revision", () => {
+    const connections = useConnectionStore();
+    const first = { id: "p-1", providerId: "mysql", name: "主库", settings: {}, rememberPassword: false,
+      environmentId: "e-dev", revision: "1" };
+    const second = { ...first, id: "p-2", name: "只读库", revision: "8" };
+    const sit = { ...first, id: "p-3", environmentId: "e-sit" };
+    connections.initialize([], [first, second, sit], [{ id: "s-order", name: "订单系统", revision: "1" }], [
+      { id: "e-dev", systemId: "s-order", name: "DEV", revision: "1" },
+      { id: "e-sit", systemId: "s-order", name: "SIT", revision: "1" }
+    ]);
+
+    expect(connections.completionContext(first)?.key).toBe("s-order:e-dev");
+    expect(connections.completionContext(second)?.key).toBe("s-order:e-dev");
+    expect(connections.completionContext(sit)?.key).toBe("s-order:e-sit");
+  });
+
+  it("deduplicates completion loads and atomically replaces an environment snapshot", () => {
+    const metadata = useMetadataStore();
+    const key = "system-1:environment-dev";
+    const oldSuggestion = suggestion("old", "orders");
+    const newSuggestion = suggestion("new", "customers");
+
+    expect(metadata.beginCompletion(key, "DEV", "load-1", "profile-1")).toBe(true);
+    expect(metadata.beginCompletion(key, "DEV", "load-duplicate", "profile-2")).toBe(false);
+    expect(metadata.completeCompletion(key, "load-1", snapshot("profile-1", oldSuggestion))).toBe(true);
+    metadata.activate("profile-1@1", key);
+    expect(metadata.suggestions).toEqual([oldSuggestion]);
+
+    expect(metadata.beginCompletion(key, "DEV", "load-2", "profile-2", true)).toBe(true);
+    expect(metadata.suggestions).toEqual([oldSuggestion]);
+    expect(metadata.completeCompletion(key, "stale-load", snapshot("profile-2", newSuggestion))).toBe(false);
+    expect(metadata.suggestions).toEqual([oldSuggestion]);
+    expect(metadata.completeCompletion(key, "load-2", snapshot("profile-2", newSuggestion))).toBe(true);
+    expect(metadata.suggestions).toEqual([newSuggestion]);
+    expect(metadata.completionFor(key)?.sourceProfileId).toBe("profile-2");
+  });
+
+  it("keeps the last successful completion snapshot when a manual refresh fails", () => {
+    const metadata = useMetadataStore();
+    const key = "system-1:environment-dev";
+    const existing = suggestion("column-1", "order_id");
+    metadata.beginCompletion(key, "DEV", "load-1", "profile-1");
+    metadata.completeCompletion(key, "load-1", snapshot("profile-1", existing));
+
+    metadata.beginCompletion(key, "DEV", "load-2", "profile-1", true);
+    metadata.failCompletion(key, "load-2", "connection failed");
+
+    expect(metadata.completionFor(key)).toMatchObject({ state: "error", hasSnapshot: true, error: "connection failed" });
+    expect(metadata.completionFor(key)?.suggestions).toEqual([existing]);
+    expect(metadata.beginCompletion(key, "DEV", "load-3", "profile-1")).toBe(false);
+  });
+
+  it("isolates environment completion snapshots and activates the selected editor environment", () => {
+    const metadata = useMetadataStore();
+    const dev = suggestion("dev", "dev_table");
+    const sit = suggestion("sit", "sit_table");
+    metadata.beginCompletion("system:dev", "DEV", "load-dev", "profile-dev");
+    metadata.completeCompletion("system:dev", "load-dev", snapshot("profile-dev", dev));
+    metadata.beginCompletion("system:sit", "SIT", "load-sit", "profile-sit");
+    metadata.completeCompletion("system:sit", "load-sit", snapshot("profile-sit", sit));
+
+    metadata.activate("profile-dev@1", "system:dev");
+    expect(metadata.suggestions).toEqual([dev]);
+    metadata.activate("profile-sit@1", "system:sit");
+    expect(metadata.suggestions).toEqual([sit]);
+  });
+
   it("initializes independent result limit and streaming batch settings", () => {
     const settings = useSettingsStore();
     settings.initialize({ "result.maxRows": "2500", "result.streamBatchRows": "75", "result.columnLayoutScope": "editor",
@@ -145,3 +214,11 @@ describe("application stores", () => {
     expect(settings.idleTimeoutMinutes).toBe(10);
   });
 });
+
+function suggestion(id: string, label: string): Suggestion {
+  return { id, label, insertText: `\`${label}\``, detail: label, kind: "table" };
+}
+
+function snapshot(sourceProfileId: string, ...suggestions: Suggestion[]): CompletionSnapshot {
+  return { providerId: "mysql", sourceProfileId, generatedAt: "2026-07-19T00:00:00Z", suggestions };
+}

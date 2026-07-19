@@ -137,6 +137,7 @@ export class RpcClient {
       case "connection.profile.move": return { path: `${ws}/connection-profiles/${encodeURIComponent(String(body.id ?? ""))}/location`, method: "PUT", body };
       case "connection.profile.delete": return { path: `${ws}/connection-profiles/${encodeURIComponent(String(body.id ?? ""))}`, method: "DELETE" };
       case "metadata.children": return { path: `${ws}/metadata/children`, method: "POST", body };
+      case "metadata.completionSnapshot": return { path: `${ws}/metadata/completion-snapshot`, method: "POST", body };
       case "metadata.definition": return { path: `${ws}/metadata/definition`, method: "POST", body };
       case "metadata.generateQuery": return { path: `${ws}/metadata/query`, method: "POST", body };
       case "editor.create": return { path: `${ws}/editors`, method: "POST", body };

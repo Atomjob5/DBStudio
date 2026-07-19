@@ -6,7 +6,8 @@
         <span>{{ connectionName ?? "当前连接" }}</span>
       </div>
       <el-tooltip content="刷新对象树 · ⌘/Ctrl R">
-        <el-button text circle :icon="Refresh" size="small" aria-label="刷新对象树" @click="refresh" />
+        <el-button text circle :icon="Refresh" size="small" aria-label="刷新对象树"
+                   :loading="completionLoading" @click="refresh" />
       </el-tooltip>
     </header>
     <div class="tree-search">
@@ -45,8 +46,9 @@ import type { MetadataNode } from "../types";
 const emit = defineEmits<{
   open: [node: MetadataNode, execute: boolean];
   definition: [node: MetadataNode];
+  refresh: [];
 }>();
-const props = defineProps<{ connectionName?: string; editorId: string; connectionKey: string }>();
+const props = defineProps<{ connectionName?: string; editorId: string; connectionKey: string; completionLoading?: boolean }>();
 const metadata = useMetadataStore();
 const treeRef = ref<InstanceType<typeof ElTree>>();
 const treeKey = ref(0);
@@ -58,16 +60,16 @@ const loadNode: LoadFunction = async (node, resolve) => {
     const data = node.data as unknown as MetadataNode;
     const payload = node.level === 0 ? { kind: "root", editorId: props.editorId } : { ...data, editorId: props.editorId };
     const nodes = await rpc.request<MetadataNode[]>("metadata.children", payload);
-    metadata.remember(nodes, props.connectionKey);
     if (node.level === 0) metadata.roots = nodes;
     resolve(nodes);
   } catch { resolve([]); }
 };
 
-function refresh(): void {
-  metadata.clear();
+function resetTree(): void {
+  metadata.clearTree(props.connectionKey);
   treeKey.value++;
 }
+function refresh(): void { resetTree(); emit("refresh"); }
 
 watch(filterText, (value) => treeRef.value?.filter(value.trim()));
 function filterNode(value: string, treeData: TreeNodeData): boolean {
@@ -95,7 +97,7 @@ function iconFor(node: MetadataNode): unknown {
   return FolderOpened;
 }
 
-defineExpose({ refresh });
+defineExpose({ refresh, resetTree });
 </script>
 
 <style scoped>

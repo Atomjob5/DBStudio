@@ -75,10 +75,46 @@ export interface MetadataNode {
 }
 
 export interface Suggestion {
+  id: string;
   label: string;
   insertText: string;
   detail: string;
-  kind: "keyword" | "table" | "column" | "function";
+  kind: "keyword" | "database" | "table" | "view" | "column" | "function" | "procedure";
+  catalog?: string;
+  schema?: string;
+  objectName?: string;
+  remarks?: string;
+}
+
+export type CompletionCacheState = "empty" | "loading" | "ready" | "error";
+export interface CompletionSnapshot {
+  providerId: string;
+  sourceProfileId: string;
+  generatedAt: string;
+  suggestions: Suggestion[];
+}
+export interface CompletionProgress {
+  loadId: string;
+  phase: "discovering" | "loading";
+  completed: number;
+  total: number;
+  message: string;
+  sourceProfileId?: string;
+  environmentId?: string;
+}
+export interface CompletionCache {
+  key: string;
+  label: string;
+  state: CompletionCacheState;
+  suggestions: Suggestion[];
+  hasSnapshot: boolean;
+  loadId?: string;
+  sourceProfileId?: string;
+  generatedAt?: string;
+  progress?: CompletionProgress;
+  error?: string;
+  notice?: "loading" | "success" | "error";
+  startedAt?: number;
 }
 
 export interface EditorTab {

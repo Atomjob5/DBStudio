@@ -112,13 +112,23 @@ onMounted(() => {
         label: item.label,
         insertText: item.insertText,
         detail: item.detail,
-        kind: item.kind === "column" ? monaco.languages.CompletionItemKind.Field : item.kind === "function" ? monaco.languages.CompletionItemKind.Function : item.kind === "table" ? monaco.languages.CompletionItemKind.Class : monaco.languages.CompletionItemKind.Keyword,
+        kind: completionKind(item.kind),
         range: { startLineNumber: position.lineNumber, endLineNumber: position.lineNumber, startColumn: word.startColumn, endColumn: word.endColumn }
       })) };
     }
   });
   switchModel(props.modelKey, props.initialValue);
 });
+
+function completionKind(kind: Suggestion["kind"]): monaco.languages.CompletionItemKind {
+  if (kind === "column") return monaco.languages.CompletionItemKind.Field;
+  if (kind === "function") return monaco.languages.CompletionItemKind.Function;
+  if (kind === "procedure") return monaco.languages.CompletionItemKind.Method;
+  if (kind === "database") return monaco.languages.CompletionItemKind.Module;
+  if (kind === "view") return monaco.languages.CompletionItemKind.Interface;
+  if (kind === "table") return monaco.languages.CompletionItemKind.Class;
+  return monaco.languages.CompletionItemKind.Keyword;
+}
 
 watch(() => props.modelKey, (key) => switchModel(key, props.initialValue));
 watch(() => props.theme, (theme) => monaco.editor.setTheme(monacoTheme(theme)));

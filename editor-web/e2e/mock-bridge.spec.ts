@@ -152,6 +152,27 @@ test("connects and renders a streamed query result with the development bridge",
   expect(darkSpectrum.innerContent).toBe("none");
 });
 
+test("shares completion cache across editors and refreshes it only from the object explorer", async ({ page }) => {
+  await connectMock(page);
+  await expect(page.locator(".completion-status")).toContainText("补全已更新");
+  const completionRequests = () => page.evaluate(() =>
+    (window as Window & { __DBSTUDIO_MOCK_COUNTS__?: Record<string, number> })
+      .__DBSTUDIO_MOCK_COUNTS__?.["metadata.completionSnapshot"] ?? 0);
+  await expect.poll(completionRequests).toBe(1);
+
+  await page.getByRole("button", { name: "新建查询", exact: true }).click();
+  await expect(page.locator(".editor-tabs .el-tabs__item")).toHaveCount(2);
+  await expect.poll(completionRequests).toBe(1);
+
+  await page.mouse.move(720, 420);
+  await page.getByRole("button", { name: "数据库对象", exact: true })
+    .evaluate((element) => (element as HTMLButtonElement).click());
+  await expect(page.getByRole("button", { name: "刷新对象树", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "刷新对象树", exact: true }).click();
+  await expect.poll(completionRequests).toBe(2);
+  await expect(page.locator(".completion-status")).toContainText("补全已更新");
+});
+
 test("uses a static spectrum edge when reduced motion is enabled", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.reload();

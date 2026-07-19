@@ -88,7 +88,8 @@
         <el-splitter-panel v-if="panelOpen" v-model:size="leftWidth" :min="210" :max="420" collapsible>
           <ObjectExplorer v-if="activeTool === 'objects' && editors.active?.connection" ref="objectExplorer"
                           :editor-id="editors.active.id" :connection-key="activeConnectionKey"
-                          :connection-name="editors.active.connection.name" @open="openObject" @definition="openDefinition" />
+                          :connection-name="editors.active.connection.name" :completion-loading="activeCompletionLoading"
+                          @open="openObject" @definition="openDefinition" @refresh="refreshCompletionFromObjectExplorer" />
           <el-empty v-else-if="activeTool === 'objects'" class="workspace-empty" description="当前编辑标签尚未选择数据库链接">
             <template #image><el-icon><Coin /></el-icon></template>
             <el-button type="primary" round @click="openConnectionManager">打开连接管理</el-button>
@@ -129,6 +130,13 @@
 
     <el-footer class="status-bar" height="24px" aria-live="polite">
       <span class="status-item"><i class="status-dot" :class="activeConnectionStatusClass" />{{ app.status }}</span>
+      <span v-if="completionStatus" class="status-item completion-status" :class="completionStatus.state"
+            :title="completionStatus.error || completionStatusText">
+        <Loading v-if="completionStatus.state === 'loading'" class="is-loading" />
+        <WarningFilled v-else-if="completionStatus.state === 'error'" />
+        <CircleCheckFilled v-else />
+        {{ completionStatusText }}
+      </span>
       <div class="status-result-actions" role="toolbar" aria-label="结果数据加载工具栏">
         <el-tooltip :content="nextPageTooltip" placement="top">
           <el-button text :icon="ArrowDown" aria-label="下一页数据" :disabled="!canLoadMore"
@@ -160,7 +168,7 @@
                   @update:copy-header-on-double-click="updateCopyHeaderOnDoubleClick"
                   @update:copy-separator="updateCopySeparator" @update:max-active-sessions="updateMaxActiveSessions"
                   @update:idle-timeout-minutes="updateIdleTimeoutMinutes" />
-  <CsvImportDialog v-model="csvDialog" :editor-id="editors.active?.id" @imported="objectExplorer?.refresh()" />
+  <CsvImportDialog v-model="csvDialog" :editor-id="editors.active?.id" @imported="objectExplorer?.resetTree()" />
 </template>
 
 <script setup lang="ts">
@@ -171,6 +179,7 @@ import {
   ArrowDown,
   ArrowRightBold,
   Bottom,
+  CircleCheckFilled,
   Clock,
   Close,
   Coin,
@@ -179,6 +188,7 @@ import {
   Document,
   DocumentChecked,
   FolderOpened,
+  Loading,
   Moon,
   MoreFilled,
   Plus,
@@ -210,7 +220,7 @@ import type { ColumnLayoutScope } from "./columnLayout";
 import type { CopySeparator } from "./resultCopy";
 import { applyDocumentTheme } from "./theme";
 import { openRecentSql, openSqlFile, recentSqlFiles, saveSqlFile } from "./files/browserFiles";
-import type { BootstrapResponse, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryResult, SavedProfile, ThemePreference } from "./types";
+import type { BootstrapResponse, CompletionCache, CompletionProgress, CompletionSnapshot, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryResult, SavedProfile, ThemePreference } from "./types";
 
 const app = useAppStore(); const connections = useConnectionStore(); const metadata = useMetadataStore();
 const editors = useEditorStore(); const queries = useQueryStore(); const settings = useSettingsStore();
@@ -240,6 +250,11 @@ const nextPageTooltip = computed(() => resultLoadTooltip("next"));
 const allRowsTooltip = computed(() => resultLoadTooltip("all"));
 const activeConnected = computed(() => Boolean(editors.active?.connection));
 const activeConnectionKey = computed(() => editors.active?.connection ? `${editors.active.connection.id}@${editors.active.connection.revision}` : "unbound");
+const activeCompletionContext = computed(() => connections.completionContext(editors.active?.connection));
+const activeCompletionKey = computed(() => activeCompletionContext.value?.key ?? "unbound");
+const activeCompletionLoading = computed(() => metadata.completionFor(activeCompletionKey.value)?.state === "loading");
+const completionStatus = computed(() => metadata.statusFor(activeCompletionKey.value));
+const completionStatusText = computed(() => completionMessage(completionStatus.value));
 const activeConnectionValue = computed(() => editors.active?.connection ? `${editors.active.connection.id}@${editors.active.connection.revision}` : undefined);
 const activeConnectionPath = computed(() => connections.pathFor(editors.active?.connection));
 const activeConnectionDisplay = computed(() => {
@@ -257,6 +272,7 @@ const panelVisible = computed(() => panelOpen.value && numericPanelWidth(leftWid
 const disposers: Array<() => void> = [];
 const colorSchemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
 let layoutSaveTimer: number | undefined;
+const completionNoticeTimers = new Map<string, number>();
 
 watch(leftWidth, (value) => {
   const width = numericPanelWidth(value);
@@ -292,20 +308,15 @@ onBeforeUnmount(() => {
   colorSchemeQuery?.removeEventListener?.("change", systemThemeChanged);
   window.removeEventListener("keydown", handleShortcut);
   if (layoutSaveTimer !== undefined) window.clearTimeout(layoutSaveTimer);
+  completionNoticeTimers.forEach((timer) => window.clearTimeout(timer));
 });
 
 watch(() => app.theme, (theme) => applyDocumentTheme(theme), { immediate: true });
 watch(() => activeExecution.value?.executionId, () => {
   activeResultIndex.value = activeExecution.value?.results[0]?.resultIndex ?? 0;
 });
-watch(() => [editors.activeId, activeConnectionKey.value] as const, async () => {
-  metadata.activate(activeConnectionKey.value);
-  if (editors.active?.connection) {
-    try {
-      const suggestions = await rpc.request<import("./types").Suggestion[]>("sql.complete", { prefix: "", editorId: editors.active.id });
-      metadata.addSuggestions(suggestions, activeConnectionKey.value);
-    } catch { /* The object tree remains usable even if keyword loading fails. */ }
-  }
+watch(() => [editors.activeId, activeConnectionKey.value, activeCompletionKey.value] as const, () => {
+  metadata.activate(activeConnectionKey.value, activeCompletionKey.value);
 });
 
 function systemThemeChanged(event: MediaQueryListEvent): void {
@@ -353,6 +364,9 @@ function installEventHandlers(): void {
     const data = raw as { message?: string };
     if (data.message) app.status = data.message;
   }));
+  disposers.push(rpc.on("metadata.completionProgress", (raw) => {
+    metadata.updateProgress(raw as CompletionProgress);
+  }));
   disposers.push(rpc.on("editor.connectionState", (raw) => {
     const data = raw as { editorId: string; state: EditorConnectionState; message?: string };
     editors.patch(data.editorId, { connectionState: data.state });
@@ -367,7 +381,9 @@ async function newEditor(content = "", filePath?: string, title?: string, fileHa
   const tab: EditorTab = { id: created.id, title: title ?? created.title, content, filePath, fileHandle,
     dirty: Boolean(content && !filePath), transactionDirty: false, busy: false,
     connection: created.connection, connectionState: created.connectionState ?? "unbound" };
-  editors.add(tab); return tab;
+  editors.add(tab);
+  if (tab.connection) void ensureCompletionForEditor(tab);
+  return tab;
 }
 
 function markActiveDirty(): void { if (editors.active) editors.patch(editors.active.id, { dirty: true }); }
@@ -475,7 +491,57 @@ function openCreateProfile(environmentId: string): void {
 function openEditProfile(profile: SavedProfile): void {
   editingProfile.value = profile; profileEnvironmentId.value = profile.environmentId; connectionDialog.value = true;
 }
-async function profileSaved(profile: SavedProfile): Promise<void> { connections.upsert(profile); await refreshConnectionCatalog(); }
+async function profileSaved(profile: SavedProfile): Promise<void> {
+  connections.upsert(profile);
+  await refreshConnectionCatalog();
+  void ensureCompletionForProfile(connections.current(profile.id) ?? profile);
+}
+
+function ensureCompletionForProfile(profile: SavedProfile, force = false): Promise<void> {
+  return loadCompletionSnapshot(profile, { profileId: profile.id }, force);
+}
+
+function ensureCompletionForEditor(tab: EditorTab, force = false): Promise<void> {
+  if (!tab.connection) return Promise.resolve();
+  return loadCompletionSnapshot(tab.connection, { editorId: tab.id }, force);
+}
+
+async function loadCompletionSnapshot(profile: SavedProfile, source: { profileId?: string; editorId?: string }, force: boolean): Promise<void> {
+  const context = connections.completionContext(profile);
+  if (!context) return;
+  const loadId = crypto.randomUUID();
+  if (!metadata.beginCompletion(context.key, context.label, loadId, profile.id, force)) return;
+  try {
+    const snapshot = await rpc.request<CompletionSnapshot>("metadata.completionSnapshot", { loadId, ...source }, 5 * 60_000);
+    if (!metadata.completeCompletion(context.key, loadId, snapshot)) return;
+    const existing = completionNoticeTimers.get(context.key);
+    if (existing !== undefined) window.clearTimeout(existing);
+    completionNoticeTimers.set(context.key, window.setTimeout(() => {
+      metadata.dismissNotice(context.key);
+      completionNoticeTimers.delete(context.key);
+    }, 3_000));
+  } catch (error) {
+    metadata.failCompletion(context.key, loadId, message(error));
+  }
+}
+
+function refreshCompletionFromObjectExplorer(): void {
+  const tab = editors.active;
+  if (tab?.connection) void ensureCompletionForEditor(tab, true);
+}
+
+function completionMessage(cache: CompletionCache | undefined): string {
+  if (!cache) return "";
+  if (cache.state === "loading") {
+    const progress = cache.progress;
+    if (progress?.phase === "loading" && progress.total > 0) {
+      return `${cache.label} 补全信息 ${progress.completed}/${progress.total} · ${progress.message}`;
+    }
+    return `${cache.label} · ${progress?.message || "正在扫描可见数据库…"}`;
+  }
+  if (cache.state === "error") return `${cache.label} 补全加载失败 · 请刷新数据库对象重试`;
+  return `${cache.label} 补全已更新 · ${cache.suggestions.length} 项`;
+}
 async function refreshConnectionCatalog(): Promise<void> {
   const catalog = await rpc.request<ConnectionCatalog>("connection.catalog");
   connections.applyCatalog(catalog);
@@ -520,10 +586,11 @@ async function connectionSelectionChanged(value: unknown): Promise<void> {
       editors.patch(tab.id, { connection: response.connection, connectionState: response.connectionState,
         transactionDirty: false });
       app.status = `已绑定 ${response.connection.name}`;
+      void ensureCompletionForEditor({ ...tab, connection: response.connection, connectionState: response.connectionState });
     }
     queries.clearEditor(tab.id);
-    metadata.activate(activeConnectionKey.value);
-    await nextTick(); objectExplorer.value?.refresh();
+    metadata.activate(activeConnectionKey.value, activeCompletionKey.value);
+    await nextTick(); objectExplorer.value?.resetTree();
   } catch (error) { reportError(error); }
 }
 
@@ -913,6 +980,18 @@ function message(error: unknown): string { return error instanceof Error ? error
 }
 .status-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .status-item svg { width: 12px; height: 12px; }
+.completion-status {
+  min-width: 0;
+  max-width: min(42vw, 520px);
+  overflow: hidden;
+  padding-left: 10px;
+  border-left: 1px solid var(--db-border-soft);
+  text-overflow: ellipsis;
+}
+.completion-status.loading { color: var(--db-accent); }
+.completion-status.error { color: var(--db-warning); }
+.completion-status.ready { color: var(--db-success); }
+.completion-status .is-loading { animation: rotating 1.4s linear infinite; }
 .status-result-actions {
   height: 18px;
   display: inline-flex;

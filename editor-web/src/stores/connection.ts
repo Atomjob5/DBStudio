@@ -52,7 +52,18 @@ export const useConnectionStore = defineStore("connection", () => {
 
   function current(profileId: string): SavedProfile | undefined { return profiles.value.find((item) => item.id === profileId); }
 
+  function completionContext(profile: SavedProfile | undefined): { key: string; systemId: string; environmentId: string; label: string } | undefined {
+    if (!profile) return undefined;
+    const environment = environments.value.find((item) => item.id === profile.environmentId);
+    if (!environment) return undefined;
+    const system = systems.value.find((item) => item.id === environment.systemId);
+    if (!system) return undefined;
+    return { key: `${system.id}:${environment.id}`, systemId: system.id, environmentId: environment.id,
+      label: `${system.name} / ${environment.name}` };
+  }
+
   function byName(left: { name: string }, right: { name: string }): number { return left.name.localeCompare(right.name, "zh-CN"); }
 
-  return { providers, profiles, systems, environments, cascaderOptions, initialize, applyCatalog, upsert, pathFor, current };
+  return { providers, profiles, systems, environments, cascaderOptions, initialize, applyCatalog, upsert,
+    pathFor, current, completionContext };
 });

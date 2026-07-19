@@ -75,8 +75,10 @@ class QueryWebSocketIntegrationTest {
             awaitType(events, "workspace.ready", 10);
             try (Connection connection = MYSQL.createConnection(""); Statement statement = connection.createStatement()) {
                 statement.execute("CREATE TABLE result_column_comment(id BIGINT COMMENT '订单编号', amount DECIMAL(10,2) COMMENT '订单金额')");
+                statement.execute("CREATE TABLE completion_customer(id BIGINT COMMENT '客户编号', name VARCHAR(100) COMMENT '客户名称')");
                 statement.execute("INSERT INTO result_column_comment VALUES (1, 12.30)");
             }
+            assertCompletionSnapshot(editorId, workspaceId, cookie, events);
             List<Map<String, Object>> metadataEvents = executeSql(editorId, workspaceId, cookie, events,
                     "SELECT id AS order_id, amount, amount + 1 AS calculated FROM result_column_comment");
             assertColumnMetadata(metadataEvents);
@@ -103,6 +105,38 @@ class QueryWebSocketIntegrationTest {
         } finally {
             socket.close();
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void assertCompletionSnapshot(String editorId, String workspaceId, String cookie,
+                                          BlockingQueue<Map<String, Object>> events) throws Exception {
+        events.clear();
+        Map<String, Object> body = new HashMap<String, Object>();
+        body.put("loadId", "completion-integration");
+        body.put("editorId", editorId);
+        Map<String, Object> snapshot = exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId
+                + "/metadata/completion-snapshot", body, cookie);
+        assertEquals("mysql", snapshot.get("providerId"));
+        List<Map<String, Object>> suggestions = (List<Map<String, Object>>) snapshot.get("suggestions");
+        assertTrue(suggestions.stream().anyMatch(value -> "table".equals(value.get("kind"))
+                && "result_column_comment".equals(value.get("label"))));
+        assertTrue(suggestions.stream().anyMatch(value -> "column".equals(value.get("kind"))
+                && "订单编号".equals(value.get("remarks"))));
+        assertEquals(2, suggestions.stream().filter(value -> "column".equals(value.get("kind"))
+                && "id".equals(value.get("label"))).count());
+        assertEquals(2, suggestions.stream().filter(value -> "column".equals(value.get("kind"))
+                && "id".equals(value.get("label"))).map(value -> String.valueOf(value.get("id"))).distinct().count());
+
+        boolean receivedProgress = false;
+        Map<String, Object> event;
+        while ((event = events.poll(200, TimeUnit.MILLISECONDS)) != null) {
+            if ("metadata.completionProgress".equals(event.get("type"))) {
+                Map<String, Object> payload = (Map<String, Object>) event.get("payload");
+                assertEquals("completion-integration", payload.get("loadId"));
+                receivedProgress = true;
+            }
+        }
+        assertTrue(receivedProgress, "completion snapshot should publish progress events");
     }
 
     private List<Map<String, Object>> execute(String editorId, String workspaceId, String cookie,

@@ -1,49 +1,97 @@
-import { computed, ref } from "vue";
+import { computed, shallowRef } from "vue";
 import { defineStore } from "pinia";
-import type { MetadataNode, Suggestion } from "../types";
+import type { CompletionCache, CompletionProgress, CompletionSnapshot, MetadataNode } from "../types";
 
-interface MetadataCache { roots: MetadataNode[]; suggestions: Suggestion[]; }
+const emptySuggestions: CompletionCache["suggestions"] = [];
 
 export const useMetadataStore = defineStore("metadata", () => {
-  const activeKey = ref("unbound");
-  const caches = ref<Record<string, MetadataCache>>({});
-  const active = computed(() => cache(activeKey.value));
-  const roots = computed({ get: () => active.value.roots, set: (value) => { active.value.roots = value; } });
-  const suggestions = computed(() => active.value.suggestions);
+  const activeTreeKey = shallowRef("unbound");
+  const activeCompletionKey = shallowRef("unbound");
+  const treeCaches = shallowRef<Record<string, MetadataNode[]>>({});
+  const completionCaches = shallowRef<Record<string, CompletionCache>>({});
+  const roots = computed({
+    get: () => treeCaches.value[activeTreeKey.value] ?? [],
+    set: (value: MetadataNode[]) => setRoots(value, activeTreeKey.value)
+  });
+  const suggestions = computed(() => completionCaches.value[activeCompletionKey.value]?.suggestions ?? emptySuggestions);
 
-  function activate(key?: string): void { activeKey.value = key || "unbound"; }
-  function cache(key: string): MetadataCache {
-    if (!caches.value[key]) caches.value[key] = { roots: [], suggestions: [] };
-    return caches.value[key];
+  function activate(treeKey?: string, completionKey?: string): void {
+    activeTreeKey.value = treeKey || "unbound";
+    activeCompletionKey.value = completionKey || "unbound";
   }
 
-  function remember(nodes: MetadataNode[], key = activeKey.value): void {
-    const target = cache(key);
-    const known = new Set(target.suggestions.map((item) => `${item.kind}:${item.label}`));
-    for (const node of nodes) {
-      if (!node.name || !["object", "column"].includes(node.kind)) continue;
-      const kind: Suggestion["kind"] = node.kind === "column"
-        ? "column"
-        : node.objectType === "FUNCTION" || node.objectType === "PROCEDURE" ? "function" : "table";
-      const identity = `${kind}:${node.name}`;
-      if (!known.has(identity)) {
-        target.suggestions.push({ label: node.name, insertText: `\`${node.name.replaceAll("`", "``")}\``, detail: node.detail ?? node.label, kind });
-        known.add(identity);
-      }
-    }
+  function setRoots(values: MetadataNode[], key = activeTreeKey.value): void {
+    treeCaches.value = { ...treeCaches.value, [key]: values };
   }
 
-  function addSuggestions(values: Suggestion[], key = activeKey.value): void {
-    const target = cache(key);
-    const known = new Set(target.suggestions.map((item) => `${item.kind}:${item.label}`));
-    for (const value of values) {
-      const identity = `${value.kind}:${value.label}`;
-      if (!known.has(identity)) { target.suggestions.push(value); known.add(identity); }
-    }
+  function clearTree(key = activeTreeKey.value): void {
+    const next = { ...treeCaches.value };
+    delete next[key];
+    treeCaches.value = next;
   }
 
-  function clear(key = activeKey.value): void { delete caches.value[key]; }
-  function clearAll(): void { caches.value = {}; }
+  function completionFor(key?: string): CompletionCache | undefined {
+    return key ? completionCaches.value[key] : undefined;
+  }
 
-  return { activeKey, roots, suggestions, activate, remember, addSuggestions, clear, clearAll };
+  function beginCompletion(key: string, label: string, loadId: string, sourceProfileId: string, force = false): boolean {
+    const current = completionCaches.value[key];
+    if (current?.state === "loading") return false;
+    if (!force && current?.hasSnapshot) return false;
+    completionCaches.value = { ...completionCaches.value, [key]: {
+      key, label, state: "loading", suggestions: current?.suggestions ?? [],
+      hasSnapshot: current?.hasSnapshot ?? false, loadId, sourceProfileId,
+      generatedAt: current?.generatedAt, notice: "loading", startedAt: Date.now()
+    } };
+    return true;
+  }
+
+  function updateProgress(progress: CompletionProgress): void {
+    const entry = Object.values(completionCaches.value).find((item) => item.loadId === progress.loadId);
+    if (!entry) return;
+    completionCaches.value = { ...completionCaches.value, [entry.key]: { ...entry, progress } };
+  }
+
+  function completeCompletion(key: string, loadId: string, snapshot: CompletionSnapshot): boolean {
+    const current = completionCaches.value[key];
+    if (!current || current.loadId !== loadId) return false;
+    completionCaches.value = { ...completionCaches.value, [key]: {
+      ...current, state: "ready", suggestions: [...snapshot.suggestions], hasSnapshot: true,
+      loadId: undefined, sourceProfileId: snapshot.sourceProfileId, generatedAt: snapshot.generatedAt,
+      progress: undefined, error: undefined, notice: "success"
+    } };
+    return true;
+  }
+
+  function failCompletion(key: string, loadId: string, error: string): boolean {
+    const current = completionCaches.value[key];
+    if (!current || current.loadId !== loadId) return false;
+    completionCaches.value = { ...completionCaches.value, [key]: {
+      ...current, state: "error", loadId: undefined, progress: undefined, error, notice: "error"
+    } };
+    return true;
+  }
+
+  function dismissNotice(key: string): void {
+    const current = completionCaches.value[key];
+    if (!current || current.notice !== "success") return;
+    completionCaches.value = { ...completionCaches.value, [key]: { ...current, notice: undefined } };
+  }
+
+  function statusFor(preferredKey?: string): CompletionCache | undefined {
+    const preferred = preferredKey ? completionCaches.value[preferredKey] : undefined;
+    if (preferred?.notice) return preferred;
+    return Object.values(completionCaches.value)
+      .filter((item) => Boolean(item.notice))
+      .sort((left, right) => (right.startedAt ?? 0) - (left.startedAt ?? 0))[0];
+  }
+
+  function clearAll(): void {
+    treeCaches.value = {};
+    completionCaches.value = {};
+  }
+
+  return { activeTreeKey, activeCompletionKey, roots, suggestions, completionCaches,
+    activate, setRoots, clearTree, completionFor, beginCompletion, updateProgress,
+    completeCompletion, failCompletion, dismissNotice, statusFor, clearAll };
 });

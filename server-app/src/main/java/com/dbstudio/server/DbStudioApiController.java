@@ -2,6 +2,9 @@ package com.dbstudio.server;
 
 import com.dbstudio.desktop.DatabaseContext;
 import com.dbstudio.desktop.ProviderRegistry;
+import com.dbstudio.desktop.completion.CompletionSnapshotService;
+import com.dbstudio.desktop.completion.CompletionSnapshotService.Snapshot;
+import com.dbstudio.desktop.completion.CompletionSnapshotService.Suggestion;
 import com.dbstudio.desktop.csv.CsvService;
 import com.dbstudio.desktop.persistence.ConnectionProfileRepository;
 import com.dbstudio.desktop.persistence.ConnectionProfileRepository.SavedProfile;
@@ -81,6 +84,7 @@ public final class DbStudioApiController {
     private final CsvService csv;
     private final WorkspaceRegistry workspaces;
     private final ConfigurableApplicationContext application;
+    private final CompletionSnapshotService completionSnapshots = new CompletionSnapshotService();
 
     public DbStudioApiController(ProviderRegistry providers, ConnectionProfileRepository profiles,
                                  ConnectionCatalogRepository catalog,
@@ -271,6 +275,62 @@ public final class DbStudioApiController {
         synchronized (context.metadataSession()) {
             return ApiPayloads.map("definition",
                     context.provider().metadata().definition(context.metadataSession(), object));
+        }
+    }
+
+    @PostMapping("/workspaces/{workspaceId}/metadata/completion-snapshot")
+    public Map<String, Object> completionSnapshot(@PathVariable String workspaceId,
+                                                   @RequestBody Map<String, Object> body) throws Exception {
+        final Workspace workspace = workspaces.require(workspaceId);
+        final String loadId = ApiPayloads.required(body, "loadId");
+        String editorId = ApiPayloads.text(body, "editorId");
+        String rawProfileId = ApiPayloads.text(body, "profileId");
+        if (editorId.isEmpty() == rawProfileId.isEmpty()) {
+            throw new ApiException("INVALID_COMPLETION_SOURCE", "补全快照必须且只能指定编辑标签或数据库链接");
+        }
+
+        final SavedProfile saved;
+        if (!editorId.isEmpty()) {
+            EditorSession editor = workspace.editors().require(editorId);
+            saved = workspace.binding(editor);
+            if (saved == null) throw new ApiException("NOT_CONNECTED", "当前编辑标签尚未选择数据库链接");
+        } else {
+            saved = profiles.find(profileId(rawProfileId)).orElseThrow(
+                    () -> new ApiException("PROFILE_NOT_FOUND", "数据库链接不存在或已删除"));
+        }
+
+        char[] password = workspace.cachedPassword(saved.profile().id());
+        if (password == null) password = secrets.load(saved.profile().secretRef()).orElse(null);
+        if (password == null) throw new ApiException("PASSWORD_REQUIRED", "获取补全信息需要数据库密码");
+        try {
+            DatabaseProvider provider = providers.require(saved.profile().providerId());
+            try (DatabaseContext temporary = new DatabaseContext(provider, saved.profile(), password)) {
+                DatabaseSession session = temporary.metadataSession();
+                final String sourceProfileId = saved.profile().id().toString();
+                Snapshot snapshot;
+                synchronized (session) {
+                    snapshot = completionSnapshots.build(provider, session, sourceProfileId,
+                            new CompletionSnapshotService.ProgressListener() {
+                                @Override public void progress(String phase, int completed, int total, String message) {
+                                    workspace.events().emit("metadata.completionProgress", ApiPayloads.map(
+                                            "loadId", loadId, "phase", phase, "completed", completed,
+                                            "total", total, "message", message,
+                                            "sourceProfileId", sourceProfileId,
+                                            "environmentId", saved.environmentId()));
+                                }
+                            });
+                }
+                List<Object> values = new ArrayList<Object>();
+                for (Suggestion suggestion : snapshot.suggestions()) values.add(completionSuggestionMap(suggestion));
+                return ApiPayloads.map("providerId", snapshot.providerId(),
+                        "sourceProfileId", snapshot.sourceProfileId(),
+                        "generatedAt", snapshot.generatedAt(), "suggestions", values);
+            } catch (SQLException exception) {
+                throw new ApiException("METADATA_LOAD_FAILED",
+                        "获取数据库补全信息失败：" + safeMessage(exception), exception);
+            }
+        } finally {
+            Arrays.fill(password, '\0');
         }
     }
 
@@ -864,6 +924,13 @@ public final class DbStudioApiController {
                 "name", profile.name(), "settings", profile.settings(),
                 "rememberPassword", saved.rememberPassword(), "environmentId", saved.environmentId(),
                 "revision", saved.revision());
+    }
+
+    private static Map<String, Object> completionSuggestionMap(Suggestion value) {
+        return ApiPayloads.map("id", value.id(), "label", value.label(),
+                "insertText", value.insertText(), "detail", value.detail(), "kind", value.kind(),
+                "catalog", value.catalog(), "schema", value.schema(),
+                "objectName", value.objectName(), "remarks", value.remarks());
     }
 
     private static Map<String, Object> systemMap(SystemEntry value) {

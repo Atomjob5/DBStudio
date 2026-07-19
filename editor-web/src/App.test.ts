@@ -6,7 +6,9 @@ import ElementPlus from "element-plus";
 import App from "./App.vue";
 import { useConnectionStore } from "./stores/connection";
 import { useEditorStore } from "./stores/editor";
+import { useMetadataStore } from "./stores/metadata";
 import { useQueryStore } from "./stores/query";
+import type { CompletionSnapshot, SavedProfile } from "./types";
 
 const rpcRequest = vi.hoisted(() => vi.fn());
 vi.mock("./bridge/rpc", () => ({
@@ -176,4 +178,119 @@ describe("App result loading status toolbar", () => {
     await nextTick();
     expect(selector.classes()).toContain("stale");
   });
+
+  it("首次绑定补载环境快照，同环境标签切换和再次绑定不重复请求", async () => {
+    await flushPromises();
+    const connections = useConnectionStore();
+    const editors = useEditorStore();
+    const profile = completionProfile();
+    connections.initialize([], [profile], [{ id: "system-1", name: "核心系统", revision: "1" }],
+      [{ id: "environment-dev", systemId: "system-1", name: "DEV", revision: "1" }]);
+    rpcRequest.mockImplementation(async (type: string) => {
+      if (type === "editor.bind") return { connection: profile, connectionState: "suspended" };
+      if (type === "metadata.completionSnapshot") return completionSnapshot(profile.id);
+      return {};
+    });
+
+    const vm = wrapper.vm as unknown as { connectionSelectionChanged: (value: string) => Promise<void> };
+    await vm.connectionSelectionChanged(`${profile.id}@${profile.revision}`);
+    await flushPromises();
+    expect(rpcRequest.mock.calls.filter(([type]) => type === "metadata.completionSnapshot")).toHaveLength(1);
+
+    editors.add({ id: "editor-same-environment", title: "查询 2", content: "", dirty: false,
+      transactionDirty: false, busy: false, connectionState: "unbound" });
+    await vm.connectionSelectionChanged(`${profile.id}@${profile.revision}`);
+    await flushPromises();
+    expect(rpcRequest.mock.calls.filter(([type]) => type === "metadata.completionSnapshot")).toHaveLength(1);
+
+    editors.activeId = "bootstrap-editor";
+    await nextTick();
+    expect(rpcRequest.mock.calls.filter(([type]) => type === "metadata.completionSnapshot")).toHaveLength(1);
+  });
+
+  it("保存新链接后在目标环境没有快照时后台加载补全", async () => {
+    await flushPromises();
+    const connections = useConnectionStore();
+    const profile = completionProfile();
+    const systems = [{ id: "system-1", name: "核心系统", revision: "1" }];
+    const environments = [{ id: "environment-dev", systemId: "system-1", name: "DEV", revision: "1" }];
+    connections.initialize([], [], systems, environments);
+    rpcRequest.mockImplementation(async (type: string) => {
+      if (type === "connection.catalog") return { systems, environments, profiles: [profile] };
+      if (type === "metadata.completionSnapshot") return completionSnapshot(profile.id);
+      return {};
+    });
+
+    const vm = wrapper.vm as unknown as { profileSaved: (value: SavedProfile) => Promise<void> };
+    await vm.profileSaved(profile);
+    await flushPromises();
+
+    expect(rpcRequest).toHaveBeenCalledWith("metadata.completionSnapshot",
+      expect.objectContaining({ profileId: profile.id }), 300_000);
+    expect(useMetadataStore().completionFor("system-1:environment-dev")?.hasSnapshot).toBe(true);
+  });
+
+  it("数据库对象手动刷新会强制原子重建当前环境补全", async () => {
+    await flushPromises();
+    const connections = useConnectionStore();
+    const editors = useEditorStore();
+    const metadata = useMetadataStore();
+    const profile = completionProfile();
+    connections.initialize([], [profile], [{ id: "system-1", name: "核心系统", revision: "1" }],
+      [{ id: "environment-dev", systemId: "system-1", name: "DEV", revision: "1" }]);
+    editors.patch("bootstrap-editor", { connection: profile, connectionState: "suspended" });
+    await nextTick();
+    metadata.beginCompletion("system-1:environment-dev", "DEV", "initial", profile.id);
+    metadata.completeCompletion("system-1:environment-dev", "initial", completionSnapshot(profile.id));
+    rpcRequest.mockImplementation(async (type: string) => {
+      if (type === "metadata.completionSnapshot") return completionSnapshot(profile.id, "customers");
+      return {};
+    });
+
+    const vm = wrapper.vm as unknown as { refreshCompletionFromObjectExplorer: () => void };
+    vm.refreshCompletionFromObjectExplorer();
+    await flushPromises();
+
+    expect(rpcRequest).toHaveBeenCalledWith("metadata.completionSnapshot",
+      expect.objectContaining({ editorId: "bootstrap-editor" }), 300_000);
+    expect(metadata.suggestions.map((item) => item.label)).toEqual(["customers"]);
+  });
+
+  it("在全局状态栏展示当前环境的补全进度、成功和失败状态", async () => {
+    await flushPromises();
+    const connections = useConnectionStore();
+    const editors = useEditorStore();
+    const metadata = useMetadataStore();
+    const profile = completionProfile();
+    connections.initialize([], [profile], [{ id: "system-1", name: "核心系统", revision: "1" }],
+      [{ id: "environment-dev", systemId: "system-1", name: "DEV", revision: "1" }]);
+    editors.patch("bootstrap-editor", { connection: profile, connectionState: "suspended" });
+    await nextTick();
+
+    metadata.beginCompletion("system-1:environment-dev", "DEV", "status-load", profile.id);
+    metadata.updateProgress({ loadId: "status-load", phase: "loading", completed: 37, total: 240,
+      message: "sales.orders", environmentId: "environment-dev" });
+    await nextTick();
+    expect(wrapper.find(".completion-status").text()).toContain("37/240 · sales.orders");
+
+    metadata.completeCompletion("system-1:environment-dev", "status-load", completionSnapshot(profile.id));
+    await nextTick();
+    expect(wrapper.find(".completion-status").text()).toContain("补全已更新 · 1 项");
+
+    metadata.beginCompletion("system-1:environment-dev", "DEV", "failed-load", profile.id, true);
+    metadata.failCompletion("system-1:environment-dev", "failed-load", "连接失败");
+    await nextTick();
+    expect(wrapper.find(".completion-status").text()).toContain("补全加载失败");
+    expect(wrapper.find(".completion-status").attributes("title")).toBe("连接失败");
+  });
 });
+
+function completionProfile(): SavedProfile {
+  return { id: "profile-completion", providerId: "mysql", name: "业务库", settings: {}, rememberPassword: false,
+    environmentId: "environment-dev", revision: "1" };
+}
+
+function completionSnapshot(sourceProfileId: string, label = "orders"): CompletionSnapshot {
+  return { providerId: "mysql", sourceProfileId, generatedAt: "2026-07-19T00:00:00Z",
+    suggestions: [{ id: `table:${label}`, label, insertText: `\`${label}\``, detail: label, kind: "table" }] };
+}

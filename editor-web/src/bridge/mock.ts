@@ -13,6 +13,7 @@ const environments = [{ id: "environment-dev", systemId: "system-demo", name: "D
 const profiles = [{ id: "c5d49b11-47bc-4c64-a31e-a17633e68a73", providerId: "mysql", name: "本地开发库", environmentId: "environment-dev", revision: "1",
   settings: { host: "127.0.0.1", port: "3306", database: "eastwealthcrawler", username: "root", timeoutSeconds: "10" }, rememberPassword: true }];
 let editorSequence = 0;
+const editorProfiles = new Map<string, string>();
 
 function metadata(payload: Record<string, unknown>): unknown[] {
   if (payload.kind === "root") return [{ id: "catalog-demo", label: "eastwealthcrawler", kind: "catalog", leaf: false, catalog: "eastwealthcrawler" }];
@@ -42,10 +43,29 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
   }
   if (type === "connection.profile.delete") { const index = profiles.findIndex((item) => item.id === payload.id); if (index >= 0) profiles.splice(index, 1); return { deleted: true }; }
   if (type === "connection.test") return { success: true, message: "连接成功", serverVersion: "MySQL 8.4.9" };
-  if (type === "editor.create") { const profile = profiles.find((item) => item.id === payload.profileId);
-    return { id: crypto.randomUUID(), title: `查询 ${++editorSequence}`, connection: profile, connectionState: profile ? "suspended" : "unbound" }; }
-  if (type === "editor.bind") return { connection: profiles.find((item) => item.id === payload.profileId), connectionState: "suspended" };
-  if (type === "editor.unbind") return { connectionState: "unbound" };
+  if (type === "editor.create") { const profile = profiles.find((item) => item.id === payload.profileId); const id = crypto.randomUUID();
+    if (profile) editorProfiles.set(id, profile.id);
+    return { id, title: `查询 ${++editorSequence}`, connection: profile, connectionState: profile ? "suspended" : "unbound" }; }
+  if (type === "editor.bind") { const profile = profiles.find((item) => item.id === payload.profileId);
+    if (profile) editorProfiles.set(String(payload.editorId), profile.id);
+    return { connection: profile, connectionState: "suspended" }; }
+  if (type === "editor.unbind") { editorProfiles.delete(String(payload.editorId)); return { connectionState: "unbound" }; }
+  if (type === "metadata.completionSnapshot") {
+    const debugWindow = window as Window & { __DBSTUDIO_MOCK_COUNTS__?: Record<string, number> };
+    const counts = debugWindow.__DBSTUDIO_MOCK_COUNTS__ ?? (debugWindow.__DBSTUDIO_MOCK_COUNTS__ = {});
+    counts[type] = (counts[type] ?? 0) + 1;
+    const profileId = String(payload.profileId ?? editorProfiles.get(String(payload.editorId)) ?? profiles[0]?.id ?? "");
+    emit("metadata.completionProgress", { loadId: payload.loadId, phase: "discovering", completed: 1, total: 1,
+      message: "已扫描 eastwealthcrawler", sourceProfileId: profileId, environmentId: "environment-dev" });
+    emit("metadata.completionProgress", { loadId: payload.loadId, phase: "loading", completed: 3, total: 3,
+      message: "eastwealthcrawler.product", sourceProfileId: profileId, environmentId: "environment-dev" });
+    return { providerId: "mysql", sourceProfileId: profileId, generatedAt: new Date().toISOString(), suggestions: [
+      { id: "keyword-select", label: "SELECT", insertText: "SELECT", detail: "MySQL 关键字", kind: "keyword" },
+      { id: "database-demo", label: "eastwealthcrawler", insertText: "`eastwealthcrawler`", detail: "数据库 eastwealthcrawler", kind: "database", catalog: "eastwealthcrawler" },
+      ...["customer", "order_item", "product"].map((name) => ({ id: `table-${name}`, label: name, insertText: `\`${name}\``,
+        detail: `eastwealthcrawler.${name} · 表`, kind: "table", catalog: "eastwealthcrawler", objectName: name }))
+    ] };
+  }
   if (type === "sql.complete") return [];
   if (type === "sql.format") return { text: payload.text };
   if (type === "metadata.children") return metadata(payload);

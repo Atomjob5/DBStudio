@@ -209,6 +209,30 @@ class LocalServerSecurityTest {
         assertTrue(rejected.getBody().contains("ENVIRONMENT_NOT_FOUND"));
     }
 
+    @Test
+    void completionSnapshotRequiresExactlyOneProfileOrEditorSource() {
+        HttpHeaders headers = authenticatedHeaders();
+        String workspaceId = UUID.randomUUID().toString();
+        assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/workspaces/" + workspaceId), HttpMethod.PUT,
+                new HttpEntity<String>("{}", headers), String.class).getStatusCode());
+
+        Map<String, Object> body = new HashMap<String, Object>();
+        body.put("loadId", "completion-source-validation");
+        ResponseEntity<String> missing = http.exchange(url("/api/v1/workspaces/" + workspaceId
+                        + "/metadata/completion-snapshot"), HttpMethod.POST,
+                new HttpEntity<Map<String, Object>>(body, headers), String.class);
+        assertEquals(HttpStatus.BAD_REQUEST, missing.getStatusCode());
+        assertTrue(missing.getBody().contains("INVALID_COMPLETION_SOURCE"));
+
+        body.put("profileId", UUID.randomUUID().toString());
+        body.put("editorId", UUID.randomUUID().toString());
+        ResponseEntity<String> duplicate = http.exchange(url("/api/v1/workspaces/" + workspaceId
+                        + "/metadata/completion-snapshot"), HttpMethod.POST,
+                new HttpEntity<Map<String, Object>>(body, headers), String.class);
+        assertEquals(HttpStatus.BAD_REQUEST, duplicate.getStatusCode());
+        assertTrue(duplicate.getBody().contains("INVALID_COMPLETION_SOURCE"));
+    }
+
     private HttpHeaders authenticatedHeaders() {
         Map<String, String> request = new HashMap<String, String>();
         request.put("token", token.launchValue());
