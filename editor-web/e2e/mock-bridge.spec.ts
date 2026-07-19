@@ -164,6 +164,19 @@ test("shares completion cache across editors and refreshes it only from the obje
   await expect(page.locator(".editor-tabs .el-tabs__item")).toHaveCount(2);
   await expect.poll(completionRequests).toBe(1);
 
+  await page.getByRole("button", { name: "更多操作", exact: true }).click();
+  await page.getByRole("menuitem", { name: "设置", exact: true }).click();
+  await expect(page.getByTestId("completion-cache-stats")).toContainText("1个环境");
+  await page.getByRole("button", { name: "清理全部补全缓存", exact: true }).click();
+  const clearDialog = page.getByRole("dialog", { name: "清理补全缓存", exact: true });
+  await expect(clearDialog.getByText("对象树、数据库连接和查询结果不会受到影响", { exact: false })).toBeVisible();
+  await clearDialog.getByRole("button", { name: "清理", exact: true }).click();
+  await expect(clearDialog).toBeHidden();
+  await expect(page.getByTestId("completion-cache-stats")).toContainText("约 0 B · 0个环境");
+  await page.waitForTimeout(150);
+  await expect.poll(completionRequests).toBe(1);
+  await page.getByRole("dialog", { name: "设置", exact: true }).getByRole("button", { name: "Close this dialog", exact: true }).click();
+
   await page.mouse.move(720, 420);
   await page.getByRole("button", { name: "数据库对象", exact: true })
     .evaluate((element) => (element as HTMLButtonElement).click());
@@ -171,6 +184,23 @@ test("shares completion cache across editors and refreshes it only from the obje
   await page.getByRole("button", { name: "刷新对象树", exact: true }).click();
   await expect.poll(completionRequests).toBe(2);
   await expect(page.locator(".completion-status")).toContainText("补全已更新");
+});
+
+test("filters duplicate column names by the SQL alias at the cursor", async ({ page }) => {
+  await connectMock(page);
+  await expect(page.locator(".completion-status")).toContainText("补全已更新");
+  const editor = page.locator(".monaco-editor .view-lines");
+  await editor.click();
+  await page.keyboard.press("ControlOrMeta+A");
+  await page.keyboard.type("select * from sales_order a join sales_order_item b on a.order_id=b.order_id where a.order");
+  await page.keyboard.press("Control+Space");
+
+  const widget = page.locator(".suggest-widget.visible");
+  await expect(widget).toBeVisible();
+  const orderId = widget.locator(".monaco-list-row").filter({ hasText: "order_id" });
+  await expect(orderId).toHaveCount(1);
+  await expect(orderId).toContainText("sales_order");
+  await expect(orderId).not.toContainText("sales_order_item");
 });
 
 test("uses a static spectrum edge when reduced motion is enabled", async ({ page }) => {
@@ -297,7 +327,7 @@ test("supports Apple appearance, system theme settings and compact windows", asy
   await expect(page.getByText("双击表头复制列名", { exact: true })).toBeVisible();
   await expect(page.getByText("多列复制分隔符", { exact: true })).toBeVisible();
   const compactRows = page.locator(".settings-drawer .compact-setting-row");
-  await expect(compactRows).toHaveCount(7);
+  await expect(compactRows).toHaveCount(8);
   expect(await compactRows.evaluateAll((rows) => rows.every((row) => {
     const style = getComputedStyle(row);
     const label = row.querySelector(".el-form-item__label")?.getBoundingClientRect();

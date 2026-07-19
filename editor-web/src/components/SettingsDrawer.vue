@@ -41,6 +41,24 @@
         </el-form-item>
       </section>
 
+      <section class="settings-section completion-settings">
+        <div class="section-heading"><div><strong>SQL补全</strong><span>上下文建议与页面内缓存</span></div></div>
+        <el-form-item class="compact-setting-row completion-cache-row">
+          <template #label>
+            <div class="setting-label"><span>补全缓存占用</span>
+              <el-tooltip content="按补全建议序列化后的UTF-8字节数估算，仅统计当前页面内存；清理不会影响对象树、连接或查询结果。" placement="top">
+                <el-icon class="setting-help" tabindex="0" aria-label="补全缓存占用说明"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </div>
+          </template>
+          <div class="completion-cache-control">
+            <span data-testid="completion-cache-stats">约 {{ completionCacheSize }} · {{ completionCacheEnvironmentCount }}个环境<span v-if="completionCacheLoadingCount"> · {{ completionCacheLoadingCount }}项加载中</span></span>
+            <el-button text type="danger" size="small" :icon="Delete" aria-label="清理全部补全缓存"
+                       :disabled="!canClearCompletionCaches" @click="$emit('clearCompletionCaches')">清理</el-button>
+          </div>
+        </el-form-item>
+      </section>
+
       <section class="settings-section result-settings">
         <div class="section-heading"><div><strong>结果集</strong><span>数据获取能力、列布局与复制</span></div></div>
         <el-form-item class="compact-setting-row">
@@ -104,19 +122,21 @@
 </template>
 
 <script setup lang="ts">
-import { Monitor, Moon, QuestionFilled, Sunny } from "@element-plus/icons-vue";
+import { Delete, Monitor, Moon, QuestionFilled, Sunny } from "@element-plus/icons-vue";
 import type { ResolvedTheme, ThemePreference } from "../types";
 import type { ColumnLayoutScope } from "../columnLayout";
 import type { CopySeparator } from "../resultCopy";
 
 defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: ResolvedTheme; maxRows: number;
   streamBatchRows: number; columnLayoutScope: ColumnLayoutScope; copyHeaderOnDoubleClick: boolean;
-  copySeparator: CopySeparator; maxActiveSessions: number; idleTimeoutMinutes: number }>();
+  copySeparator: CopySeparator; maxActiveSessions: number; idleTimeoutMinutes: number;
+  completionCacheSize: string; completionCacheEnvironmentCount: number; completionCacheLoadingCount: number;
+  canClearCompletionCaches: boolean }>();
 const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme": [value: ThemePreference];
   "update:maxRows": [value: number]; "update:streamBatchRows": [value: number];
   "update:columnLayoutScope": [value: ColumnLayoutScope]; "update:copyHeaderOnDoubleClick": [value: boolean];
   "update:copySeparator": [value: CopySeparator]; "update:maxActiveSessions": [value: number];
-  "update:idleTimeoutMinutes": [value: number] }>();
+  "update:idleTimeoutMinutes": [value: number]; clearCompletionCaches: [] }>();
 function themeChanged(value: string | number | boolean | undefined): void {
   if (value === "system" || value === "dark" || value === "light") emit("update:theme", value);
 }
@@ -191,4 +211,7 @@ function copyHeaderToggleChanged(value: string | number | boolean): void {
 .compact-setting-row :deep(.el-radio-button__inner) { padding-inline: 9px; }
 .number-with-unit { display: flex; align-items: center; gap: 6px; color: var(--db-muted); font-size: 11px; }
 .separator-options :deep(.el-radio-button__inner) { min-width: 38px; padding-inline: 8px; }
+.completion-cache-control { display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: 5px; }
+.completion-cache-control > span { max-width: 178px; overflow: hidden; color: var(--db-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.completion-cache-control :deep(.el-button) { margin-left: 0; padding-inline: 5px; }
 </style>

@@ -3,7 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { useAppStore } from "./app";
 import { useConnectionStore } from "./connection";
 import { useEditorStore } from "./editor";
-import { useMetadataStore } from "./metadata";
+import { formatCompletionBytes, serializedUtf8Size, useMetadataStore } from "./metadata";
 import { useQueryStore } from "./query";
 import { useSettingsStore } from "./settings";
 import type { CompletionSnapshot, Suggestion } from "../types";
@@ -192,6 +192,60 @@ describe("application stores", () => {
     expect(metadata.suggestions).toEqual([dev]);
     metadata.activate("profile-sit@1", "system:sit");
     expect(metadata.suggestions).toEqual([sit]);
+  });
+
+  it("estimates serialized UTF-8 completion cache space across environments", () => {
+    const metadata = useMetadataStore();
+    const chinese = suggestion("中文😀", "订单😀");
+    const english = suggestion("english", "orders");
+    metadata.beginCompletion("system:dev", "DEV", "load-dev", "profile-dev");
+    metadata.completeCompletion("system:dev", "load-dev", snapshot("profile-dev", chinese));
+    metadata.beginCompletion("system:sit", "SIT", "load-sit", "profile-sit");
+    metadata.completeCompletion("system:sit", "load-sit", snapshot("profile-sit", english));
+
+    expect(metadata.completionStats).toEqual({
+      environmentCount: 2,
+      suggestionCount: 2,
+      estimatedBytes: serializedUtf8Size([chinese]) + serializedUtf8Size([english]),
+      loadingCount: 0
+    });
+    expect(formatCompletionBytes(1229)).toBe("1.2 KB");
+  });
+
+  it("counts a preserved snapshot after refresh failure and excludes empty loading caches", () => {
+    const metadata = useMetadataStore();
+    const existing = suggestion("old", "订单");
+    metadata.beginCompletion("system:dev", "DEV", "load-1", "profile-1");
+    metadata.completeCompletion("system:dev", "load-1", snapshot("profile-1", existing));
+    metadata.beginCompletion("system:dev", "DEV", "load-2", "profile-1", true);
+    metadata.beginCompletion("system:sit", "SIT", "load-3", "profile-2");
+    metadata.failCompletion("system:dev", "load-2", "failed");
+
+    expect(metadata.completionStats).toEqual({
+      environmentCount: 1,
+      suggestionCount: 1,
+      estimatedBytes: serializedUtf8Size([existing]),
+      loadingCount: 1
+    });
+  });
+
+  it("clears only completion caches and ignores responses from invalidated loads", () => {
+    const metadata = useMetadataStore();
+    const root = { id: "catalog", label: "db", kind: "catalog" as const, leaf: false };
+    metadata.setRoots([root], "profile@1");
+    metadata.activate("profile@1", "system:dev");
+    metadata.beginCompletion("system:dev", "DEV", "load-1", "profile-1");
+    metadata.updateProgress({ loadId: "load-1", phase: "loading", completed: 1, total: 2, message: "orders" });
+
+    const released = metadata.clearCompletions();
+
+    expect(released.loadingCount).toBe(1);
+    expect(metadata.roots).toEqual([root]);
+    expect(metadata.suggestions).toEqual([]);
+    expect(metadata.canClearCompletions).toBe(false);
+    expect(metadata.completeCompletion("system:dev", "load-1", snapshot("profile-1", suggestion("late", "late_table")))).toBe(false);
+    metadata.updateProgress({ loadId: "load-1", phase: "loading", completed: 2, total: 2, message: "late" });
+    expect(metadata.completionCaches).toEqual({});
   });
 
   it("initializes independent result limit and streaming batch settings", () => {

@@ -5,10 +5,12 @@ import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import * as monaco from "monaco-editor";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import type { Suggestion } from "../types";
+import { resolveCompletionSuggestions } from "../sqlCompletion";
 
 (self as typeof self & { MonacoEnvironment: object }).MonacoEnvironment = { getWorker: () => new EditorWorker() };
 
-const props = defineProps<{ modelKey: string; initialValue: string; theme: "dark" | "light"; suggestions: Suggestion[] }>();
+const props = defineProps<{ modelKey: string; initialValue: string; theme: "dark" | "light";
+  suggestions: Suggestion[]; defaultCatalog?: string }>();
 const emit = defineEmits<{
   dirty: [];
   execute: [scope: "current" | "script", selection: string, cursorOffset: number];
@@ -108,7 +110,12 @@ onMounted(() => {
     triggerCharacters: [".", "`"],
     provideCompletionItems(model, position) {
       const word = model.getWordUntilPosition(position);
-      return { suggestions: props.suggestions.map((item) => ({
+      const sqlBeforeCursor = model.getValueInRange({
+        startLineNumber: 1, startColumn: 1,
+        endLineNumber: position.lineNumber, endColumn: position.column
+      });
+      const contextualSuggestions = resolveCompletionSuggestions(sqlBeforeCursor, props.suggestions, props.defaultCatalog);
+      return { suggestions: contextualSuggestions.map((item) => ({
         label: item.label,
         insertText: item.insertText,
         detail: item.detail,

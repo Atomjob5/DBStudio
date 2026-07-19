@@ -117,6 +117,33 @@ export interface CompletionCache {
   startedAt?: number;
 }
 
+export interface CompletionSource {
+  kind: "physical" | "cte" | "derived";
+  name: string;
+  alias: string;
+  catalog?: string;
+  columns?: string[];
+}
+
+export interface CompletionScope {
+  depth: number;
+  sources: CompletionSource[];
+  parent?: CompletionScope;
+}
+
+export interface CompletionContext {
+  qualifier: string[];
+  defaultCatalog?: string;
+  scope?: CompletionScope;
+}
+
+export interface CompletionCacheStats {
+  environmentCount: number;
+  suggestionCount: number;
+  estimatedBytes: number;
+  loadingCount: number;
+}
+
 export interface EditorTab {
   id: string;
   title: string;

@@ -59,11 +59,20 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
       message: "已扫描 eastwealthcrawler", sourceProfileId: profileId, environmentId: "environment-dev" });
     emit("metadata.completionProgress", { loadId: payload.loadId, phase: "loading", completed: 3, total: 3,
       message: "eastwealthcrawler.product", sourceProfileId: profileId, environmentId: "environment-dev" });
+    const tableNames = ["customer", "order_item", "product", "sales_order", "sales_order_item"];
+    const columns: Record<string, string[]> = {
+      sales_order: ["order_id", "customer_id", "created_at"],
+      sales_order_item: ["order_id", "product_id", "quantity"]
+    };
     return { providerId: "mysql", sourceProfileId: profileId, generatedAt: new Date().toISOString(), suggestions: [
       { id: "keyword-select", label: "SELECT", insertText: "SELECT", detail: "MySQL 关键字", kind: "keyword" },
       { id: "database-demo", label: "eastwealthcrawler", insertText: "`eastwealthcrawler`", detail: "数据库 eastwealthcrawler", kind: "database", catalog: "eastwealthcrawler" },
-      ...["customer", "order_item", "product"].map((name) => ({ id: `table-${name}`, label: name, insertText: `\`${name}\``,
-        detail: `eastwealthcrawler.${name} · 表`, kind: "table", catalog: "eastwealthcrawler", objectName: name }))
+      ...tableNames.map((name) => ({ id: `table-${name}`, label: name, insertText: `\`${name}\``,
+        detail: `eastwealthcrawler.${name} · 表`, kind: "table", catalog: "eastwealthcrawler", objectName: name })),
+      ...Object.entries(columns).flatMap(([table, names]) => names.map((name) => ({
+        id: `column-${table}-${name}`, label: name, insertText: `\`${name}\``,
+        detail: `eastwealthcrawler.${table}.${name}`, kind: "column", catalog: "eastwealthcrawler", objectName: table
+      })))
     ] };
   }
   if (type === "sql.complete") return [];

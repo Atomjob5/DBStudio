@@ -112,6 +112,7 @@
                 </el-tabs>
                 <MonacoEditor v-if="editors.active" ref="monacoEditor" class="editor-widget" :model-key="editors.active.id"
                               :initial-value="editors.active.content" :theme="app.theme" :suggestions="metadata.suggestions"
+                              :default-catalog="editors.active.connection?.settings.database ?? ''"
                               @dirty="markActiveDirty" @execute="executeFromEditor" @format="formatActive" />
                 <el-empty v-else class="workspace-empty" description="新建 SQL 标签开始查询">
                   <template #image><el-icon><Document /></el-icon></template>
@@ -163,11 +164,13 @@
                   :stream-batch-rows="settings.streamBatchRows" :column-layout-scope="settings.columnLayoutScope"
                   :copy-header-on-double-click="settings.copyHeaderOnDoubleClick" :copy-separator="settings.copySeparator"
                   :max-active-sessions="settings.maxActiveSessions" :idle-timeout-minutes="settings.idleTimeoutMinutes"
+                  :completion-cache-size="completionCacheSize" :completion-cache-environment-count="metadata.completionStats.environmentCount"
+                  :completion-cache-loading-count="metadata.completionStats.loadingCount" :can-clear-completion-caches="metadata.canClearCompletions"
                   @update:theme="updateTheme" @update:max-rows="updateMaxRows"
                   @update:stream-batch-rows="updateStreamBatchRows" @update:column-layout-scope="updateColumnLayoutScope"
                   @update:copy-header-on-double-click="updateCopyHeaderOnDoubleClick"
                   @update:copy-separator="updateCopySeparator" @update:max-active-sessions="updateMaxActiveSessions"
-                  @update:idle-timeout-minutes="updateIdleTimeoutMinutes" />
+                  @update:idle-timeout-minutes="updateIdleTimeoutMinutes" @clear-completion-caches="clearCompletionCaches" />
   <CsvImportDialog v-model="csvDialog" :editor-id="editors.active?.id" @imported="objectExplorer?.resetTree()" />
 </template>
 
@@ -213,7 +216,7 @@ import SettingsDrawer from "./components/SettingsDrawer.vue";
 import { useAppStore } from "./stores/app";
 import { useConnectionStore } from "./stores/connection";
 import { useEditorStore } from "./stores/editor";
-import { useMetadataStore } from "./stores/metadata";
+import { formatCompletionBytes, useMetadataStore } from "./stores/metadata";
 import { useQueryStore } from "./stores/query";
 import { useSettingsStore } from "./stores/settings";
 import type { ColumnLayoutScope } from "./columnLayout";
@@ -255,6 +258,7 @@ const activeCompletionKey = computed(() => activeCompletionContext.value?.key ??
 const activeCompletionLoading = computed(() => metadata.completionFor(activeCompletionKey.value)?.state === "loading");
 const completionStatus = computed(() => metadata.statusFor(activeCompletionKey.value));
 const completionStatusText = computed(() => completionMessage(completionStatus.value));
+const completionCacheSize = computed(() => formatCompletionBytes(metadata.completionStats.estimatedBytes));
 const activeConnectionValue = computed(() => editors.active?.connection ? `${editors.active.connection.id}@${editors.active.connection.revision}` : undefined);
 const activeConnectionPath = computed(() => connections.pathFor(editors.active?.connection));
 const activeConnectionDisplay = computed(() => {
@@ -750,6 +754,23 @@ async function updateIdleTimeoutMinutes(value: number): Promise<void> {
   const previous = settings.idleTimeoutMinutes; settings.idleTimeoutMinutes = value;
   try { await rpc.request("settings.update", { key: "connection.idleTimeoutMinutes", value: String(value) }); }
   catch (error) { settings.idleTimeoutMinutes = previous; reportError(error); }
+}
+async function clearCompletionCaches(): Promise<void> {
+  const stats = { ...metadata.completionStats };
+  const size = formatCompletionBytes(stats.estimatedBytes);
+  try {
+    await ElMessageBox.confirm(
+      `将清理约 ${size}（${stats.environmentCount}个环境）的补全缓存。对象树、数据库连接和查询结果不会受到影响。`,
+      "清理补全缓存",
+      { type: "warning", confirmButtonText: "清理", cancelButtonText: "取消" }
+    );
+  } catch {
+    return;
+  }
+  completionNoticeTimers.forEach((timer) => window.clearTimeout(timer));
+  completionNoticeTimers.clear();
+  metadata.clearCompletions();
+  ElMessage.success(`已释放约 ${size} 的补全缓存`);
 }
 function dataCommand(command: string): void {
   if (command === "import" && editors.active?.connection) csvDialog.value = true;

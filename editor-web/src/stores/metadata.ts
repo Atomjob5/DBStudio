@@ -1,6 +1,6 @@
 import { computed, shallowRef } from "vue";
 import { defineStore } from "pinia";
-import type { CompletionCache, CompletionProgress, CompletionSnapshot, MetadataNode } from "../types";
+import type { CompletionCache, CompletionCacheStats, CompletionProgress, CompletionSnapshot, MetadataNode } from "../types";
 
 const emptySuggestions: CompletionCache["suggestions"] = [];
 
@@ -14,6 +14,15 @@ export const useMetadataStore = defineStore("metadata", () => {
     set: (value: MetadataNode[]) => setRoots(value, activeTreeKey.value)
   });
   const suggestions = computed(() => completionCaches.value[activeCompletionKey.value]?.suggestions ?? emptySuggestions);
+  const completionStats = computed<CompletionCacheStats>(() => Object.values(completionCaches.value).reduce((stats, cache) => {
+    if (cache.state === "loading") stats.loadingCount += 1;
+    if (!cache.hasSnapshot) return stats;
+    stats.environmentCount += 1;
+    stats.suggestionCount += cache.suggestions.length;
+    stats.estimatedBytes += serializedUtf8Size(cache.suggestions);
+    return stats;
+  }, { environmentCount: 0, suggestionCount: 0, estimatedBytes: 0, loadingCount: 0 }));
+  const canClearCompletions = computed(() => Object.keys(completionCaches.value).length > 0);
 
   function activate(treeKey?: string, completionKey?: string): void {
     activeTreeKey.value = treeKey || "unbound";
@@ -91,7 +100,27 @@ export const useMetadataStore = defineStore("metadata", () => {
     completionCaches.value = {};
   }
 
-  return { activeTreeKey, activeCompletionKey, roots, suggestions, completionCaches,
+  function clearCompletions(): CompletionCacheStats {
+    const released = { ...completionStats.value };
+    completionCaches.value = {};
+    return released;
+  }
+
+  return { activeTreeKey, activeCompletionKey, roots, suggestions, completionCaches, completionStats, canClearCompletions,
     activate, setRoots, clearTree, completionFor, beginCompletion, updateProgress,
-    completeCompletion, failCompletion, dismissNotice, statusFor, clearAll };
+    completeCompletion, failCompletion, dismissNotice, statusFor, clearCompletions, clearAll };
 });
+
+export function serializedUtf8Size(value: unknown): number {
+  const serialized = JSON.stringify(value);
+  return new TextEncoder().encode(serialized).byteLength;
+}
+
+export function formatCompletionBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / 1024 ** index;
+  const digits = index === 0 || value >= 10 ? 0 : 1;
+  return `${value.toFixed(digits)} ${units[index]}`;
+}

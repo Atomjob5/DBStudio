@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
-import ElementPlus from "element-plus";
+import ElementPlus, { ElMessageBox } from "element-plus";
 import App from "./App.vue";
 import { useConnectionStore } from "./stores/connection";
 import { useEditorStore } from "./stores/editor";
@@ -46,7 +46,7 @@ describe("App result loading status toolbar", () => {
     });
   });
 
-  afterEach(() => wrapper.unmount());
+  afterEach(() => { wrapper.unmount(); vi.restoreAllMocks(); });
 
   it("keeps SVG actions in the footer and loads the selected result", async () => {
     await flushPromises();
@@ -282,6 +282,26 @@ describe("App result loading status toolbar", () => {
     await nextTick();
     expect(wrapper.find(".completion-status").text()).toContain("补全加载失败");
     expect(wrapper.find(".completion-status").attributes("title")).toBe("连接失败");
+  });
+
+  it("确认后只清理补全缓存并使迟到快照失效", async () => {
+    await flushPromises();
+    const metadata = useMetadataStore();
+    metadata.setRoots([{ id: "catalog", label: "eastwealthcrawler", kind: "catalog", leaf: false }], "profile@1");
+    metadata.activate("profile@1", "system-1:environment-dev");
+    metadata.beginCompletion("system-1:environment-dev", "DEV", "load-before-clear", "profile-1");
+    metadata.completeCompletion("system-1:environment-dev", "load-before-clear", completionSnapshot("profile-1"));
+    metadata.beginCompletion("system-1:environment-dev", "DEV", "load-refresh", "profile-1", true);
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue({ value: "", action: "confirm" } as never);
+
+    const vm = wrapper.vm as unknown as { clearCompletionCaches: () => Promise<void> };
+    await vm.clearCompletionCaches();
+    await nextTick();
+
+    expect(ElMessageBox.confirm).toHaveBeenCalledWith(expect.stringContaining("1个环境"), "清理补全缓存", expect.any(Object));
+    expect(metadata.suggestions).toEqual([]);
+    expect(metadata.roots).toHaveLength(1);
+    expect(metadata.completeCompletion("system-1:environment-dev", "load-refresh", completionSnapshot("profile-1", "late"))).toBe(false);
   });
 });
 
