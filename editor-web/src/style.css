@@ -27,9 +27,31 @@
   --db-accent-hover: #0077ed;
   --db-accent-soft: rgba(0, 113, 227, 0.12);
   --db-success: #248a3d;
-  --db-spectrum-green: #34c759;
-  --db-spectrum-cyan: #32ade6;
-  --db-spectrum-blue: #007aff;
+  --db-spectrum-green: #00a63e;
+  --db-spectrum-cyan: #00a7c4;
+  --db-spectrum-blue: #006eff;
+  --db-spectrum-orange: #ff8a00;
+  --db-spectrum-inner-green: #30d158;
+  --db-spectrum-inner-cyan: #64d2ff;
+  --db-spectrum-inner-blue: #0a84ff;
+  --db-spectrum-inner-orange: #ff9f0a;
+  --db-spectrum-gradient: linear-gradient(90deg,
+    var(--db-spectrum-green) 0%, var(--db-spectrum-cyan) 28%,
+    var(--db-spectrum-blue) 55%, var(--db-spectrum-orange) 68%,
+    var(--db-spectrum-orange) 77%, var(--db-spectrum-green) 85%,
+    var(--db-spectrum-green) 100%);
+  --db-spectrum-inner-gradient: linear-gradient(90deg,
+    var(--db-spectrum-inner-green) 0%, var(--db-spectrum-inner-cyan) 28%,
+    var(--db-spectrum-inner-blue) 55%, var(--db-spectrum-inner-orange) 68%,
+    var(--db-spectrum-inner-orange) 77%, var(--db-spectrum-inner-green) 85%,
+    var(--db-spectrum-inner-green) 100%);
+  --db-spectrum-inner-content: "";
+  --db-spectrum-edge-width: 1px;
+  --db-spectrum-opacity: 1;
+  --db-spectrum-inner-opacity: 0.64;
+  --db-spectrum-separator: rgba(60, 60, 67, 0.14);
+  --db-spectrum-shadow: rgba(0, 0, 0, 0.06);
+  --db-spectrum-fallback-inner: rgba(0, 167, 196, 0.24);
   --db-warning: #b25000;
   --db-danger: #d70015;
   --db-editor-bg: #ffffff;
@@ -98,6 +120,18 @@ html[data-theme="dark"] {
   --db-spectrum-green: #30d158;
   --db-spectrum-cyan: #64d2ff;
   --db-spectrum-blue: #0a84ff;
+  --db-spectrum-orange: #0a84ff;
+  --db-spectrum-gradient: linear-gradient(90deg,
+    var(--db-spectrum-green) 0%, var(--db-spectrum-cyan) 25%,
+    var(--db-spectrum-blue) 50%, var(--db-spectrum-cyan) 75%,
+    var(--db-spectrum-green) 100%);
+  --db-spectrum-inner-content: none;
+  --db-spectrum-edge-width: 1.5px;
+  --db-spectrum-opacity: 0.76;
+  --db-spectrum-inner-opacity: 0;
+  --db-spectrum-separator: rgba(255, 255, 255, 0.1);
+  --db-spectrum-shadow: rgba(0, 0, 0, 0.26);
+  --db-spectrum-fallback-inner: transparent;
   --db-warning: #ff9f0a;
   --db-danger: #ff453a;
   --db-editor-bg: #111113;

@@ -79,21 +79,60 @@ test("connects and renders a streamed query result with the development bridge",
   await expect(page.locator(".connection-pill-wrap")).toHaveClass(/connected/);
   const spectrum = await page.locator(".connection-pill-wrap").evaluate((element) => {
     const style = getComputedStyle(element, "::before");
-    return { animationName: style.animationName, animationDuration: style.animationDuration, opacity: style.opacity };
+    const inner = getComputedStyle(element, "::after");
+    const wrapper = getComputedStyle(element);
+    return {
+      animationName: style.animationName,
+      animationDuration: style.animationDuration,
+      opacity: style.opacity,
+      edgeWidth: style.paddingTop,
+      colors: style.backgroundImage,
+      innerAnimationName: inner.animationName,
+      innerDuration: inner.animationDuration,
+      innerOpacity: inner.opacity,
+      innerFilter: inner.filter,
+      innerWidth: inner.paddingTop,
+      innerColors: inner.backgroundImage,
+      separator: wrapper.boxShadow,
+      green: getComputedStyle(document.documentElement).getPropertyValue("--db-spectrum-green").trim(),
+      cyan: getComputedStyle(document.documentElement).getPropertyValue("--db-spectrum-cyan").trim(),
+      blue: getComputedStyle(document.documentElement).getPropertyValue("--db-spectrum-blue").trim(),
+      orange: getComputedStyle(document.documentElement).getPropertyValue("--db-spectrum-orange").trim()
+    };
   });
   expect(spectrum.animationName).toContain("connection-spectrum");
   expect(spectrum.animationDuration).toBe("5.6s");
-  expect(Number(spectrum.opacity)).toBeCloseTo(0.7, 1);
+  expect(Number(spectrum.opacity)).toBe(1);
+  expect(spectrum.edgeWidth).toBe("1px");
+  expect(spectrum.colors).toContain("rgb(255, 138, 0)");
+  expect(spectrum.innerAnimationName).toContain("connection-spectrum");
+  expect(spectrum.innerDuration).toBe("5.6s");
+  expect(Number(spectrum.innerOpacity)).toBeCloseTo(0.64, 2);
+  expect(spectrum.innerFilter).toBe("blur(0.8px)");
+  expect(spectrum.innerWidth).toBe("1px");
+  expect(spectrum.innerColors).toContain("rgb(255, 159, 10)");
+  expect(spectrum.separator).not.toBe("none");
+  expect(spectrum).toMatchObject({ green: "#00a63e", cyan: "#00a7c4", blue: "#006eff", orange: "#ff8a00" });
+  await expect(page.locator(".connection-pill-wrap")).toHaveScreenshot("connection-spectrum-light-1440.png");
+  await page.setViewportSize({ width: 1024, height: 640 });
+  await expect(page.locator(".connection-pill-wrap")).toHaveScreenshot("connection-spectrum-light-1024.png");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.locator(".connection-pill-wrap").hover();
+  expect(Number(await page.locator(".connection-pill-wrap").evaluate((element) => getComputedStyle(element, "::before").opacity))).toBe(1);
   await page.locator(".connection-pill-wrap").evaluate((element) => element.classList.add("stale"));
   expect(await page.locator(".connection-pill-wrap").evaluate((element) => getComputedStyle(element, "::before").animationName)).toBe("none");
   await page.locator(".connection-pill-wrap").evaluate((element) => element.classList.remove("stale"));
   await page.locator(".connection-pill input").focus();
   const focusedSpectrum = await page.locator(".connection-pill-wrap").evaluate((element) => {
     const style = getComputedStyle(element, "::before");
-    return { playState: style.animationPlayState, opacity: style.opacity };
+    const inner = getComputedStyle(element, "::after");
+    return { playState: style.animationPlayState, opacity: style.opacity,
+      innerPlayState: inner.animationPlayState, innerOpacity: inner.opacity };
   });
   expect(focusedSpectrum.playState).toBe("paused");
-  expect(Number(focusedSpectrum.opacity)).toBeCloseTo(0.28, 2);
+  expect(Number(focusedSpectrum.opacity)).toBeCloseTo(0.38, 2);
+  expect(focusedSpectrum.innerPlayState).toBe("paused");
+  expect(Number(focusedSpectrum.innerOpacity)).toBeCloseTo(0.22, 2);
   await page.keyboard.press("Escape");
 
   await page.getByRole("button", { name: "切换界面主题" }).click();
@@ -102,10 +141,15 @@ test("connects and renders a streamed query result with the development bridge",
     green: getComputedStyle(document.documentElement).getPropertyValue("--db-spectrum-green").trim(),
     cyan: getComputedStyle(document.documentElement).getPropertyValue("--db-spectrum-cyan").trim(),
     blue: getComputedStyle(document.documentElement).getPropertyValue("--db-spectrum-blue").trim(),
-    edge: getComputedStyle(element, "::before").backgroundImage
+    opacity: getComputedStyle(document.documentElement).getPropertyValue("--db-spectrum-opacity").trim(),
+    edgeWidth: getComputedStyle(element, "::before").paddingTop,
+    edge: getComputedStyle(element, "::before").backgroundImage,
+    innerContent: getComputedStyle(element, "::after").content
   }));
-  expect(darkSpectrum).toMatchObject({ green: "#30d158", cyan: "#64d2ff", blue: "#0a84ff" });
+  expect(darkSpectrum).toMatchObject({ green: "#30d158", cyan: "#64d2ff", blue: "#0a84ff", opacity: "0.76" });
+  expect(darkSpectrum.edgeWidth).toBe("1.5px");
   expect(darkSpectrum.edge).toContain("linear-gradient");
+  expect(darkSpectrum.innerContent).toBe("none");
 });
 
 test("uses a static spectrum edge when reduced motion is enabled", async ({ page }) => {
@@ -116,10 +160,14 @@ test("uses a static spectrum edge when reduced motion is enabled", async ({ page
   await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
   const motion = await page.locator(".connection-pill-wrap").evaluate((element) => {
     const style = getComputedStyle(element, "::before");
-    return { animationName: style.animationName, background: style.backgroundImage };
+    const inner = getComputedStyle(element, "::after");
+    return { animationName: style.animationName, background: style.backgroundImage,
+      innerAnimationName: inner.animationName, innerBackground: inner.backgroundImage };
   });
   expect(motion.animationName).toBe("none");
   expect(motion.background).toContain("linear-gradient");
+  expect(motion.innerAnimationName).toBe("none");
+  expect(motion.innerBackground).toContain("linear-gradient");
 });
 
 test("selects result headers, reorders columns and resizes with the header handle", async ({ page }) => {
@@ -228,7 +276,7 @@ test("supports Apple appearance, system theme settings and compact windows", asy
   await expect(page.getByText("双击表头复制列名", { exact: true })).toBeVisible();
   await expect(page.getByText("多列复制分隔符", { exact: true })).toBeVisible();
   const compactRows = page.locator(".settings-drawer .compact-setting-row");
-  await expect(compactRows).toHaveCount(5);
+  await expect(compactRows).toHaveCount(7);
   expect(await compactRows.evaluateAll((rows) => rows.every((row) => {
     const style = getComputedStyle(row);
     const label = row.querySelector(".el-form-item__label")?.getBoundingClientRect();

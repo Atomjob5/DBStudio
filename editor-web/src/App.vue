@@ -1,13 +1,13 @@
 <template>
   <el-container class="app-shell fill" v-loading="app.loading">
     <el-header class="app-toolbar glass-surface" height="48px" aria-label="应用工具栏">
-      <el-tooltip :content="activeConnectionTooltip" placement="bottom">
+      <el-tooltip :content="activeConnectionTooltip" placement="bottom" :disabled="connectionCascaderOpen" :show-after="600">
         <div class="connection-pill-wrap" :class="{ connected: editors.active?.connectionState === 'active', suspended: editors.active?.connectionState === 'suspended', stale: editors.active?.connection?.stale || editors.active?.connection?.unavailable }">
           <el-cascader ref="connectionCascader" class="connection-pill" :model-value="activeConnectionValue"
                        :options="connections.cascaderOptions" :props="connectionCascaderProps"
                        :show-all-levels="false" filterable clearable :disabled="!editors.active || editors.active.busy"
                        :placeholder="activeConnectionDisplay" aria-label="当前编辑标签的数据库链接"
-                       @change="connectionSelectionChanged">
+                       @change="connectionSelectionChanged" @visible-change="connectionCascaderOpen = $event">
             <template #default="{ data }">
               <span>{{ data.menuLabel ?? data.label }}</span>
             </template>
@@ -219,6 +219,7 @@ const leftWidth = ref(248); const lastLeftWidth = ref(248); const editorHeight =
 const activeTool = ref<"objects" | "connections">("connections"); const panelOpen = ref(true);
 const editingProfile = ref<SavedProfile>(); const profileEnvironmentId = ref("");
 const connectionCascader = ref();
+const connectionCascaderOpen = ref(false);
 const objectExplorer = ref<InstanceType<typeof ObjectExplorer>>();
 const monacoEditor = ref<{ getValue(key?: string): string; setValue(value: string, key?: string): void }>();
 const recentHandles = new Map<string, FileSystemFileHandle>();
@@ -736,7 +737,11 @@ function message(error: unknown): string { return error instanceof Error ? error
 }
 .connection-pill-wrap:hover { background: var(--db-control-hover); }
 .connection-pill-wrap.connected:not(.stale) {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--db-spectrum-cyan) 70%, var(--db-control-border));
+  box-shadow:
+    inset 0 0 0 var(--db-spectrum-edge-width) color-mix(in srgb, var(--db-spectrum-cyan) 92%, var(--db-control-border)),
+    inset 0 0 4px var(--db-spectrum-fallback-inner),
+    0 0 0 1px var(--db-spectrum-separator),
+    0 1px 2px var(--db-spectrum-shadow);
 }
 .connection-pill-wrap.suspended { background: var(--db-control-bg); }
 .connection-pill-wrap.stale {
@@ -765,22 +770,22 @@ function message(error: unknown): string { return error instanceof Error ? error
 .connection-pill :deep(.el-input__inner) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 @supports ((mask-composite: exclude) or (-webkit-mask-composite: xor)) {
-  .connection-pill-wrap.connected:not(.stale) { box-shadow: inset 0 0 0 1px var(--db-control-border); }
+  .connection-pill-wrap.connected:not(.stale) {
+    box-shadow:
+      inset 0 0 3px var(--db-spectrum-fallback-inner),
+      0 0 0 1px var(--db-spectrum-separator),
+      0 1px 2px var(--db-spectrum-shadow);
+  }
   .connection-pill-wrap.connected:not(.stale)::before {
     content: "";
     position: absolute;
     z-index: 2;
     inset: 0;
-    padding: 1px;
+    padding: var(--db-spectrum-edge-width);
     border-radius: inherit;
     pointer-events: none;
-    opacity: 0.7;
-    background: linear-gradient(90deg,
-      var(--db-spectrum-green) 0%,
-      var(--db-spectrum-cyan) 25%,
-      var(--db-spectrum-blue) 50%,
-      var(--db-spectrum-cyan) 75%,
-      var(--db-spectrum-green) 100%);
+    opacity: var(--db-spectrum-opacity);
+    background: var(--db-spectrum-gradient);
     background-size: 220% 100%;
     -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
     -webkit-mask-composite: xor;
@@ -788,8 +793,32 @@ function message(error: unknown): string { return error instanceof Error ? error
     mask-composite: exclude;
     animation: connection-spectrum 5.6s linear infinite;
   }
+  .connection-pill-wrap.connected:not(.stale)::after {
+    content: var(--db-spectrum-inner-content);
+    position: absolute;
+    z-index: 0;
+    inset: 1px;
+    padding: 1px;
+    border-radius: 9px;
+    pointer-events: none;
+    opacity: var(--db-spectrum-inner-opacity);
+    filter: blur(0.8px);
+    background: var(--db-spectrum-inner-gradient);
+    background-size: 220% 100%;
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    animation: connection-spectrum 5.6s linear infinite;
+  }
+  .connection-pill-wrap.connected:not(.stale):hover::before { opacity: 1; }
+  .connection-pill-wrap.connected:not(.stale):hover::after { opacity: 0.82; }
   .connection-pill-wrap.connected:not(.stale):focus-within::before {
-    opacity: 0.28;
+    opacity: 0.38;
+    animation-play-state: paused;
+  }
+  .connection-pill-wrap.connected:not(.stale):focus-within::after {
+    opacity: 0.22;
     animation-play-state: paused;
   }
 }
@@ -923,7 +952,8 @@ function message(error: unknown): string { return error instanceof Error ? error
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .connection-pill-wrap.connected:not(.stale)::before {
+  .connection-pill-wrap.connected:not(.stale)::before,
+  .connection-pill-wrap.connected:not(.stale)::after {
     animation: none !important;
     background-position: 50% 50%;
   }
