@@ -2,7 +2,7 @@
   <main class="workspace-chooser" aria-label="选择工作空间">
     <section class="workspace-window">
       <header class="workspace-hero">
-        <div class="app-mark">D</div>
+        <span class="app-mark"><img src="/assets/branding/dbstudio-workspace-line-128.png" alt="DBStudio" /></span>
         <div><p>DBStudio</p><h1>选择工作空间</h1><span>每个空间独立保存SQL标签与数据库会话。</span></div>
         <el-button type="primary" round :icon="Plus" @click="openCreate">新建空间</el-button>
       </header>
@@ -78,15 +78,18 @@ function formatTime(value: string): string {
 .workspace-chooser { display:grid; min-height:100%; place-items:center; padding:32px; background:var(--db-bg); }
 .workspace-window { display:flex; width:min(760px,100%); height:min(680px,calc(100vh - 64px)); flex-direction:column; overflow:hidden;
   border:1px solid var(--db-border); border-radius:22px; background:var(--db-content); box-shadow:0 24px 70px rgba(0,0,0,.12); }
-.workspace-hero { display:grid; grid-template-columns:48px 1fr auto; gap:16px; align-items:center; padding:26px 28px 22px;
+.workspace-hero { display:grid; grid-template-columns:64px 1fr auto; gap:18px; align-items:center; padding:26px 28px 22px;
   border-bottom:1px solid var(--db-border-soft); }
-.app-mark { display:grid; width:44px; height:44px; place-items:center; border-radius:12px; color:white; font-size:20px; font-weight:700;
-  background:linear-gradient(145deg,#2997ff,#0066cc); box-shadow:0 6px 18px rgba(0,113,227,.24); }
+.app-mark { display:grid; width:60px; height:60px; place-items:center; border:1px solid rgba(0,113,227,.12); border-radius:16px;
+  background:rgba(247,250,255,.96); box-shadow:0 7px 20px rgba(0,113,227,.16); }
+.app-mark img { display:block; width:54px; height:54px; object-fit:contain; }
 .workspace-hero p,.workspace-hero h1 { margin:0; }.workspace-hero p{color:var(--db-muted);font-size:12px}.workspace-hero h1{font-size:24px;line-height:1.25}.workspace-hero span{color:var(--db-muted);font-size:12px}
 .workspace-list { flex:1; padding:14px 18px; }.workspace-card { display:flex; align-items:center; margin:5px 0; border-radius:13px; transition:background 120ms; }.workspace-card:hover{background:var(--db-control-hover)}
 .workspace-open { display:flex; min-width:0; flex:1; align-items:center; gap:13px; padding:12px; border:0; color:inherit; text-align:left; background:transparent; cursor:pointer; }.workspace-open:disabled{cursor:not-allowed;opacity:.62}
-.workspace-icon { display:grid; width:34px; height:34px; place-items:center; border-radius:9px; color:var(--db-accent); background:color-mix(in srgb,var(--db-accent) 11%,transparent); }.workspace-icon svg{width:18px}
+.workspace-icon { display:grid; width:34px; height:34px; flex:none; place-items:center; border-radius:9px;
+  color:var(--db-accent); background:color-mix(in srgb,var(--db-accent) 11%,transparent); }
+.workspace-icon svg { width:18px; }
 .workspace-copy{display:flex;min-width:0;flex:1;flex-direction:column;gap:3px}.workspace-copy strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}.workspace-copy small{color:var(--db-muted);font-size:11px}.workspace-flags{flex:none}.open-arrow{color:var(--db-muted);font-size:24px}
 footer{display:flex;align-items:center;justify-content:space-between;padding:10px 24px;border-top:1px solid var(--db-border-soft);color:var(--db-muted);font-size:11px}
-@media(max-width:640px){.workspace-chooser{padding:0}.workspace-window{height:100vh;border:0;border-radius:0}.workspace-hero{grid-template-columns:44px 1fr}.workspace-hero>.el-button{grid-column:1/-1}.workspace-flags{display:none}}
+@media(max-width:640px){.workspace-chooser{padding:0}.workspace-window{height:100vh;border:0;border-radius:0}.workspace-hero{grid-template-columns:60px 1fr}.workspace-hero>.el-button{grid-column:1/-1}.workspace-flags{display:none}}
 </style>
