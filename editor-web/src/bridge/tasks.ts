@@ -27,6 +27,7 @@ class TaskClient {
   }
 
   async request<T>(type: string, payload: unknown, timeoutMs = 10 * 60_000): Promise<T | undefined> {
+    await rpc.ensureOperational();
     const started = await rpc.request<TaskStart>(type, payload);
     if (started.cancelled || !started.taskId) return undefined;
     return this.wait<T>(started.taskId, timeoutMs);

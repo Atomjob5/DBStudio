@@ -16,10 +16,12 @@ public final class LocalRequestFilter extends OncePerRequestFilter {
     public static final String REQUEST_ID = "dbstudio.requestId";
     private final LocalAccessToken token;
     private final ObjectMapper mapper;
+    private final WorkspaceRegistry workspaces;
 
-    public LocalRequestFilter(LocalAccessToken token, ObjectMapper mapper) {
+    public LocalRequestFilter(LocalAccessToken token, ObjectMapper mapper, WorkspaceRegistry workspaces) {
         this.token = token;
         this.mapper = mapper;
+        this.workspaces = workspaces;
     }
 
     @Override
@@ -49,8 +51,35 @@ public final class LocalRequestFilter extends OncePerRequestFilter {
                         "UNAUTHORIZED", "本地会话未认证或已经失效");
                 return;
             }
+            String workspaceId = protectedWorkspaceId(request);
+            if (workspaceId != null) {
+                try {
+                    workspaces.requireOwned(workspaceId, clientId(request));
+                } catch (ApiException exception) {
+                    reject(response, requestId, HttpServletResponse.SC_CONFLICT,
+                            exception.getCode(), exception.getMessage());
+                    return;
+                }
+            }
         }
         chain.doFilter(request, response);
+    }
+
+    private static String protectedWorkspaceId(HttpServletRequest request) {
+        String prefix = "/api/v1/workspaces/";
+        String path = request.getRequestURI();
+        if (!path.startsWith(prefix)) return null;
+        String remaining = path.substring(prefix.length());
+        int separator = remaining.indexOf('/');
+        if (separator < 0) return null;
+        String operation = remaining.substring(separator + 1);
+        if ("open".equals(operation)) return null;
+        return remaining.substring(0, separator);
+    }
+
+    private static String clientId(HttpServletRequest request) {
+        String header = request.getHeader("X-DBStudio-Client-Id");
+        return header == null || header.trim().isEmpty() ? request.getParameter("clientId") : header;
     }
 
     private boolean validHost(HttpServletRequest request) {

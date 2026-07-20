@@ -30,7 +30,50 @@ export interface SavedProfile {
 
 export interface ConnectionSystem { id: string; name: string; revision: string; }
 export interface ConnectionEnvironment { id: string; systemId: string; name: string; revision: string; }
-export type EditorConnectionState = "unbound" | "active" | "suspended";
+export type EditorConnectionState = "unbound" | "ready" | "active" | "suspended" | "credentials-required" | "unavailable";
+export type TransportState = "connecting" | "ready" | "reconnecting" | "recovering" | "offline";
+export type TransactionState = "none" | "active" | "disconnected-protected" | "auto-rolled-back" | "lost";
+export type WorkspaceState = "available" | "in-use" | "disconnected" | "disconnected-transaction";
+export type RecoveryState = "none" | "unsaved-content" | "transaction-protected" | "transaction-rolled-back";
+export interface WorkspaceSummary {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  lastOpenedAt?: string;
+  state: WorkspaceState;
+  recoveryState: RecoveryState;
+  unsavedEditorCount: number;
+  transactionCount: number;
+}
+export interface RecoveredEditor {
+  id: string;
+  title: string;
+  content: string;
+  dirty: boolean;
+  sortOrder: number;
+  fileName?: string;
+  filePath?: string;
+  active: boolean;
+  transactionState: TransactionState;
+  connectionState: EditorConnectionState;
+  connection?: EditorConnectionBinding;
+}
+export interface WorkspaceRecoverySummary {
+  message: string;
+  unsavedEditorCount: number;
+  transactionCount: number;
+  transactionRecoverable: boolean;
+}
+export interface WorkspaceOpenResponse {
+  workspaceId: string;
+  workspace?: WorkspaceSummary;
+  recoveryDecisionRequired?: boolean;
+  processRestarted?: boolean;
+  transactionRolledBack?: boolean;
+  recovery?: WorkspaceRecoverySummary;
+  editors?: RecoveredEditor[];
+}
 export interface EditorConnectionBinding extends SavedProfile {
   unavailable?: boolean;
   stale?: boolean;
@@ -152,6 +195,7 @@ export interface EditorTab {
   fileHandle?: FileSystemFileHandle;
   dirty: boolean;
   transactionDirty: boolean;
+  transactionState?: TransactionState;
   busy: boolean;
   connection?: EditorConnectionBinding;
   connectionState: EditorConnectionState;
@@ -189,6 +233,7 @@ export interface QueryExecutionState {
   cancelled: boolean;
   failed: boolean;
   durationMs: number;
+  historical?: boolean;
 }
 
 export interface HistoryEntry {

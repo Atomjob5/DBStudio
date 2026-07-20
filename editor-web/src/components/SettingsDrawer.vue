@@ -39,6 +39,18 @@
           <div class="number-with-unit"><el-input-number class="compact-number" size="small" :model-value="idleTimeoutMinutes" :min="1" :max="1440" controls-position="right"
                            @update:model-value="$emit('update:idleTimeoutMinutes', $event ?? 10)" /><span>分钟</span></div>
         </el-form-item>
+        <el-form-item class="compact-setting-row">
+          <template #label>
+            <div class="setting-label"><span>事务断连回滚时间</span>
+              <el-tooltip content="浏览器或事件通道断开后，未提交事务会保留原JDBC至该时间；超时后自动回滚。Java进程退出时无法恢复事务。" placement="top">
+                <el-icon class="setting-help" tabindex="0" aria-label="事务断连回滚时间说明"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </div>
+          </template>
+          <div class="number-with-unit"><el-input-number class="compact-number" size="small"
+            :model-value="transactionDisconnectRollbackMinutes" :min="1" :max="1440" controls-position="right"
+            @update:model-value="$emit('update:transactionDisconnectRollbackMinutes', $event ?? 10)" /><span>分钟</span></div>
+        </el-form-item>
       </section>
 
       <section class="settings-section completion-settings">
@@ -130,13 +142,15 @@ import type { CopySeparator } from "../resultCopy";
 defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: ResolvedTheme; maxRows: number;
   streamBatchRows: number; columnLayoutScope: ColumnLayoutScope; copyHeaderOnDoubleClick: boolean;
   copySeparator: CopySeparator; maxActiveSessions: number; idleTimeoutMinutes: number;
+  transactionDisconnectRollbackMinutes: number;
   completionCacheSize: string; completionCacheEnvironmentCount: number; completionCacheLoadingCount: number;
   canClearCompletionCaches: boolean }>();
 const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme": [value: ThemePreference];
   "update:maxRows": [value: number]; "update:streamBatchRows": [value: number];
   "update:columnLayoutScope": [value: ColumnLayoutScope]; "update:copyHeaderOnDoubleClick": [value: boolean];
   "update:copySeparator": [value: CopySeparator]; "update:maxActiveSessions": [value: number];
-  "update:idleTimeoutMinutes": [value: number]; clearCompletionCaches: [] }>();
+  "update:idleTimeoutMinutes": [value: number]; "update:transactionDisconnectRollbackMinutes": [value: number];
+  clearCompletionCaches: [] }>();
 function themeChanged(value: string | number | boolean | undefined): void {
   if (value === "system" || value === "dark" || value === "light") emit("update:theme", value);
 }

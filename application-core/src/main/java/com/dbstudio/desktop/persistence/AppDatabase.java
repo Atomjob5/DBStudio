@@ -12,7 +12,7 @@ import java.time.Instant;
 import java.util.UUID;
 
 public final class AppDatabase implements AutoCloseable {
-    private static final int SCHEMA_VERSION = 3;
+    private static final int SCHEMA_VERSION = 4;
     private final Connection connection;
 
     public AppDatabase(Path dataDirectory) throws SQLException, IOException {
@@ -36,6 +36,7 @@ public final class AppDatabase implements AutoCloseable {
         if (version == 0) { migrateToV1(); recordVersion(1); version = 1; }
         if (version == 1) { migrateToV2(); recordVersion(2); version = 2; }
         if (version == 2) { migrateToV3(); recordVersion(3); version = 3; }
+        if (version == 3) { migrateToV4(); recordVersion(4); version = 4; }
         if (version > SCHEMA_VERSION) {
             throw new SQLException("Local database schema is newer than this application: " + version);
         }
@@ -118,6 +119,43 @@ public final class AppDatabase implements AutoCloseable {
                 assignProfiles.setString(1, environmentId);
                 assignProfiles.executeUpdate();
             }
+            connection.commit();
+        } catch (SQLException exception) {
+            connection.rollback();
+            throw exception;
+        } finally {
+            connection.setAutoCommit(previousAutoCommit);
+        }
+    }
+
+    private void migrateToV4() throws SQLException {
+        boolean previousAutoCommit = connection.getAutoCommit();
+        connection.setAutoCommit(false);
+        try (Statement statement = connection.createStatement()) {
+            statement.execute("CREATE TABLE workspace_catalog ("
+                    + "id TEXT PRIMARY KEY, local_uuid TEXT NOT NULL, machine_fingerprint TEXT NOT NULL, "
+                    + "name TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, "
+                    + "last_opened_at TEXT, deleted_at TEXT)");
+            statement.execute("CREATE UNIQUE INDEX idx_workspace_active_name "
+                    + "ON workspace_catalog(name COLLATE NOCASE) WHERE deleted_at IS NULL");
+            statement.execute("CREATE TABLE workspace_editor_checkpoint ("
+                    + "workspace_id TEXT NOT NULL, editor_id TEXT NOT NULL, title TEXT NOT NULL, "
+                    + "sql_text TEXT NOT NULL, sort_order INTEGER NOT NULL, file_name TEXT, file_path TEXT, "
+                    + "profile_id TEXT, is_active INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, "
+                    + "PRIMARY KEY(workspace_id, editor_id), "
+                    + "FOREIGN KEY(workspace_id) REFERENCES workspace_catalog(id))");
+            statement.execute("CREATE TABLE workspace_editor_recovery ("
+                    + "workspace_id TEXT NOT NULL, editor_id TEXT NOT NULL, run_id TEXT NOT NULL, "
+                    + "title TEXT NOT NULL, sql_text TEXT NOT NULL, sort_order INTEGER NOT NULL, "
+                    + "file_name TEXT, file_path TEXT, profile_id TEXT, dirty INTEGER NOT NULL DEFAULT 0, "
+                    + "is_active INTEGER NOT NULL DEFAULT 0, transaction_state TEXT NOT NULL DEFAULT 'none', "
+                    + "updated_at TEXT NOT NULL, PRIMARY KEY(workspace_id, editor_id), "
+                    + "FOREIGN KEY(workspace_id) REFERENCES workspace_catalog(id))");
+            statement.execute("CREATE INDEX idx_workspace_recovery_run "
+                    + "ON workspace_editor_recovery(run_id, workspace_id)");
+            statement.execute("CREATE TABLE application_run ("
+                    + "id TEXT PRIMARY KEY, started_at TEXT NOT NULL, clean_shutdown_at TEXT, "
+                    + "normal_exit INTEGER NOT NULL DEFAULT 0)");
             connection.commit();
         } catch (SQLException exception) {
             connection.rollback();

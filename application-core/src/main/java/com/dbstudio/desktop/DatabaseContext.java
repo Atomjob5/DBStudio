@@ -20,7 +20,6 @@ public final class DatabaseContext implements AutoCloseable {
         this.provider = Objects.requireNonNull(provider, "provider");
         this.profile = Objects.requireNonNull(profile, "profile");
         this.password = Arrays.copyOf(password, password.length);
-        openMetadataSession();
     }
 
     public DatabaseProvider provider() {

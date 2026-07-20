@@ -36,10 +36,15 @@ public final class EditorSessionRegistry implements AutoCloseable {
     }
 
     public EditorSession create() {
-        UUID id = UUID.randomUUID();
-        EditorSession session = new EditorSession(id, "查询 " + sequence.getAndIncrement());
-        sessions.put(id, session);
-        return session;
+        return create(UUID.randomUUID());
+    }
+
+    /** Creates an idempotent logical editor for browser workspace recovery. */
+    public EditorSession create(UUID id) {
+        if (id == null) throw new RpcException("INVALID_EDITOR_ID", "查询标签 ID 无效");
+        EditorSession created = new EditorSession(id, "查询 " + sequence.getAndIncrement());
+        EditorSession existing = sessions.putIfAbsent(id, created);
+        return existing == null ? created : existing;
     }
 
     /** Backwards-compatible eager creation used by core contract tests. */
@@ -121,6 +126,9 @@ public final class EditorSessionRegistry implements AutoCloseable {
         for (EditorSession session : sessions.values()) session.setStreamBatchRows(this.streamBatchRows);
     }
 
+    public int maxRows() { return maxRows; }
+    public int streamBatchRows() { return streamBatchRows; }
+
     @Override public void close() {
         List<EditorSession> copy = new ArrayList<EditorSession>(sessions.values());
         sessions.clear();
@@ -152,7 +160,8 @@ public final class EditorSessionRegistry implements AutoCloseable {
             return current;
         }
         public String bindingKey() { return bindingKey; }
-        public boolean bound() { return context != null; }
+        public boolean bound() { return bindingKey != null; }
+        public boolean hasContext() { return context != null; }
         public boolean active() { return runner != null; }
         public UUID activeExecutionId() { return activeExecutionId; }
         public UUID lastExecutionId() { return lastExecutionId; }
@@ -160,6 +169,18 @@ public final class EditorSessionRegistry implements AutoCloseable {
         public String lastSql() { return lastSql; }
         public long lastTouched() { return lastTouched; }
         public void touch() { lastTouched = System.currentTimeMillis(); }
+
+        /** Attaches a runner backed by a workspace JDBC lease. */
+        public synchronized void attachRunner(QueryRunner value) {
+            if (runner != null && runner != value) throw new RpcException("QUERY_BUSY", "编辑标签已有数据库任务");
+            runner = value; touch();
+        }
+
+        /** Detaches a leased runner without closing its JDBC session. */
+        public synchronized QueryRunner detachRunner() {
+            QueryRunner current = runner;
+            runner = null; touch(); return current;
+        }
 
         public synchronized void bind(DatabaseContext value, String key) {
             if (activeExecutionId != null) throw new RpcException("QUERY_BUSY", "查询执行期间不能切换数据库链接");
@@ -171,6 +192,12 @@ public final class EditorSessionRegistry implements AutoCloseable {
             lastExecutionId = null;
             lastSql = null;
             touch();
+        }
+
+        public synchronized void bindLogical(String key) {
+            if (activeExecutionId != null) throw new RpcException("QUERY_BUSY", "查询执行期间不能切换数据库链接");
+            if (transactionDirty()) throw new RpcException("TRANSACTION_DECISION_REQUIRED", "切换链接前必须提交或回滚事务");
+            closeRunner(); context = null; bindingKey = key; touch();
         }
 
         public synchronized void activate(int maxRows, int streamBatchRows) throws SQLException {

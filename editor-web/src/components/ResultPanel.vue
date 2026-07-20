@@ -8,6 +8,7 @@
         </el-tabs>
         <div class="result-meta" aria-live="polite">
           <span>{{ summary }}</span>
+          <el-tag v-if="execution?.historical" size="small" type="info" effect="plain">断线前快照</el-tag>
           <el-tag v-if="activeResult?.truncated" size="small" type="warning" effect="plain">已截断</el-tag>
         </div>
         <div class="result-actions" aria-label="结果操作">
@@ -27,7 +28,7 @@
           <el-tooltip content="复制选中单元格">
             <el-button text :icon="CopyDocument" aria-label="复制选中单元格" :disabled="!selectedCell" @click="copyCell" />
           </el-tooltip>
-          <el-dropdown :disabled="!activeResult?.columns.length" @command="exportCommand">
+          <el-dropdown :disabled="!activeResult?.columns.length || execution?.historical" @command="exportCommand">
             <el-button text :icon="Download" aria-label="导出结果" title="导出结果" />
             <template #dropdown>
               <el-dropdown-menu>
@@ -442,6 +443,7 @@ async function copyText(text: string, successMessage: string): Promise<void> {
 }
 
 function exportCommand(command: string): void {
+  if (props.execution?.historical) return;
   const resultIndex = activeResult.value?.resultIndex;
   if (resultIndex === undefined) return;
   if (command === "loaded") emit("export-loaded", resultIndex);

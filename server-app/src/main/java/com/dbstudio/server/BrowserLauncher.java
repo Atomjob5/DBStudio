@@ -21,7 +21,8 @@ public final class BrowserLauncher implements ApplicationListener<WebServerIniti
     @Override
     public void onApplicationEvent(WebServerInitializedEvent event) {
         if (!enabled) return;
-        final String url = "http://127.0.0.1:" + event.getWebServer().getPort() + "/#token=" + token.launchValue();
+        final String base = "http://127.0.0.1:" + event.getWebServer().getPort() + "/";
+        final String url = token.enabled() ? base + "#token=" + token.launchValue() : base;
         Thread opener = new Thread(new Runnable() {
             @Override public void run() {
                 try {

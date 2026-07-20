@@ -89,6 +89,24 @@ describe("application stores", () => {
     expect(queries.executions["editor-1"]).not.toBe(resultComplete);
   });
 
+  it("marks disconnected results as historical snapshots without dropping loaded rows", () => {
+    const queries = useQueryStore();
+    queries.start("editor-1", "execution-1");
+    queries.addResult("editor-1", {
+      resultIndex: 0, sql: "select 1", type: "QUERY", columns: ["value"], rows: [["1"]],
+      updateCount: -1, truncated: true, durationMs: 1, complete: false
+    });
+    const before = queries.executions["editor-1"];
+    queries.markHistorical("editor-1");
+    const historical = queries.executions["editor-1"];
+    expect(historical).not.toBe(before);
+    expect(historical).toMatchObject({ busy: false, historical: true });
+    expect(historical.results[0]).toMatchObject({ rows: [["1"]], complete: true });
+
+    queries.start("editor-1", "execution-2");
+    expect(queries.executions["editor-1"].historical).toBeUndefined();
+  });
+
   it("updates saved connection profiles without duplicates", () => {
     const connections = useConnectionStore();
     connections.initialize([], []);

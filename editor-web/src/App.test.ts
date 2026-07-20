@@ -10,11 +10,34 @@ import { useMetadataStore } from "./stores/metadata";
 import { useQueryStore } from "./stores/query";
 import type { CompletionSnapshot, SavedProfile } from "./types";
 
-const rpcRequest = vi.hoisted(() => vi.fn());
+const rpcMock = vi.hoisted(() => ({
+  request: vi.fn(),
+  ensureOperational: vi.fn(async () => undefined),
+  ready: vi.fn(async () => undefined),
+  listWorkspaces: vi.fn(async () => [{ id: "workspace-1", name: "测试空间", createdAt: "2026-01-01", updatedAt: "2026-01-01",
+    state: "available", recoveryState: "none", unsavedEditorCount: 0, transactionCount: 0 }]),
+  openWorkspace: vi.fn(async () => ({ workspaceId: "workspace-1", recoveryDecisionRequired: false, editors: [] })),
+  closeWorkspace: vi.fn(async () => undefined),
+  listeners: new Map<string, Set<(payload: unknown) => void>>()
+}));
+const rpcRequest = rpcMock.request;
 vi.mock("./bridge/rpc", () => ({
   rpc: {
-    request: rpcRequest,
-    on: vi.fn(() => () => undefined),
+    transportState: "ready",
+    ready: rpcMock.ready,
+    listWorkspaces: rpcMock.listWorkspaces,
+    createWorkspace: vi.fn(), renameWorkspace: vi.fn(), deleteWorkspace: vi.fn(),
+    openWorkspace: rpcMock.openWorkspace, closeWorkspace: rpcMock.closeWorkspace,
+    finalizeWorkspace: vi.fn(async () => undefined),
+    resolveWorkspaceRecovery: vi.fn(),
+    request: rpcMock.request,
+    saveEditorDraft: vi.fn(async () => undefined),
+    ensureOperational: rpcMock.ensureOperational,
+    on: vi.fn((type: string, handler: (payload: unknown) => void) => {
+      const listeners = rpcMock.listeners.get(type) ?? new Set();
+      listeners.add(handler); rpcMock.listeners.set(type, listeners);
+      return () => listeners.delete(handler);
+    }),
     uploadCsv: vi.fn(),
     downloadCsv: vi.fn()
   }
@@ -23,9 +46,11 @@ vi.mock("./bridge/rpc", () => ({
 describe("App result loading status toolbar", () => {
   let wrapper: VueWrapper;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     setActivePinia(createPinia());
     rpcRequest.mockReset();
+    rpcMock.ensureOperational.mockClear();
+    rpcMock.listeners.clear();
     rpcRequest.mockImplementation(async (type: string, payload: Record<string, unknown>) => {
       if (type === "app.bootstrap") return { providers: [], profiles: [], recentFiles: [], settings: {} };
       if (type === "editor.create") return { id: "bootstrap-editor", title: "查询 1", connectionState: "unbound" };
@@ -40,10 +65,15 @@ describe("App result loading status toolbar", () => {
         plugins: [ElementPlus],
         stubs: {
           ConnectionDialog: true, ConnectionManagerPanel: true, CsvImportDialog: true, HistoryDrawer: true, MonacoEditor: true,
-          ObjectExplorer: true, SettingsDrawer: true
+          ObjectExplorer: true, SettingsDrawer: true, WorkspaceChooser: true
         }
       }
     });
+    await flushPromises();
+    const vm = wrapper.vm as unknown as { openWorkspace: (workspace: unknown) => Promise<void> };
+    await vm.openWorkspace({ id: "workspace-1", name: "测试空间", createdAt: "2026-01-01", updatedAt: "2026-01-01",
+      state: "available", recoveryState: "none", unsavedEditorCount: 0, transactionCount: 0 });
+    await flushPromises();
   });
 
   afterEach(() => { wrapper.unmount(); vi.restoreAllMocks(); });
@@ -80,6 +110,30 @@ describe("App result loading status toolbar", () => {
       editorId: "editor-1", resultIndex: 1, offset: 1, limit: 1000
     }, 120_000);
     expect(wrapper.find(".result-data-toolbar").exists()).toBe(false);
+  });
+
+  it("工作空间恢复时只恢复编辑器内容并清空旧结果", async () => {
+    await flushPromises();
+    const connections = useConnectionStore();
+    const editors = useEditorStore();
+    const queries = useQueryStore();
+    const profile = completionProfile();
+    connections.initialize([], [profile], [{ id: "system-1", name: "核心系统", revision: "1" }],
+      [{ id: "environment-dev", systemId: "system-1", name: "DEV", revision: "1" }]);
+    editors.patch("bootstrap-editor", { connection: profile, connectionState: "active", busy: true, transactionDirty: true });
+    queries.start("bootstrap-editor", "execution-before-disconnect");
+    queries.addResult("bootstrap-editor", { resultIndex: 0, sql: "select 1", type: "QUERY", columns: ["id"],
+      rows: [["1"]], updateCount: -1, truncated: true, durationMs: 2, complete: false });
+    const vm = wrapper.vm as unknown as { bootstrapWorkspace: (editors: unknown[]) => Promise<void> };
+    await vm.bootstrapWorkspace([{ id: "bootstrap-editor", title: "查询 1", content: "select 1", dirty: true,
+      sortOrder: 0, active: true, transactionState: "auto-rolled-back", connectionState: "credentials-required",
+      connection: profile }]);
+    await nextTick();
+
+    expect(editors.active).toMatchObject({ busy: false, transactionDirty: false,
+      connectionState: "credentials-required", content: "select 1", transactionState: "auto-rolled-back" });
+    expect(queries.executions["bootstrap-editor"]).toBeUndefined();
+    expect(wrapper.find('button[aria-label="下一页数据"]').attributes("disabled")).toBeDefined();
   });
 
   it("disables both actions while all rows are loading", async () => {

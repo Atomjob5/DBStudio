@@ -53,10 +53,17 @@ export const useQueryStore = defineStore("query", () => {
     executions.value = remaining;
   }
 
+  function markHistorical(editorId: string): void {
+    const execution = executions.value[editorId];
+    if (!execution) return;
+    replaceExecution(editorId, { ...execution, busy: false, historical: true,
+      results: execution.results.map((result) => ({ ...result, complete: true })) });
+  }
+
   function warnLate(editorId: string, resultIndex: number): void {
     if (import.meta.env.DEV) console.warn(`Ignoring late query rows for ${editorId}/${resultIndex}`);
   }
 
   function clear(): void { executions.value = {}; }
-  return { executions, start, addResult, appendRows, completeResult, complete, clearEditor, clear };
+  return { executions, start, addResult, appendRows, completeResult, complete, markHistorical, clearEditor, clear };
 });

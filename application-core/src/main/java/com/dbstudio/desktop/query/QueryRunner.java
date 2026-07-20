@@ -2,6 +2,7 @@ package com.dbstudio.desktop.query;
 
 import com.dbstudio.spi.DatabaseSession;
 import com.dbstudio.spi.SqlStatement;
+import com.dbstudio.spi.StatementType;
 import java.io.IOException;
 import java.io.Reader;
 import java.sql.Blob;
@@ -32,6 +33,7 @@ public final class QueryRunner implements AutoCloseable {
     private static final AtomicInteger THREAD_SEQUENCE = new AtomicInteger();
 
     private final DatabaseSession session;
+    private final boolean ownsSession;
     private final ExecutorService executor;
     private final AtomicReference<Statement> activeStatement = new AtomicReference<Statement>();
     private final AtomicBoolean transactionDirty = new AtomicBoolean();
@@ -41,7 +43,13 @@ public final class QueryRunner implements AutoCloseable {
 
     public QueryRunner(DatabaseSession session, int maxRows, int streamBatchRows,
                        ResultColumnResolver columnResolver) {
+        this(session, maxRows, streamBatchRows, columnResolver, true);
+    }
+
+    public QueryRunner(DatabaseSession session, int maxRows, int streamBatchRows,
+                       ResultColumnResolver columnResolver, boolean ownsSession) {
         this.session = Objects.requireNonNull(session, "session");
+        this.ownsSession = ownsSession;
         this.columnResolver = Objects.requireNonNull(columnResolver, "columnResolver");
         this.maxRows = Math.max(1, maxRows);
         this.streamBatchRows = Math.max(1, streamBatchRows);
@@ -186,9 +194,8 @@ public final class QueryRunner implements AutoCloseable {
             statement.setMaxRows(statementMaxRows + 1);
             activeStatement.set(statement);
             boolean hasResult = statement.execute(sqlStatement.text());
-            if (sqlStatement.type().modifiesData()) transactionDirty.set(true);
-            else if (sqlStatement.type().implicitlyCommitsInMySql()) {
-                transactionDirty.set(false);
+            updateTransactionState(sqlStatement, hasResult);
+            if (sqlStatement.type().implicitlyCommitsInMySql()) {
                 columnResolver.invalidate();
             }
 
@@ -343,6 +350,45 @@ public final class QueryRunner implements AutoCloseable {
         return lower.contains("cancel") || lower.contains("interrupt");
     }
 
+    private void updateTransactionState(SqlStatement statement, boolean hasResult) {
+        StatementType type = statement.type();
+        String normalized = leadingKeyword(statement.text());
+        if (type.modifiesData() || type == StatementType.OTHER) {
+            transactionDirty.set(true);
+            return;
+        }
+        if (type == StatementType.DDL) {
+            transactionDirty.set(false);
+            return;
+        }
+        if (type == StatementType.TRANSACTION) {
+            if ("COMMIT".equals(normalized) || "ROLLBACK".equals(normalized)) transactionDirty.set(false);
+            else transactionDirty.set(true);
+            return;
+        }
+        if (type == StatementType.QUERY) {
+            /* WITH can prefix UPDATE/DELETE/INSERT in MySQL. If a statement classified as a
+             * query produces an update count instead of a ResultSet, pin the connection rather
+             * than risk returning an uncommitted transaction to the shared queue. */
+            if (!hasResult) {
+                transactionDirty.set(true);
+                return;
+            }
+            String upper = statement.text().toUpperCase(java.util.Locale.ROOT);
+            if (upper.matches("(?s).*\\bFOR\\s+(UPDATE|SHARE)\\b.*")
+                    || upper.matches("(?s).*\\bLOCK\\s+IN\\s+SHARE\\s+MODE\\b.*")) {
+                transactionDirty.set(true);
+            }
+        }
+    }
+
+    private static String leadingKeyword(String sql) {
+        if (sql == null) return "";
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(
+                "(?is)^\\s*(?:/\\*.*?\\*/\\s*)*(?:--[^\\r\\n]*(?:[\\r\\n]+|$)\\s*)*([a-z]+)").matcher(sql);
+        return matcher.find() ? matcher.group(1).toUpperCase(java.util.Locale.ROOT) : "";
+    }
+
     @Override
     public void close() {
         try { cancel(); } catch (RuntimeException ignored) { }
@@ -350,7 +396,7 @@ public final class QueryRunner implements AutoCloseable {
         if (transactionDirty.getAndSet(false)) {
             try { session.rollback(); } catch (SQLException ignored) { }
         }
-        try { session.close(); } catch (SQLException ignored) { }
+        if (ownsSession) try { session.close(); } catch (SQLException ignored) { }
     }
 
     public static final class QueryExecutionException extends RuntimeException {

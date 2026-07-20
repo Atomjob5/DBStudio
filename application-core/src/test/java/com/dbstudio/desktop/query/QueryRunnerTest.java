@@ -122,6 +122,23 @@ class QueryRunnerTest {
         }
     }
 
+    @Test
+    void conservativelyPinsWithPrefixedDmlEvenWhenClassifiedAsQuery() throws Exception {
+        final Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
+        connection.setAutoCommit(false);
+        try (QueryRunner runner = new QueryRunner(session(connection), 10, 10)) {
+            runner.execute(Collections.singletonList(
+                    sql("CREATE TABLE cte_dml(id INTEGER)", StatementType.DDL)), true).join();
+            assertFalse(runner.isTransactionDirty());
+
+            runner.execute(Collections.singletonList(sql(
+                    "WITH value(id) AS (SELECT 1) INSERT INTO cte_dml SELECT id FROM value",
+                    StatementType.QUERY)), true).join();
+
+            assertTrue(runner.isTransactionDirty());
+        }
+    }
+
     private StatementResult query(QueryRunner runner, int rows, final List<Integer> batches,
                                   final Runnable started) {
         String text = "WITH RECURSIVE numbers(id) AS (SELECT 1 UNION ALL SELECT id + 1 FROM numbers WHERE id < "

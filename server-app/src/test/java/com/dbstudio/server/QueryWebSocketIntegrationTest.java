@@ -39,6 +39,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @Testcontainers(disabledWithoutDocker = true)
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "dbstudio.open-browser=false",
+        "dbstudio.local-access-token.enabled=true",
         "dbstudio.data-directory=${java.io.tmpdir}/dbstudio-websocket-test-${random.uuid}"
 })
 class QueryWebSocketIntegrationTest {
@@ -49,12 +50,15 @@ class QueryWebSocketIntegrationTest {
     @Autowired TestRestTemplate http;
     @Autowired LocalAccessToken token;
     @Autowired ObjectMapper mapper;
+    @Autowired WorkspaceRegistry workspaces;
+    private String clientId;
 
     @Test
     void streamsRealQueryEventsUsingIndependentLimitsAndBatchSizes() throws Exception {
         String cookie = authenticate();
         String workspaceId = UUID.randomUUID().toString();
         exchange(HttpMethod.PUT, "/api/v1/workspaces/" + workspaceId, new HashMap<String, Object>(), cookie);
+        openWorkspace(workspaceId, cookie);
         String profileId = createProfile(workspaceId, cookie);
         Map<String, Object> editorBody = new HashMap<String, Object>();
         editorBody.put("profileId", profileId);
@@ -69,7 +73,8 @@ class QueryWebSocketIntegrationTest {
             @Override protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
                 events.add(mapper.readValue(message.getPayload(), new TypeReference<Map<String, Object>>() { }));
             }
-        }, socketHeaders, URI.create("ws://127.0.0.1:" + port + "/api/v1/events?workspaceId=" + workspaceId))
+        }, socketHeaders, URI.create("ws://127.0.0.1:" + port + "/api/v1/events?workspaceId=" + workspaceId
+                + "&clientId=" + clientId))
                 .get(10, TimeUnit.SECONDS);
         try {
             awaitType(events, "workspace.ready", 10);
@@ -102,6 +107,60 @@ class QueryWebSocketIntegrationTest {
             List<Map<String, Object>> second = execute(editorId, workspaceId, cookie, events, 250);
             assertEquals(Arrays.asList(100, 100, 50), rowBatchSizes(second));
             assertOrder(second);
+        } finally {
+            socket.close();
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void restoresAnExpiredEditorAndExecutesAfterSupplyingItsUnrememberedPassword() throws Exception {
+        String cookie = authenticate();
+        String workspaceId = UUID.randomUUID().toString();
+        exchange(HttpMethod.PUT, "/api/v1/workspaces/" + workspaceId,
+                new HashMap<String, Object>(), cookie);
+        openWorkspace(workspaceId, cookie);
+        String profileId = createProfile(workspaceId, cookie);
+        Map<String, Object> editorBody = new HashMap<String, Object>(); editorBody.put("profileId", profileId);
+        String editorId = String.valueOf(exchange(HttpMethod.POST,
+                "/api/v1/workspaces/" + workspaceId + "/editors", editorBody, cookie).get("id"));
+
+        Map<String, Object> draft = new HashMap<String, Object>(); draft.put("title", "恢复查询");
+        draft.put("sqlText", "SELECT 1"); draft.put("dirty", true); draft.put("sortOrder", 0);
+        draft.put("active", true); draft.put("profileId", profileId);
+        exchange(HttpMethod.PUT, "/api/v1/workspaces/" + workspaceId + "/editors/" + editorId + "/draft", draft, cookie);
+        workspaces.expireNow(workspaceId);
+        Map<String, Object> reopened = openWorkspace(workspaceId, cookie);
+        assertEquals(Boolean.TRUE, reopened.get("recoveryDecisionRequired"));
+        Map<String, Object> recoveryBody = new HashMap<String, Object>(); recoveryBody.put("decision", "restore");
+        Map<String, Object> recovery = exchange(HttpMethod.POST,
+                "/api/v1/workspaces/" + workspaceId + "/recovery", recoveryBody, cookie);
+        Map<String, Object> restored = (Map<String, Object>) ((List<?>) recovery.get("editors")).get(0);
+        assertEquals(editorId, restored.get("id"));
+        assertEquals("credentials-required", restored.get("connectionState"));
+
+        final BlockingQueue<Map<String, Object>> events = new LinkedBlockingQueue<Map<String, Object>>();
+        WebSocketHttpHeaders socketHeaders = new WebSocketHttpHeaders();
+        socketHeaders.setOrigin(origin()); socketHeaders.add(HttpHeaders.COOKIE, cookie);
+        WebSocketSession socket = new StandardWebSocketClient().doHandshake(new TextWebSocketHandler() {
+            @Override protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
+                events.add(mapper.readValue(message.getPayload(), new TypeReference<Map<String, Object>>() { }));
+            }
+        }, socketHeaders, URI.create("ws://127.0.0.1:" + port + "/api/v1/events?workspaceId=" + workspaceId
+                + "&clientId=" + clientId))
+                .get(10, TimeUnit.SECONDS);
+        try {
+            awaitType(events, "workspace.ready", 10);
+            Map<String, Object> bind = new HashMap<String, Object>();
+            bind.put("profileId", profileId); bind.put("password", MYSQL.getPassword());
+            bind.put("rememberPassword", false); bind.put("transactionAction", "");
+            Map<String, Object> rebound = exchange(HttpMethod.PUT, "/api/v1/workspaces/" + workspaceId
+                    + "/editors/" + editorId + "/connection", bind, cookie);
+            assertEquals("ready", rebound.get("connectionState"));
+
+            List<Map<String, Object>> queryEvents = executeSql(editorId, workspaceId, cookie, events, "SELECT 1");
+            assertOrder(queryEvents);
+            assertTrue(queryEvents.stream().anyMatch(value -> "query.executionComplete".equals(value.get("type"))));
         } finally {
             socket.close();
         }
@@ -164,7 +223,7 @@ class QueryWebSocketIntegrationTest {
             collected.add(event);
             if ("query.executionComplete".equals(event.get("type"))) return collected;
         }
-        throw new AssertionError("Timed out waiting for query.executionComplete");
+        throw new AssertionError("Timed out waiting for query.executionComplete; received=" + collected);
     }
 
     @SuppressWarnings("unchecked")
@@ -219,11 +278,18 @@ class QueryWebSocketIntegrationTest {
     @SuppressWarnings("unchecked")
     private Map<String, Object> exchange(HttpMethod method, String path, Object body, String cookie) {
         HttpHeaders headers = new HttpHeaders(); headers.setOrigin(origin()); headers.add(HttpHeaders.COOKIE, cookie);
+        if (clientId != null) headers.add("X-DBStudio-Client-Id", clientId);
         headers.setContentType(MediaType.APPLICATION_JSON);
         HttpEntity<Object> entity = body == null ? new HttpEntity<Object>(headers) : new HttpEntity<Object>(body, headers);
         ResponseEntity<Map> response = http.exchange(url(path), method, entity, Map.class);
         assertTrue(response.getStatusCode().is2xxSuccessful(), String.valueOf(response.getBody()));
         return response.getBody();
+    }
+
+    private Map<String, Object> openWorkspace(String workspaceId, String cookie) {
+        clientId = UUID.randomUUID().toString();
+        Map<String, Object> body = new HashMap<String, Object>(); body.put("clientId", clientId);
+        return exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId + "/open", body, cookie);
     }
 
     private void awaitType(BlockingQueue<Map<String, Object>> events, String type, int seconds) throws Exception {

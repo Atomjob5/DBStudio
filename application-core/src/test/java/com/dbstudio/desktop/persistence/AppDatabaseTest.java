@@ -43,12 +43,12 @@ class AppDatabaseTest {
     }
 
     @Test
-    void createsVersionThreeCatalogSchemaAndKeepsRecentFileTableForMigrationCompatibility() throws Exception {
+    void createsVersionFourWorkspaceSchemaAndKeepsRecentFileTableForMigrationCompatibility() throws Exception {
         try (AppDatabase database = new AppDatabase(directory)) {
             try (Statement statement = database.connection().createStatement();
                  ResultSet result = statement.executeQuery("SELECT MAX(version) FROM schema_version")) {
                 assertTrue(result.next());
-                assertEquals(3, result.getInt(1));
+                assertEquals(4, result.getInt(1));
             }
             try (Statement statement = database.connection().createStatement();
                  ResultSet result = statement.executeQuery(
@@ -64,6 +64,53 @@ class AppDatabaseTest {
                 assertEquals("未分类系统", result.getString(1));
                 assertEquals("默认环境", result.getString(2));
             }
+            for (String table : new String[] { "workspace_catalog", "workspace_editor_checkpoint",
+                    "workspace_editor_recovery", "application_run" }) {
+                try (Statement statement = database.connection().createStatement();
+                     ResultSet result = statement.executeQuery(
+                             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='" + table + "'")) {
+                    assertTrue(result.next()); assertEquals(1, result.getInt(1));
+                }
+            }
+        }
+    }
+
+    @Test
+    void persistsWorkspaceDraftsAndStableCheckpointsSeparately() throws Exception {
+        try (AppDatabase database = new AppDatabase(directory)) {
+            WorkspaceRepository workspaces = new WorkspaceRepository(database);
+            String workspaceId = UUID.randomUUID().toString();
+            String editorId = UUID.randomUUID().toString();
+            workspaces.create(workspaceId, UUID.randomUUID().toString(), "machine", "订单开发");
+            workspaces.startRun("run-1");
+            workspaces.saveDraft(new WorkspaceRepository.EditorDraft(workspaceId, editorId, "run-1",
+                    "orders.sql", "select 1", 0, "orders.sql", "orders.sql", null,
+                    false, true, "none", null));
+            workspaces.saveDraft(new WorkspaceRepository.EditorDraft(workspaceId, editorId, "run-1",
+                    "查询 1", "select 2", 0, null, null, null, true, true, "active", null));
+
+            assertEquals("select 1", workspaces.checkpoints(workspaceId).get(0).sqlText());
+            assertEquals("select 2", workspaces.recoveryDrafts(workspaceId).get(0).sqlText());
+            assertEquals(1, workspaces.find(workspaceId).get().dirtyCount());
+            assertEquals(1, workspaces.find(workspaceId).get().transactionCount());
+
+            workspaces.discardRecovery(workspaceId);
+            assertTrue(workspaces.recoveryDrafts(workspaceId).isEmpty());
+            assertEquals("select 1", workspaces.checkpoints(workspaceId).get(0).sqlText());
+        }
+    }
+
+    @Test
+    void doesNotCreateStableCheckpointForUnsavedTemporaryEditor() throws Exception {
+        try (AppDatabase database = new AppDatabase(directory)) {
+            WorkspaceRepository workspaces = new WorkspaceRepository(database);
+            String workspaceId = UUID.randomUUID().toString();
+            workspaces.create(workspaceId, UUID.randomUUID().toString(), "machine", "临时查询");
+            workspaces.saveDraft(new WorkspaceRepository.EditorDraft(workspaceId, UUID.randomUUID().toString(),
+                    "run-1", "查询 1", "", 0, null, null, null, false, true, "none", null));
+
+            assertTrue(workspaces.checkpoints(workspaceId).isEmpty());
+            assertEquals(1, workspaces.recoveryDrafts(workspaceId).size());
         }
     }
 

@@ -1,7 +1,7 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { normalizeThemePreference, resolveTheme } from "../theme";
-import type { BootstrapResponse, ResolvedTheme, ThemePreference } from "../types";
+import type { BootstrapResponse, ResolvedTheme, ThemePreference, TransportState } from "../types";
 
 export const useAppStore = defineStore("app", () => {
   const initialized = ref(false);
@@ -10,6 +10,7 @@ export const useAppStore = defineStore("app", () => {
   const systemTheme = ref<ResolvedTheme>("light");
   const theme = computed(() => resolveTheme(themePreference.value, systemTheme.value));
   const status = ref("正在启动…");
+  const transportState = ref<TransportState>("connecting");
 
   function applyBootstrap(data: BootstrapResponse): void {
     themePreference.value = normalizeThemePreference(data.settings["ui.theme"]);
@@ -25,8 +26,10 @@ export const useAppStore = defineStore("app", () => {
     systemTheme.value = theme;
   }
 
+  function setTransportState(state: TransportState): void { transportState.value = state; }
+
   return {
-    initialized, loading, themePreference, systemTheme, theme, status,
-    applyBootstrap, setThemePreference, setSystemTheme
+    initialized, loading, themePreference, systemTheme, theme, status, transportState,
+    applyBootstrap, setThemePreference, setSystemTheme, setTransportState
   };
 });

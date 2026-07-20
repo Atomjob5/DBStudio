@@ -10,8 +10,10 @@ import javax.servlet.http.HttpServletRequest;
 public final class LocalAccessToken {
     public static final String COOKIE_NAME = "DBSTUDIO_SESSION";
     private final String value;
+    private final boolean enabled;
 
-    public LocalAccessToken() {
+    public LocalAccessToken(boolean enabled) {
+        this.enabled = enabled;
         byte[] bytes = new byte[32];
         new SecureRandom().nextBytes(bytes);
         this.value = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
@@ -19,6 +21,7 @@ public final class LocalAccessToken {
     }
 
     public String launchValue() { return value; }
+    public boolean enabled() { return enabled; }
 
     public boolean matches(String candidate) {
         if (candidate == null) return false;
@@ -27,6 +30,7 @@ public final class LocalAccessToken {
     }
 
     public boolean authenticated(HttpServletRequest request) {
+        if (!enabled) return true;
         Cookie[] cookies = request.getCookies();
         if (cookies == null) return false;
         for (Cookie cookie : cookies) {

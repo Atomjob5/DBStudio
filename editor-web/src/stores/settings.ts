@@ -11,6 +11,7 @@ export const useSettingsStore = defineStore("settings", () => {
   const copySeparator = ref<CopySeparator>("comma");
   const maxActiveSessions = ref(10);
   const idleTimeoutMinutes = ref(10);
+  const transactionDisconnectRollbackMinutes = ref(10);
   const recentFiles = ref<string[]>([]);
 
   function initialize(settings: Record<string, string>, recent: string[]): void {
@@ -26,10 +27,12 @@ export const useSettingsStore = defineStore("settings", () => {
     maxActiveSessions.value = Number.isFinite(maximum) ? maximum : 10;
     const idle = Number.parseInt(settings["connection.idleTimeoutMinutes"] ?? "10", 10);
     idleTimeoutMinutes.value = Number.isFinite(idle) ? idle : 10;
+    const transactionTimeout = Number.parseInt(settings["connection.transactionDisconnectRollbackMinutes"] ?? "10", 10);
+    transactionDisconnectRollbackMinutes.value = Number.isFinite(transactionTimeout) ? transactionTimeout : 10;
     recentFiles.value = recent;
   }
 
   return { maxResultRows, streamBatchRows, columnLayoutScope, copyHeaderOnDoubleClick, copySeparator,
-    maxActiveSessions, idleTimeoutMinutes,
+    maxActiveSessions, idleTimeoutMinutes, transactionDisconnectRollbackMinutes,
     recentFiles, initialize };
 });

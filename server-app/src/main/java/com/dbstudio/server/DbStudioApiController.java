@@ -14,6 +14,7 @@ import com.dbstudio.desktop.persistence.ConnectionCatalogRepository.SystemEntry;
 import com.dbstudio.desktop.persistence.QueryHistoryRepository;
 import com.dbstudio.desktop.persistence.QueryHistoryRepository.QueryHistoryEntry;
 import com.dbstudio.desktop.persistence.SettingsRepository;
+import com.dbstudio.desktop.persistence.WorkspaceRepository;
 import com.dbstudio.desktop.query.QueryExecution;
 import com.dbstudio.desktop.query.QueryResultListener;
 import com.dbstudio.desktop.query.QueryRunner.PageResult;
@@ -73,6 +74,7 @@ public final class DbStudioApiController {
             "ui.theme", "result.maxRows", "result.streamBatchRows", "result.columnLayoutScope",
             "result.copyHeaderOnDoubleClick", "result.copySeparator",
             "connection.maxActiveSessions", "connection.idleTimeoutMinutes",
+            "connection.transactionDisconnectRollbackMinutes",
             "layout.leftWidth", "layout.editorHeight");
 
     private final ProviderRegistry providers;
@@ -84,22 +86,66 @@ public final class DbStudioApiController {
     private final CsvService csv;
     private final WorkspaceRegistry workspaces;
     private final ConfigurableApplicationContext application;
+    private final WorkspaceRepository workspaceRepository;
+    private final ApplicationRunLifecycle runLifecycle;
     private final CompletionSnapshotService completionSnapshots = new CompletionSnapshotService();
 
     public DbStudioApiController(ProviderRegistry providers, ConnectionProfileRepository profiles,
                                  ConnectionCatalogRepository catalog,
                                  QueryHistoryRepository history, SettingsRepository settings,
                                  SecretStore secrets, CsvService csv, WorkspaceRegistry workspaces,
-                                 ConfigurableApplicationContext application) {
+                                 ConfigurableApplicationContext application,
+                                 WorkspaceRepository workspaceRepository, ApplicationRunLifecycle runLifecycle) {
         this.providers = providers; this.profiles = profiles; this.catalog = catalog; this.history = history;
         this.settings = settings; this.secrets = secrets; this.csv = csv;
         this.workspaces = workspaces; this.application = application;
+        this.workspaceRepository = workspaceRepository; this.runLifecycle = runLifecycle;
     }
 
     @PutMapping("/workspaces/{workspaceId}")
     public Map<String, Object> createWorkspace(@PathVariable String workspaceId) {
-        workspaces.create(workspaceId);
-        return ApiPayloads.map("workspaceId", workspaceId, "reconnectSeconds", WorkspaceRegistry.RECONNECT_SECONDS);
+        WorkspaceRegistry.WorkspaceRegistration registration = workspaces.create(workspaceId);
+        return ApiPayloads.map("workspaceId", workspaceId, "created", registration.created());
+    }
+
+    @PostMapping("/workspaces/{workspaceId}/restore")
+    public Map<String, Object> restoreWorkspace(@PathVariable String workspaceId,
+                                                @RequestBody Map<String, Object> body) throws Exception {
+        Workspace workspace = workspaces.require(workspaceId);
+        Object rawEditors = body == null ? null : body.get("editors");
+        if (!(rawEditors instanceof List)) throw new ApiException("INVALID_REQUEST", "editors 必须是数组");
+        List<Object> restored = new ArrayList<Object>();
+        for (Object raw : (List<?>) rawEditors) {
+            if (!(raw instanceof Map)) continue;
+            @SuppressWarnings("unchecked") Map<String, Object> value = (Map<String, Object>) raw;
+            String editorId = ApiPayloads.required(value, "editorId");
+            EditorSession editor;
+            try { editor = workspace.editors().create(UUID.fromString(editorId)); }
+            catch (IllegalArgumentException exception) {
+                throw new ApiException("INVALID_EDITOR_ID", "查询标签 ID 无效", exception);
+            }
+            String profileId = ApiPayloads.text(value, "profileId");
+            if (profileId.trim().isEmpty()) {
+                restored.add(ApiPayloads.map("editorId", editorId, "recoveryStatus", "restored",
+                        "connectionState", "unbound"));
+                continue;
+            }
+            try {
+                SavedProfile binding = bindEditor(workspace, editor, profileId, Collections.<String, Object>emptyMap());
+                restored.add(ApiPayloads.map("editorId", editorId, "recoveryStatus", "restored",
+                        "connectionState", "suspended", "connection", profileMap(binding)));
+            } catch (ApiException exception) {
+                if ("PROFILE_NOT_FOUND".equals(exception.getCode())) {
+                    restored.add(ApiPayloads.map("editorId", editorId, "recoveryStatus", "profileUnavailable",
+                            "connectionState", "unbound", "message", exception.getMessage()));
+                } else if ("PASSWORD_REQUIRED".equals(exception.getCode())
+                        || "CONNECTION_FAILED".equals(exception.getCode())) {
+                    restored.add(ApiPayloads.map("editorId", editorId, "recoveryStatus", "passwordRequired",
+                            "connectionState", "credentials-required", "message", exception.getMessage()));
+                } else throw exception;
+            }
+        }
+        return ApiPayloads.map("editors", restored);
     }
 
     @GetMapping("/bootstrap")
@@ -355,7 +401,7 @@ public final class DbStudioApiController {
         String requestedProfile = body == null ? "" : ApiPayloads.text(body, "profileId");
         if (!requestedProfile.isEmpty()) bindEditor(workspace, editor, requestedProfile, body);
         Map<String, Object> result = ApiPayloads.map("id", editor.id().toString(), "title", editor.title(),
-                "connectionState", editor.bound() ? "suspended" : "unbound");
+                "connectionState", editor.bound() ? "ready" : "unbound");
         SavedProfile binding = workspace.binding(editor);
         if (binding != null) result.put("connection", profileMap(binding));
         return result;
@@ -367,9 +413,9 @@ public final class DbStudioApiController {
                                                      @RequestBody Map<String, Object> body) throws Exception {
         Workspace workspace = workspaces.require(workspaceId);
         EditorSession editor = workspace.editors().require(editorId);
-        resolveTransactionBeforeSwitch(editor, ApiPayloads.text(body, "transactionAction"));
+        resolveTransactionBeforeSwitch(workspace, editor, ApiPayloads.text(body, "transactionAction"));
         SavedProfile binding = bindEditor(workspace, editor, ApiPayloads.required(body, "profileId"), body);
-        return ApiPayloads.map("connection", profileMap(binding), "connectionState", "suspended");
+        return ApiPayloads.map("connection", profileMap(binding), "connectionState", "ready");
     }
 
     @DeleteMapping("/workspaces/{workspaceId}/editors/{editorId}/connection")
@@ -378,7 +424,7 @@ public final class DbStudioApiController {
                                                        @RequestParam(defaultValue = "") String transactionAction) throws Exception {
         Workspace workspace = workspaces.require(workspaceId);
         EditorSession editor = workspace.editors().require(editorId);
-        resolveTransactionBeforeSwitch(editor, transactionAction);
+        resolveTransactionBeforeSwitch(workspace, editor, transactionAction);
         workspace.unbind(editor);
         return ApiPayloads.map("connectionState", "unbound");
     }
@@ -393,11 +439,12 @@ public final class DbStudioApiController {
             return ApiPayloads.map("requiresTransactionDecision", editor.transactionDirty());
         }
         if (editor.transactionDirty()) {
-            if ("commit".equals(action)) editor.commit().get(30, TimeUnit.SECONDS);
-            else if ("rollback".equals(action)) editor.rollback().get(30, TimeUnit.SECONDS);
+            if ("commit".equals(action)) workspace.commit(editor).get(30, TimeUnit.SECONDS);
+            else if ("rollback".equals(action)) workspace.rollback(editor).get(30, TimeUnit.SECONDS);
             else throw new ApiException("TRANSACTION_DECISION_REQUIRED", "关闭前必须提交或回滚事务");
         }
         workspace.closeEditor(editorId);
+        workspaceRepository.removeEditor(workspaceId, editorId);
         return ApiPayloads.map("closed", true, "requiresTransactionDecision", false);
     }
 
@@ -407,7 +454,9 @@ public final class DbStudioApiController {
                                        @RequestBody Map<String, Object> body) {
         final Workspace workspace = workspaces.require(workspaceId);
         final EditorSession editor = workspace.editors().require(editorId);
-        workspace.ensureActive(editor);
+        if (!workspace.events().connected()) throw new ApiException(
+                "EVENT_CHANNEL_REQUIRED", "事件通道尚未连接，请等待重连后再执行SQL");
+        ensureEditorContext(workspace, editor);
         final DatabaseContext context = workspace.requireEditorDatabase(editor);
         final List<SqlStatement> statements = selectStatements(context.provider(), body);
         boolean stopOnError = ApiPayloads.bool(body, "stopOnError", true);
@@ -441,7 +490,7 @@ public final class DbStudioApiController {
             }
         };
 
-        final UUID executionId = workspace.editors().execute(editor, statements, stopOnError,
+        final UUID executionId = workspace.execute(editor, statements, stopOnError,
                 id -> workspace.events().emit("query.started", ApiPayloads.map(
                         "editorId", editorId, "executionId", id.toString())), listener,
                 (id, execution, failure) -> finishExecution(workspace, context, editorId, id, execution, failure));
@@ -483,7 +532,7 @@ public final class DbStudioApiController {
                                                @RequestBody Map<String, Object> body) throws Exception {
         Workspace workspace = workspaces.require(workspaceId);
         EditorSession editor = workspace.editors().require(editorId);
-        workspace.ensureActive(editor);
+        ensureEditorContext(workspace, editor);
         StatementResult source = result(editor, resultIndex);
         if (!source.hasRows() || source.type() != StatementType.QUERY) {
             throw new ApiException("RESULT_NOT_PAGEABLE", "只有只读查询结果支持继续加载数据");
@@ -497,7 +546,7 @@ public final class DbStudioApiController {
         if (limit < 1 || limit > 100_000) {
             throw new ApiException("INVALID_RESULT_LIMIT", "单次加载行数必须在 1 到 100000 之间");
         }
-        PageResult page = editor.runner().fetchPage(source.sql(), offset, limit).get(120, TimeUnit.SECONDS);
+        PageResult page = workspace.fetchPage(editor, source.sql(), offset, limit).get(120, TimeUnit.SECONDS);
         editor.appendResultRows(resultIndex, page.rows(), page.hasMore());
         return ApiPayloads.map("resultIndex", resultIndex, "offset", offset, "rows", page.rows(),
                 "hasMore", page.hasMore(), "nextOffset", offset + page.rows().size());
@@ -508,13 +557,14 @@ public final class DbStudioApiController {
                                             @PathVariable String action) throws Exception {
         Workspace workspace = workspaces.require(workspaceId);
         EditorSession editor = workspace.editors().require(editorId);
-        workspace.ensureActive(editor);
-        if ("commit".equals(action)) editor.commit().get(30, TimeUnit.SECONDS);
-        else if ("rollback".equals(action)) editor.rollback().get(30, TimeUnit.SECONDS);
+        ensureEditorContext(workspace, editor);
+        if ("commit".equals(action)) workspace.commit(editor).get(30, TimeUnit.SECONDS);
+        else if ("rollback".equals(action)) workspace.rollback(editor).get(30, TimeUnit.SECONDS);
         else throw new ApiException("INVALID_TRANSACTION_ACTION", "事务操作无效");
         String message = "commit".equals(action) ? "事务已提交" : "事务已回滚";
         workspace.events().emit("transaction.status", ApiPayloads.map(
-                "editorId", editorId, "dirty", false, "message", message));
+                "editorId", editorId, "dirty", false, "state", "none", "message", message));
+        workspaceRepository.updateTransactionState(workspaceId, editorId, "none");
         return ApiPayloads.map("dirty", false, "message", message);
     }
 
@@ -610,6 +660,15 @@ public final class DbStudioApiController {
                 throw new ApiException("INVALID_SETTING", "空闲链接回收时间必须在 1 到 1440 分钟之间");
             }
         }
+        if ("connection.transactionDisconnectRollbackMinutes".equals(key)) {
+            try {
+                int minutes = Integer.parseInt(value);
+                if (minutes < 1 || minutes > 1_440) throw new NumberFormatException();
+                workspaces.setTransactionRollbackMinutes(minutes);
+            } catch (NumberFormatException exception) {
+                throw new ApiException("INVALID_SETTING", "事务断连回滚时间必须在 1 到 1440 分钟之间");
+            }
+        }
         settings.put(key, value);
         return ApiPayloads.map("key", key, "value", value);
     }
@@ -698,6 +757,7 @@ public final class DbStudioApiController {
 
     @PostMapping("/shutdown")
     public Map<String, Object> shutdown() {
+        runLifecycle.requestNormalExit();
         Thread closer = new Thread(new Runnable() {
             @Override public void run() {
                 try { Thread.sleep(150L); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
@@ -718,6 +778,8 @@ public final class DbStudioApiController {
         workspace.events().emit("query.executionComplete", ApiPayloads.map("editorId", editorId,
                 "executionId", executionId.toString(), "cancelled", cancelled, "failed", failed,
                 "durationMs", duration, "transactionDirty", editor.transactionDirty()));
+        try { workspaceRepository.updateTransactionState(workspace.id(), editorId,
+                editor.transactionDirty() ? "active" : "none"); } catch (SQLException ignored) { }
         try {
             String sql = editor.lastSql() == null ? "" : editor.lastSql();
             String error = failure == null ? firstError(execution) : safeMessage(failure);
@@ -848,11 +910,11 @@ public final class DbStudioApiController {
         return required ? null : null;
     }
 
-    private void resolveTransactionBeforeSwitch(EditorSession editor, String action) throws Exception {
+    private void resolveTransactionBeforeSwitch(Workspace workspace, EditorSession editor, String action) throws Exception {
         if (editor.activeExecutionId() != null) throw new ApiException("QUERY_BUSY", "查询执行期间不能切换数据库链接");
         if (!editor.transactionDirty()) return;
-        if ("commit".equals(action)) editor.commit().get(30, TimeUnit.SECONDS);
-        else if ("rollback".equals(action)) editor.rollback().get(30, TimeUnit.SECONDS);
+        if ("commit".equals(action)) workspace.commit(editor).get(30, TimeUnit.SECONDS);
+        else if ("rollback".equals(action)) workspace.rollback(editor).get(30, TimeUnit.SECONDS);
         else throw new ApiException("TRANSACTION_DECISION_REQUIRED", "切换链接前必须提交或回滚事务");
     }
 
@@ -861,7 +923,17 @@ public final class DbStudioApiController {
         if (editorId.isEmpty()) throw new ApiException("EDITOR_REQUIRED", "数据库操作需要编辑标签上下文");
         EditorSession editor = workspace.editors().require(editorId);
         editor.touch();
+        ensureEditorContext(workspace, editor);
         return workspace.requireEditorDatabase(editor);
+    }
+
+    private void ensureEditorContext(Workspace workspace, EditorSession editor) {
+        if (editor.hasContext()) return;
+        SavedProfile saved = workspace.binding(editor);
+        if (saved == null) throw new ApiException("NOT_CONNECTED", "当前编辑标签尚未选择数据库链接");
+        try { bindEditor(workspace, editor, saved.profile().id().toString(), Collections.<String,Object>emptyMap()); }
+        catch (ApiException exception) { throw exception; }
+        catch (Exception exception) { throw new ApiException("CONNECTION_REOPEN_FAILED", safeMessage(exception), exception); }
     }
 
     private void connectionsChanged() {
@@ -901,6 +973,9 @@ public final class DbStudioApiController {
         if (!result.containsKey("result.copySeparator")) result.put("result.copySeparator", "comma");
         if (!result.containsKey("connection.maxActiveSessions")) result.put("connection.maxActiveSessions", "10");
         if (!result.containsKey("connection.idleTimeoutMinutes")) result.put("connection.idleTimeoutMinutes", "10");
+        if (!result.containsKey("connection.transactionDisconnectRollbackMinutes")) {
+            result.put("connection.transactionDisconnectRollbackMinutes", "10");
+        }
         return result;
     }
 

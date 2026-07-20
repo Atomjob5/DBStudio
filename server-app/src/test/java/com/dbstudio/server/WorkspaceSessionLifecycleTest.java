@@ -1,12 +1,9 @@
 package com.dbstudio.server;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.dbstudio.desktop.DatabaseContext;
-import com.dbstudio.desktop.persistence.ConnectionProfileRepository.SavedProfile;
-import com.dbstudio.desktop.web.EditorSessionRegistry.EditorSession;
 import com.dbstudio.spi.ColumnInfo;
 import com.dbstudio.spi.ConnectionAdapter;
 import com.dbstudio.spi.ConnectionField;
@@ -23,6 +20,7 @@ import com.dbstudio.spi.SqlStatement;
 import com.dbstudio.spi.StatementType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.file.Path;
+import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -32,6 +30,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -39,42 +38,34 @@ class WorkspaceSessionLifecycleTest {
     @TempDir Path directory;
 
     @Test
-    void safelySuspendsAndReopensAStillBoundEditorSession() throws Exception {
+    void reusesIdleJdbcAndCreatesANewGenerationAfterDisconnect() throws Exception {
         AtomicInteger opened = new AtomicInteger();
         DatabaseProvider provider = provider(opened);
         ConnectionProfile profile = new ConnectionProfile(
                 UUID.randomUUID(), "fake", "测试链接", Collections.<String, String>emptyMap(), "test-secret");
-        SavedProfile saved = new SavedProfile(profile, false, "environment", "revision-1");
         EditorConnectionLimiter limiter = new EditorConnectionLimiter();
         limiter.setMaximum(10);
-        Workspace workspace = new Workspace(UUID.randomUUID().toString(), 1000, 100,
-                new ObjectMapper(), directory, limiter);
+        DatabaseContext context = new DatabaseContext(provider, profile, new char[0]);
+        WorkspaceJdbcPool pool = new WorkspaceJdbcPool("workspace:profile@revision", context, limiter);
         try {
-            DatabaseContext context = new DatabaseContext(provider, profile, new char[0]);
-            workspace.registerContext(Workspace.bindingKey(saved), context);
-            EditorSession editor = workspace.editors().create();
-            workspace.bind(editor, saved, context);
-
-            assertTrue(editor.bound());
-            assertFalse(editor.active());
-            assertEquals(1, opened.get()); // metadata/validation connection
-
-            workspace.ensureActive(editor);
-            assertTrue(editor.active());
+            WorkspaceJdbcPool.Lease first = pool.borrow();
+            pool.release(first);
             assertEquals(1, limiter.activeCount());
+            assertEquals(1, opened.get());
+
+            WorkspaceJdbcPool.Lease reused = pool.borrow();
+            assertTrue(first.session() == reused.session());
+            pool.release(reused);
+            assertEquals(1, opened.get());
+
+            pool.retireUnpinned();
+            WorkspaceJdbcPool.Lease replacement = pool.borrow();
             assertEquals(2, opened.get());
-
-            workspace.suspendIdle(Long.MAX_VALUE);
-            assertTrue(editor.bound());
-            assertFalse(editor.active());
+            pool.release(replacement);
+            pool.reap(Long.MAX_VALUE);
             assertEquals(0, limiter.activeCount());
-
-            workspace.ensureActive(editor);
-            assertTrue(editor.active());
-            assertEquals(1, limiter.activeCount());
-            assertEquals(4, opened.get()); // editor session and lazily reopened metadata session
         } finally {
-            workspace.close();
+            pool.close();
         }
         assertEquals(0, limiter.activeCount());
     }
@@ -111,12 +102,24 @@ class WorkspaceSessionLifecycleTest {
                     }
                     @Override public DatabaseSession connect(ConnectionProfile profile, char[] password) {
                         opened.incrementAndGet();
+                        final AtomicBoolean closed = new AtomicBoolean();
+                        final Connection jdbc = (Connection) Proxy.newProxyInstance(
+                                Connection.class.getClassLoader(), new Class<?>[] { Connection.class },
+                                (proxy, method, args) -> {
+                                    String name = method.getName();
+                                    if ("isClosed".equals(name)) return closed.get();
+                                    if ("isValid".equals(name)) return !closed.get();
+                                    if ("getAutoCommit".equals(name)) return false;
+                                    if ("close".equals(name)) { closed.set(true); return null; }
+                                    if (method.getReturnType() == boolean.class) return false;
+                                    if (method.getReturnType() == int.class) return 0;
+                                    return null;
+                                });
                         return new DatabaseSession() {
-                            private boolean closed;
-                            @Override public Connection jdbcConnection() { return null; }
+                            @Override public Connection jdbcConnection() { return jdbc; }
                             @Override public String currentCatalog() { return ""; }
-                            @Override public boolean isClosed() { return closed; }
-                            @Override public void close() throws SQLException { closed = true; }
+                            @Override public boolean isClosed() { return closed.get(); }
+                            @Override public void close() throws SQLException { jdbc.close(); }
                         };
                     }
                 };

@@ -60,6 +60,19 @@ describe("ResultPanel streaming rendering", () => {
     expect(wrapper.emitted("update:active-result-index")?.[0]).toEqual([1]);
   });
 
+  it("labels historical results and disables server export", async () => {
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: 0, execution: {
+        executionId: "historical", editorId: "editor-1", busy: false, cancelled: false, failed: false,
+        durationMs: 8, historical: true,
+        results: [{ resultIndex: 0, sql: "select 1", type: "QUERY", columns: ["id"], rows: [["1"]],
+          updateCount: -1, truncated: true, durationMs: 7, complete: true }]
+      } }, global: { plugins: [ElementPlus] }
+    });
+    expect(wrapper.text()).toContain("断线前快照");
+    expect(wrapper.findComponent({ name: "ElDropdown" }).props("disabled")).toBe(true);
+  });
+
   it("filters options by metadata and only renders selected columns in source order", async () => {
     const wrapper = mount(ResultPanel, {
       props: { activeResultIndex: 0, execution: {

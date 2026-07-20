@@ -17,6 +17,7 @@ describe("SettingsDrawer compact result settings", () => {
         copySeparator: "comma",
         maxActiveSessions: 10,
         idleTimeoutMinutes: 10,
+        transactionDisconnectRollbackMinutes: 10,
         completionCacheSize: "1.2 MB",
         completionCacheEnvironmentCount: 3,
         completionCacheLoadingCount: 1,
@@ -29,7 +30,7 @@ describe("SettingsDrawer compact result settings", () => {
   it("renders compact connection and result settings without the old alert", async () => {
     const wrapper = mountDrawer();
     await flushPromises();
-    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(8);
+    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(9);
     expect(wrapper.findComponent({ name: "ElAlert" }).exists()).toBe(false);
     const separator = wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "comma");
@@ -57,8 +58,9 @@ describe("SettingsDrawer compact result settings", () => {
     const numbers = wrapper.findAllComponents({ name: "ElInputNumber" });
     numbers[0].vm.$emit("update:modelValue", 12);
     numbers[1].vm.$emit("update:modelValue", 15);
-    numbers[2].vm.$emit("update:modelValue", 2500);
-    numbers[3].vm.$emit("update:modelValue", 50);
+    numbers[2].vm.$emit("update:modelValue", 20);
+    numbers[3].vm.$emit("update:modelValue", 2500);
+    numbers[4].vm.$emit("update:modelValue", 50);
     wrapper.findComponent({ name: "ElSwitch" }).vm.$emit("update:modelValue", false);
     wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "result")!.vm.$emit("update:modelValue", "editor");
@@ -67,6 +69,7 @@ describe("SettingsDrawer compact result settings", () => {
 
     expect(wrapper.emitted("update:maxActiveSessions")?.[0]).toEqual([12]);
     expect(wrapper.emitted("update:idleTimeoutMinutes")?.[0]).toEqual([15]);
+    expect(wrapper.emitted("update:transactionDisconnectRollbackMinutes")?.[0]).toEqual([20]);
     expect(wrapper.emitted("update:maxRows")?.[0]).toEqual([2500]);
     expect(wrapper.emitted("update:streamBatchRows")?.[0]).toEqual([50]);
     expect(wrapper.emitted("update:copyHeaderOnDoubleClick")?.[0]).toEqual([false]);

@@ -4,10 +4,16 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import java.net.URI;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -22,15 +28,23 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.socket.TextMessage;
+import org.springframework.web.socket.WebSocketHttpHeaders;
+import org.springframework.web.socket.WebSocketSession;
+import org.springframework.web.socket.client.standard.StandardWebSocketClient;
+import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "dbstudio.open-browser=false",
+        "dbstudio.local-access-token.enabled=true",
         "dbstudio.data-directory=${java.io.tmpdir}/dbstudio-server-test-${random.uuid}"
 })
 class LocalServerSecurityTest {
     @LocalServerPort int port;
     @Autowired TestRestTemplate http;
     @Autowired LocalAccessToken token;
+    @Autowired WorkspaceRegistry workspaces;
+    @Autowired ObjectMapper mapper;
 
     @Test
     void servesEmbeddedFrontendAndRejectsUnauthenticatedApi() {
@@ -66,8 +80,97 @@ class LocalServerSecurityTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void persistsWorkspaceDraftAndRestoresOriginalEditorIdAfterRuntimeExpires() {
+        HttpHeaders headers = authenticatedHeaders();
+        String workspaceId = UUID.randomUUID().toString();
+        ResponseEntity<Map> first = http.exchange(url("/api/v1/workspaces/" + workspaceId),
+                HttpMethod.PUT, new HttpEntity<String>("{}", headers), Map.class);
+        assertEquals(Boolean.TRUE, first.getBody().get("created"));
+        String clientId = openWorkspace(headers, workspaceId);
+        Map<String, Object> createdEditor = http.exchange(url("/api/v1/workspaces/" + workspaceId + "/editors"),
+                HttpMethod.POST, new HttpEntity<Map<String,Object>>(new HashMap<String,Object>(), headers), Map.class).getBody();
+        String editorId = String.valueOf(createdEditor.get("id"));
+        Map<String, Object> draft = new HashMap<String, Object>();
+        draft.put("title", "未保存查询"); draft.put("sqlText", "select 42"); draft.put("dirty", true);
+        draft.put("sortOrder", 0); draft.put("active", true);
+        assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/workspaces/" + workspaceId + "/editors/" + editorId + "/draft"),
+                HttpMethod.PUT, new HttpEntity<Map<String, Object>>(draft, headers), String.class).getStatusCode());
+        workspaces.expireNow(workspaceId);
+        headers.set("X-DBStudio-Client-Id", clientId);
+        Map<String, Object> openBody = new HashMap<String, Object>(); openBody.put("clientId", clientId);
+        ResponseEntity<Map> reopened = http.exchange(url("/api/v1/workspaces/" + workspaceId + "/open"),
+                HttpMethod.POST, new HttpEntity<Map<String, Object>>(openBody, headers), Map.class);
+        assertEquals(Boolean.TRUE, reopened.getBody().get("recoveryDecisionRequired"));
+        Map<String, Object> recovery = new HashMap<String, Object>(); recovery.put("decision", "restore");
+        recovery.put("processRestarted", false);
+        ResponseEntity<Map> response = http.exchange(url("/api/v1/workspaces/" + workspaceId + "/recovery"),
+                HttpMethod.POST, new HttpEntity<Map<String, Object>>(recovery, headers), Map.class);
+        List<Map<String, Object>> restored = (List<Map<String, Object>>) response.getBody().get("editors");
+        assertEquals(editorId, restored.get(0).get("id"));
+        assertEquals("select 42", restored.get(0).get("content"));
+        assertEquals(editorId, workspaces.require(workspaceId).editors().require(editorId).id().toString());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void respondsToWebSocketHeartbeatWithAWorkspacePong() throws Exception {
+        HttpHeaders headers = authenticatedHeaders();
+        String workspaceId = UUID.randomUUID().toString();
+        http.exchange(url("/api/v1/workspaces/" + workspaceId), HttpMethod.PUT,
+                new HttpEntity<String>("{}", headers), String.class);
+        String clientId = openWorkspace(headers, workspaceId);
+        final BlockingQueue<Map<String, Object>> events = new LinkedBlockingQueue<Map<String, Object>>();
+        WebSocketHttpHeaders socketHeaders = new WebSocketHttpHeaders();
+        socketHeaders.setOrigin("http://127.0.0.1:" + port);
+        socketHeaders.add(HttpHeaders.COOKIE, headers.getFirst(HttpHeaders.COOKIE));
+        WebSocketSession socket = new StandardWebSocketClient().doHandshake(new TextWebSocketHandler() {
+            @Override protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
+                events.add(mapper.readValue(message.getPayload(), new TypeReference<Map<String, Object>>() { }));
+            }
+        }, socketHeaders, URI.create("ws://127.0.0.1:" + port + "/api/v1/events?workspaceId=" + workspaceId
+                + "&clientId=" + clientId))
+                .get(10, TimeUnit.SECONDS);
+        try {
+            awaitEvent(events, "workspace.ready");
+            socket.sendMessage(new TextMessage("ping"));
+            Map<String, Object> pong = awaitEvent(events, "workspace.pong");
+            assertNotNull(((Map<String, Object>) pong.get("payload")).get("serverTime"));
+        } finally {
+            socket.close();
+        }
+    }
+
+    @Test
+    void reconnectsImmediatelyAfterThePreviousBrowserTabCloses() throws Exception {
+        HttpHeaders headers = authenticatedHeaders();
+        String workspaceId = UUID.randomUUID().toString();
+        http.exchange(url("/api/v1/workspaces/" + workspaceId), HttpMethod.PUT,
+                new HttpEntity<String>("{}", headers), String.class);
+
+        String firstClientId = openWorkspace(headers, workspaceId);
+        BlockingQueue<Map<String, Object>> firstEvents = new LinkedBlockingQueue<Map<String, Object>>();
+        WebSocketSession first = connectWorkspaceSocket(headers, workspaceId, firstClientId, firstEvents);
+        awaitEvent(firstEvents, "workspace.ready");
+        first.close();
+        long disconnectDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (workspaces.require(workspaceId).events().connected()
+                && System.nanoTime() < disconnectDeadline) Thread.sleep(20L);
+
+        String secondClientId = openWorkspace(headers, workspaceId);
+        BlockingQueue<Map<String, Object>> secondEvents = new LinkedBlockingQueue<Map<String, Object>>();
+        WebSocketSession second = connectWorkspaceSocket(headers, workspaceId, secondClientId, secondEvents);
+        try {
+            assertEquals(workspaceId, ((Map<?, ?>) awaitEvent(secondEvents, "workspace.ready")
+                    .get("payload")).get("workspaceId"));
+        } finally {
+            second.close();
+        }
+    }
+
+    @Test
     void rejectsForeignOrigin() throws Exception {
-        LocalRequestFilter filter = new LocalRequestFilter(token, new ObjectMapper());
+        LocalRequestFilter filter = new LocalRequestFilter(token, new ObjectMapper(), workspaces);
         MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/bootstrap");
         request.setLocalPort(33000);
         request.addHeader(HttpHeaders.HOST, "127.0.0.1:33000");
@@ -80,7 +183,7 @@ class LocalServerSecurityTest {
 
     @Test
     void websocketHandshakeRequiresAnOrigin() throws Exception {
-        LocalRequestFilter filter = new LocalRequestFilter(token, new ObjectMapper());
+        LocalRequestFilter filter = new LocalRequestFilter(token, new ObjectMapper(), workspaces);
         MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/events");
         request.setLocalPort(33000);
         request.addHeader(HttpHeaders.HOST, "127.0.0.1:33000");
@@ -101,6 +204,7 @@ class LocalServerSecurityTest {
         assertTrue(defaults.getBody().contains("\"result.copySeparator\":\"comma\""));
         assertTrue(defaults.getBody().contains("\"connection.maxActiveSessions\":\"10\""));
         assertTrue(defaults.getBody().contains("\"connection.idleTimeoutMinutes\":\"10\""));
+        assertTrue(defaults.getBody().contains("\"connection.transactionDisconnectRollbackMinutes\":\"10\""));
 
         Map<String, String> setting = new HashMap<String, String>();
         setting.put("key", "result.columnLayoutScope");
@@ -149,6 +253,14 @@ class LocalServerSecurityTest {
         setting.put("value", "0");
         assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                 new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+
+        setting.put("key", "connection.transactionDisconnectRollbackMinutes");
+        setting.put("value", "20");
+        assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+        setting.put("value", "1441");
+        assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
     }
 
     @Test
@@ -158,6 +270,7 @@ class LocalServerSecurityTest {
         String workspaceId = UUID.randomUUID().toString();
         assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/workspaces/" + workspaceId), HttpMethod.PUT,
                 new HttpEntity<String>("{}", headers), String.class).getStatusCode());
+        openWorkspace(headers, workspaceId);
 
         Map<String, Object> systemBody = new HashMap<String, Object>(); systemBody.put("name", "订单系统");
         Map<String, Object> firstSystem = http.exchange(url("/api/v1/connection-systems"), HttpMethod.POST,
@@ -215,6 +328,7 @@ class LocalServerSecurityTest {
         String workspaceId = UUID.randomUUID().toString();
         assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/workspaces/" + workspaceId), HttpMethod.PUT,
                 new HttpEntity<String>("{}", headers), String.class).getStatusCode());
+        openWorkspace(headers, workspaceId);
 
         Map<String, Object> body = new HashMap<String, Object>();
         body.put("loadId", "completion-source-validation");
@@ -243,6 +357,39 @@ class LocalServerSecurityTest {
         headers.add(HttpHeaders.COOKIE, cookie.substring(0, cookie.indexOf(';')));
         headers.add(HttpHeaders.ORIGIN, "http://127.0.0.1:" + port);
         return headers;
+    }
+
+    private String openWorkspace(HttpHeaders headers, String workspaceId) {
+        String clientId = UUID.randomUUID().toString();
+        Map<String, Object> body = new HashMap<String, Object>(); body.put("clientId", clientId);
+        ResponseEntity<String> opened = http.exchange(url("/api/v1/workspaces/" + workspaceId + "/open"),
+                HttpMethod.POST, new HttpEntity<Map<String, Object>>(body, headers), String.class);
+        assertEquals(HttpStatus.OK, opened.getStatusCode());
+        headers.set("X-DBStudio-Client-Id", clientId);
+        return clientId;
+    }
+
+    private WebSocketSession connectWorkspaceSocket(HttpHeaders headers, String workspaceId, String clientId,
+                                                     final BlockingQueue<Map<String, Object>> events)
+            throws Exception {
+        WebSocketHttpHeaders socketHeaders = new WebSocketHttpHeaders();
+        socketHeaders.setOrigin("http://127.0.0.1:" + port);
+        socketHeaders.add(HttpHeaders.COOKIE, headers.getFirst(HttpHeaders.COOKIE));
+        return new StandardWebSocketClient().doHandshake(new TextWebSocketHandler() {
+            @Override protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
+                events.add(mapper.readValue(message.getPayload(), new TypeReference<Map<String, Object>>() { }));
+            }
+        }, socketHeaders, URI.create("ws://127.0.0.1:" + port + "/api/v1/events?workspaceId=" + workspaceId
+                + "&clientId=" + clientId)).get(10, TimeUnit.SECONDS);
+    }
+
+    private Map<String, Object> awaitEvent(BlockingQueue<Map<String, Object>> events, String type) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < deadline) {
+            Map<String, Object> event = events.poll(1, TimeUnit.SECONDS);
+            if (event != null && type.equals(event.get("type"))) return event;
+        }
+        throw new AssertionError("Timed out waiting for " + type);
     }
 
     private String url(String path) { return "http://127.0.0.1:" + port + path; }

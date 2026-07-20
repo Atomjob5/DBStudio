@@ -8,6 +8,7 @@ import com.dbstudio.desktop.persistence.ConnectionProfileRepository;
 import com.dbstudio.desktop.persistence.ConnectionCatalogRepository;
 import com.dbstudio.desktop.persistence.QueryHistoryRepository;
 import com.dbstudio.desktop.persistence.SettingsRepository;
+import com.dbstudio.desktop.persistence.WorkspaceRepository;
 import com.dbstudio.desktop.security.SecretStore;
 import com.dbstudio.desktop.security.SystemSecretStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -21,7 +22,10 @@ import org.springframework.context.annotation.Configuration;
 
 @Configuration
 public class AppConfiguration {
-    @Bean public LocalAccessToken localAccessToken() { return new LocalAccessToken(); }
+    @Bean public LocalAccessToken localAccessToken(
+            @Value("${dbstudio.local-access-token.enabled:false}") boolean enabled) {
+        return new LocalAccessToken(enabled);
+    }
     @Bean public ProviderRegistry providerRegistry() { return new ProviderRegistry(); }
     @Bean(destroyMethod = "close") public AppDatabase appDatabase(
             @Value("${dbstudio.data-directory:}") String configuredDirectory) throws SQLException, IOException {
@@ -39,6 +43,7 @@ public class AppConfiguration {
         return new QueryHistoryRepository(database);
     }
     @Bean public SettingsRepository settings(AppDatabase database) { return new SettingsRepository(database); }
+    @Bean public WorkspaceRepository workspaces(AppDatabase database) { return new WorkspaceRepository(database); }
     @Bean public SecretStore secretStore() { return new SystemSecretStore(); }
     @Bean public CsvService csvService() { return new CsvService(); }
 }

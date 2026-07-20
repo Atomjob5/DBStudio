@@ -1,11 +1,14 @@
 <template>
-  <el-container class="app-shell fill" v-loading="app.loading">
+  <WorkspaceChooser v-if="!workspaceOpened" :workspaces="workspaceCatalog" :loading="workspaceLoading"
+                    @open="openWorkspace" @create="createWorkspace" @rename="renameWorkspace"
+                    @delete="deleteWorkspace" @refresh="refreshWorkspaces" />
+  <el-container v-else class="app-shell fill" v-loading="app.loading">
     <el-header class="app-toolbar glass-surface" height="48px" aria-label="应用工具栏">
       <el-tooltip :content="activeConnectionTooltip" placement="bottom" :disabled="connectionCascaderOpen" :show-after="600">
-        <div class="connection-pill-wrap" :class="{ connected: editors.active?.connectionState === 'active', suspended: editors.active?.connectionState === 'suspended', stale: editors.active?.connection?.stale || editors.active?.connection?.unavailable }">
+        <div class="connection-pill-wrap" :class="{ connected: ['ready','active'].includes(editors.active?.connectionState ?? ''), suspended: editors.active?.connectionState === 'suspended', stale: editors.active?.connection?.stale || editors.active?.connection?.unavailable }">
           <el-cascader ref="connectionCascader" class="connection-pill" :model-value="activeConnectionValue"
                        :options="connections.cascaderOptions" :props="connectionCascaderProps"
-                       :show-all-levels="false" filterable clearable :disabled="!editors.active || editors.active.busy"
+                       :show-all-levels="false" filterable clearable :disabled="!editors.active || editors.active.busy || app.transportState !== 'ready'"
                        :placeholder="activeConnectionDisplay" aria-label="当前编辑标签的数据库链接"
                        @change="connectionSelectionChanged" @visible-change="connectionCascaderOpen = $event">
             <template #default="{ data }">
@@ -49,13 +52,13 @@
 
       <div class="toolbar-cluster query-actions" aria-label="查询控制">
         <el-tooltip content="取消执行 · Esc" placement="bottom">
-          <el-button text :icon="Close" aria-label="取消执行" :disabled="!editors.active?.busy" @click="cancelActive" />
+          <el-button text :icon="Close" aria-label="取消执行" :disabled="!editors.active?.busy || app.transportState !== 'ready'" @click="cancelActive" />
         </el-tooltip>
         <el-tooltip content="提交事务 · ⌘/Ctrl Alt C" placement="bottom">
-          <el-button text :icon="Select" aria-label="提交事务" :disabled="!editors.active?.connection" @click="commitActive" />
+          <el-button text :icon="Select" aria-label="提交事务" :disabled="!editors.active?.connection || app.transportState !== 'ready'" @click="commitActive" />
         </el-tooltip>
         <el-tooltip content="回滚事务 · ⌘/Ctrl Alt R" placement="bottom">
-          <el-button text :icon="RefreshLeft" aria-label="回滚事务" :disabled="!editors.active?.connection" @click="rollbackActive" />
+          <el-button text :icon="RefreshLeft" aria-label="回滚事务" :disabled="!editors.active?.connection || app.transportState !== 'ready'" @click="rollbackActive" />
         </el-tooltip>
       </div>
 
@@ -64,7 +67,7 @@
         <el-button text circle :icon="MoreFilled" aria-label="更多操作" />
         <template #dropdown>
           <el-dropdown-menu>
-            <el-dropdown-item command="import" :icon="Upload" :disabled="!activeConnected">导入 CSV / TSV</el-dropdown-item>
+            <el-dropdown-item command="import" :icon="Upload" :disabled="!activeConnected || app.transportState !== 'ready'">导入 CSV / TSV</el-dropdown-item>
             <el-dropdown-item command="history" :icon="Clock">查询历史</el-dropdown-item>
             <el-dropdown-item divided command="settings" :icon="Setting">设置</el-dropdown-item>
             <el-dropdown-item divided command="exit" :icon="SwitchButton">退出 DBStudio</el-dropdown-item>
@@ -86,7 +89,7 @@
       </nav>
       <el-splitter class="workbench" lazy>
         <el-splitter-panel v-if="panelOpen" v-model:size="leftWidth" :min="210" :max="420" collapsible>
-          <ObjectExplorer v-if="activeTool === 'objects' && editors.active?.connection" ref="objectExplorer"
+          <ObjectExplorer v-if="activeTool === 'objects' && activeConnected && editors.active?.connection" ref="objectExplorer"
                           :editor-id="editors.active.id" :connection-key="activeConnectionKey"
                           :connection-name="editors.active.connection.name" :completion-loading="activeCompletionLoading"
                           @open="openObject" @definition="openDefinition" @refresh="refreshCompletionFromObjectExplorer" />
@@ -131,6 +134,10 @@
 
     <el-footer class="status-bar" height="24px" aria-live="polite">
       <span class="status-item"><i class="status-dot" :class="activeConnectionStatusClass" />{{ app.status }}</span>
+      <span v-if="app.transportState !== 'ready'" class="status-item transport-status" :class="app.transportState">
+        <Loading v-if="app.transportState !== 'offline'" class="is-loading" />
+        <WarningFilled v-else />{{ transportStatusText }}
+      </span>
       <span v-if="completionStatus" class="status-item completion-status" :class="completionStatus.state"
             :title="completionStatus.error || completionStatusText">
         <Loading v-if="completionStatus.state === 'loading'" class="is-loading" />
@@ -149,9 +156,12 @@
         </el-tooltip>
       </div>
       <span class="status-spacer" />
-      <span v-if="editors.active?.transactionDirty" class="status-item transaction-warning"><WarningFilled />未提交事务</span>
+      <span v-if="editors.active?.transactionState === 'disconnected-protected'" class="status-item transaction-warning"><WarningFilled />事务断连保护中</span>
+      <span v-else-if="editors.active?.transactionDirty" class="status-item transaction-warning"><WarningFilled />未提交事务</span>
+      <span v-else-if="editors.active?.transactionState === 'auto-rolled-back' || editors.active?.transactionState === 'lost'"
+            class="status-item transaction-warning"><WarningFilled />上次事务已回滚</span>
       <span class="status-item"><i class="status-dot" :class="editors.active?.busy ? 'busy' : 'neutral'" />
-        {{ editors.active?.busy ? "正在执行" : activeConnected ? editors.active?.connectionState === "suspended" ? "链接已暂停" : "自动提交关闭" : "未选择链接" }}
+        {{ connectionSessionText }}
       </span>
     </el-footer>
   </el-container>
@@ -164,13 +174,16 @@
                   :stream-batch-rows="settings.streamBatchRows" :column-layout-scope="settings.columnLayoutScope"
                   :copy-header-on-double-click="settings.copyHeaderOnDoubleClick" :copy-separator="settings.copySeparator"
                   :max-active-sessions="settings.maxActiveSessions" :idle-timeout-minutes="settings.idleTimeoutMinutes"
+                  :transaction-disconnect-rollback-minutes="settings.transactionDisconnectRollbackMinutes"
                   :completion-cache-size="completionCacheSize" :completion-cache-environment-count="metadata.completionStats.environmentCount"
                   :completion-cache-loading-count="metadata.completionStats.loadingCount" :can-clear-completion-caches="metadata.canClearCompletions"
                   @update:theme="updateTheme" @update:max-rows="updateMaxRows"
                   @update:stream-batch-rows="updateStreamBatchRows" @update:column-layout-scope="updateColumnLayoutScope"
                   @update:copy-header-on-double-click="updateCopyHeaderOnDoubleClick"
                   @update:copy-separator="updateCopySeparator" @update:max-active-sessions="updateMaxActiveSessions"
-                  @update:idle-timeout-minutes="updateIdleTimeoutMinutes" @clear-completion-caches="clearCompletionCaches" />
+                  @update:idle-timeout-minutes="updateIdleTimeoutMinutes"
+                  @update:transaction-disconnect-rollback-minutes="updateTransactionDisconnectRollbackMinutes"
+                  @clear-completion-caches="clearCompletionCaches" />
   <CsvImportDialog v-model="csvDialog" :editor-id="editors.active?.id" @imported="objectExplorer?.resetTree()" />
 </template>
 
@@ -213,6 +226,7 @@ import MonacoEditor from "./components/MonacoEditor.vue";
 import ObjectExplorer from "./components/ObjectExplorer.vue";
 import ResultPanel from "./components/ResultPanel.vue";
 import SettingsDrawer from "./components/SettingsDrawer.vue";
+import WorkspaceChooser from "./components/WorkspaceChooser.vue";
 import { useAppStore } from "./stores/app";
 import { useConnectionStore } from "./stores/connection";
 import { useEditorStore } from "./stores/editor";
@@ -223,7 +237,7 @@ import type { ColumnLayoutScope } from "./columnLayout";
 import type { CopySeparator } from "./resultCopy";
 import { applyDocumentTheme } from "./theme";
 import { openRecentSql, openSqlFile, recentSqlFiles, saveSqlFile } from "./files/browserFiles";
-import type { BootstrapResponse, CompletionCache, CompletionProgress, CompletionSnapshot, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryResult, SavedProfile, ThemePreference } from "./types";
+import type { BootstrapResponse, CompletionCache, CompletionProgress, CompletionSnapshot, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryResult, RecoveredEditor, SavedProfile, ThemePreference, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "./types";
 
 const app = useAppStore(); const connections = useConnectionStore(); const metadata = useMetadataStore();
 const editors = useEditorStore(); const queries = useQueryStore(); const settings = useSettingsStore();
@@ -236,6 +250,11 @@ const connectionCascaderOpen = ref(false);
 const objectExplorer = ref<InstanceType<typeof ObjectExplorer>>();
 const monacoEditor = ref<{ getValue(key?: string): string; setValue(value: string, key?: string): void }>();
 const recentHandles = new Map<string, FileSystemFileHandle>();
+const workspaceOpened = ref(false);
+const workspaceCatalog = ref<WorkspaceSummary[]>([]);
+const workspaceLoading = ref(false);
+const currentWorkspace = ref<WorkspaceSummary>();
+const draftSaveTimers = new Map<string, number>();
 const activeExecution = computed(() => editors.activeId ? queries.executions[editors.activeId] : undefined);
 const activeResultIndex = ref(0);
 const activeResult = computed(() => activeExecution.value?.results.find((result) => result.resultIndex === activeResultIndex.value)
@@ -248,10 +267,11 @@ const activeResultLoading = computed(() => {
     : undefined;
 });
 const canLoadMore = computed(() => Boolean(activeResult.value?.columns.length && activeResult.value.complete
-  && activeResult.value.truncated && !activeExecution.value?.busy && !resultLoading.value));
+  && activeResult.value.truncated && !activeExecution.value?.busy && !activeExecution.value?.historical
+  && !resultLoading.value && app.transportState === "ready"));
 const nextPageTooltip = computed(() => resultLoadTooltip("next"));
 const allRowsTooltip = computed(() => resultLoadTooltip("all"));
-const activeConnected = computed(() => Boolean(editors.active?.connection));
+const activeConnected = computed(() => Boolean(editors.active?.connection && editors.active.connectionState !== "unbound"));
 const activeConnectionKey = computed(() => editors.active?.connection ? `${editors.active.connection.id}@${editors.active.connection.revision}` : "unbound");
 const activeCompletionContext = computed(() => connections.completionContext(editors.active?.connection));
 const activeCompletionKey = computed(() => activeCompletionContext.value?.key ?? "unbound");
@@ -269,9 +289,17 @@ const activeConnectionDisplay = computed(() => {
 });
 const activeConnectionTooltip = computed(() => `${activeConnectionPath.value}${editors.active?.connection?.stale
   ? " · 配置已更新，重新选择后生效" : editors.active?.connection?.unavailable ? " · 配置已删除，当前会话仍可继续使用" : ""}`);
-const activeConnectionStatusClass = computed(() => !activeConnected.value ? "offline" : editors.active?.connectionState === "active" ? "online" : "neutral");
+const activeConnectionStatusClass = computed(() => !activeConnected.value ? "offline" : ["ready", "active"].includes(editors.active?.connectionState ?? "") ? "online" : "neutral");
 const connectionCascaderProps: CascaderProps = { emitPath: false };
-const canExecute = computed(() => Boolean(editors.active?.connection && !editors.active.busy));
+const canExecute = computed(() => Boolean(activeConnected.value && !editors.active?.busy && app.transportState === "ready"));
+const transportStatusText = computed(() => app.transportState === "recovering" ? "正在恢复浏览器工作区…"
+  : app.transportState === "connecting" ? "正在建立事件通道…"
+    : app.transportState === "offline" ? "事件通道不可用" : "事件通道重连中…");
+const connectionSessionText = computed(() => editors.active?.busy ? "正在执行"
+  : editors.active?.connectionState === "unbound" && editors.active?.connection ? "链接配置不可用"
+    : !activeConnected.value ? "未选择链接"
+    : editors.active?.connectionState === "credentials-required" ? "需要重新输入密码"
+      : editors.active?.connectionState === "suspended" ? "链接已暂停" : "自动提交关闭");
 const panelVisible = computed(() => panelOpen.value && numericPanelWidth(leftWidth.value) > 0);
 const disposers: Array<() => void> = [];
 const colorSchemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -287,32 +315,25 @@ onMounted(async () => {
   app.setSystemTheme(colorSchemeQuery?.matches ? "dark" : "light");
   colorSchemeQuery?.addEventListener?.("change", systemThemeChanged);
   installEventHandlers();
-  app.loading = true;
+  workspaceLoading.value = true;
   try {
-    const data = await rpc.request<BootstrapResponse>("app.bootstrap");
-    connections.initialize(data.providers, data.profiles, data.systems ?? [], data.environments ?? []);
-    settings.initialize(data.settings, data.recentFiles);
-    for (const recent of await recentSqlFiles().catch(() => [])) {
-      recentHandles.set(recent.name, recent.handle);
-      if (!settings.recentFiles.includes(recent.name)) settings.recentFiles.push(recent.name);
-    }
-    app.applyBootstrap(data);
-    leftWidth.value = Number(data.settings["layout.leftWidth"] ?? 248);
-    editorHeight.value = data.settings["layout.editorHeight"] ?? "62%";
-    await newEditor();
-    activeTool.value = editors.active?.connection ? "objects" : "connections";
+    await rpc.ready();
+    await refreshWorkspaces();
   } catch (error) {
     app.status = "启动失败";
     ElNotification.error({ title: "DBStudio 启动失败", message: message(error), duration: 0 });
-  } finally { app.loading = false; }
+  } finally { workspaceLoading.value = false; }
   window.addEventListener("keydown", handleShortcut);
+  window.addEventListener("pagehide", flushDrafts);
 });
 onBeforeUnmount(() => {
   disposers.forEach((dispose) => dispose());
   colorSchemeQuery?.removeEventListener?.("change", systemThemeChanged);
   window.removeEventListener("keydown", handleShortcut);
+  window.removeEventListener("pagehide", flushDrafts);
   if (layoutSaveTimer !== undefined) window.clearTimeout(layoutSaveTimer);
   completionNoticeTimers.forEach((timer) => window.clearTimeout(timer));
+  draftSaveTimers.forEach((timer) => window.clearTimeout(timer));
 });
 
 watch(() => app.theme, (theme) => applyDocumentTheme(theme), { immediate: true });
@@ -321,6 +342,10 @@ watch(() => activeExecution.value?.executionId, () => {
 });
 watch(() => [editors.activeId, activeConnectionKey.value, activeCompletionKey.value] as const, () => {
   metadata.activate(activeConnectionKey.value, activeCompletionKey.value);
+});
+watch(() => editors.activeId, (current, previous) => {
+  if (previous) void persistDraftById(previous, true);
+  if (current) scheduleDraft(current);
 });
 
 function systemThemeChanged(event: MediaQueryListEvent): void {
@@ -339,6 +364,26 @@ watch([leftWidth, editorHeight], () => {
 });
 
 function installEventHandlers(): void {
+  app.setTransportState(rpc.transportState);
+  disposers.push(rpc.on("transport.state", (raw) => {
+    const state = (raw as { state: TransportState }).state;
+    const previous = app.transportState;
+    app.setTransportState(state);
+    if (state === "reconnecting") app.status = "事件通道重连中…";
+    else if (state === "recovering") app.status = "正在恢复浏览器工作区…";
+    else if (state === "offline") app.status = "事件通道暂时不可用";
+    else if (state === "ready" && previous === "reconnecting") app.status = "事件通道已恢复";
+  }));
+  disposers.push(rpc.on("workspace.ready", (raw) => {
+    const data = raw as { editors?: Array<{ editorId: string; busy: boolean; transactionDirty: boolean;
+      transactionState: EditorTab["transactionState"]; connectionState: EditorConnectionState }> };
+    for (const state of data.editors ?? []) {
+      const tab = editors.tabs.find((item) => item.id === state.editorId); if (!tab) continue;
+      if (tab.busy && !state.busy) queries.markHistorical(tab.id);
+      editors.patch(tab.id, { busy: state.busy, transactionDirty: state.transactionDirty,
+        transactionState: state.transactionState, connectionState: state.connectionState });
+    }
+  }));
   disposers.push(rpc.on("query.started", (raw) => {
     const data = raw as { editorId: string; executionId: string };
     queries.start(data.editorId, data.executionId);
@@ -357,12 +402,17 @@ function installEventHandlers(): void {
   }));
   disposers.push(rpc.on("query.executionComplete", (raw) => {
     const data = raw as { editorId: string; executionId: string; cancelled: boolean; failed: boolean; durationMs: number; transactionDirty: boolean };
-    queries.complete(data.editorId, data); editors.patch(data.editorId, { busy: false, transactionDirty: data.transactionDirty });
+    queries.complete(data.editorId, data); editors.patch(data.editorId, {
+      busy: false, transactionDirty: data.transactionDirty,
+      transactionState: data.transactionDirty ? "active" : "none"
+    });
+    scheduleDraft(data.editorId);
     app.status = `${data.cancelled ? "执行已取消" : data.failed ? "执行失败" : "执行完成"} · ${data.durationMs} ms`;
   }));
   disposers.push(rpc.on("transaction.status", (raw) => {
     const data = raw as { editorId: string; dirty: boolean; message: string };
-    editors.patch(data.editorId, { transactionDirty: data.dirty }); app.status = data.message;
+    editors.patch(data.editorId, { transactionDirty: data.dirty, transactionState: data.dirty ? "active" : "none" });
+    scheduleDraft(data.editorId); app.status = data.message;
   }));
   disposers.push(rpc.on("task.progress", (raw) => {
     const data = raw as { message?: string };
@@ -377,43 +427,218 @@ function installEventHandlers(): void {
     if (data.message && data.editorId === editors.activeId) app.status = data.message;
   }));
   disposers.push(rpc.on("connections.changed", () => { void refreshConnectionCatalog(); }));
+  disposers.push(rpc.on("transaction.autoRolledBack", (raw) => {
+    const data = raw as { message?: string };
+    for (const tab of editors.tabs) if (tab.transactionDirty) {
+      editors.patch(tab.id, { transactionDirty: false, transactionState: "auto-rolled-back" });
+      scheduleDraft(tab.id);
+    }
+    ElNotification.warning({ title: "事务已自动回滚", message: data.message ?? "断连事务已超过保护时间并自动回滚" });
+  }));
+}
+
+async function refreshWorkspaces(): Promise<void> {
+  workspaceLoading.value = true;
+  try { workspaceCatalog.value = await rpc.listWorkspaces(); }
+  finally { workspaceLoading.value = false; }
+}
+
+async function createWorkspace(name: string): Promise<void> {
+  try {
+    const created = await rpc.createWorkspace(name);
+    await refreshWorkspaces();
+    await openWorkspace(created);
+  } catch (error) { reportError(error); }
+}
+
+async function renameWorkspace(workspace: WorkspaceSummary, name: string): Promise<void> {
+  try { await rpc.renameWorkspace(workspace.id, name); await refreshWorkspaces(); }
+  catch (error) { reportError(error); }
+}
+
+async function deleteWorkspace(workspace: WorkspaceSummary): Promise<void> {
+  try {
+    await ElMessageBox.confirm(`删除“${workspace.name}”？该空间保存的编辑器检查点和恢复草稿将不再可用。`, "删除工作空间", {
+      type: "warning", confirmButtonText: "删除", cancelButtonText: "取消"
+    });
+    await rpc.deleteWorkspace(workspace.id); await refreshWorkspaces();
+  } catch (error) { if (error !== "cancel" && error !== "close") reportError(error); }
+}
+
+async function openWorkspace(workspace: WorkspaceSummary): Promise<void> {
+  workspaceLoading.value = true;
+  try {
+    let opened = await rpc.openWorkspace(workspace.id);
+    if (opened.recoveryDecisionRequired) {
+      const decision = await askRecoveryDecision(opened);
+      if (decision === "return") {
+        await rpc.closeWorkspace(); await refreshWorkspaces(); return;
+      }
+      opened = await rpc.resolveWorkspaceRecovery(decision);
+    }
+    currentWorkspace.value = opened.workspace ?? workspace;
+    workspaceOpened.value = true;
+    await bootstrapWorkspace(opened.editors ?? []);
+    if (opened.transactionRolledBack || opened.processRestarted && (opened.recovery?.transactionCount ?? 0) > 0) {
+      ElNotification.warning({ title: "事务未恢复", message: "上次未提交事务已随数据库连接断开而回滚；SQL内容已恢复。", duration: 0 });
+    }
+  } catch (error) {
+    await rpc.closeWorkspace().catch(() => undefined);
+    if ((error as { code?: string }).code === "WORKSPACE_IN_USE") await refreshWorkspaces();
+    reportError(error);
+  } finally { workspaceLoading.value = false; }
+}
+
+async function askRecoveryDecision(opened: WorkspaceOpenResponse): Promise<"restore" | "discard" | "return"> {
+  const summary = opened.recovery;
+  const details = `${summary?.unsavedEditorCount ?? 0} 个未保存标签${summary?.transactionCount ? `，${summary.transactionCount} 个事务状态` : ""}`;
+  try {
+    await ElMessageBox({
+      title: "似乎上次还有些东西遗漏了，是否要恢复？",
+      message: `检测到 ${details}。恢复只包含编辑器内容，不恢复查询结果。`, type: "warning",
+      showCancelButton: true, showClose: true, distinguishCancelAndClose: true,
+      confirmButtonText: "恢复上次内容", cancelButtonText: "放弃并打开", closeOnClickModal: false
+    });
+    return "restore";
+  } catch (choice) { return choice === "cancel" ? "discard" : "return"; }
+}
+
+async function bootstrapWorkspace(recovered: RecoveredEditor[]): Promise<void> {
+  app.loading = true;
+  try {
+    const data = await rpc.request<BootstrapResponse>("app.bootstrap");
+    connections.initialize(data.providers, data.profiles, data.systems ?? [], data.environments ?? []);
+    settings.initialize(data.settings, data.recentFiles);
+    for (const recent of await recentSqlFiles().catch(() => [])) {
+      recentHandles.set(recent.name, recent.handle);
+      if (!settings.recentFiles.includes(recent.name)) settings.recentFiles.push(recent.name);
+    }
+    app.applyBootstrap(data);
+    leftWidth.value = Number(data.settings["layout.leftWidth"] ?? 248);
+    editorHeight.value = data.settings["layout.editorHeight"] ?? "62%";
+    editors.clear(); queries.clear(); resultLoading.value = undefined;
+    for (const value of [...recovered].sort((left, right) => left.sortOrder - right.sortOrder)) {
+      editors.add({ id: value.id, title: value.title, content: value.content, filePath: value.filePath,
+        dirty: value.dirty, transactionDirty: value.transactionState === "active" || value.transactionState === "disconnected-protected",
+        transactionState: value.transactionState, busy: false, connection: value.connection,
+        connectionState: value.connectionState });
+    }
+    const active = recovered.find((item) => item.active);
+    if (active) editors.activeId = active.id;
+    if (!editors.tabs.length) await newEditor();
+    activeTool.value = editors.active?.connection ? "objects" : "connections";
+    app.status = recovered.length ? `已打开 ${currentWorkspace.value?.name ?? "工作空间"} · 已恢复编辑器内容` : `已打开 ${currentWorkspace.value?.name ?? "工作空间"}`;
+  } finally { app.loading = false; }
+}
+
+function scheduleDraft(editorId: string): void {
+  if (!workspaceOpened.value) return;
+  const previous = draftSaveTimers.get(editorId);
+  if (previous !== undefined) window.clearTimeout(previous);
+  draftSaveTimers.set(editorId, window.setTimeout(() => {
+    draftSaveTimers.delete(editorId); void persistDraftById(editorId, false);
+  }, 1_000));
+}
+
+async function persistDraftById(editorId: string, immediate: boolean, keepalive = false): Promise<void> {
+  if (!workspaceOpened.value) return;
+  const tab = editors.tabs.find((item) => item.id === editorId); if (!tab) return;
+  const timer = draftSaveTimers.get(editorId);
+  if (timer !== undefined) { window.clearTimeout(timer); draftSaveTimers.delete(editorId); }
+  const sqlText = typeof monacoEditor.value?.getValue === "function"
+    ? monacoEditor.value.getValue(editorId) : tab.content;
+  if (immediate) editors.patch(editorId, { content: sqlText });
+  await rpc.saveEditorDraft(editorId, { title: tab.title, sqlText,
+    sortOrder: editors.tabs.findIndex((item) => item.id === editorId), fileName: tab.filePath,
+    filePath: tab.filePath, profileId: tab.connection?.id, dirty: tab.dirty, active: editors.activeId === editorId
+  }, keepalive).catch((error) => { if (immediate) reportError(error); });
+}
+
+function flushDrafts(): void {
+  for (const tab of editors.tabs) void persistDraftById(tab.id, false, true);
 }
 
 async function newEditor(content = "", filePath?: string, title?: string, fileHandle?: FileSystemFileHandle): Promise<EditorTab | undefined> {
+  await rpc.ensureOperational();
   const inherited = editors.active?.connection && connections.current(editors.active.connection.id) ? editors.active.connection.id : undefined;
   const created = await rpc.request<{ id: string; title: string; connection?: EditorConnectionBinding; connectionState: EditorConnectionState }>("editor.create", inherited ? { profileId: inherited } : {});
   const tab: EditorTab = { id: created.id, title: title ?? created.title, content, filePath, fileHandle,
     dirty: Boolean(content && !filePath), transactionDirty: false, busy: false,
     connection: created.connection, connectionState: created.connectionState ?? "unbound" };
   editors.add(tab);
+  scheduleDraft(tab.id);
   if (tab.connection) void ensureCompletionForEditor(tab);
   return tab;
 }
 
-function markActiveDirty(): void { if (editors.active) editors.patch(editors.active.id, { dirty: true }); }
+function markActiveDirty(): void {
+  if (!editors.active) return;
+  editors.patch(editors.active.id, { dirty: true }); scheduleDraft(editors.active.id);
+}
 async function formatActive(): Promise<void> {
   const tab = editors.active; if (!tab) return;
   if (!tab.connection) { ElMessage.warning("请先为当前编辑标签选择数据库链接"); return; }
   const result = await rpc.request<{ text: string }>("sql.format", { editorId: tab.id, text: monacoEditor.value?.getValue(tab.id) ?? tab.content });
   monacoEditor.value?.setValue(result.text, tab.id);
   editors.patch(tab.id, { dirty: true });
+  scheduleDraft(tab.id);
 }
 function executeFromEditor(scope: "current" | "script", selectedText: string, cursorOffset: number): void { void executeActive(scope, selectedText, cursorOffset); }
 function executeCommand(command: string): void {
   if (command === "current" || command === "script") void executeActive(command);
 }
-async function executeActive(scope: "current" | "script", selectedText = "", cursorOffset = 0): Promise<void> {
+async function executeActive(scope: "current" | "script", selectedText = "", cursorOffset = 0,
+                             recoveryRetried = false): Promise<void> {
   const tab = editors.active; if (!tab || tab.busy) return;
-  if (!tab.connection) { ElMessage.warning("请先为当前编辑标签选择数据库链接"); return; }
-  editors.patch(tab.id, { busy: true }); app.status = "正在执行…";
+  if (!tab.connection || tab.connectionState === "unbound") {
+    ElMessage.warning(tab.connection ? "原数据库链接已不可用，请重新选择链接" : "请先为当前编辑标签选择数据库链接");
+    return;
+  }
   try {
+    await rpc.ensureOperational();
+    if (!await ensureEditorCredentials(tab)) return;
+    editors.patch(tab.id, { busy: true }); app.status = "正在执行…";
     const response = await rpc.request<{ executionId: string }>("query.execute", { editorId: tab.id, text: monacoEditor.value?.getValue(tab.id) ?? tab.content, selectedText, cursorOffset, scope, stopOnError: true });
     queries.start(tab.id, response.executionId);
-  } catch (error) { editors.patch(tab.id, { busy: false }); ElMessage.error(message(error)); }
+  } catch (error) {
+    editors.patch(tab.id, { busy: false });
+    if ((error as { code?: string }).code === "WORKSPACE_RECOVERED_RETRY_REQUIRED" && !recoveryRetried) {
+      if (editors.activeId !== tab.id) return;
+      await executeActive(scope, selectedText, cursorOffset, true);
+      return;
+    }
+    ElMessage.error(message(error));
+  }
 }
-async function cancelActive(): Promise<void> { if (editors.active) await rpc.request("query.cancel", { editorId: editors.active.id }); }
-async function commitActive(): Promise<void> { if (editors.active?.connection) await rpc.request("transaction.commit", { editorId: editors.active.id }); }
-async function rollbackActive(): Promise<void> { if (editors.active?.connection) await rpc.request("transaction.rollback", { editorId: editors.active.id }); }
+async function ensureEditorCredentials(tab: EditorTab): Promise<boolean> {
+  if (tab.connectionState !== "credentials-required") return true;
+  const password = await requestConnectionPassword();
+  if (!password || !tab.connection) return false;
+  const response = await rpc.request<{ connection: EditorConnectionBinding; connectionState: EditorConnectionState }>(
+    "editor.bind", { editorId: tab.id, profileId: tab.connection.id, password: password.password,
+      rememberPassword: password.remember, transactionAction: "" }, 60_000);
+  editors.patch(tab.id, { connection: response.connection, connectionState: response.connectionState });
+  scheduleDraft(tab.id);
+  return true;
+}
+async function cancelActive(): Promise<void> {
+  const tab = editors.active;
+  if (!tab) return;
+  await rpc.ensureOperational();
+  await rpc.request("query.cancel", { editorId: tab.id });
+}
+async function commitActive(): Promise<void> {
+  const tab = editors.active;
+  if (!tab?.connection) return;
+  await rpc.ensureOperational();
+  await rpc.request("transaction.commit", { editorId: tab.id });
+}
+async function rollbackActive(): Promise<void> {
+  const tab = editors.active;
+  if (!tab?.connection) return;
+  await rpc.ensureOperational();
+  await rpc.request("transaction.rollback", { editorId: tab.id });
+}
 
 interface ResultPageResponse {
   resultIndex: number;
@@ -435,6 +660,8 @@ async function loadAllResultRows(): Promise<void> {
 
 function resultLoadTooltip(mode: "next" | "all"): string {
   if (!activeResult.value?.columns.length) return "暂无可加载的查询结果";
+  if (activeExecution.value?.historical) return "断线前快照不能继续加载数据";
+  if (app.transportState !== "ready") return "事件通道恢复后才能加载数据";
   if (activeExecution.value?.busy || !activeResult.value.complete) return "查询尚未完成";
   if (resultLoading.value) return resultLoading.value.mode === "next" ? "正在加载下一页数据…" : "正在获取全部数据…";
   if (!activeResult.value.truncated) return "已获取全部数据";
@@ -445,12 +672,13 @@ function resultLoadTooltip(mode: "next" | "all"): string {
 
 async function loadResultRows(resultIndex: number, initialOffset: number, all: boolean): Promise<void> {
   const tab = editors.active;
-  if (!tab || resultLoading.value) return;
+  if (!tab || resultLoading.value || activeExecution.value?.historical) return;
   const mode = all ? "all" : "next";
   resultLoading.value = { editorId: tab.id, resultIndex, mode };
   let offset = initialOffset;
   const limit = all ? 5_000 : settings.maxResultRows;
   try {
+    await rpc.ensureOperational();
     do {
       const page = await rpc.request<ResultPageResponse>("query.fetchRows", {
         editorId: tab.id, resultIndex, offset, limit
@@ -572,9 +800,10 @@ async function connectionSelectionChanged(value: unknown): Promise<void> {
   const transactionAction = await transactionActionForSwitch(tab);
   if (transactionAction === "cancel") return;
   try {
+    await rpc.ensureOperational();
     if (!selected) {
       await rpc.request("editor.unbind", { editorId: tab.id, transactionAction });
-      editors.patch(tab.id, { connection: undefined, connectionState: "unbound", transactionDirty: false });
+      editors.patch(tab.id, { connection: undefined, connectionState: "unbound", transactionDirty: false, transactionState: "none" });
     } else {
       const profileId = selected.split("@")[0];
       let response: { connection: EditorConnectionBinding; connectionState: EditorConnectionState };
@@ -588,11 +817,12 @@ async function connectionSelectionChanged(value: unknown): Promise<void> {
           password: password.password, rememberPassword: password.remember }, 60_000);
       }
       editors.patch(tab.id, { connection: response.connection, connectionState: response.connectionState,
-        transactionDirty: false });
+        transactionDirty: false, transactionState: "none" });
       app.status = `已绑定 ${response.connection.name}`;
       void ensureCompletionForEditor({ ...tab, connection: response.connection, connectionState: response.connectionState });
     }
     queries.clearEditor(tab.id);
+    scheduleDraft(tab.id);
     metadata.activate(activeConnectionKey.value, activeCompletionKey.value);
     await nextTick(); objectExplorer.value?.resetTree();
   } catch (error) { reportError(error); }
@@ -657,6 +887,7 @@ async function saveActive(saveAs: boolean): Promise<boolean> {
   const file = await saveSqlFile(monacoEditor.value?.getValue(tab.id) ?? tab.content, tab.title, tab.fileHandle, saveAs);
   if (!file) return false;
   editors.patch(tab.id, { filePath: file.name, fileHandle: file.handle, title: file.name, dirty: false });
+  await persistDraftById(tab.id, true);
   if (file.handle) { recentHandles.set(file.name, file.handle); if (!settings.recentFiles.includes(file.name)) settings.recentFiles.unshift(file.name); }
   return true;
 }
@@ -696,7 +927,35 @@ async function closeApplication(activeTasks = 0): Promise<void> {
         return;
       }
     }
-    for (const tab of [...editors.tabs]) if (!await closeTab(tab.id)) { await rpc.request("app.closeDecision", { allow: false }); return; }
+    const discardDrafts = new Set<string>();
+    for (const tab of [...editors.tabs]) {
+      editors.activeId = tab.id;
+      if (tab.dirty) {
+        try {
+          await ElMessageBox({ title: "保存修改？", message: `${tab.title} 有未保存的修改。`, type: "warning",
+            showCancelButton: true, showClose: true, distinguishCancelAndClose: true,
+            confirmButtonText: "保存", cancelButtonText: "不保存" });
+          if (!await saveActive(false)) { await rpc.request("app.closeDecision", { allow: false }); return; }
+        } catch (choice) {
+          if (choice !== "cancel") { await rpc.request("app.closeDecision", { allow: false }); return; }
+          discardDrafts.add(tab.id);
+        }
+      }
+      if (tab.transactionDirty) {
+        try {
+          await ElMessageBox({ title: "未提交事务", message: `${tab.title} 仍有未提交事务。`, type: "warning",
+            showCancelButton: true, showClose: true, distinguishCancelAndClose: true,
+            confirmButtonText: "提交", cancelButtonText: "回滚" });
+          await commitActive();
+        } catch (choice) {
+          if (choice !== "cancel") { await rpc.request("app.closeDecision", { allow: false }); return; }
+          await rollbackActive();
+        }
+      }
+    }
+    draftSaveTimers.forEach((timer) => window.clearTimeout(timer)); draftSaveTimers.clear();
+    for (const tab of editors.tabs) if (!discardDrafts.has(tab.id)) await persistDraftById(tab.id, true);
+    await rpc.finalizeWorkspace();
     await rpc.request("app.closeDecision", { allow: true });
   } catch (error) {
     reportError(error);
@@ -755,6 +1014,12 @@ async function updateIdleTimeoutMinutes(value: number): Promise<void> {
   try { await rpc.request("settings.update", { key: "connection.idleTimeoutMinutes", value: String(value) }); }
   catch (error) { settings.idleTimeoutMinutes = previous; reportError(error); }
 }
+async function updateTransactionDisconnectRollbackMinutes(value: number): Promise<void> {
+  const previous = settings.transactionDisconnectRollbackMinutes;
+  settings.transactionDisconnectRollbackMinutes = value;
+  try { await rpc.request("settings.update", { key: "connection.transactionDisconnectRollbackMinutes", value: String(value) }); }
+  catch (error) { settings.transactionDisconnectRollbackMinutes = previous; reportError(error); }
+}
 async function clearCompletionCaches(): Promise<void> {
   const stats = { ...metadata.completionStats };
   const size = formatCompletionBytes(stats.estimatedBytes);
@@ -779,13 +1044,19 @@ function dataCommand(command: string): void {
   else settingsDrawer.value = true;
 }
 async function exportLoaded(resultIndex: number): Promise<void> {
-  if (!editors.active) return;
-  rpc.downloadCsv("loaded", editors.active.id, resultIndex);
+  if (!editors.active || activeExecution.value?.historical) {
+    ElMessage.warning("断线前快照不能通过服务端导出，可继续复制已加载内容");
+    return;
+  }
+  await rpc.downloadCsv("loaded", editors.active.id, resultIndex);
   ElMessage.success("已开始下载当前已加载结果");
 }
 async function exportFull(resultIndex: number): Promise<void> {
-  if (!editors.active) return;
-  rpc.downloadCsv("full", editors.active.id, resultIndex);
+  if (!editors.active || activeExecution.value?.historical) {
+    ElMessage.warning("断线前快照不能重新执行完整导出");
+    return;
+  }
+  await rpc.downloadCsv("full", editors.active.id, resultIndex);
   ElMessage.success("已开始流式导出完整结果");
 }
 function reportError(error: unknown): void { ElMessage.error(message(error)); }
@@ -1001,6 +1272,13 @@ function message(error: unknown): string { return error instanceof Error ? error
 }
 .status-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .status-item svg { width: 12px; height: 12px; }
+.transport-status {
+  padding-left: 10px;
+  border-left: 1px solid var(--db-border-soft);
+  color: var(--db-accent);
+}
+.transport-status.offline { color: var(--db-warning); }
+.transport-status .is-loading { animation: rotating 1.4s linear infinite; }
 .completion-status {
   min-width: 0;
   max-width: min(42vw, 520px);

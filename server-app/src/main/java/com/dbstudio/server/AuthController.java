@@ -16,11 +16,12 @@ public final class AuthController {
 
     @PostMapping("/exchange")
     public Map<String, Object> exchange(@RequestBody Map<String, Object> body, HttpServletResponse response) {
+        if (!token.enabled()) return ApiPayloads.map("authenticated", true, "required", false);
         if (!token.matches(ApiPayloads.text(body, "token"))) {
             throw new ApiException("INVALID_LAUNCH_TOKEN", "启动令牌无效");
         }
         response.addHeader(HttpHeaders.SET_COOKIE, LocalAccessToken.COOKIE_NAME + "=" + token.launchValue()
                 + "; Path=/; HttpOnly; SameSite=Strict");
-        return ApiPayloads.map("authenticated", true);
+        return ApiPayloads.map("authenticated", true, "required", true);
     }
 }

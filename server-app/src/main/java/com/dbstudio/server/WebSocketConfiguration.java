@@ -50,10 +50,13 @@ public class WebSocketConfiguration implements WebSocketConfigurer {
             if (!token.authenticated(servlet)) return false;
             List<String> ids = UriComponentsBuilder.fromUri(request.getURI()).build()
                     .getQueryParams().get("workspaceId");
-            if (ids == null || ids.size() != 1) return false;
+            List<String> clients = UriComponentsBuilder.fromUri(request.getURI()).build()
+                    .getQueryParams().get("clientId");
+            if (ids == null || ids.size() != 1 || clients == null || clients.size() != 1) return false;
             try {
-                workspaces.require(ids.get(0));
+                workspaces.requireOwned(ids.get(0), clients.get(0));
                 attributes.put(WorkspaceWebSocketHandler.WORKSPACE_ATTRIBUTE, ids.get(0));
+                attributes.put(WorkspaceWebSocketHandler.CLIENT_ATTRIBUTE, clients.get(0));
                 return true;
             } catch (ApiException exception) {
                 return false;
