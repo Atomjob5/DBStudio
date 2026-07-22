@@ -254,10 +254,14 @@ public final class QueryRunner implements AutoCloseable {
             String display = label == null || label.trim().isEmpty() ? name : label;
             columns.add(display);
             columnDetails.add(new ResultColumn(display, name, metadata.getCatalogName(index),
-                    metadata.getSchemaName(index), metadata.getTableName(index), metadata.getColumnTypeName(index), ""));
+                    metadata.getSchemaName(index), metadata.getTableName(index), metadata.getColumnTypeName(index), "",
+                    metadata.getColumnType(index), display));
         }
-        columnDetails = columnResolver.resolve(sqlStatement.text(), Collections.unmodifiableList(columnDetails));
-        listener.resultMetadata(resultIndex, sqlStatement.text(), sqlStatement.type(), columnDetails);
+        ResolvedResultMetadata resolved = columnResolver.resolve(sqlStatement.text(),
+                Collections.unmodifiableList(columnDetails));
+        columnDetails = resolved.columns();
+        listener.resultMetadata(resultIndex, sqlStatement.text(), sqlStatement.type(), columnDetails,
+                resolved.mutationTarget());
 
         List<List<String>> rows = new ArrayList<List<String>>(Math.min(resultMaxRows, JDBC_FETCH_SIZE));
         List<List<String>> batch = new ArrayList<List<String>>(Math.min(resultBatchRows, resultMaxRows));
@@ -274,8 +278,8 @@ public final class QueryRunner implements AutoCloseable {
             }
         }
         if (!batch.isEmpty()) listener.rows(resultIndex, immutableRows(batch));
-        return new StatementResult(sqlStatement.text(), sqlStatement.type(), columns, columnDetails, rows, -1, truncated,
-                Duration.between(started, Instant.now()), null);
+        return new StatementResult(sqlStatement.text(), sqlStatement.type(), columns, columnDetails,
+                resolved.mutationTarget(), rows, -1, truncated, Duration.between(started, Instant.now()), null);
     }
 
     private static List<List<String>> immutableRows(List<List<String>> rows) {

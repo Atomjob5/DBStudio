@@ -173,6 +173,7 @@
   <SettingsDrawer v-model="settingsDrawer" :theme="app.themePreference" :resolved-theme="app.theme" :max-rows="settings.maxResultRows"
                   :stream-batch-rows="settings.streamBatchRows" :column-layout-scope="settings.columnLayoutScope"
                   :copy-header-on-double-click="settings.copyHeaderOnDoubleClick" :copy-separator="settings.copySeparator"
+                  :header-sorting-enabled="settings.headerSortingEnabled" :header-filtering-enabled="settings.headerFilteringEnabled"
                   :max-active-sessions="settings.maxActiveSessions" :idle-timeout-minutes="settings.idleTimeoutMinutes"
                   :transaction-disconnect-rollback-minutes="settings.transactionDisconnectRollbackMinutes"
                   :completion-cache-size="completionCacheSize" :completion-cache-environment-count="metadata.completionStats.environmentCount"
@@ -180,6 +181,8 @@
                   @update:theme="updateTheme" @update:max-rows="updateMaxRows"
                   @update:stream-batch-rows="updateStreamBatchRows" @update:column-layout-scope="updateColumnLayoutScope"
                   @update:copy-header-on-double-click="updateCopyHeaderOnDoubleClick"
+                  @update:header-sorting-enabled="updateHeaderSortingEnabled"
+                  @update:header-filtering-enabled="updateHeaderFilteringEnabled"
                   @update:copy-separator="updateCopySeparator" @update:max-active-sessions="updateMaxActiveSessions"
                   @update:idle-timeout-minutes="updateIdleTimeoutMinutes"
                   @update:transaction-disconnect-rollback-minutes="updateTransactionDisconnectRollbackMinutes"
@@ -998,6 +1001,16 @@ async function updateCopyHeaderOnDoubleClick(value: boolean): Promise<void> {
   const previous = settings.copyHeaderOnDoubleClick; settings.copyHeaderOnDoubleClick = value;
   try { await rpc.request("settings.update", { key: "result.copyHeaderOnDoubleClick", value: String(value) }); }
   catch (error) { settings.copyHeaderOnDoubleClick = previous; reportError(error); }
+}
+async function updateHeaderSortingEnabled(value: boolean): Promise<void> {
+  const previous = settings.headerSortingEnabled; settings.headerSortingEnabled = value;
+  try { await rpc.request("settings.update", { key: "result.headerSortingEnabled", value: String(value) }); }
+  catch (error) { settings.headerSortingEnabled = previous; reportError(error); }
+}
+async function updateHeaderFilteringEnabled(value: boolean): Promise<void> {
+  const previous = settings.headerFilteringEnabled; settings.headerFilteringEnabled = value;
+  try { await rpc.request("settings.update", { key: "result.headerFilteringEnabled", value: String(value) }); }
+  catch (error) { settings.headerFilteringEnabled = previous; reportError(error); }
 }
 async function updateCopySeparator(value: CopySeparator): Promise<void> {
   const previous = settings.copySeparator; settings.copySeparator = value;

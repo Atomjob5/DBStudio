@@ -19,6 +19,7 @@ import com.dbstudio.desktop.query.QueryExecution;
 import com.dbstudio.desktop.query.QueryResultListener;
 import com.dbstudio.desktop.query.QueryRunner.PageResult;
 import com.dbstudio.desktop.query.ResultColumn;
+import com.dbstudio.desktop.query.ResultMutationTarget;
 import com.dbstudio.desktop.query.StatementResult;
 import com.dbstudio.desktop.security.SecretStore;
 import com.dbstudio.desktop.web.EditorSessionRegistry.EditorSession;
@@ -73,6 +74,7 @@ public final class DbStudioApiController {
     private static final List<String> SETTING_KEYS = Arrays.asList(
             "ui.theme", "result.maxRows", "result.streamBatchRows", "result.columnLayoutScope",
             "result.copyHeaderOnDoubleClick", "result.copySeparator",
+            "result.headerSortingEnabled", "result.headerFilteringEnabled",
             "connection.maxActiveSessions", "connection.idleTimeoutMinutes",
             "connection.transactionDisconnectRollbackMinutes",
             "layout.leftWidth", "layout.editorHeight");
@@ -464,19 +466,21 @@ public final class DbStudioApiController {
         final QueryResultListener listener = new QueryResultListener() {
             @Override public void resultStarted(int resultIndex, String sql, StatementType type, List<String> columns) {
                 emitResultMetadata(workspace, editorId, resultIndex, sql, type, columns,
-                        basicColumnDetails(columns));
+                        basicColumnDetails(columns), null);
             }
             @Override public void resultMetadata(int resultIndex, String sql, StatementType type,
-                                                 List<ResultColumn> columns) {
+                                                 List<ResultColumn> columns, ResultMutationTarget mutationTarget) {
                 List<String> labels = new ArrayList<String>(columns.size());
                 List<Map<String, Object>> details = new ArrayList<Map<String, Object>>(columns.size());
                 for (ResultColumn column : columns) {
                     labels.add(column.label());
                     details.add(ApiPayloads.map("label", column.label(), "name", column.name(),
                             "remarks", column.remarks(), "catalog", column.catalog(), "schema", column.schema(),
-                            "table", column.table(), "typeName", column.typeName()));
+                            "table", column.table(), "typeName", column.typeName(), "jdbcType", column.jdbcType(),
+                            "quotedLabel", column.quotedLabel()));
                 }
-                emitResultMetadata(workspace, editorId, resultIndex, sql, type, labels, details);
+                emitResultMetadata(workspace, editorId, resultIndex, sql, type, labels, details,
+                        mutationTargetPayload(mutationTarget));
             }
             @Override public void rows(int resultIndex, List<List<String>> rows) {
                 workspace.events().emit("query.rows", ApiPayloads.map(
@@ -499,10 +503,11 @@ public final class DbStudioApiController {
 
     private void emitResultMetadata(Workspace workspace, String editorId, int resultIndex, String sql,
                                     StatementType type, List<String> columns,
-                                    List<Map<String, Object>> columnDetails) {
+                                    List<Map<String, Object>> columnDetails, Map<String, Object> mutationTarget) {
         workspace.events().emit("query.resultMeta", ApiPayloads.map("editorId", editorId,
                 "resultIndex", resultIndex, "sql", sql, "type", type.name(), "columns", columns,
-                "columnDetails", columnDetails, "rows", Collections.emptyList(), "updateCount", -1,
+                "columnDetails", columnDetails, "mutationTarget", mutationTarget,
+                "rows", Collections.emptyList(), "updateCount", -1,
                 "truncated", false, "durationMs", 0, "complete", false));
     }
 
@@ -510,8 +515,25 @@ public final class DbStudioApiController {
         List<Map<String, Object>> details = new ArrayList<Map<String, Object>>(columns.size());
         for (String column : columns) details.add(ApiPayloads.map(
                 "label", column, "name", column, "remarks", "", "catalog", "", "schema", "",
-                "table", "", "typeName", ""));
+                "table", "", "typeName", "", "jdbcType", java.sql.Types.VARCHAR,
+                "quotedLabel", column));
         return details;
+    }
+
+    private Map<String, Object> mutationTargetPayload(ResultMutationTarget target) {
+        if (target == null) return null;
+        List<Map<String, Object>> columns = new ArrayList<Map<String, Object>>();
+        for (ResultMutationTarget.Column column : target.columns()) {
+            columns.add(ApiPayloads.map("resultIndex", column.resultIndex(), "name", column.name(),
+                    "quotedName", column.quotedName(), "jdbcType", column.jdbcType()));
+        }
+        List<Map<String, Object>> keys = new ArrayList<Map<String, Object>>();
+        for (ResultMutationTarget.Key key : target.uniqueKeys()) {
+            keys.add(ApiPayloads.map("name", key.name(), "primary", key.primary(),
+                    "resultColumnIndices", key.resultColumnIndices()));
+        }
+        return ApiPayloads.map("qualifiedName", target.qualifiedName(), "columns", columns,
+                "uniqueKeys", keys);
     }
 
     @DeleteMapping("/workspaces/{workspaceId}/executions/{executionId}")
@@ -637,6 +659,10 @@ public final class DbStudioApiController {
         }
         if ("result.copyHeaderOnDoubleClick".equals(key) && !Arrays.asList("true", "false").contains(value)) {
             throw new ApiException("INVALID_SETTING", "双击复制列名设置无效");
+        }
+        if (("result.headerSortingEnabled".equals(key) || "result.headerFilteringEnabled".equals(key))
+                && !Arrays.asList("true", "false").contains(value)) {
+            throw new ApiException("INVALID_SETTING", "结果表头功能设置无效");
         }
         if ("result.copySeparator".equals(key)
                 && !Arrays.asList("comma", "tab", "semicolon", "pipe").contains(value)) {
@@ -971,6 +997,8 @@ public final class DbStudioApiController {
         if (!result.containsKey("result.columnLayoutScope")) result.put("result.columnLayoutScope", "result");
         if (!result.containsKey("result.copyHeaderOnDoubleClick")) result.put("result.copyHeaderOnDoubleClick", "true");
         if (!result.containsKey("result.copySeparator")) result.put("result.copySeparator", "comma");
+        if (!result.containsKey("result.headerSortingEnabled")) result.put("result.headerSortingEnabled", "true");
+        if (!result.containsKey("result.headerFilteringEnabled")) result.put("result.headerFilteringEnabled", "true");
         if (!result.containsKey("connection.maxActiveSessions")) result.put("connection.maxActiveSessions", "10");
         if (!result.containsKey("connection.idleTimeoutMinutes")) result.put("connection.idleTimeoutMinutes", "10");
         if (!result.containsKey("connection.transactionDisconnectRollbackMinutes")) {

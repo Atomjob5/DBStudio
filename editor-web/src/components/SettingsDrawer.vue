@@ -114,6 +114,16 @@
                      @update:model-value="copyHeaderToggleChanged" />
         </el-form-item>
         <el-form-item class="compact-setting-row">
+          <template #label><div class="setting-label"><span>启用表头排序</span></div></template>
+          <el-switch size="small" :model-value="headerSortingEnabled"
+                     @update:model-value="$emit('update:headerSortingEnabled', $event === true)" />
+        </el-form-item>
+        <el-form-item class="compact-setting-row">
+          <template #label><div class="setting-label"><span>启用表头筛选</span></div></template>
+          <el-switch size="small" :model-value="headerFilteringEnabled"
+                     @update:model-value="$emit('update:headerFilteringEnabled', $event === true)" />
+        </el-form-item>
+        <el-form-item class="compact-setting-row">
           <template #label>
             <div class="setting-label"><span>多列复制分隔符</span>
               <el-tooltip content="用于右键复制多列时连接字段；包含分隔符、引号或换行的内容会自动转义。" placement="top">
@@ -142,6 +152,7 @@ import type { CopySeparator } from "../resultCopy";
 defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: ResolvedTheme; maxRows: number;
   streamBatchRows: number; columnLayoutScope: ColumnLayoutScope; copyHeaderOnDoubleClick: boolean;
   copySeparator: CopySeparator; maxActiveSessions: number; idleTimeoutMinutes: number;
+  headerSortingEnabled: boolean; headerFilteringEnabled: boolean;
   transactionDisconnectRollbackMinutes: number;
   completionCacheSize: string; completionCacheEnvironmentCount: number; completionCacheLoadingCount: number;
   canClearCompletionCaches: boolean }>();
@@ -149,6 +160,7 @@ const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme"
   "update:maxRows": [value: number]; "update:streamBatchRows": [value: number];
   "update:columnLayoutScope": [value: ColumnLayoutScope]; "update:copyHeaderOnDoubleClick": [value: boolean];
   "update:copySeparator": [value: CopySeparator]; "update:maxActiveSessions": [value: number];
+  "update:headerSortingEnabled": [value: boolean]; "update:headerFilteringEnabled": [value: boolean];
   "update:idleTimeoutMinutes": [value: number]; "update:transactionDisconnectRollbackMinutes": [value: number];
   clearCompletionCaches: [] }>();
 function themeChanged(value: string | number | boolean | undefined): void {

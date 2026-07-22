@@ -24,7 +24,7 @@ function metadata(payload: Record<string, unknown>): unknown[] {
 }
 
 export const developmentMockRequest: MockRequestHandler = async (type, payload, emit) => {
-  if (type === "app.bootstrap") return { providers, systems, environments, profiles, recentFiles: [], settings: { "ui.theme": "system", "result.maxRows": "1000", "result.streamBatchRows": "100", "result.columnLayoutScope": "result", "result.copyHeaderOnDoubleClick": "true", "result.copySeparator": "comma", "connection.maxActiveSessions": "10", "connection.idleTimeoutMinutes": "10" } };
+  if (type === "app.bootstrap") return { providers, systems, environments, profiles, recentFiles: [], settings: { "ui.theme": "system", "result.maxRows": "1000", "result.streamBatchRows": "100", "result.columnLayoutScope": "result", "result.copyHeaderOnDoubleClick": "true", "result.copySeparator": "comma", "result.headerSortingEnabled": "true", "result.headerFilteringEnabled": "true", "connection.maxActiveSessions": "10", "connection.idleTimeoutMinutes": "10" } };
   if (type === "connection.catalog") return { systems, environments, profiles };
   if (type === "connection.system.create") { const value = { id: crypto.randomUUID(), name: String(payload.name), revision: String(Date.now()) }; systems.push(value); return value; }
   if (type === "connection.system.update") { const value = systems.find((item) => item.id === payload.id); if (value) { value.name = String(payload.name); value.revision = String(Date.now()); } return value; }
@@ -87,9 +87,13 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
       emit("query.started", { editorId, executionId });
       emit("query.resultMeta", { editorId, resultIndex: 0, sql: payload.text, type: "QUERY", columns: ["id", "name"],
         columnDetails: [
-          { label: "id", name: "id", remarks: "记录编号", catalog: "demo", schema: "", table: "sample", typeName: "BIGINT" },
-          { label: "name", name: "name", remarks: "产品名称", catalog: "demo", schema: "", table: "sample", typeName: "VARCHAR" }
-        ], updateCount: -1, truncated: false, durationMs: 0 });
+          { label: "id", name: "id", remarks: "记录编号", catalog: "demo", schema: "", table: "sample", typeName: "BIGINT", jdbcType: -5, quotedLabel: "`id`" },
+          { label: "name", name: "name", remarks: "产品名称", catalog: "demo", schema: "", table: "sample", typeName: "VARCHAR", jdbcType: 12, quotedLabel: "`name`" }
+        ], mutationTarget: { qualifiedName: "`demo`.`sample`", columns: [
+          { resultIndex: 0, name: "id", quotedName: "`id`", jdbcType: -5 },
+          { resultIndex: 1, name: "name", quotedName: "`name`", jdbcType: 12 }
+        ], uniqueKeys: [{ name: "PRIMARY", primary: true, resultColumnIndices: [0] }] },
+        updateCount: -1, truncated: false, durationMs: 0 });
       const rows = Array.from({ length: 200 }, (_, index) => [String(index + 1), `Apple Studio ${index + 1} ✨`]);
       emit("query.rows", { editorId, resultIndex: 0, rows: rows.slice(0, 100) });
       emit("query.rows", { editorId, resultIndex: 0, rows: rows.slice(100) });

@@ -4,11 +4,13 @@ import java.util.List;
 
 /** Resolves optional database metadata without using the active streaming query connection. */
 public interface ResultColumnResolver {
-    List<ResultColumn> resolve(String sql, List<ResultColumn> columns);
+    ResolvedResultMetadata resolve(String sql, List<ResultColumn> columns);
     void invalidate();
 
     ResultColumnResolver NONE = new ResultColumnResolver() {
-        @Override public List<ResultColumn> resolve(String sql, List<ResultColumn> columns) { return columns; }
+        @Override public ResolvedResultMetadata resolve(String sql, List<ResultColumn> columns) {
+            return new ResolvedResultMetadata(columns, null);
+        }
         @Override public void invalidate() { }
     };
 }

@@ -13,6 +13,12 @@ async function connectMock(page: Page): Promise<void> {
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/?mock=1");
+  if (await page.getByRole("main", { name: "选择工作空间" }).isVisible()) {
+    await page.getByRole("button", { name: "创建第一个工作空间" }).click();
+    await page.getByPlaceholder("例如：订单系统开发").fill("Playwright 工作空间");
+    await page.getByRole("button", { name: "创建", exact: true }).click();
+    await expect(page.locator(".connection-pill input")).toBeVisible();
+  }
 });
 
 test("keeps the activity bar flush, restores a collapsed panel and renders a compact connection selector", async ({ page }) => {
@@ -306,6 +312,75 @@ test("copies result headers and loaded rows from the header context menu", async
   await expect(page.locator(".result-header-context-menu")).toBeHidden();
 });
 
+test("sorts, filters, selects cells and copies safe row SQL", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:4173" });
+  await connectMock(page);
+  await page.getByRole("button", { name: "执行", exact: true }).click();
+  await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
+
+  const sort = page.getByRole("button", { name: "按 id 升序", exact: true });
+  await sort.click();
+  await page.getByRole("button", { name: "按 id 降序", exact: true }).click();
+  await expect(page.locator(".result-cell").filter({ hasText: /^200$/ }).first()).toBeVisible();
+
+  await page.getByRole("button", { name: "筛选 id", exact: true }).click();
+  await page.locator(".result-filter-popover .el-select").first().click();
+  await page.getByRole("option", { name: "包含", exact: true }).click();
+  await page.getByRole("textbox", { name: "筛选值", exact: true }).fill("00");
+  await page.getByRole("button", { name: "应用", exact: true }).click();
+  await expect(page.getByText("显示 2 / 已加载 200 行 · 38 ms", { exact: true })).toBeVisible();
+
+  // Re-execution resets sort/filter and gives the selection tests a predictable row order.
+  await page.getByRole("button", { name: "执行", exact: true }).click();
+  await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
+  const firstId = page.locator(".result-cell").filter({ hasText: /^1$/ }).first();
+  const secondName = page.locator(".result-cell").filter({ hasText: /^Apple Studio 2 ✨$/ }).first();
+  const start = await firstId.boundingBox(); const end = await secondName.boundingBox();
+  if (!start || !end) throw new Error("Result cells are not measurable");
+  await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(end.x + end.width / 2, end.y + end.height / 2, { steps: 5 });
+  await page.mouse.up();
+  await page.keyboard.press("ControlOrMeta+C");
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toBe("1,Apple Studio 1 ✨\n2,Apple Studio 2 ✨");
+
+  await secondName.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "复制", exact: true }).hover();
+  await page.getByRole("menuitem", { name: "复制为 IN 语句", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("(`id`, `name`) IN ((1, 'Apple Studio 1 ✨'), (2, 'Apple Studio 2 ✨'))");
+
+  const rowNumbers = page.locator(".result-row-number:not(.result-row-number-header)");
+  await expect.poll(async () => {
+    const gutter = page.locator(".el-table-v2__left").first();
+    return gutter.evaluate((element) => {
+      const style = getComputedStyle(element);
+      const divider = getComputedStyle(element, "::after");
+      return { shadow: style.boxShadow, divider: divider.width, width: element.getBoundingClientRect().width };
+    });
+  }).toEqual({ shadow: "none", divider: "1px", width: 34 });
+  const firstRowNumber = await rowNumbers.nth(0).boundingBox();
+  const thirdRowNumber = await rowNumbers.nth(2).boundingBox();
+  if (!firstRowNumber || !thirdRowNumber) throw new Error("Row numbers are not measurable");
+  await page.mouse.move(firstRowNumber.x + firstRowNumber.width / 2, firstRowNumber.y + firstRowNumber.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(thirdRowNumber.x + thirdRowNumber.width / 2, thirdRowNumber.y + thirdRowNumber.height / 2, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(() => rowNumbers.nth(0).evaluate((element) => {
+    const style = getComputedStyle(element, "::before");
+    return { width: style.width, color: style.backgroundColor, outline: getComputedStyle(element).outlineStyle };
+  })).toEqual({ width: "2px", color: "rgb(0, 113, 227)", outline: "none" });
+  await page.keyboard.press("ControlOrMeta+C");
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toBe("1,Apple Studio 1 ✨\n2,Apple Studio 2 ✨\n3,Apple Studio 3 ✨");
+  await rowNumbers.nth(2).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "复制", exact: true }).hover();
+  await page.getByRole("menuitem", { name: "复制为 UPDATE 语句", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("UPDATE `demo`.`sample` SET `name` = 'Apple Studio 1 ✨' WHERE `id` = 1;");
+});
+
 test("supports Apple appearance, system theme settings and compact windows", async ({ page }) => {
   test.setTimeout(45_000);
   await expect(page).toHaveScreenshot("apple-connection-light.png");
@@ -327,7 +402,7 @@ test("supports Apple appearance, system theme settings and compact windows", asy
   await expect(page.getByText("双击表头复制列名", { exact: true })).toBeVisible();
   await expect(page.getByText("多列复制分隔符", { exact: true })).toBeVisible();
   const compactRows = page.locator(".settings-drawer .compact-setting-row");
-  await expect(compactRows).toHaveCount(8);
+  await expect(compactRows).toHaveCount(11);
   expect(await compactRows.evaluateAll((rows) => rows.every((row) => {
     const style = getComputedStyle(row);
     const label = row.querySelector(".el-form-item__label")?.getBoundingClientRect();

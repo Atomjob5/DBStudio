@@ -5,6 +5,7 @@ import com.dbstudio.spi.DatabaseObject;
 import com.dbstudio.spi.DatabaseObjectType;
 import com.dbstudio.spi.DatabaseSession;
 import com.dbstudio.spi.MetadataAdapter;
+import com.dbstudio.spi.UniqueKeyInfo;
 import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -14,8 +15,10 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 public final class MySqlMetadataAdapter implements MetadataAdapter {
     @Override
@@ -80,6 +83,58 @@ public final class MySqlMetadataAdapter implements MetadataAdapter {
             }
         });
         return columns;
+    }
+
+    @Override
+    public boolean isBaseTable(DatabaseSession session, String catalog, String schema,
+                               String objectName) throws SQLException {
+        try (ResultSet resultSet = session.jdbcConnection().getMetaData()
+                .getTables(catalog, schemaOrNull(schema), objectName, new String[]{"TABLE"})) {
+            while (resultSet.next()) {
+                if (objectName.equalsIgnoreCase(resultSet.getString("TABLE_NAME"))) return true;
+            }
+        }
+        return false;
+    }
+
+    @Override
+    public List<UniqueKeyInfo> listUniqueKeys(DatabaseSession session, String catalog, String schema,
+                                               String objectName) throws SQLException {
+        DatabaseMetaData metadata = session.jdbcConnection().getMetaData();
+        List<UniqueKeyInfo> keys = new ArrayList<UniqueKeyInfo>();
+        TreeMap<Integer, String> primary = new TreeMap<Integer, String>();
+        String primaryName = "PRIMARY";
+        try (ResultSet resultSet = metadata.getPrimaryKeys(catalog, schemaOrNull(schema), objectName)) {
+            while (resultSet.next()) {
+                primary.put(resultSet.getInt("KEY_SEQ"), resultSet.getString("COLUMN_NAME"));
+                String name = resultSet.getString("PK_NAME");
+                if (name != null && !name.trim().isEmpty()) primaryName = name;
+            }
+        }
+        if (!primary.isEmpty()) keys.add(new UniqueKeyInfo(primaryName, true,
+                new ArrayList<String>(primary.values())));
+
+        Map<String, TreeMap<Integer, String>> indexes = new LinkedHashMap<String, TreeMap<Integer, String>>();
+        try (ResultSet resultSet = metadata.getIndexInfo(catalog, schemaOrNull(schema), objectName, true, false)) {
+            while (resultSet.next()) {
+                if (resultSet.getShort("TYPE") == DatabaseMetaData.tableIndexStatistic
+                        || resultSet.getBoolean("NON_UNIQUE")) continue;
+                String name = resultSet.getString("INDEX_NAME");
+                String column = resultSet.getString("COLUMN_NAME");
+                if (name == null || column == null || "PRIMARY".equalsIgnoreCase(name)) continue;
+                TreeMap<Integer, String> index = indexes.get(name);
+                if (index == null) {
+                    index = new TreeMap<Integer, String>();
+                    indexes.put(name, index);
+                }
+                index.put(resultSet.getInt("ORDINAL_POSITION"), column);
+            }
+        }
+        for (Map.Entry<String, TreeMap<Integer, String>> entry : indexes.entrySet()) {
+            if (!entry.getValue().isEmpty()) keys.add(new UniqueKeyInfo(entry.getKey(), false,
+                    new ArrayList<String>(entry.getValue().values())));
+        }
+        return Collections.unmodifiableList(keys);
     }
 
     @Override

@@ -5,6 +5,7 @@ import java.util.Arrays;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MySqlDialectTest {
@@ -42,5 +43,17 @@ class MySqlDialectTest {
         String script = "SELECT 1;\nSELECT 2;";
         com.dbstudio.spi.SqlStatement statement = dialect.currentStatement(script, script.indexOf('2')).get();
         assertEquals("SELECT 2", statement.text());
+    }
+
+    @Test
+    void recognizesOnlySafeSingleTableMutationSources() {
+        com.dbstudio.spi.ResultMutationSource source = dialect.resultMutationSource(
+                "SELECT o.id AS order_id, o.amount FROM `eastwealthcrawler`.`orders` o WHERE o.id > 0").get();
+        assertEquals("eastwealthcrawler", source.catalog());
+        assertEquals("orders", source.table());
+        assertFalse(dialect.resultMutationSource("SELECT a.id FROM orders a JOIN items b ON b.order_id=a.id").isPresent());
+        assertFalse(dialect.resultMutationSource("SELECT id, amount + 1 FROM orders").isPresent());
+        assertFalse(dialect.resultMutationSource("WITH data AS (SELECT * FROM orders) SELECT * FROM data").isPresent());
+        assertFalse(dialect.resultMutationSource("SELECT id FROM orders UNION SELECT id FROM archive_orders").isPresent());
     }
 }

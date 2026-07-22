@@ -79,7 +79,7 @@ class QueryWebSocketIntegrationTest {
         try {
             awaitType(events, "workspace.ready", 10);
             try (Connection connection = MYSQL.createConnection(""); Statement statement = connection.createStatement()) {
-                statement.execute("CREATE TABLE result_column_comment(id BIGINT COMMENT '订单编号', amount DECIMAL(10,2) COMMENT '订单金额')");
+                statement.execute("CREATE TABLE result_column_comment(id BIGINT PRIMARY KEY COMMENT '订单编号', amount DECIMAL(10,2) COMMENT '订单金额')");
                 statement.execute("CREATE TABLE completion_customer(id BIGINT COMMENT '客户编号', name VARCHAR(100) COMMENT '客户名称')");
                 statement.execute("INSERT INTO result_column_comment VALUES (1, 12.30)");
             }
@@ -87,6 +87,8 @@ class QueryWebSocketIntegrationTest {
             List<Map<String, Object>> metadataEvents = executeSql(editorId, workspaceId, cookie, events,
                     "SELECT id AS order_id, amount, amount + 1 AS calculated FROM result_column_comment");
             assertColumnMetadata(metadataEvents);
+            assertMutationTarget(executeSql(editorId, workspaceId, cookie, events,
+                    "SELECT id AS order_id, amount FROM result_column_comment"));
 
             updateSetting(cookie, "result.maxRows", "120");
             updateSetting(cookie, "result.streamBatchRows", "50");
@@ -239,6 +241,21 @@ class QueryWebSocketIntegrationTest {
             return;
         }
         throw new AssertionError("Missing query.resultMeta columnDetails");
+    }
+
+    @SuppressWarnings("unchecked")
+    private void assertMutationTarget(List<Map<String, Object>> events) {
+        for (Map<String, Object> event : events) if ("query.resultMeta".equals(event.get("type"))) {
+            Map<String, Object> payload = (Map<String, Object>) event.get("payload");
+            Map<String, Object> target = (Map<String, Object>) payload.get("mutationTarget");
+            assertTrue(target != null, "simple base-table query should expose a safe mutation target");
+            assertEquals("`dbstudio`.`result_column_comment`", target.get("qualifiedName"));
+            List<Map<String, Object>> keys = (List<Map<String, Object>>) target.get("uniqueKeys");
+            assertEquals(Boolean.TRUE, keys.get(0).get("primary"));
+            assertEquals(Arrays.asList(0), keys.get(0).get("resultColumnIndices"));
+            return;
+        }
+        throw new AssertionError("Missing query.resultMeta mutationTarget");
     }
 
     @SuppressWarnings("unchecked")

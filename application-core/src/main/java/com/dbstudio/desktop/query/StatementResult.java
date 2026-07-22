@@ -11,6 +11,7 @@ public final class StatementResult {
     private final StatementType type;
     private final List<String> columns;
     private final List<ResultColumn> columnDetails;
+    private final ResultMutationTarget mutationTarget;
     private final List<List<String>> rows;
     private final long updateCount;
     private final boolean truncated;
@@ -25,12 +26,19 @@ public final class StatementResult {
     public StatementResult(String sql, StatementType type, List<String> columns, List<ResultColumn> columnDetails,
                            List<List<String>> rows, long updateCount, boolean truncated, Duration duration,
                            String errorMessage) {
+        this(sql, type, columns, columnDetails, null, rows, updateCount, truncated, duration, errorMessage);
+    }
+
+    public StatementResult(String sql, StatementType type, List<String> columns, List<ResultColumn> columnDetails,
+                           ResultMutationTarget mutationTarget, List<List<String>> rows, long updateCount,
+                           boolean truncated, Duration duration, String errorMessage) {
         this.sql = sql;
         this.type = type;
         this.columns = columns == null ? Collections.<String>emptyList()
                 : Collections.unmodifiableList(new ArrayList<String>(columns));
         this.columnDetails = columnDetails == null ? Collections.<ResultColumn>emptyList()
                 : Collections.unmodifiableList(new ArrayList<ResultColumn>(columnDetails));
+        this.mutationTarget = mutationTarget;
         if (rows == null) {
             this.rows = Collections.emptyList();
         } else {
@@ -50,6 +58,7 @@ public final class StatementResult {
     public StatementType type() { return type; }
     public List<String> columns() { return columns; }
     public List<ResultColumn> columnDetails() { return columnDetails; }
+    public ResultMutationTarget mutationTarget() { return mutationTarget; }
     public List<List<String>> rows() { return rows; }
     public long updateCount() { return updateCount; }
     public boolean truncated() { return truncated; }

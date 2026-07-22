@@ -23,7 +23,9 @@ export function resultColumnOptions(columns: string[], details?: QueryColumn[]):
       catalog: detail?.catalog || "",
       schema: detail?.schema || "",
       table: detail?.table || "",
-      typeName: detail?.typeName || ""
+      typeName: detail?.typeName || "",
+      jdbcType: detail?.jdbcType ?? 12,
+      quotedLabel: detail?.quotedLabel || label
     };
   });
 }

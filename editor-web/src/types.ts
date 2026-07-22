@@ -207,6 +207,7 @@ export interface QueryResult {
   type: string;
   columns: string[];
   columnDetails?: QueryColumn[];
+  mutationTarget?: QueryMutationTarget;
   rows: Array<Array<string | null>>;
   updateCount: number;
   truncated: boolean;
@@ -223,6 +224,27 @@ export interface QueryColumn {
   schema: string;
   table: string;
   typeName: string;
+  jdbcType?: number;
+  quotedLabel?: string;
+}
+
+export interface QueryMutationColumn {
+  resultIndex: number;
+  name: string;
+  quotedName: string;
+  jdbcType: number;
+}
+
+export interface QueryMutationKey {
+  name: string;
+  primary: boolean;
+  resultColumnIndices: number[];
+}
+
+export interface QueryMutationTarget {
+  qualifiedName: string;
+  columns: QueryMutationColumn[];
+  uniqueKeys: QueryMutationKey[];
 }
 
 export interface QueryExecutionState {

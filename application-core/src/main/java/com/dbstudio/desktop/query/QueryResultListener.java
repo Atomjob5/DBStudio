@@ -11,6 +11,10 @@ public interface QueryResultListener {
         for (ResultColumn column : columns) labels.add(column.label());
         resultStarted(resultIndex, sql, type, labels);
     }
+    default void resultMetadata(int resultIndex, String sql, StatementType type, List<ResultColumn> columns,
+                                ResultMutationTarget mutationTarget) {
+        resultMetadata(resultIndex, sql, type, columns);
+    }
     void rows(int resultIndex, List<List<String>> rows);
     void resultCompleted(int resultIndex, StatementResult result);
 

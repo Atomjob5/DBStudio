@@ -9,6 +9,8 @@ export const useSettingsStore = defineStore("settings", () => {
   const columnLayoutScope = ref<ColumnLayoutScope>("result");
   const copyHeaderOnDoubleClick = ref(true);
   const copySeparator = ref<CopySeparator>("comma");
+  const headerSortingEnabled = ref(true);
+  const headerFilteringEnabled = ref(true);
   const maxActiveSessions = ref(10);
   const idleTimeoutMinutes = ref(10);
   const transactionDisconnectRollbackMinutes = ref(10);
@@ -23,6 +25,8 @@ export const useSettingsStore = defineStore("settings", () => {
     copyHeaderOnDoubleClick.value = settings["result.copyHeaderOnDoubleClick"] !== "false";
     const separator = settings["result.copySeparator"];
     copySeparator.value = separator === "tab" || separator === "semicolon" || separator === "pipe" ? separator : "comma";
+    headerSortingEnabled.value = settings["result.headerSortingEnabled"] !== "false";
+    headerFilteringEnabled.value = settings["result.headerFilteringEnabled"] !== "false";
     const maximum = Number.parseInt(settings["connection.maxActiveSessions"] ?? "10", 10);
     maxActiveSessions.value = Number.isFinite(maximum) ? maximum : 10;
     const idle = Number.parseInt(settings["connection.idleTimeoutMinutes"] ?? "10", 10);
@@ -33,6 +37,7 @@ export const useSettingsStore = defineStore("settings", () => {
   }
 
   return { maxResultRows, streamBatchRows, columnLayoutScope, copyHeaderOnDoubleClick, copySeparator,
+    headerSortingEnabled, headerFilteringEnabled,
     maxActiveSessions, idleTimeoutMinutes, transactionDisconnectRollbackMinutes,
     recentFiles, initialize };
 });

@@ -7,8 +7,10 @@ import com.alibaba.druid.sql.ast.SQLStatement;
 import com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr;
 import com.alibaba.druid.sql.ast.expr.SQLPropertyExpr;
 import com.alibaba.druid.sql.ast.statement.SQLSelectItem;
+import com.alibaba.druid.sql.ast.statement.SQLExprTableSource;
 import com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock;
 import com.alibaba.druid.sql.ast.statement.SQLSelectStatement;
+import com.dbstudio.spi.ResultMutationSource;
 import com.dbstudio.spi.SqlDialect;
 import com.dbstudio.spi.SqlStatement;
 import com.dbstudio.spi.StatementType;
@@ -212,10 +214,48 @@ public final class MySqlDialect implements SqlDialect {
         }
     }
 
+    @Override
+    public Optional<ResultMutationSource> resultMutationSource(String sql) {
+        try {
+            SQLStatement statement = SQLUtils.parseSingleMysqlStatement(sql);
+            if (!(statement instanceof SQLSelectStatement)) return Optional.empty();
+            SQLSelectStatement selectStatement = (SQLSelectStatement) statement;
+            if (selectStatement.getSelect().getWithSubQuery() != null) return Optional.empty();
+            SQLSelectQueryBlock block = selectStatement.getSelect().getQueryBlock();
+            if (block == null || !(block.getFrom() instanceof SQLExprTableSource)) return Optional.empty();
+            if (!block.selectItemHasAllColumn()) {
+                for (SQLSelectItem item : block.getSelectList()) {
+                    if (!(item.getExpr() instanceof SQLIdentifierExpr)
+                            && !(item.getExpr() instanceof SQLPropertyExpr)) return Optional.empty();
+                }
+            }
+            SQLExprTableSource source = (SQLExprTableSource) block.getFrom();
+            String table = normalizedIdentifier(source.getTableName());
+            if (table.isEmpty()) return Optional.empty();
+            // MySQL treats the qualifier before a table as a JDBC catalog (database), while
+            // Druid exposes a two-part name through getSchema(). Normalize that difference here.
+            String catalog = normalizedIdentifier(source.getCatalog());
+            if (catalog.isEmpty()) catalog = normalizedIdentifier(source.getSchema());
+            return Optional.of(new ResultMutationSource(catalog, "", table));
+        } catch (RuntimeException ignored) {
+            return Optional.empty();
+        }
+    }
+
     private static String sourceColumnName(SQLExpr expression) {
         if (expression instanceof SQLIdentifierExpr) return ((SQLIdentifierExpr) expression).getName();
         if (expression instanceof SQLPropertyExpr) return ((SQLPropertyExpr) expression).getName();
         return "";
+    }
+
+    private static String normalizedIdentifier(String value) {
+        if (value == null) return "";
+        String normalized = value.trim();
+        if (normalized.length() >= 2 && normalized.charAt(0) == '`'
+                && normalized.charAt(normalized.length() - 1) == '`') {
+            normalized = normalized.substring(1, normalized.length() - 1).replace("``", "`");
+        }
+        return normalized;
     }
 
     private void addStatement(List<SqlStatement> statements, String script, int rawStart, int rawEnd) {

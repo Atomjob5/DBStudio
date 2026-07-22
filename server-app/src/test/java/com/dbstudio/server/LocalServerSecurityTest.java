@@ -202,6 +202,8 @@ class LocalServerSecurityTest {
         assertTrue(defaults.getBody().contains("\"result.columnLayoutScope\":\"result\""));
         assertTrue(defaults.getBody().contains("\"result.copyHeaderOnDoubleClick\":\"true\""));
         assertTrue(defaults.getBody().contains("\"result.copySeparator\":\"comma\""));
+        assertTrue(defaults.getBody().contains("\"result.headerSortingEnabled\":\"true\""));
+        assertTrue(defaults.getBody().contains("\"result.headerFilteringEnabled\":\"true\""));
         assertTrue(defaults.getBody().contains("\"connection.maxActiveSessions\":\"10\""));
         assertTrue(defaults.getBody().contains("\"connection.idleTimeoutMinutes\":\"10\""));
         assertTrue(defaults.getBody().contains("\"connection.transactionDisconnectRollbackMinutes\":\"10\""));
@@ -234,6 +236,19 @@ class LocalServerSecurityTest {
             assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                     new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
         }
+
+        for (String key : Arrays.asList("result.headerSortingEnabled", "result.headerFilteringEnabled")) {
+            setting.put("key", key);
+            setting.put("value", "false");
+            assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                    new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+            setting.put("value", "enabled");
+            ResponseEntity<String> invalidToggle = http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                    new HttpEntity<Map<String, String>>(setting, headers), String.class);
+            assertEquals(HttpStatus.BAD_REQUEST, invalidToggle.getStatusCode());
+            assertTrue(invalidToggle.getBody().contains("INVALID_SETTING"));
+        }
+        setting.put("key", "result.copySeparator");
         setting.put("value", "space");
         assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                 new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());

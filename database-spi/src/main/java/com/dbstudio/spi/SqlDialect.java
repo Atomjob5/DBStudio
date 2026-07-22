@@ -24,4 +24,9 @@ public interface SqlDialect {
     default List<String> resultColumnNames(String sql) {
         return Collections.emptyList();
     }
+
+    /** Returns a physical source only when row mutation SQL can be generated without guessing. */
+    default Optional<ResultMutationSource> resultMutationSource(String sql) {
+        return Optional.empty();
+    }
 }

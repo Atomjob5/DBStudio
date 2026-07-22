@@ -91,7 +91,7 @@ describe("ResultPanel streaming rendering", () => {
     const select = wrapper.findComponent({ name: "ElSelect" });
     const table = wrapper.findComponent({ name: "ElTableV2" });
     expect((table.props("columns") as Array<{ title: string }>).map((column) => column.title))
-      .toEqual(["id", "customer_name", "amount"]);
+      .toEqual(["#", "id", "customer_name", "amount"]);
 
     (select.props("filterMethod") as (query: string) => void)("订单 金额");
     await nextTick();
@@ -99,11 +99,11 @@ describe("ResultPanel streaming rendering", () => {
 
     select.vm.$emit("update:modelValue", [2, 0]);
     await nextTick();
-    expect((table.props("columns") as Array<{ title: string }>).map((column) => column.title)).toEqual(["id", "amount"]);
+    expect((table.props("columns") as Array<{ title: string }>).map((column) => column.title)).toEqual(["#", "id", "amount"]);
     select.vm.$emit("update:modelValue", []);
     await nextTick();
     expect((table.props("columns") as Array<{ title: string }>).map((column) => column.title))
-      .toEqual(["id", "customer_name", "amount"]);
+      .toEqual(["#", "id", "customer_name", "amount"]);
   });
 
   it("keeps selections per result, supports duplicate labels and resets for a new execution", async () => {
@@ -127,7 +127,7 @@ describe("ResultPanel streaming rendering", () => {
     select.vm.$emit("update:modelValue", [1]);
     await nextTick();
     let table = wrapper.findComponent({ name: "ElTableV2" });
-    expect((table.props("columns") as Array<{ dataKey: number }>).map((column) => column.dataKey)).toEqual([1]);
+    expect((table.props("columns") as Array<{ title: string }>).map((column) => column.title)).toEqual(["#", "id"]);
 
     await wrapper.setProps({ activeResultIndex: 1 });
     select = wrapper.findComponent({ name: "ElSelect" });
@@ -140,7 +140,7 @@ describe("ResultPanel streaming rendering", () => {
     await wrapper.setProps({ execution: { ...execution, results: [...execution.results] } });
     table = wrapper.findComponent({ name: "ElTableV2" });
     expect(table.props("data")).toHaveLength(2);
-    expect((table.props("columns") as Array<{ dataKey: number }>)[0].dataKey).toBe(1);
+    expect((table.props("columns") as Array<{ title: string }>).map((column) => column.title)).toEqual(["#", "id"]);
 
     await wrapper.setProps({ execution: { ...execution, executionId: "execution-b" } });
     await nextTick();
@@ -159,7 +159,8 @@ describe("ResultPanel streaming rendering", () => {
     });
     const table = () => wrapper.findComponent({ name: "ElTableV2" });
     const columns = () => table().props("columns") as Column[];
-    const header = (index: number) => columns()[index].headerCellRenderer?.({} as never) as VNode;
+    const dataColumns = () => columns().slice(1);
+    const header = (index: number) => dataColumns()[index].headerCellRenderer?.({} as never) as VNode;
 
     header(0).props?.onClick({ ctrlKey: false, metaKey: false, shiftKey: false });
     header(2).props?.onClick({ ctrlKey: true, metaKey: false, shiftKey: false });
@@ -175,7 +176,7 @@ describe("ResultPanel streaming rendering", () => {
     target.props?.onDragover(dragEvent);
     target.props?.onDrop(dragEvent);
     await nextTick();
-    expect(columns().map((column) => column.title)).toEqual(["name", "id", "amount"]);
+    expect(dataColumns().map((column) => column.title)).toEqual(["name", "id", "amount"]);
     expect(wrapper.find('button[aria-label="复原列布局"]').exists()).toBe(true);
 
     const resizedHeader = header(0);
@@ -187,12 +188,12 @@ describe("ResultPanel streaming rendering", () => {
     window.dispatchEvent(move);
     window.dispatchEvent(new Event("pointerup"));
     await nextTick();
-    expect(columns()[0].width).toBe(220);
+    expect(dataColumns()[0].width).toBe(220);
 
     await wrapper.find('button[aria-label="复原列布局"]').trigger("click");
     await nextTick();
-    expect(columns().map((column) => column.title)).toEqual(["id", "name", "amount"]);
-    expect(columns()[1].width).toBe(120);
+    expect(dataColumns().map((column) => column.title)).toEqual(["id", "name", "amount"]);
+    expect(dataColumns()[1].width).toBe(120);
   });
 
   it("copies headers and loaded data from the context menu and moves selected columns to an edge", async () => {
@@ -206,7 +207,8 @@ describe("ResultPanel streaming rendering", () => {
       } }, global: { plugins: [ElementPlus] }
     });
     const columns = () => wrapper.findComponent({ name: "ElTableV2" }).props("columns") as Column[];
-    const header = (index: number) => columns()[index].headerCellRenderer?.({} as never) as VNode;
+    const dataColumns = () => columns().slice(1);
+    const header = (index: number) => dataColumns()[index].headerCellRenderer?.({} as never) as VNode;
 
     header(0).props?.onClick({ ctrlKey: false, metaKey: false, shiftKey: false });
     header(2).props?.onClick({ ctrlKey: true, metaKey: false, shiftKey: false });
@@ -221,7 +223,7 @@ describe("ResultPanel streaming rendering", () => {
 
     menu.vm.$emit("command", "move-right");
     await nextTick();
-    expect(columns().map((column) => column.title)).toEqual(["name", "id", "amount"]);
+    expect(dataColumns().map((column) => column.title)).toEqual(["name", "id", "amount"]);
 
     header(0).props?.onContextmenu({ preventDefault: vi.fn(), clientX: 20, clientY: 30 });
     menu.vm.$emit("command", "copy-headers");
@@ -238,7 +240,7 @@ describe("ResultPanel streaming rendering", () => {
           rows: [["1"]], updateCount: -1, truncated: false, durationMs: 7, complete: true }]
       } }, global: { plugins: [ElementPlus] }
     });
-    const column = (wrapper.findComponent({ name: "ElTableV2" }).props("columns") as Column[])[0];
+    const column = (wrapper.findComponent({ name: "ElTableV2" }).props("columns") as Column[])[1];
     const header = column.headerCellRenderer?.({} as never) as VNode;
     const children = header.children as VNode[];
     children[0].props?.onDblclick({ preventDefault: vi.fn(), stopPropagation: vi.fn() });
@@ -251,10 +253,83 @@ describe("ResultPanel streaming rendering", () => {
     expect(clipboardWrite).toHaveBeenCalledTimes(1);
 
     settings.copyHeaderOnDoubleClick = false;
-    const updatedHeader = (wrapper.findComponent({ name: "ElTableV2" }).props("columns") as Column[])[0]
+    const updatedHeader = (wrapper.findComponent({ name: "ElTableV2" }).props("columns") as Column[])[1]
       .headerCellRenderer?.({} as never) as VNode;
     (updatedHeader.children as VNode[])[0].props?.onDblclick({ preventDefault: vi.fn(), stopPropagation: vi.fn() });
     await flushPromises();
     expect(clipboardWrite).toHaveBeenCalledTimes(1);
+  });
+
+  it("sorts and filters loaded rows and clears state when each setting is disabled", async () => {
+    const settings = useSettingsStore();
+    const wrapper = mount(ResultPanel, { props: { activeResultIndex: 0, execution: {
+      executionId: "execution-sort", editorId: "editor-1", busy: false, cancelled: false, failed: false, durationMs: 4,
+      results: [{ resultIndex: 0, sql: "select id, name", type: "QUERY", columns: ["id", "name"],
+        columnDetails: [
+          { label: "id", name: "id", remarks: "", catalog: "db", schema: "", table: "sample", typeName: "BIGINT", jdbcType: -5, quotedLabel: "`id`" },
+          { label: "name", name: "name", remarks: "", catalog: "db", schema: "", table: "sample", typeName: "VARCHAR", jdbcType: 12, quotedLabel: "`name`" }
+        ], rows: [["10", "ten"], ["2", "two"], [null, "none"]], updateCount: -1, truncated: false, durationMs: 3, complete: true }]
+    } }, global: { plugins: [ElementPlus] } });
+    const table = () => wrapper.findComponent({ name: "ElTableV2" });
+    const header = (table().props("columns") as Column[])[1].headerCellRenderer?.({} as never) as VNode;
+    const tools = (header.children as VNode[]).find((child) => child?.props?.columnIndex === 0) as VNode;
+    tools.props?.onSort(); await nextTick();
+    expect((table().props("data") as Array<{ cells: Array<string | null> }>).map((row) => row.cells[0]))
+      .toEqual(["2", "10", null]);
+    tools.props?.onApply({ columnIndex: 0, operator: "gt", value: "2" }); await nextTick();
+    expect((table().props("data") as Array<{ cells: Array<string | null> }>).map((row) => row.cells[0])).toEqual(["10"]);
+
+    settings.headerSortingEnabled = false; await nextTick();
+    expect((table().props("data") as Array<{ cells: Array<string | null> }>).map((row) => row.cells[0])).toEqual(["10"]);
+    settings.headerFilteringEnabled = false; await nextTick();
+    expect((table().props("data") as Array<{ cells: Array<string | null> }>).map((row) => row.cells[0]))
+      .toEqual(["10", "2", null]);
+  });
+
+  it("copies a rectangular cell selection and generates safe SQL for selected rows", async () => {
+    const wrapper = mount(ResultPanel, { props: { activeResultIndex: 0, execution: {
+      executionId: "execution-select", editorId: "editor-1", busy: false, cancelled: false, failed: false, durationMs: 4,
+      results: [{ resultIndex: 0, sql: "select id, name from sample", type: "QUERY", columns: ["id", "name"],
+        columnDetails: [
+          { label: "id", name: "id", remarks: "", catalog: "db", schema: "", table: "sample", typeName: "BIGINT", jdbcType: -5, quotedLabel: "`id`" },
+          { label: "name", name: "name", remarks: "", catalog: "db", schema: "", table: "sample", typeName: "VARCHAR", jdbcType: 12, quotedLabel: "`name`" }
+        ], mutationTarget: { qualifiedName: "`db`.`sample`", columns: [
+          { resultIndex: 0, name: "id", quotedName: "`id`", jdbcType: -5 },
+          { resultIndex: 1, name: "name", quotedName: "`name`", jdbcType: 12 }
+        ], uniqueKeys: [{ name: "PRIMARY", primary: true, resultColumnIndices: [0] }] },
+        rows: [["1", "Apple"], ["2", "Banana"], ["3", "Cherry"]], updateCount: -1, truncated: false, durationMs: 3, complete: true }]
+    } }, global: { plugins: [ElementPlus] } });
+    const table = wrapper.findComponent({ name: "ElTableV2" });
+    const columns = table.props("columns") as Column[];
+    const rows = table.props("data") as Array<{ sourceIndex: number; cells: string[] }>;
+    const first = columns[1].cellRenderer?.({ rowData: rows[0], rowIndex: 0 } as never) as VNode;
+    const last = columns[2].cellRenderer?.({ rowData: rows[1], rowIndex: 1 } as never) as VNode;
+    first.props?.onPointerdown({ button: 0, preventDefault: vi.fn() });
+    last.props?.onPointerenter(); window.dispatchEvent(new Event("pointerup"));
+    await wrapper.get(".table-host").trigger("keydown", { metaKey: true, key: "c" });
+    await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith("1,Apple\n2,Banana");
+
+    const rowNumber = columns[0];
+    expect(rowNumber.width).toBe(34);
+    expect(rowNumber.minWidth).toBe(34);
+    expect(rowNumber.maxWidth).toBe(34);
+    const rowOne = rowNumber.cellRenderer?.({ rowData: rows[0] } as never) as VNode;
+    const rowThree = rowNumber.cellRenderer?.({ rowData: rows[2] } as never) as VNode;
+    rowOne.props?.onPointerdown({ button: 0, preventDefault: vi.fn(), stopPropagation: vi.fn(), ctrlKey: false, metaKey: false, shiftKey: false });
+    rowThree.props?.onPointerenter();
+    window.dispatchEvent(new Event("pointerup"));
+    await wrapper.get(".table-host").trigger("keydown", { metaKey: true, key: "c" });
+    await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith("1,Apple\n2,Banana\n3,Cherry");
+
+    rowThree.props?.onContextmenu({ preventDefault: vi.fn(), stopPropagation: vi.fn(), clientX: 20, clientY: 30 });
+    await nextTick();
+    const menu = wrapper.findComponent({ name: "ResultDataContextMenu" });
+    expect(menu.props("mode")).toBe("rows");
+    expect(menu.props("canUpdate")).toBe(true);
+    menu.vm.$emit("command", "copy-update"); await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith(
+      "UPDATE `db`.`sample` SET `name` = 'Apple' WHERE `id` = 1;\nUPDATE `db`.`sample` SET `name` = 'Banana' WHERE `id` = 2;\nUPDATE `db`.`sample` SET `name` = 'Cherry' WHERE `id` = 3;");
   });
 });

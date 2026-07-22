@@ -25,8 +25,8 @@
               </div>
             </el-option>
           </el-select>
-          <el-tooltip content="复制选中单元格">
-            <el-button text :icon="CopyDocument" aria-label="复制选中单元格" :disabled="!selectedCell" @click="copyCell" />
+          <el-tooltip :content="copySelectionTitle">
+            <el-button text :icon="CopyDocument" :aria-label="copySelectionTitle" :disabled="!hasDataSelection" @click="copyCurrentSelection()" />
           </el-tooltip>
           <el-dropdown :disabled="!activeResult?.columns.length || execution?.historical" @command="exportCommand">
             <el-button text :icon="Download" aria-label="导出结果" title="导出结果" />
@@ -40,10 +40,11 @@
         </div>
       </div>
       <el-alert v-if="activeResult?.errorMessage" :title="activeResult.errorMessage" type="error" show-icon :closable="false" />
-      <div v-else-if="activeResult?.columns.length" ref="tableHost" class="table-host">
+      <div v-else-if="activeResult?.columns.length" ref="tableHost" class="table-host" tabindex="0"
+           @keydown="tableKeydown" @pointermove="autoScrollSelection">
         <el-auto-resizer v-slot="{ width, height }">
-          <el-table-v2 :columns="tableColumns" :data="tableRows" :width="width" :height="height"
-                       :row-height="32" :header-height="32" fixed />
+          <el-table-v2 :columns="tableColumns" :data="displayRows" :width="width" :height="height"
+                       row-key="sourceIndex" :row-height="32" :header-height="32" fixed />
         </el-auto-resizer>
       </div>
       <el-result v-else icon="success" title="语句执行完成" :sub-title="`影响行数：${activeResult?.updateCount ?? 0}`" />
@@ -55,12 +56,15 @@
                              :can-copy-data="canCopyHeaderData" :can-move-left="canMoveSelectionLeft"
                              :can-move-right="canMoveSelectionRight" @close="closeHeaderMenu"
                              @command="headerMenuCommand" />
+    <ResultDataContextMenu :visible="dataMenu.visible" :x="dataMenu.x" :y="dataMenu.y" :mode="dataMenu.mode"
+                           :can-in="canCopyIn" :can-insert="canCopyInsert" :can-update="canCopyUpdate"
+                           :can-delete="canCopyDelete" @close="closeDataMenu" @command="dataMenuCommand" />
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, h, onBeforeUnmount, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, TableV2FixedDir } from "element-plus";
 import { CopyDocument, DataAnalysis, Download, RefreshLeft } from "@element-plus/icons-vue";
 import type { Column } from "element-plus";
 import type { QueryExecutionState } from "../types";
@@ -71,7 +75,11 @@ import { useColumnLayoutStore } from "../stores/columnLayout";
 import { useSettingsStore } from "../stores/settings";
 import { resultCopyText, type ResultCopyMode } from "../resultCopy";
 import { writeClipboardText } from "../clipboard";
+import { copyGrid, copyInPredicate, copyRowSql, inRange, normalizeRange, selectRows, visibleRows,
+  type CellPoint, type CellRange, type ResultFilter, type ResultSort, type ViewRow } from "../resultGrid";
 import ResultHeaderContextMenu, { type HeaderMenuCommand } from "./ResultHeaderContextMenu.vue";
+import ResultHeaderTools from "./ResultHeaderTools.vue";
+import ResultDataContextMenu, { type DataMenuCommand } from "./ResultDataContextMenu.vue";
 
 const props = defineProps<{
   execution?: QueryExecutionState;
@@ -89,6 +97,8 @@ const activeLayout = ref<{ layoutKey: string; viewKey: string; identities: strin
 const dropTarget = ref<{ identity: string; side: DropSide }>();
 const resizing = ref<{ identity: string; startX: number; startWidth: number }>();
 const headerMenu = ref({ visible: false, x: 0, y: 0 });
+const dataMenu = ref<{ visible: boolean; x: number; y: number; mode: "cells" | "rows" }>(
+  { visible: false, x: 0, y: 0, mode: "cells" });
 let dragPreview: HTMLElement | undefined;
 let measureContext: CanvasRenderingContext2D | null | undefined;
 const activeIndex = computed({
@@ -97,9 +107,22 @@ const activeIndex = computed({
 });
 const selectedColumns = ref<Record<string, number[]>>({});
 const columnQuery = ref("");
-const selectedCell = ref<{ row: number; column: number; value: string | null }>();
+const sorts = ref<Record<string, ResultSort | undefined>>({});
+const filters = ref<Record<string, ResultFilter[]>>({});
+const cellRange = ref<CellRange>();
+const cellAnchor = ref<CellPoint>();
+const selectingCells = ref(false);
+const selectingRows = ref(false);
+const rowDragAnchor = ref<number>();
+const rowDragBase = ref<number[]>([]);
+const rowDragMode = ref<"replace" | "add" | "remove">("replace");
+const selectedRowSources = ref<number[]>([]);
+const rowAnchor = ref<number>();
+const selectionMode = ref<"cells" | "rows">("cells");
 const activeResult = computed(() => props.execution?.results.find((item) => item.resultIndex === activeIndex.value) ?? props.execution?.results[0]);
 const resultKey = computed(() => String(activeResult.value?.resultIndex ?? 0));
+const activeSort = computed(() => sorts.value[resultKey.value]);
+const activeFilters = computed(() => filters.value[resultKey.value] ?? []);
 const selectedColumnIndices = computed<number[]>({
   get: () => selectedColumns.value[resultKey.value] ?? [],
   set: (value) => { selectedColumns.value = { ...selectedColumns.value, [resultKey.value]: value }; }
@@ -126,16 +149,19 @@ const summary = computed(() => {
   const result = activeResult.value;
   if (!result) return "";
   if (props.execution?.busy) return "正在执行…";
-  return result.columns.length ? `${result.rows.length} 行 · ${result.durationMs} ms` : `${result.updateCount} 行受影响 · ${result.durationMs} ms`;
+  if (!result.columns.length) return `${result.updateCount} 行受影响 · ${result.durationMs} ms`;
+  return displayRows.value.length === result.rows.length ? `${result.rows.length} 行 · ${result.durationMs} ms`
+    : `显示 ${displayRows.value.length} / 已加载 ${result.rows.length} 行 · ${result.durationMs} ms`;
 });
 
 watch(() => props.execution?.executionId, () => {
-  selectedCell.value = undefined;
+  clearSelection();
+  sorts.value = {}; filters.value = {};
   selectedColumns.value = {};
   columnQuery.value = "";
-  closeHeaderMenu();
+  closeHeaderMenu(); closeDataMenu();
 });
-watch(activeIndex, () => { selectedCell.value = undefined; columnQuery.value = ""; closeHeaderMenu(); });
+watch(activeIndex, () => { clearSelection(); columnQuery.value = ""; closeHeaderMenu(); closeDataMenu(); });
 watch([
   () => props.execution?.executionId,
   () => props.execution?.editorId,
@@ -145,29 +171,55 @@ watch([
   () => settings.columnLayoutScope
 ], activateLayout, { immediate: true });
 watch([() => activeLayout.value?.viewKey, () => selectedColumnIndices.value.join(",")], syncVisibleFilter);
+watch(() => visibleColumnOptions.value.map((column) => column.index).join(","), () => {
+  reconcileViewState(); clearSelection();
+});
+watch(() => settings.headerSortingEnabled, (enabled) => { if (!enabled) { sorts.value = {}; clearSelection(); } });
+watch(() => settings.headerFilteringEnabled, (enabled) => { if (!enabled) { filters.value = {}; clearSelection(); } });
 
-const tableRows = computed(() => activeResult.value?.rows ?? []);
+const displayRows = computed(() => visibleRows(activeResult.value?.rows ?? [], columnOptions.value,
+  settings.headerSortingEnabled ? activeSort.value : undefined,
+  settings.headerFilteringEnabled ? activeFilters.value : []));
+const tableColumns = computed<Column[]>(() => [rowSelectorColumn(), ...visibleColumnOptions.value.map((column, index) =>
+  columnDefinition(column, index))]);
 
-const tableColumns = computed<Column[]>(() => visibleColumnOptions.value.map((column) => ({
-  ...columnDefinition(column),
-})));
-
-function columnDefinition(column: ColumnOption): Column {
+function columnDefinition(column: ColumnOption, visiblePosition: number): Column {
   const identity = currentIdentities.value[column.index];
   const stored = activeLayout.value ? columnLayouts.layout(activeLayout.value.layoutKey) : undefined;
   return {
   key: `c${column.index}`,
-  dataKey: column.index,
+  dataKey: "cells",
   title: column.label,
   width: stored?.widths[identity] ?? defaultColumnWidth(column.label),
   minWidth: 72,
   maxWidth: 800,
   headerCellRenderer: () => renderHeader(column, identity),
-  cellRenderer: ({ cellData, rowIndex }: { cellData: string | null; rowIndex: number }) => h("span", {
-    class: ["result-cell", cellData === null ? "null-value" : cellData.startsWith?.("0x") ? "binary-value" : "", selectedCell.value?.row === rowIndex && selectedCell.value?.column === column.index ? "selected" : ""],
-    title: cellData !== null && cellData.length >= 40 ? cellData : undefined,
-    onClick: () => { selectedCell.value = { row: rowIndex, column: column.index, value: cellData }; }
-  }, cellData === null ? "NULL" : cellData)
+  cellRenderer: ({ rowData, rowIndex }: { rowData: ViewRow; rowIndex: number }) => {
+    const cellData = rowData.cells[column.index] ?? null;
+    return h("span", {
+      class: ["result-cell", cellData === null ? "null-value" : cellData.startsWith?.("0x") ? "binary-value" : "",
+        selectionMode.value === "cells" && inRange(cellRange.value, rowIndex, visiblePosition) ? "selected" : ""],
+      title: cellData !== null && cellData.length >= 40 ? cellData : undefined,
+      onPointerdown: (event: PointerEvent) => startCellSelection(event, rowIndex, visiblePosition),
+      onPointerenter: () => extendCellSelection(rowIndex, visiblePosition),
+      onContextmenu: (event: MouseEvent) => openCellMenu(event, rowIndex, visiblePosition, rowData)
+    }, cellData === null ? "NULL" : cellData);
+  }
+  };
+}
+
+function rowSelectorColumn(): Column {
+  return {
+    key: "__row__", dataKey: "sourceIndex", title: "#", width: 34, minWidth: 34, maxWidth: 34,
+    fixed: TableV2FixedDir.LEFT,
+    headerCellRenderer: () => h("span", { class: "result-row-number result-row-number-header", title: "单击或拖动行号选择整行" }, "#"),
+    cellRenderer: ({ rowData }: { rowData: ViewRow }) => h("span", {
+      class: ["result-row-number", selectionMode.value === "rows" && selectedRowSources.value.includes(rowData.sourceIndex) ? "selected" : ""],
+      title: `选择第 ${rowData.sourceIndex + 1} 行；按住拖动可连续选择多行`,
+      onPointerdown: (event: PointerEvent) => selectResultRow(event, rowData.sourceIndex),
+      onPointerenter: () => extendRowSelection(rowData.sourceIndex),
+      onContextmenu: (event: MouseEvent) => openRowMenu(event, rowData.sourceIndex)
+    }, String(rowData.sourceIndex + 1))
   };
 }
 
@@ -217,6 +269,16 @@ function renderHeader(column: ColumnOption, identity: string) {
     }, column.label),
     selected && view && view.selected.length > 1 && firstSelected === identity
       ? h("span", { class: "column-selection-count" }, `${view.selected.length}列`) : undefined,
+    h(ResultHeaderTools, {
+      column, columnIndex: column.index,
+      sort: activeSort.value?.columnIndex === column.index ? activeSort.value : undefined,
+      filter: activeFilters.value.find((item) => item.columnIndex === column.index),
+      sortingEnabled: settings.headerSortingEnabled,
+      filteringEnabled: settings.headerFilteringEnabled,
+      onSort: () => cycleSort(column.index),
+      onApply: (filter: ResultFilter) => applyFilter(filter),
+      onClear: () => clearFilter(column.index)
+    }),
     h("span", {
       class: "column-resize-handle", role: "separator", tabindex: 0,
       "aria-label": `调整 ${column.label} 列宽`, title: "拖动调整列宽，双击自动匹配",
@@ -428,9 +490,223 @@ function optionDetail(column: ColumnOption): string {
   return values.join(" · ");
 }
 
-async function copyCell(): Promise<void> {
-  const text = selectedCell.value?.value ?? "NULL";
-  await copyText(text, "已复制单元格");
+function cycleSort(columnIndex: number): void {
+  const current = activeSort.value;
+  const next: ResultSort | undefined = current?.columnIndex !== columnIndex
+    ? { columnIndex, direction: "asc" }
+    : current.direction === "asc" ? { columnIndex, direction: "desc" } : undefined;
+  sorts.value = { ...sorts.value, [resultKey.value]: next };
+  clearSelection();
+}
+
+function applyFilter(filter: ResultFilter): void {
+  const next = activeFilters.value.filter((item) => item.columnIndex !== filter.columnIndex);
+  next.push(filter);
+  filters.value = { ...filters.value, [resultKey.value]: next };
+  clearSelection();
+}
+
+function clearFilter(columnIndex: number): void {
+  filters.value = { ...filters.value,
+    [resultKey.value]: activeFilters.value.filter((item) => item.columnIndex !== columnIndex) };
+  clearSelection();
+}
+
+function reconcileViewState(): void {
+  const visible = new Set(visibleColumnOptions.value.map((column) => column.index));
+  const sort = activeSort.value;
+  if (sort && !visible.has(sort.columnIndex)) sorts.value = { ...sorts.value, [resultKey.value]: undefined };
+  const nextFilters = activeFilters.value.filter((filter) => visible.has(filter.columnIndex));
+  if (nextFilters.length !== activeFilters.value.length) filters.value = { ...filters.value, [resultKey.value]: nextFilters };
+}
+
+function clearSelection(): void {
+  window.removeEventListener("pointerup", finishCellSelection);
+  window.removeEventListener("pointerup", finishRowSelection);
+  selectingCells.value = false;
+  selectingRows.value = false;
+  cellRange.value = undefined;
+  cellAnchor.value = undefined;
+  selectedRowSources.value = [];
+  rowAnchor.value = undefined;
+}
+
+function startCellSelection(event: PointerEvent, row: number, column: number): void {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  tableHost.value?.focus();
+  selectionMode.value = "cells";
+  selectedRowSources.value = [];
+  rowAnchor.value = undefined;
+  const point = { row, column };
+  if (event.shiftKey && cellAnchor.value) cellRange.value = { start: cellAnchor.value, end: point };
+  else { cellAnchor.value = point; cellRange.value = { start: point, end: point }; }
+  selectingCells.value = true;
+  window.removeEventListener("pointerup", finishCellSelection);
+  window.addEventListener("pointerup", finishCellSelection, { once: true });
+}
+
+function extendCellSelection(row: number, column: number): void {
+  if (!selectingCells.value || !cellAnchor.value) return;
+  cellRange.value = { start: cellAnchor.value, end: { row, column } };
+}
+
+function finishCellSelection(): void {
+  selectingCells.value = false;
+  window.removeEventListener("pointerup", finishCellSelection);
+}
+
+function selectResultRow(event: PointerEvent, sourceIndex: number): void {
+  if (event.button !== 0) return;
+  event.preventDefault(); event.stopPropagation();
+  tableHost.value?.focus();
+  selectionMode.value = "rows";
+  cellRange.value = undefined; cellAnchor.value = undefined;
+  const order = displayRows.value.map((row) => row.sourceIndex);
+  const before = [...selectedRowSources.value];
+  const rangeAnchor = event.shiftKey && rowAnchor.value !== undefined ? rowAnchor.value : sourceIndex;
+  const toggle = event.ctrlKey || event.metaKey;
+  rowDragBase.value = toggle ? before : [];
+  rowDragMode.value = toggle ? (before.includes(sourceIndex) ? "remove" : "add") : "replace";
+  rowDragAnchor.value = rangeAnchor;
+  const selected = selectRows(order, before,
+    rowAnchor.value, sourceIndex, event.ctrlKey || event.metaKey, event.shiftKey);
+  selectedRowSources.value = selected.selected;
+  rowAnchor.value = selected.anchor;
+  selectingRows.value = true;
+  window.removeEventListener("pointerup", finishRowSelection);
+  window.addEventListener("pointerup", finishRowSelection, { once: true });
+}
+
+function extendRowSelection(sourceIndex: number): void {
+  const anchor = rowDragAnchor.value;
+  if (!selectingRows.value || anchor === undefined) return;
+  const order = displayRows.value.map((row) => row.sourceIndex);
+  const start = order.indexOf(anchor); const end = order.indexOf(sourceIndex);
+  if (start < 0 || end < 0) return;
+  const range = new Set(order.slice(Math.min(start, end), Math.max(start, end) + 1));
+  const base = new Set(rowDragBase.value);
+  if (rowDragMode.value === "add") range.forEach((value) => base.add(value));
+  else if (rowDragMode.value === "remove") range.forEach((value) => base.delete(value));
+  else { base.clear(); range.forEach((value) => base.add(value)); }
+  selectedRowSources.value = order.filter((value) => base.has(value));
+}
+
+function finishRowSelection(): void {
+  selectingRows.value = false;
+  window.removeEventListener("pointerup", finishRowSelection);
+}
+
+function openCellMenu(event: MouseEvent, row: number, column: number, rowData: ViewRow): void {
+  event.preventDefault(); event.stopPropagation();
+  if (selectionMode.value === "rows" && selectedRowSources.value.includes(rowData.sourceIndex)) {
+    openDataMenu(event, "rows");
+    return;
+  }
+  selectionMode.value = "cells";
+  selectedRowSources.value = [];
+  if (!inRange(cellRange.value, row, column)) {
+    const point = { row, column };
+    cellAnchor.value = point; cellRange.value = { start: point, end: point };
+  }
+  openDataMenu(event, "cells");
+}
+
+function openRowMenu(event: MouseEvent, sourceIndex: number): void {
+  event.preventDefault(); event.stopPropagation();
+  selectionMode.value = "rows";
+  cellRange.value = undefined; cellAnchor.value = undefined;
+  if (!selectedRowSources.value.includes(sourceIndex)) {
+    selectedRowSources.value = [sourceIndex]; rowAnchor.value = sourceIndex;
+  }
+  openDataMenu(event, "rows");
+}
+
+function openDataMenu(event: MouseEvent, mode: "cells" | "rows"): void {
+  dataMenu.value = { visible: true, mode,
+    x: Math.max(8, Math.min(event.clientX, window.innerWidth - 198)),
+    y: Math.max(8, Math.min(event.clientY, window.innerHeight - 270)) };
+}
+
+function closeDataMenu(): void { dataMenu.value = { ...dataMenu.value, visible: false }; }
+
+const selectedCellColumns = computed(() => {
+  if (selectionMode.value !== "cells" || !cellRange.value) return [];
+  const range = normalizeRange(cellRange.value);
+  return visibleColumnOptions.value.slice(range.start.column, range.end.column + 1);
+});
+const selectedCellRows = computed(() => {
+  if (selectionMode.value !== "cells" || !cellRange.value) return [];
+  const range = normalizeRange(cellRange.value);
+  return displayRows.value.slice(range.start.row, range.end.row + 1);
+});
+const selectedRowsInDisplayOrder = computed(() => {
+  const selected = new Set(selectedRowSources.value);
+  return displayRows.value.filter((row) => selected.has(row.sourceIndex));
+});
+const hasDataSelection = computed(() => selectionMode.value === "cells"
+  ? selectedCellColumns.value.length > 0 && selectedCellRows.value.length > 0
+  : selectedRowsInDisplayOrder.value.length > 0);
+const copySelectionTitle = computed(() => selectionMode.value === "rows" ? "复制选中行" : "复制选中单元格");
+
+function selectedCopyText(includeHeaders = false): string {
+  if (selectionMode.value === "rows") {
+    return copyGrid(visibleColumnOptions.value, selectedRowsInDisplayOrder.value, includeHeaders, settings.copySeparator);
+  }
+  return copyGrid(selectedCellColumns.value, selectedCellRows.value, includeHeaders, settings.copySeparator);
+}
+
+async function copyCurrentSelection(includeHeaders = false): Promise<void> {
+  if (!hasDataSelection.value) return;
+  await copyText(selectedCopyText(includeHeaders), includeHeaders ? "已复制列名和数据"
+    : selectionMode.value === "rows" ? "已复制选中行" : "已复制选中单元格");
+}
+
+function inPredicate(): string | undefined {
+  return copyInPredicate(selectedCellColumns.value.map((column) => ({ index: column.index,
+    quotedLabel: column.quotedLabel || column.label, jdbcType: column.jdbcType ?? 12 })), selectedCellRows.value);
+}
+
+function rowSql(mode: "insert" | "update" | "delete"): string | undefined {
+  return copyRowSql(mode, activeResult.value?.mutationTarget,
+    visibleColumnOptions.value.map((column) => column.index), selectedRowsInDisplayOrder.value);
+}
+
+const canCopyIn = computed(() => selectionMode.value === "cells" && !!inPredicate());
+const canCopyInsert = computed(() => selectionMode.value === "rows" && !!rowSql("insert"));
+const canCopyUpdate = computed(() => selectionMode.value === "rows" && !!rowSql("update"));
+const canCopyDelete = computed(() => selectionMode.value === "rows" && !!rowSql("delete"));
+
+function dataMenuCommand(command: DataMenuCommand): void {
+  if (command === "copy-data") { void copyCurrentSelection(); return; }
+  if (command === "copy-all") { void copyCurrentSelection(true); return; }
+  if (command === "copy-in") {
+    const text = inPredicate(); if (text) void copyText(text, "已复制 IN 语句"); return;
+  }
+  const mode = command.replace("copy-", "") as "insert" | "update" | "delete";
+  const text = rowSql(mode);
+  if (text) void copyText(text, `已复制 ${mode.toUpperCase()} 语句`);
+}
+
+function tableKeydown(event: KeyboardEvent): void {
+  const target = event.target as HTMLElement | null;
+  if (target?.matches("input, textarea, select, [contenteditable='true']")) return;
+  if (event.key === "Escape") { clearSelection(); closeDataMenu(); return; }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "c" && hasDataSelection.value) {
+    event.preventDefault(); void copyCurrentSelection();
+  }
+}
+
+function autoScrollSelection(event: PointerEvent): void {
+  if ((!selectingCells.value && !selectingRows.value) || !tableHost.value) return;
+  const bounds = tableHost.value.getBoundingClientRect();
+  const scroller = tableHost.value.querySelector<HTMLElement>(".el-table-v2__body, .el-scrollbar__wrap");
+  if (!scroller) return;
+  const edge = 26;
+  if (event.clientY < bounds.top + edge) scroller.scrollTop -= 18;
+  else if (event.clientY > bounds.bottom - edge) scroller.scrollTop += 18;
+  if (event.clientX < bounds.left + edge) scroller.scrollLeft -= 18;
+  else if (event.clientX > bounds.right - edge) scroller.scrollLeft += 18;
 }
 
 async function copyText(text: string, successMessage: string): Promise<void> {
@@ -450,7 +726,11 @@ function exportCommand(command: string): void {
   else if (command === "full") emit("export-full", resultIndex);
 }
 
-onBeforeUnmount(() => { finishColumnResize(); endColumnDrag(); closeHeaderMenu(); });
+onBeforeUnmount(() => {
+  finishColumnResize(); finishCellSelection(); finishRowSelection(); endColumnDrag(); closeHeaderMenu(); closeDataMenu();
+  window.removeEventListener("pointerup", finishCellSelection);
+  window.removeEventListener("pointerup", finishRowSelection);
+});
 </script>
 
 <style scoped>
@@ -473,8 +753,18 @@ onBeforeUnmount(() => { finishColumnResize(); endColumnDrag(); closeHeaderMenu()
 .column-option { min-width: 0; display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
 .column-option span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .column-option small { overflow: hidden; color: var(--db-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.table-host { flex: 1; min-height: 0; }
+.table-host { flex: 1; min-height: 0; outline: none; }
+.table-host:focus-visible { box-shadow: inset 0 0 0 1px var(--db-accent); }
 :deep(.el-table-v2__header-cell) { padding: 0; }
+:deep(.el-table-v2__left) {
+  border-right: 0;
+  background: var(--db-row-gutter-bg);
+  box-shadow: none;
+}
+:deep(.el-table-v2__left::after) {
+  content: ""; position: absolute; z-index: 3; top: 0; right: 0; bottom: 0; width: 1px;
+  background: var(--db-row-gutter-divider); pointer-events: none;
+}
 .result-empty { flex: 1; }
 .result-empty :deep(.el-empty__image) { width: auto; height: auto; }
 .result-empty :deep(.el-empty__image .el-icon) {
@@ -496,9 +786,24 @@ onBeforeUnmount(() => { finishColumnResize(); endColumnDrag(); closeHeaderMenu()
   text-overflow: ellipsis;
   white-space: nowrap;
   line-height: 27px;
-  cursor: default;
+  cursor: cell;
+  user-select: none;
 }
 :deep(.result-cell.selected) { outline: 1.5px solid var(--db-accent); background: var(--db-accent-soft); }
+:deep(.result-row-number) {
+  position: relative; display: block; width: 100%; height: 32px; margin: 0; border: 0; border-radius: 0;
+  background: var(--db-row-gutter-bg);
+  color: var(--db-muted); font-size: 10px; line-height: 32px; text-align: center; user-select: none; cursor: default;
+}
+:deep(.result-row-number-header) { background: var(--db-table-header); font-weight: 600; }
+:deep(.result-row-number:not(.result-row-number-header)) { cursor: pointer; }
+:deep(.el-table-v2__row:hover .result-row-number),
+:deep(.el-table-v2__row.is-hovered .result-row-number) { color: var(--db-text-secondary); }
+:deep(.result-row-number.selected) { outline: 0; background: var(--db-row-gutter-bg); color: var(--db-accent); font-weight: 600; }
+:deep(.result-row-number.selected::before) {
+  content: ""; position: absolute; top: 5px; bottom: 5px; left: 0; width: 2px;
+  border-radius: 0 2px 2px 0; background: var(--db-accent);
+}
 
 @media (max-width: 1080px) {
   .result-meta { display: none; }
@@ -520,7 +825,7 @@ onBeforeUnmount(() => { finishColumnResize(); endColumnDrag(); closeHeaderMenu()
 }
 .result-column-header.drop-before::before { left: 0; }
 .result-column-header.drop-after::after { right: 0; }
-.result-column-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.result-column-title { min-width: 24px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .column-selection-count {
   flex: none; padding: 1px 5px; border-radius: 8px; background: var(--db-accent); color: #fff; font-size: 9px;
 }
