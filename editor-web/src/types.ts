@@ -118,24 +118,76 @@ export interface MetadataNode {
   detail?: string;
 }
 
-export interface Suggestion {
-  id: string;
+export interface CompletionNamespaceDescriptor {
+  key: string;
+  catalog: string;
+  schema: string;
   label: string;
-  insertText: string;
-  detail: string;
-  kind: "keyword" | "database" | "catalog" | "schema" | "table" | "view" | "column" | "function" | "procedure" | "sequence";
-  catalog?: string;
-  schema?: string;
-  objectName?: string;
-  remarks?: string;
+  kind: "catalog" | "schema";
+  current: boolean;
+  system: boolean;
+}
+
+export interface CompletionNamespacesResponse {
+  providerId: string;
+  sourceProfileId: string;
+  namespaces: CompletionNamespaceDescriptor[];
+}
+
+export interface CompletionColumnSnapshot {
+  name: string;
+  typeName: string;
+  remarks: string;
+}
+
+export interface CompletionObjectSnapshot {
+  name: string;
+  kind: "table" | "view";
+  remarks: string;
+  columns: CompletionColumnSnapshot[];
+}
+
+export interface CompletionNamespaceSnapshot {
+  key: string;
+  catalog: string;
+  schema: string;
+  label: string;
+  objects: CompletionObjectSnapshot[];
 }
 
 export type CompletionCacheState = "empty" | "loading" | "ready" | "error";
 export interface CompletionSnapshot {
+  formatVersion: 1;
   providerId: string;
   sourceProfileId: string;
   generatedAt: string;
-  suggestions: Suggestion[];
+  defaultNamespaceKey: string;
+  selectedNamespaceKeys: string[];
+  namespaces: CompletionNamespaceSnapshot[];
+}
+
+export interface CompletionCacheSummary {
+  providerId: string;
+  sourceProfileId: string;
+  generatedAt: string;
+  selectedNamespaceKeys: string[];
+  objectCount: number;
+  columnCount: number;
+  estimatedBytes: number;
+}
+
+export interface CompletionCandidate {
+  label: string;
+  qualifiedLabel: string;
+  insertText: string;
+  kind: "keyword" | "schema" | "table" | "view" | "column";
+  remarks: string;
+  typeName: string;
+}
+
+export interface CompletionResult {
+  items: CompletionCandidate[];
+  incomplete: boolean;
 }
 export interface CompletionProgress {
   loadId: string;
@@ -150,8 +202,8 @@ export interface CompletionCache {
   key: string;
   label: string;
   state: CompletionCacheState;
-  suggestions: Suggestion[];
   hasSnapshot: boolean;
+  summary?: CompletionCacheSummary;
   loadId?: string;
   sourceProfileId?: string;
   generatedAt?: string;
@@ -159,26 +211,6 @@ export interface CompletionCache {
   error?: string;
   notice?: "loading" | "success" | "error";
   startedAt?: number;
-}
-
-export interface CompletionSource {
-  kind: "physical" | "cte" | "derived";
-  name: string;
-  alias: string;
-  catalog?: string;
-  columns?: string[];
-}
-
-export interface CompletionScope {
-  depth: number;
-  sources: CompletionSource[];
-  parent?: CompletionScope;
-}
-
-export interface CompletionContext {
-  qualifier: string[];
-  defaultCatalog?: string;
-  scope?: CompletionScope;
 }
 
 export interface CompletionCacheStats {

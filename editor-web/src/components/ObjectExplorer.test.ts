@@ -4,7 +4,7 @@ import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import ElementPlus from "element-plus";
 import ObjectExplorer from "./ObjectExplorer.vue";
 import { useMetadataStore } from "../stores/metadata";
-import type { CompletionSnapshot, MetadataNode, Suggestion } from "../types";
+import type { CompletionCacheSummary, MetadataNode } from "../types";
 
 const rpcRequest = vi.hoisted(() => vi.fn());
 vi.mock("../bridge/rpc", () => ({ rpc: { request: rpcRequest } }));
@@ -24,18 +24,18 @@ describe("ObjectExplorer completion refresh boundary", () => {
 
   afterEach(() => wrapper.unmount());
 
-  it("does not incrementally mutate completion suggestions while the tree loads", async () => {
+  it("does not incrementally mutate completion cache state while the tree loads", async () => {
     const metadata = useMetadataStore();
-    const existing: Suggestion = { id: "table:orders", label: "orders", insertText: "`orders`", detail: "orders", kind: "table" };
-    const snapshot: CompletionSnapshot = { providerId: "mysql", sourceProfileId: "profile-1",
-      generatedAt: "2026-07-19T00:00:00Z", suggestions: [existing] };
+    const summary: CompletionCacheSummary = { providerId: "mysql", sourceProfileId: "profile-1",
+      generatedAt: "2026-07-19T00:00:00Z", selectedNamespaceKeys: ["catalog:sales"],
+      objectCount: 1, columnCount: 2, estimatedBytes: 128 };
     metadata.beginCompletion("system:dev", "DEV", "load-1", "profile-1");
-    metadata.completeCompletion("system:dev", "load-1", snapshot);
+    metadata.completeCompletion("system:dev", "load-1", summary);
     metadata.activate("profile-1@1", "system:dev");
 
     await flushPromises();
 
-    expect(metadata.suggestions).toEqual([existing]);
+    expect(metadata.completionFor("system:dev")?.summary).toEqual(summary);
     expect(rpcRequest).toHaveBeenCalledWith("metadata.children", { kind: "root", editorId: "editor-1" });
   });
 

@@ -3,10 +3,10 @@ import { createPinia, setActivePinia } from "pinia";
 import { useAppStore } from "./app";
 import { useConnectionStore } from "./connection";
 import { useEditorStore } from "./editor";
-import { formatCompletionBytes, serializedUtf8Size, useMetadataStore } from "./metadata";
+import { formatCompletionBytes, useMetadataStore } from "./metadata";
 import { useQueryStore } from "./query";
 import { useSettingsStore } from "./settings";
-import type { CompletionSnapshot, Suggestion } from "../types";
+import type { CompletionCacheSummary } from "../types";
 
 beforeEach(() => setActivePinia(createPinia()));
 
@@ -166,85 +166,59 @@ describe("application stores", () => {
   it("deduplicates completion loads and atomically replaces an environment snapshot", () => {
     const metadata = useMetadataStore();
     const key = "system-1:environment-dev";
-    const oldSuggestion = suggestion("old", "orders");
-    const newSuggestion = suggestion("new", "customers");
+    const oldSummary = summary("profile-1", 1, 2, 100);
+    const newSummary = summary("profile-2", 2, 4, 180);
 
     expect(metadata.beginCompletion(key, "DEV", "load-1", "profile-1")).toBe(true);
     expect(metadata.beginCompletion(key, "DEV", "load-duplicate", "profile-2")).toBe(false);
-    expect(metadata.completeCompletion(key, "load-1", snapshot("profile-1", oldSuggestion))).toBe(true);
-    metadata.activate("profile-1@1", key);
-    expect(metadata.suggestions).toEqual([oldSuggestion]);
+    expect(metadata.completeCompletion(key, "load-1", oldSummary)).toBe(true);
+    expect(metadata.completionFor(key)?.summary).toEqual(oldSummary);
 
     expect(metadata.beginCompletion(key, "DEV", "load-2", "profile-2", true)).toBe(true);
-    expect(metadata.suggestions).toEqual([oldSuggestion]);
-    expect(metadata.completeCompletion(key, "stale-load", snapshot("profile-2", newSuggestion))).toBe(false);
-    expect(metadata.suggestions).toEqual([oldSuggestion]);
-    expect(metadata.completeCompletion(key, "load-2", snapshot("profile-2", newSuggestion))).toBe(true);
-    expect(metadata.suggestions).toEqual([newSuggestion]);
+    expect(metadata.completionFor(key)?.summary).toEqual(oldSummary);
+    expect(metadata.completeCompletion(key, "stale-load", newSummary)).toBe(false);
+    expect(metadata.completionFor(key)?.summary).toEqual(oldSummary);
+    expect(metadata.completeCompletion(key, "load-2", newSummary)).toBe(true);
+    expect(metadata.completionFor(key)?.summary).toEqual(newSummary);
     expect(metadata.completionFor(key)?.sourceProfileId).toBe("profile-2");
   });
 
   it("keeps the last successful completion snapshot when a manual refresh fails", () => {
     const metadata = useMetadataStore();
     const key = "system-1:environment-dev";
-    const existing = suggestion("column-1", "order_id");
+    const existing = summary("profile-1", 1, 2, 100);
     metadata.beginCompletion(key, "DEV", "load-1", "profile-1");
-    metadata.completeCompletion(key, "load-1", snapshot("profile-1", existing));
+    metadata.completeCompletion(key, "load-1", existing);
 
     metadata.beginCompletion(key, "DEV", "load-2", "profile-1", true);
     metadata.failCompletion(key, "load-2", "connection failed");
 
     expect(metadata.completionFor(key)).toMatchObject({ state: "error", hasSnapshot: true, error: "connection failed" });
-    expect(metadata.completionFor(key)?.suggestions).toEqual([existing]);
+    expect(metadata.completionFor(key)?.summary).toEqual(existing);
     expect(metadata.beginCompletion(key, "DEV", "load-3", "profile-1")).toBe(false);
   });
 
-  it("isolates environment completion snapshots and activates the selected editor environment", () => {
+  it("hydrates persistent IndexedDB statistics without serializing snapshots on the main thread", () => {
     const metadata = useMetadataStore();
-    const dev = suggestion("dev", "dev_table");
-    const sit = suggestion("sit", "sit_table");
-    metadata.beginCompletion("system:dev", "DEV", "load-dev", "profile-dev");
-    metadata.completeCompletion("system:dev", "load-dev", snapshot("profile-dev", dev));
-    metadata.beginCompletion("system:sit", "SIT", "load-sit", "profile-sit");
-    metadata.completeCompletion("system:sit", "load-sit", snapshot("profile-sit", sit));
-
-    metadata.activate("profile-dev@1", "system:dev");
-    expect(metadata.suggestions).toEqual([dev]);
-    metadata.activate("profile-sit@1", "system:sit");
-    expect(metadata.suggestions).toEqual([sit]);
-  });
-
-  it("estimates serialized UTF-8 completion cache space across environments", () => {
-    const metadata = useMetadataStore();
-    const chinese = suggestion("中文😀", "订单😀");
-    const english = suggestion("english", "orders");
-    metadata.beginCompletion("system:dev", "DEV", "load-dev", "profile-dev");
-    metadata.completeCompletion("system:dev", "load-dev", snapshot("profile-dev", chinese));
-    metadata.beginCompletion("system:sit", "SIT", "load-sit", "profile-sit");
-    metadata.completeCompletion("system:sit", "load-sit", snapshot("profile-sit", english));
-
+    metadata.applyPersistentStats({ environmentCount: 2, suggestionCount: 110_000, estimatedBytes: 52_000_000 });
     expect(metadata.completionStats).toEqual({
       environmentCount: 2,
-      suggestionCount: 2,
-      estimatedBytes: serializedUtf8Size([chinese]) + serializedUtf8Size([english]),
+      suggestionCount: 110_000,
+      estimatedBytes: 52_000_000,
       loadingCount: 0
     });
     expect(formatCompletionBytes(1229)).toBe("1.2 KB");
   });
 
-  it("counts a preserved snapshot after refresh failure and excludes empty loading caches", () => {
+  it("counts loading caches independently from persistent snapshots", () => {
     const metadata = useMetadataStore();
-    const existing = suggestion("old", "订单");
-    metadata.beginCompletion("system:dev", "DEV", "load-1", "profile-1");
-    metadata.completeCompletion("system:dev", "load-1", snapshot("profile-1", existing));
-    metadata.beginCompletion("system:dev", "DEV", "load-2", "profile-1", true);
+    metadata.applyPersistentStats({ environmentCount: 1, suggestionCount: 3, estimatedBytes: 99 });
     metadata.beginCompletion("system:sit", "SIT", "load-3", "profile-2");
-    metadata.failCompletion("system:dev", "load-2", "failed");
 
     expect(metadata.completionStats).toEqual({
       environmentCount: 1,
-      suggestionCount: 1,
-      estimatedBytes: serializedUtf8Size([existing]),
+      suggestionCount: 3,
+      estimatedBytes: 99,
       loadingCount: 1
     });
   });
@@ -261,9 +235,8 @@ describe("application stores", () => {
 
     expect(released.loadingCount).toBe(1);
     expect(metadata.roots).toEqual([root]);
-    expect(metadata.suggestions).toEqual([]);
     expect(metadata.canClearCompletions).toBe(false);
-    expect(metadata.completeCompletion("system:dev", "load-1", snapshot("profile-1", suggestion("late", "late_table")))).toBe(false);
+    expect(metadata.completeCompletion("system:dev", "load-1", summary("profile-1", 1, 1, 100))).toBe(false);
     metadata.updateProgress({ loadId: "load-1", phase: "loading", completed: 2, total: 2, message: "late" });
     expect(metadata.completionCaches).toEqual({});
   });
@@ -272,7 +245,8 @@ describe("application stores", () => {
     const settings = useSettingsStore();
     settings.initialize({ "result.maxRows": "2500", "result.streamBatchRows": "75", "result.columnLayoutScope": "editor",
       "result.copyHeaderOnDoubleClick": "false", "result.copySeparator": "tab",
-      "connection.maxActiveSessions": "12", "connection.idleTimeoutMinutes": "30" }, []);
+      "connection.maxActiveSessions": "12", "connection.idleTimeoutMinutes": "30",
+      "editor.completionCandidateLimit": "250" }, []);
     expect(settings.maxResultRows).toBe(2500);
     expect(settings.streamBatchRows).toBe(75);
     expect(settings.columnLayoutScope).toBe("editor");
@@ -280,19 +254,18 @@ describe("application stores", () => {
     expect(settings.copySeparator).toBe("tab");
     expect(settings.maxActiveSessions).toBe(12);
     expect(settings.idleTimeoutMinutes).toBe(30);
+    expect(settings.completionCandidateLimit).toBe(250);
     settings.initialize({ "result.columnLayoutScope": "legacy", "result.copySeparator": "legacy" }, []);
     expect(settings.columnLayoutScope).toBe("result");
     expect(settings.copyHeaderOnDoubleClick).toBe(true);
     expect(settings.copySeparator).toBe("comma");
     expect(settings.maxActiveSessions).toBe(10);
     expect(settings.idleTimeoutMinutes).toBe(10);
+    expect(settings.completionCandidateLimit).toBe(100);
   });
 });
 
-function suggestion(id: string, label: string): Suggestion {
-  return { id, label, insertText: `\`${label}\``, detail: label, kind: "table" };
-}
-
-function snapshot(sourceProfileId: string, ...suggestions: Suggestion[]): CompletionSnapshot {
-  return { providerId: "mysql", sourceProfileId, generatedAt: "2026-07-19T00:00:00Z", suggestions };
+function summary(sourceProfileId: string, objectCount: number, columnCount: number, estimatedBytes: number): CompletionCacheSummary {
+  return { providerId: "mysql", sourceProfileId, generatedAt: "2026-07-19T00:00:00Z",
+    selectedNamespaceKeys: ["catalog:sales"], objectCount, columnCount, estimatedBytes };
 }

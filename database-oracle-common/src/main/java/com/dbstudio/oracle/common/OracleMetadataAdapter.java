@@ -27,6 +27,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Metadata implementation shared by native Oracle and OceanBase Oracle mode. */
 /**
@@ -36,6 +38,8 @@ import java.util.TreeMap;
  * 补全仍能提供可理解的部分结果。</p>
  */
 public class OracleMetadataAdapter implements MetadataAdapter {
+    private static final Logger LOG = LoggerFactory.getLogger(OracleMetadataAdapter.class);
+    private static final int COMPLETION_CHUNK_SIZE = 500;
     private static final Set<String> SYSTEM_SCHEMAS = Collections.unmodifiableSet(new LinkedHashSet<String>(Arrays.asList(
             "SYS", "SYSTEM", "SYSAUX", "OUTLN", "DBSNMP", "APPQOSSYS", "AUDSYS", "CTXSYS", "DVSYS",
             "GSMADMIN_INTERNAL", "LBACSYS", "MDSYS", "OJVMSYS", "OLAPSYS", "ORDDATA", "ORDSYS", "WMSYS",
@@ -58,6 +62,33 @@ public class OracleMetadataAdapter implements MetadataAdapter {
         Collections.sort(sorted, String.CASE_INSENSITIVE_ORDER);
         if (sorted.remove(current)) sorted.add(0, current);
         for (String name : sorted) result.add(DatabaseNamespace.schema(name, name.equalsIgnoreCase(current)));
+        return Collections.unmodifiableList(result);
+    }
+
+    @Override public List<DatabaseNamespace> listCompletionNamespaces(DatabaseSession session) throws SQLException {
+        String current = upper(session.currentSchema());
+        Set<String> names = new LinkedHashSet<String>();
+        try (Statement statement = session.jdbcConnection().createStatement();
+             ResultSet result = statement.executeQuery("SELECT DISTINCT OWNER FROM ALL_OBJECTS ORDER BY OWNER")) {
+            while (result.next()) {
+                String name = upper(result.getString(1));
+                if (!name.isEmpty()) names.add(name);
+            }
+        } catch (SQLException dictionaryFailure) {
+            try (ResultSet result = session.jdbcConnection().getMetaData().getSchemas()) {
+                while (result.next()) {
+                    String name = upper(result.getString("TABLE_SCHEM"));
+                    if (!name.isEmpty()) names.add(name);
+                }
+            }
+        }
+        if (!current.isEmpty()) names.add(current);
+        List<String> sorted = new ArrayList<String>(names);
+        Collections.sort(sorted, String.CASE_INSENSITIVE_ORDER);
+        if (sorted.remove(current)) sorted.add(0, current);
+        List<DatabaseNamespace> result = new ArrayList<DatabaseNamespace>(sorted.size());
+        for (String name : sorted) result.add(DatabaseNamespace.schema(name,
+                name.equalsIgnoreCase(current), isSystemSchema(name)));
         return Collections.unmodifiableList(result);
     }
 
@@ -94,18 +125,21 @@ public class OracleMetadataAdapter implements MetadataAdapter {
                                                                        List<DatabaseNamespace> namespaces,
                                                                        Set<DatabaseObjectType> types)
             throws SQLException {
-        List<DatabaseObject> objects = new ArrayList<DatabaseObject>();
-        for (DatabaseNamespace namespace : namespaces) {
-            for (DatabaseObjectType type : types) objects.addAll(listObjects(session, namespace, type));
+        return listCompletionObjects(session, namespaces, types, MetadataAdapter.CompletionLoadListener.NONE);
+    }
+
+    @Override public List<CompletionObjectInfo> listCompletionObjects(DatabaseSession session,
+                                                                       List<DatabaseNamespace> namespaces,
+                                                                       Set<DatabaseObjectType> types,
+                                                                       MetadataAdapter.CompletionLoadListener listener)
+            throws SQLException {
+        try {
+            return batchCompletionObjects(session, namespaces, types);
+        } catch (SQLException batchFailure) {
+            LOG.warn("Oracle兼容数据库批量读取补全元数据失败，降级为逐对象读取 reason={}", batchFailure.getMessage());
+            listener.compatibilityFallback("批量读取失败，正在使用兼容方式加载…");
+            return MetadataAdapter.super.listCompletionObjects(session, namespaces, types);
         }
-        Map<String, List<ColumnInfo>> columns = loadCompletionColumns(session, namespaces);
-        List<CompletionObjectInfo> result = new ArrayList<CompletionObjectInfo>(objects.size());
-        for (DatabaseObject object : objects) {
-            List<ColumnInfo> values = columns.get(objectKey(object.schema(), object.name()));
-            result.add(new CompletionObjectInfo(object,
-                    values == null ? Collections.<ColumnInfo>emptyList() : values));
-        }
-        return Collections.unmodifiableList(result);
     }
 
     @Override public List<ColumnInfo> listColumns(DatabaseSession session, String catalog, String schema,
@@ -119,6 +153,26 @@ public class OracleMetadataAdapter implements MetadataAdapter {
                 columns.add(new ColumnInfo(name, result.getString("TYPE_NAME"), result.getInt("COLUMN_SIZE"),
                         result.getInt("DECIMAL_DIGITS"), result.getInt("NULLABLE") != DatabaseMetaData.columnNoNulls,
                         result.getString("COLUMN_DEF"), containsIgnoreCase(primary, name),
+                        result.getInt("ORDINAL_POSITION"), value(result.getString("REMARKS"))));
+            }
+        }
+        Collections.sort(columns, new Comparator<ColumnInfo>() {
+            @Override public int compare(ColumnInfo left, ColumnInfo right) {
+                return Integer.compare(left.ordinal(), right.ordinal());
+            }
+        });
+        return Collections.unmodifiableList(columns);
+    }
+
+    @Override public List<ColumnInfo> listCompletionColumns(DatabaseSession session, String catalog, String schema,
+                                                             String objectName) throws SQLException {
+        String owner = schema == null || schema.trim().isEmpty() ? catalog : schema;
+        List<ColumnInfo> columns = new ArrayList<ColumnInfo>();
+        try (ResultSet result = session.jdbcConnection().getMetaData().getColumns(null, owner, objectName, "%")) {
+            while (result.next()) {
+                columns.add(new ColumnInfo(result.getString("COLUMN_NAME"), result.getString("TYPE_NAME"),
+                        result.getInt("COLUMN_SIZE"), result.getInt("DECIMAL_DIGITS"),
+                        result.getInt("NULLABLE") != DatabaseMetaData.columnNoNulls, "", false,
                         result.getInt("ORDINAL_POSITION"), value(result.getString("REMARKS"))));
             }
         }
@@ -196,52 +250,82 @@ public class OracleMetadataAdapter implements MetadataAdapter {
 
     protected boolean isSystemSchema(String schema) { return SYSTEM_SCHEMAS.contains(upper(schema)); }
 
-    private Map<String, List<ColumnInfo>> loadCompletionColumns(DatabaseSession session,
-                                                                 List<DatabaseNamespace> namespaces)
-            throws SQLException {
+    private List<CompletionObjectInfo> batchCompletionObjects(DatabaseSession session,
+                                                                List<DatabaseNamespace> namespaces,
+                                                                Set<DatabaseObjectType> types) throws SQLException {
         List<String> schemas = new ArrayList<String>();
         for (DatabaseNamespace namespace : namespaces) {
             String schema = requiredSchema(namespace);
             if (!schemas.contains(schema)) schemas.add(schema);
         }
-        Map<String, List<ColumnInfo>> result = new LinkedHashMap<String, List<ColumnInfo>>();
-        final int chunkSize = 500;
-        for (int start = 0; start < schemas.size(); start += chunkSize) {
-            List<String> chunk = schemas.subList(start, Math.min(schemas.size(), start + chunkSize));
+        Map<String, DatabaseObject> objects = new LinkedHashMap<String, DatabaseObject>();
+        Map<String, List<ColumnInfo>> columns = new LinkedHashMap<String, List<ColumnInfo>>();
+        for (int start = 0; start < schemas.size(); start += COMPLETION_CHUNK_SIZE) {
+            List<String> chunk = schemas.subList(start, Math.min(schemas.size(), start + COMPLETION_CHUNK_SIZE));
             StringBuilder placeholders = new StringBuilder();
             for (int index = 0; index < chunk.size(); index++) {
                 if (index > 0) placeholders.append(',');
                 placeholders.append('?');
             }
-            String sql = "SELECT c.OWNER,c.TABLE_NAME,c.COLUMN_NAME,c.DATA_TYPE,"
-                    + "COALESCE(c.DATA_PRECISION,c.DATA_LENGTH),c.DATA_SCALE,c.NULLABLE,"
-                    + "c.COLUMN_ID,cc.COMMENTS,CASE WHEN pk.COLUMN_NAME IS NULL THEN 0 ELSE 1 END "
+            String objectSql = "SELECT o.OWNER,o.OBJECT_NAME,o.OBJECT_TYPE,tc.COMMENTS FROM ALL_OBJECTS o "
+                    + "LEFT JOIN ALL_TAB_COMMENTS tc ON tc.OWNER=o.OWNER AND tc.TABLE_NAME=o.OBJECT_NAME "
+                    + "WHERE o.OWNER IN (" + placeholders + ") AND o.OBJECT_TYPE IN ('TABLE','VIEW') "
+                    + "ORDER BY o.OWNER,o.OBJECT_NAME";
+            try (PreparedStatement statement = session.jdbcConnection().prepareStatement(objectSql)) {
+                for (int index = 0; index < chunk.size(); index++) statement.setString(index + 1, chunk.get(index));
+                try (ResultSet rows = statement.executeQuery()) {
+                    while (rows.next()) {
+                        DatabaseObjectType type = "VIEW".equalsIgnoreCase(rows.getString(3))
+                                ? DatabaseObjectType.VIEW : DatabaseObjectType.TABLE;
+                        if (!types.contains(type)) continue;
+                        String owner = upper(rows.getString(1)); String name = rows.getString(2);
+                        objects.put(objectKey(owner, name), object(type, owner, name, value(rows.getString(4)),
+                                Collections.<String, String>emptyMap()));
+                    }
+                }
+            }
+            String columnSql = "SELECT c.OWNER,c.TABLE_NAME,c.COLUMN_NAME,c.DATA_TYPE,c.DATA_LENGTH,"
+                    + "c.DATA_PRECISION,c.DATA_SCALE,c.CHAR_LENGTH,c.NULLABLE,c.COLUMN_ID,cc.COMMENTS "
                     + "FROM ALL_TAB_COLUMNS c LEFT JOIN ALL_COL_COMMENTS cc ON cc.OWNER=c.OWNER "
-                    + "AND cc.TABLE_NAME=c.TABLE_NAME AND cc.COLUMN_NAME=c.COLUMN_NAME LEFT JOIN ("
-                    + "SELECT kc.OWNER,kc.TABLE_NAME,kc.COLUMN_NAME FROM ALL_CONSTRAINTS k "
-                    + "JOIN ALL_CONS_COLUMNS kc ON kc.OWNER=k.OWNER AND kc.CONSTRAINT_NAME=k.CONSTRAINT_NAME "
-                    + "AND kc.TABLE_NAME=k.TABLE_NAME WHERE k.CONSTRAINT_TYPE='P') pk ON pk.OWNER=c.OWNER "
-                    + "AND pk.TABLE_NAME=c.TABLE_NAME AND pk.COLUMN_NAME=c.COLUMN_NAME WHERE c.OWNER IN ("
+                    + "AND cc.TABLE_NAME=c.TABLE_NAME AND cc.COLUMN_NAME=c.COLUMN_NAME WHERE c.OWNER IN ("
                     + placeholders + ") ORDER BY c.OWNER,c.TABLE_NAME,c.COLUMN_ID";
-            try (PreparedStatement statement = session.jdbcConnection().prepareStatement(sql)) {
+            try (PreparedStatement statement = session.jdbcConnection().prepareStatement(columnSql)) {
                 for (int index = 0; index < chunk.size(); index++) statement.setString(index + 1, chunk.get(index));
                 try (ResultSet rows = statement.executeQuery()) {
                     while (rows.next()) {
                         String key = objectKey(rows.getString(1), rows.getString(2));
-                        List<ColumnInfo> values = result.get(key);
-                        if (values == null) { values = new ArrayList<ColumnInfo>(); result.put(key, values); }
-                        values.add(new ColumnInfo(rows.getString(3), rows.getString(4), rows.getInt(5),
-                                rows.getInt(6), "Y".equalsIgnoreCase(rows.getString(7)), "",
-                                rows.getInt(10) == 1, rows.getInt(8), value(rows.getString(9))));
+                        if (!objects.containsKey(key)) continue;
+                        List<ColumnInfo> values = columns.get(key);
+                        if (values == null) { values = new ArrayList<ColumnInfo>(); columns.put(key, values); }
+                        values.add(new ColumnInfo(rows.getString(3), completionTypeName(rows), rows.getInt(5),
+                                rows.getInt(7), "Y".equalsIgnoreCase(rows.getString(9)), "", false,
+                                rows.getInt(10), value(rows.getString(11))));
                     }
                 }
             }
         }
-        Map<String, List<ColumnInfo>> immutable = new LinkedHashMap<String, List<ColumnInfo>>();
-        for (Map.Entry<String, List<ColumnInfo>> entry : result.entrySet()) {
-            immutable.put(entry.getKey(), Collections.unmodifiableList(entry.getValue()));
+        List<CompletionObjectInfo> result = new ArrayList<CompletionObjectInfo>(objects.size());
+        for (Map.Entry<String, DatabaseObject> entry : objects.entrySet()) {
+            List<ColumnInfo> values = columns.get(entry.getKey());
+            result.add(new CompletionObjectInfo(entry.getValue(), values == null
+                    ? Collections.<ColumnInfo>emptyList() : values));
         }
-        return Collections.unmodifiableMap(immutable);
+        return Collections.unmodifiableList(result);
+    }
+
+    private static String completionTypeName(ResultSet rows) throws SQLException {
+        String type = value(rows.getString(4));
+        int charLength = rows.getInt(8);
+        if (("CHAR".equalsIgnoreCase(type) || "NCHAR".equalsIgnoreCase(type)
+                || "VARCHAR2".equalsIgnoreCase(type) || "NVARCHAR2".equalsIgnoreCase(type)) && charLength > 0) {
+            return type + "(" + charLength + ")";
+        }
+        Object precision = rows.getObject(6);
+        if ("NUMBER".equalsIgnoreCase(type) && precision != null) {
+            int scale = rows.getInt(7);
+            return type + "(" + rows.getInt(6) + (scale > 0 ? "," + scale : "") + ")";
+        }
+        return type;
     }
 
     private static String objectKey(String schema, String objectName) {

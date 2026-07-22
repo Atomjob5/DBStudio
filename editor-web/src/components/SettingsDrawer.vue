@@ -54,11 +54,23 @@
       </section>
 
       <section class="settings-section completion-settings">
-        <div class="section-heading"><div><strong>SQL补全</strong><span>上下文建议与页面内缓存</span></div></div>
+        <div class="section-heading"><div><strong>SQL补全</strong><span>上下文建议与浏览器持久缓存</span></div></div>
+        <el-form-item class="compact-setting-row">
+          <template #label>
+            <div class="setting-label"><span>补全候选词数量</span>
+              <el-tooltip content="每次最多返回给编辑器的候选数量；继续输入会在Worker中重新筛选。" placement="top">
+                <el-icon class="setting-help" tabindex="0" aria-label="补全候选词数量说明"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </div>
+          </template>
+          <el-input-number class="compact-number" size="small" :model-value="completionCandidateLimit"
+                           :min="10" :max="1000" :step="10" controls-position="right"
+                           @update:model-value="$emit('update:completionCandidateLimit', $event ?? 100)" />
+        </el-form-item>
         <el-form-item class="compact-setting-row completion-cache-row">
           <template #label>
             <div class="setting-label"><span>补全缓存占用</span>
-              <el-tooltip content="按补全建议序列化后的UTF-8字节数估算，仅统计当前页面内存；清理不会影响对象树、连接或查询结果。" placement="top">
+              <el-tooltip content="统计浏览器IndexedDB中的紧凑补全快照；清理不会影响对象树、连接或查询结果。" placement="top">
                 <el-icon class="setting-help" tabindex="0" aria-label="补全缓存占用说明"><QuestionFilled /></el-icon>
               </el-tooltip>
             </div>
@@ -155,13 +167,14 @@ defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: Resolv
   headerSortingEnabled: boolean; headerFilteringEnabled: boolean;
   transactionDisconnectRollbackMinutes: number;
   completionCacheSize: string; completionCacheEnvironmentCount: number; completionCacheLoadingCount: number;
-  canClearCompletionCaches: boolean }>();
+  completionCandidateLimit: number; canClearCompletionCaches: boolean }>();
 const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme": [value: ThemePreference];
   "update:maxRows": [value: number]; "update:streamBatchRows": [value: number];
   "update:columnLayoutScope": [value: ColumnLayoutScope]; "update:copyHeaderOnDoubleClick": [value: boolean];
   "update:copySeparator": [value: CopySeparator]; "update:maxActiveSessions": [value: number];
   "update:headerSortingEnabled": [value: boolean]; "update:headerFilteringEnabled": [value: boolean];
   "update:idleTimeoutMinutes": [value: number]; "update:transactionDisconnectRollbackMinutes": [value: number];
+  "update:completionCandidateLimit": [value: number];
   clearCompletionCaches: [] }>();
 function themeChanged(value: string | number | boolean | undefined): void {
   if (value === "system" || value === "dark" || value === "light") emit("update:theme", value);

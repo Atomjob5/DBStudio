@@ -14,6 +14,7 @@ export const useSettingsStore = defineStore("settings", () => {
   const maxActiveSessions = ref(10);
   const idleTimeoutMinutes = ref(10);
   const transactionDisconnectRollbackMinutes = ref(10);
+  const completionCandidateLimit = ref(100);
   const recentFiles = ref<string[]>([]);
 
   function initialize(settings: Record<string, string>, recent: string[]): void {
@@ -33,11 +34,14 @@ export const useSettingsStore = defineStore("settings", () => {
     idleTimeoutMinutes.value = Number.isFinite(idle) ? idle : 10;
     const transactionTimeout = Number.parseInt(settings["connection.transactionDisconnectRollbackMinutes"] ?? "10", 10);
     transactionDisconnectRollbackMinutes.value = Number.isFinite(transactionTimeout) ? transactionTimeout : 10;
+    const completionLimit = Number.parseInt(settings["editor.completionCandidateLimit"] ?? "100", 10);
+    completionCandidateLimit.value = Number.isFinite(completionLimit) ? Math.max(10, Math.min(1000, completionLimit)) : 100;
     recentFiles.value = recent;
   }
 
   return { maxResultRows, streamBatchRows, columnLayoutScope, copyHeaderOnDoubleClick, copySeparator,
     headerSortingEnabled, headerFilteringEnabled,
     maxActiveSessions, idleTimeoutMinutes, transactionDisconnectRollbackMinutes,
+    completionCandidateLimit,
     recentFiles, initialize };
 });

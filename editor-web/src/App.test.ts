@@ -8,7 +8,7 @@ import { useConnectionStore } from "./stores/connection";
 import { useEditorStore } from "./stores/editor";
 import { useMetadataStore } from "./stores/metadata";
 import { useQueryStore } from "./stores/query";
-import type { CompletionSnapshot, SavedProfile } from "./types";
+import type { CompletionCacheSummary, CompletionNamespaceDescriptor, SavedProfile } from "./types";
 
 const rpcMock = vi.hoisted(() => ({
   request: vi.fn(),
@@ -21,9 +21,14 @@ const rpcMock = vi.hoisted(() => ({
   listeners: new Map<string, Set<(payload: unknown) => void>>()
 }));
 const rpcRequest = rpcMock.request;
+const completionMock = vi.hoisted(() => ({
+  inspect: vi.fn(), refresh: vi.fn(), stats: vi.fn(), clear: vi.fn(), complete: vi.fn()
+}));
 vi.mock("./bridge/rpc", () => ({
   rpc: {
     transportState: "ready",
+    activeWorkspaceId: "workspace-1",
+    activeClientId: "client-1",
     ready: rpcMock.ready,
     listWorkspaces: rpcMock.listWorkspaces,
     createWorkspace: vi.fn(), renameWorkspace: vi.fn(), deleteWorkspace: vi.fn(),
@@ -42,6 +47,7 @@ vi.mock("./bridge/rpc", () => ({
     downloadCsv: vi.fn()
   }
 }));
+vi.mock("./completion/client", () => ({ completionClient: completionMock }));
 
 describe("App result loading status toolbar", () => {
   let wrapper: VueWrapper;
@@ -49,11 +55,17 @@ describe("App result loading status toolbar", () => {
   beforeEach(async () => {
     setActivePinia(createPinia());
     rpcRequest.mockReset();
+    completionMock.inspect.mockReset().mockResolvedValue(undefined);
+    completionMock.refresh.mockReset().mockResolvedValue(completionSummary("profile-completion"));
+    completionMock.stats.mockReset().mockResolvedValue({ environmentCount: 0, suggestionCount: 0, estimatedBytes: 0 });
+    completionMock.clear.mockReset().mockResolvedValue(undefined);
+    completionMock.complete.mockReset().mockResolvedValue({ items: [], incomplete: false });
     rpcMock.ensureOperational.mockClear();
     rpcMock.listeners.clear();
     rpcRequest.mockImplementation(async (type: string, payload: Record<string, unknown>) => {
       if (type === "app.bootstrap") return { providers: [], profiles: [], recentFiles: [], settings: {} };
       if (type === "editor.create") return { id: "bootstrap-editor", title: "查询 1", connectionState: "unbound" };
+      if (type === "metadata.completionNamespaces") return completionNamespaces();
       if (type === "query.fetchRows") {
         const offset = Number(payload.offset);
         return { resultIndex: payload.resultIndex, offset, rows: [[String(offset + 1)]], hasMore: true, nextOffset: offset + 1 };
@@ -242,24 +254,27 @@ describe("App result loading status toolbar", () => {
       [{ id: "environment-dev", systemId: "system-1", name: "DEV", revision: "1" }]);
     rpcRequest.mockImplementation(async (type: string) => {
       if (type === "editor.bind") return { connection: profile, connectionState: "suspended" };
-      if (type === "metadata.completionSnapshot") return completionSnapshot(profile.id);
+      if (type === "metadata.completionNamespaces") return completionNamespaces(profile.id);
       return {};
     });
 
-    const vm = wrapper.vm as unknown as { connectionSelectionChanged: (value: string) => Promise<void> };
+    const vm = wrapper.vm as unknown as { connectionSelectionChanged: (value: string) => Promise<void>;
+      completeSchemaSelection: (value: CompletionNamespaceDescriptor[]) => void };
     await vm.connectionSelectionChanged(`${profile.id}@${profile.revision}`);
     await flushPromises();
-    expect(rpcRequest.mock.calls.filter(([type]) => type === "metadata.completionSnapshot")).toHaveLength(1);
+    vm.completeSchemaSelection(completionNamespaces(profile.id).namespaces);
+    await flushPromises();
+    expect(completionMock.refresh).toHaveBeenCalledTimes(1);
 
     editors.add({ id: "editor-same-environment", title: "查询 2", content: "", dirty: false,
       transactionDirty: false, busy: false, connectionState: "unbound" });
     await vm.connectionSelectionChanged(`${profile.id}@${profile.revision}`);
     await flushPromises();
-    expect(rpcRequest.mock.calls.filter(([type]) => type === "metadata.completionSnapshot")).toHaveLength(1);
+    expect(completionMock.refresh).toHaveBeenCalledTimes(1);
 
     editors.activeId = "bootstrap-editor";
     await nextTick();
-    expect(rpcRequest.mock.calls.filter(([type]) => type === "metadata.completionSnapshot")).toHaveLength(1);
+    expect(completionMock.refresh).toHaveBeenCalledTimes(1);
   });
 
   it("保存新链接后在目标环境没有快照时后台加载补全", async () => {
@@ -271,16 +286,20 @@ describe("App result loading status toolbar", () => {
     connections.initialize([], [], systems, environments);
     rpcRequest.mockImplementation(async (type: string) => {
       if (type === "connection.catalog") return { systems, environments, profiles: [profile] };
-      if (type === "metadata.completionSnapshot") return completionSnapshot(profile.id);
+      if (type === "metadata.completionNamespaces") return completionNamespaces(profile.id);
       return {};
     });
 
-    const vm = wrapper.vm as unknown as { profileSaved: (value: SavedProfile) => Promise<void> };
+    const vm = wrapper.vm as unknown as { profileSaved: (value: SavedProfile) => Promise<void>;
+      completeSchemaSelection: (value: CompletionNamespaceDescriptor[]) => void };
     await vm.profileSaved(profile);
     await flushPromises();
+    vm.completeSchemaSelection(completionNamespaces(profile.id).namespaces);
+    await flushPromises();
 
-    expect(rpcRequest).toHaveBeenCalledWith("metadata.completionSnapshot",
-      expect.objectContaining({ profileId: profile.id }), 300_000);
+    expect(completionMock.refresh).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.objectContaining({ profileId: profile.id })
+    }));
     expect(useMetadataStore().completionFor("system-1:environment-dev:mysql")?.hasSnapshot).toBe(true);
   });
 
@@ -294,20 +313,26 @@ describe("App result loading status toolbar", () => {
       [{ id: "environment-dev", systemId: "system-1", name: "DEV", revision: "1" }]);
     editors.patch("bootstrap-editor", { connection: profile, connectionState: "suspended" });
     await nextTick();
-    metadata.beginCompletion("system-1:environment-dev", "DEV", "initial", profile.id);
-    metadata.completeCompletion("system-1:environment-dev", "initial", completionSnapshot(profile.id));
+    const cacheKey = "system-1:environment-dev:mysql";
+    metadata.beginCompletion(cacheKey, "DEV", "initial", profile.id);
+    metadata.completeCompletion(cacheKey, "initial", completionSummary(profile.id));
+    completionMock.refresh.mockResolvedValueOnce(completionSummary(profile.id, 2, 5));
     rpcRequest.mockImplementation(async (type: string) => {
-      if (type === "metadata.completionSnapshot") return completionSnapshot(profile.id, "customers");
+      if (type === "metadata.completionNamespaces") return completionNamespaces(profile.id);
       return {};
     });
 
-    const vm = wrapper.vm as unknown as { refreshCompletionFromObjectExplorer: () => void };
+    const vm = wrapper.vm as unknown as { refreshCompletionFromObjectExplorer: () => void;
+      completeSchemaSelection: (value: CompletionNamespaceDescriptor[]) => void };
     vm.refreshCompletionFromObjectExplorer();
     await flushPromises();
+    vm.completeSchemaSelection(completionNamespaces(profile.id).namespaces);
+    await flushPromises();
 
-    expect(rpcRequest).toHaveBeenCalledWith("metadata.completionSnapshot",
-      expect.objectContaining({ editorId: "bootstrap-editor" }), 300_000);
-    expect(metadata.suggestions.map((item) => item.label)).toEqual(["customers"]);
+    expect(completionMock.refresh).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.objectContaining({ editorId: "bootstrap-editor" })
+    }));
+    expect(metadata.completionFor(cacheKey)?.summary?.objectCount).toBe(2);
   });
 
   it("在全局状态栏展示当前环境的补全进度、成功和失败状态", async () => {
@@ -327,7 +352,7 @@ describe("App result loading status toolbar", () => {
     await nextTick();
     expect(wrapper.find(".completion-status").text()).toContain("37/240 · sales.orders");
 
-    metadata.completeCompletion("system-1:environment-dev", "status-load", completionSnapshot(profile.id));
+    metadata.completeCompletion("system-1:environment-dev", "status-load", completionSummary(profile.id));
     await nextTick();
     expect(wrapper.find(".completion-status").text()).toContain("补全已更新 · 1 项");
 
@@ -344,7 +369,8 @@ describe("App result loading status toolbar", () => {
     metadata.setRoots([{ id: "catalog", label: "eastwealthcrawler", kind: "catalog", leaf: false }], "profile@1");
     metadata.activate("profile@1", "system-1:environment-dev");
     metadata.beginCompletion("system-1:environment-dev", "DEV", "load-before-clear", "profile-1");
-    metadata.completeCompletion("system-1:environment-dev", "load-before-clear", completionSnapshot("profile-1"));
+    metadata.completeCompletion("system-1:environment-dev", "load-before-clear", completionSummary("profile-1"));
+    metadata.applyPersistentStats({ environmentCount: 1, suggestionCount: 1, estimatedBytes: 120 });
     metadata.beginCompletion("system-1:environment-dev", "DEV", "load-refresh", "profile-1", true);
     vi.spyOn(ElMessageBox, "confirm").mockResolvedValue({ value: "", action: "confirm" } as never);
 
@@ -353,9 +379,9 @@ describe("App result loading status toolbar", () => {
     await nextTick();
 
     expect(ElMessageBox.confirm).toHaveBeenCalledWith(expect.stringContaining("1个环境"), "清理补全缓存", expect.any(Object));
-    expect(metadata.suggestions).toEqual([]);
+    expect(completionMock.clear).toHaveBeenCalledTimes(1);
     expect(metadata.roots).toHaveLength(1);
-    expect(metadata.completeCompletion("system-1:environment-dev", "load-refresh", completionSnapshot("profile-1", "late"))).toBe(false);
+    expect(metadata.completeCompletion("system-1:environment-dev", "load-refresh", completionSummary("profile-1"))).toBe(false);
   });
 });
 
@@ -364,7 +390,14 @@ function completionProfile(): SavedProfile {
     environmentId: "environment-dev", revision: "1" };
 }
 
-function completionSnapshot(sourceProfileId: string, label = "orders"): CompletionSnapshot {
+function completionSummary(sourceProfileId: string, objectCount = 1, columnCount = 0): CompletionCacheSummary {
   return { providerId: "mysql", sourceProfileId, generatedAt: "2026-07-19T00:00:00Z",
-    suggestions: [{ id: `table:${label}`, label, insertText: `\`${label}\``, detail: label, kind: "table" }] };
+    selectedNamespaceKeys: ["catalog:sales"], objectCount, columnCount, estimatedBytes: 120 };
+}
+
+function completionNamespaces(sourceProfileId = "profile-completion") {
+  return { providerId: "mysql", sourceProfileId, namespaces: [
+    { key: "catalog:sales", catalog: "sales", schema: "", label: "sales", kind: "catalog" as const,
+      current: true, system: false }
+  ] };
 }

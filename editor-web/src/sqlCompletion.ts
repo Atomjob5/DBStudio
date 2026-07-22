@@ -1,382 +1,327 @@
-import type { CompletionContext, CompletionScope, CompletionSource, Suggestion } from "./types";
+import { GenericSQL, MySQL } from "dt-sql-parser";
+import type {
+  CompletionCandidate,
+  CompletionNamespaceSnapshot,
+  CompletionObjectSnapshot,
+  CompletionResult,
+  CompletionSnapshot
+} from "./types";
 
-interface SqlToken {
-  kind: "word" | "symbol";
-  value: string;
-  lower: string;
-  start: number;
-  end: number;
-  depth: number;
+type SqlParser = MySQL | GenericSQL;
+type ParserSyntax = { syntaxContextType?: string; wordRanges?: Array<{ text?: string }> };
+type ParserEntity = {
+  entityContextType?: string;
+  text?: string;
+  isAccessible?: boolean;
+  _alias?: { text?: string };
+  position?: { endTokenIndex?: number };
+};
+type ParserToken = { tokenIndex: number; text?: string; channel?: number };
+
+interface IndexedNamespace {
+  snapshot: CompletionNamespaceSnapshot;
+  objects: Map<string, CompletionObjectSnapshot>;
 }
 
-const sourceTerminators = new Set([
-  "where", "on", "join", "left", "right", "inner", "outer", "cross", "full", "straight_join",
-  "group", "order", "having", "limit", "union", "except", "intersect", "window", "qualify",
-  "set", "values", "returning", "for", "lock"
-]);
-const aliasTerminators = new Set([...sourceTerminators, "from", "as", "using", "and", "or", "when", "then", "else", "end"]);
-
-export function resolveCompletionSuggestions(
-  sqlBeforeCursor: string,
-  suggestions: Suggestion[],
-  defaultCatalog = ""
-): Suggestion[] {
-  const context = analyzeCompletionContext(sqlBeforeCursor, suggestions, defaultCatalog);
-  if (context.qualifier.length === 0) return suggestions;
-  if (context.qualifier.length >= 2) {
-    return physicalColumns(suggestions, context.qualifier[context.qualifier.length - 1], context.qualifier[context.qualifier.length - 2]);
-  }
-
-  const qualifier = context.qualifier[0].toLocaleLowerCase();
-  let scope = context.scope;
-  while (scope) {
-    const source = scope.sources.find((item) => item.alias.toLocaleLowerCase() === qualifier)
-      ?? scope.sources.find((item) => item.name.toLocaleLowerCase() === qualifier);
-    if (source) return suggestionsForSource(source, suggestions, defaultCatalog);
-    scope = scope.parent;
-  }
-  return [];
+interface IndexedSource {
+  namespace: IndexedNamespace;
+  object: CompletionObjectSnapshot;
+  alias: string;
 }
 
-export function analyzeCompletionContext(
-  sqlBeforeCursor: string,
-  suggestions: Suggestion[] = [],
-  defaultCatalog = ""
-): CompletionContext {
-  const tokens = lex(sqlBeforeCursor);
-  const statementStart = lastStatementStart(tokens);
-  const statementTokens = tokens.slice(statementStart);
-  const qualifier = readQualifier(statementTokens);
-  if (qualifier.length === 0) return { qualifier, defaultCatalog };
+export interface CompletionIndex {
+  snapshot: CompletionSnapshot;
+  namespaces: Map<string, IndexedNamespace>;
+  defaultNamespace?: IndexedNamespace;
+}
 
-  const currentDepth = unmatchedOpenDepth(statementTokens);
-  const ctes = parseCtes(statementTokens, suggestions, defaultCatalog);
-  const starts = activeScopeStarts(statementTokens, currentDepth);
-  let parent: CompletionScope | undefined;
-  for (let depth = 0; depth <= currentDepth; depth += 1) {
-    const selectIndex = lastTokenIndex(statementTokens, starts[depth] ?? 0, depth, "select");
-    if (selectIndex < 0) continue;
-    parent = {
-      depth,
-      sources: parseSources(statementTokens, selectIndex, statementTokens.length, depth, ctes, suggestions, defaultCatalog),
-      parent
+export interface CompletionRequest {
+  providerId: string;
+  sql: string;
+  prefix: string;
+  limit: number;
+}
+
+const HEAL_IDENTIFIER = "__dbstudio_completion__";
+
+export function buildCompletionIndex(snapshot: CompletionSnapshot): CompletionIndex {
+  const namespaces = new Map<string, IndexedNamespace>();
+  let defaultNamespace: IndexedNamespace | undefined;
+  for (const value of snapshot.namespaces) {
+    const indexed: IndexedNamespace = {
+      snapshot: value,
+      objects: new Map(value.objects.map((object) => [normalize(object.name), object]))
     };
+    for (const name of [value.key, value.label, value.catalog, value.schema]) {
+      if (name) namespaces.set(normalize(name), indexed);
+    }
+    if (value.key === snapshot.defaultNamespaceKey) defaultNamespace = indexed;
   }
-  return { qualifier, defaultCatalog, scope: parent };
+  return { snapshot, namespaces, defaultNamespace };
 }
 
-function lex(sql: string): SqlToken[] {
-  const tokens: SqlToken[] = [];
-  let index = 0;
-  let depth = 0;
-  while (index < sql.length) {
-    const char = sql[index];
-    if (/\s/.test(char)) { index += 1; continue; }
-    if (char === "-" && sql[index + 1] === "-") { index = skipLine(sql, index + 2); continue; }
-    if (char === "#") { index = skipLine(sql, index + 1); continue; }
-    if (char === "/" && sql[index + 1] === "*") {
-      const end = sql.indexOf("*/", index + 2);
-      index = end < 0 ? sql.length : end + 2;
-      continue;
-    }
-    if (char === "'" || char === "\"") { index = skipQuoted(sql, index, char); continue; }
-    if (char === "`") {
-      const start = index;
-      let value = "";
-      index += 1;
-      while (index < sql.length) {
-        if (sql[index] === "`" && sql[index + 1] === "`") { value += "`"; index += 2; continue; }
-        if (sql[index] === "`") { index += 1; break; }
-        value += sql[index++];
+export function resolveCompletion(index: CompletionIndex | undefined, request: CompletionRequest): CompletionResult {
+  const limit = Math.max(10, Math.min(1000, request.limit || 100));
+  const parser = parserFor(request.providerId);
+  const position = caretPosition(request.sql);
+  let syntax: ParserSyntax[] = [];
+  let keywords: string[] = [];
+  let entities: ParserEntity[] = [];
+  let tokens: ParserToken[] = [];
+  try {
+    const suggestions = parser.getSuggestionAtCaretPosition(request.sql, position);
+    syntax = (suggestions?.syntax ?? []) as ParserSyntax[];
+    keywords = (suggestions?.keywords ?? []) as string[];
+    const healing = healStatement(parser, request.sql);
+    const healedSql = healing.sql;
+    entities = (parser.getAllEntities(healedSql, healing.caret) ?? []) as ParserEntity[];
+    tokens = parser.getAllTokens(healedSql) as ParserToken[];
+  } catch {
+    // Keep parser-provided statement starters as the only safe fallback for a broken statement.
+    try { keywords = (parser.getSuggestionAtCaretPosition("", { lineNumber: 1, column: 1 })?.keywords ?? []) as string[]; }
+    catch { keywords = []; }
+  }
+
+  const qualifier = syntaxQualifier(syntax)
+    || tokenQualifier(tokens, needsHealing(request.sql), request.prefix);
+  const tableContext = syntax.some((item) => item.syntaxContextType === "table" || item.syntaxContextType === "view");
+  const hasAccessibleSources = entities.some((entity) => entity.entityContextType === "table" && entity.isAccessible);
+  const columnContext = syntax.some((item) => item.syntaxContextType === "column")
+    || (!tableContext && hasAccessibleSources);
+  const candidates: CompletionCandidate[] = [];
+
+  if (index && tableContext) {
+    if (qualifier) {
+      const namespace = index.namespaces.get(normalize(qualifier));
+      if (namespace) candidates.push(...objectCandidates(index, namespace, true));
+    } else {
+      for (const namespace of uniqueNamespaces(index)) {
+        candidates.push(namespaceCandidate(index, namespace));
+        candidates.push(...objectCandidates(index, namespace, false));
       }
-      tokens.push(wordToken(value, start, index, depth));
+    }
+  } else if (index && columnContext) {
+    const sources = resolveSources(index, entities, tokens);
+    const selected = qualifier
+      ? sources.filter((source) => normalize(source.alias) === normalize(qualifier)
+        || normalize(source.object.name) === normalize(qualifier))
+      : sources;
+    if (selected.length) candidates.push(...columnCandidates(selected, Boolean(qualifier), request.providerId));
+  }
+
+  candidates.push(...keywordCandidates(keywords));
+  const prefix = normalize(request.prefix);
+  const filtered = deduplicate(candidates)
+    .filter((candidate) => !prefix || normalize(candidate.label).startsWith(prefix)
+      || normalize(lastIdentifier(candidate.qualifiedLabel)).startsWith(prefix)
+      || normalize(unquote(candidate.insertText)).startsWith(prefix))
+    .sort((left, right) => compareCandidates(left, right, prefix));
+  return { items: filtered.slice(0, limit), incomplete: filtered.length > limit };
+}
+
+function namespaceCandidate(index: CompletionIndex, namespace: IndexedNamespace): CompletionCandidate {
+  return {
+    label: namespace.snapshot.label,
+    qualifiedLabel: namespace.snapshot.label,
+    insertText: quoteIdentifier(namespace.snapshot.label, index.snapshot.providerId),
+    kind: "schema",
+    remarks: "",
+    typeName: "SCHEMA"
+  };
+}
+
+function parserFor(providerId: string): SqlParser {
+  return normalize(providerId).includes("mysql") && !normalize(providerId).includes("oracle")
+    ? new MySQL()
+    : new GenericSQL({ diagnostics: false });
+}
+
+function caretPosition(sql: string): { lineNumber: number; column: number } {
+  const lines = sql.split("\n");
+  return { lineNumber: lines.length, column: (lines.at(-1)?.length ?? 0) + 1 };
+}
+
+function needsHealing(sql: string): boolean {
+  return /\.\s*$/.test(sql);
+}
+
+function healStatement(parser: SqlParser, sql: string): { sql: string; caret: { lineNumber: number; column: number } } {
+  const atCaret = needsHealing(sql) ? `${sql}${HEAL_IDENTIFIER}` : sql;
+  const tokens = parser.getAllTokens(atCaret) as ParserToken[];
+  let parentheses = 0;
+  for (const token of tokens) {
+    if (token.channel !== 0) continue;
+    if (token.text === "(") parentheses += 1;
+    else if (token.text === ")") parentheses = Math.max(0, parentheses - 1);
+  }
+  return { sql: `${atCaret}${")".repeat(parentheses)}`, caret: caretPosition(atCaret) };
+}
+
+function syntaxQualifier(syntax: ParserSyntax[]): string {
+  for (const item of syntax) {
+    if (!item.wordRanges?.length) continue;
+    const words = item.wordRanges.map((word) => word.text ?? "").filter((word) => word && word !== ".");
+    if (item.wordRanges.some((word) => word.text === ".") && words.length) return unquote(words.at(-1) ?? "");
+  }
+  return "";
+}
+
+function resolveSources(index: CompletionIndex, entities: ParserEntity[], tokens: ParserToken[]): IndexedSource[] {
+  const result: IndexedSource[] = [];
+  for (const entity of entities) {
+    if (entity.entityContextType !== "table" || !entity.isAccessible || !entity.text) continue;
+    const path = splitIdentifierPath(entity.text).filter((part) => normalize(part) !== normalize(HEAL_IDENTIFIER));
+    if (!path.length) continue;
+    const objectName = path.at(-1) ?? "";
+    const namespace = path.length > 1 ? index.namespaces.get(normalize(path.at(-2) ?? "")) : index.defaultNamespace;
+    const object = namespace?.objects.get(normalize(objectName));
+    if (!namespace || !object) continue;
+    const alias = unquote(entity._alias?.text || aliasFromTokens(entity, tokens) || object.name);
+    result.push({ namespace, object, alias });
+  }
+  return result;
+}
+
+function tokenQualifier(tokens: ParserToken[], trailingDot: boolean, prefix: string): string {
+  const visible = tokens.filter((token) => token.channel === 0 && token.text);
+  let dotIndex = -1;
+  const healingIndex = visible.findIndex((token) => token.text === HEAL_IDENTIFIER);
+  if (trailingDot && healingIndex > 1 && visible[healingIndex - 1]?.text === ".") {
+    dotIndex = healingIndex - 1;
+  } else if (prefix && normalize(visible.at(-1)?.text ?? "") === normalize(prefix) && visible.at(-2)?.text === ".") {
+    dotIndex = visible.length - 2;
+  }
+  return dotIndex > 0 ? unquote(visible[dotIndex - 1].text ?? "") : "";
+}
+
+function aliasFromTokens(entity: ParserEntity, tokens: ParserToken[]): string {
+  const end = entity.position?.endTokenIndex;
+  if (end === undefined) return "";
+  const following = tokens.filter((token) => token.channel === 0 && token.tokenIndex > end && token.text);
+  let candidate = following[0]?.text ?? "";
+  if (normalize(candidate) === "as") candidate = following[1]?.text ?? "";
+  if (!candidate || ALIAS_BOUNDARIES.has(normalize(candidate)) || /^[,;()=.]+$/.test(candidate)) return "";
+  return unquote(candidate);
+}
+
+const ALIAS_BOUNDARIES = new Set([
+  "where", "join", "left", "right", "full", "inner", "cross", "on", "using", "group", "order",
+  "having", "limit", "offset", "fetch", "union", "minus", "except", "intersect", "connect", "start"
+]);
+
+function objectCandidates(index: CompletionIndex, namespace: IndexedNamespace, qualifiedContext: boolean): CompletionCandidate[] {
+  const isDefault = namespace === index.defaultNamespace;
+  return namespace.snapshot.objects.map((object) => ({
+    label: object.name,
+    qualifiedLabel: `${namespace.snapshot.label}.${object.name}`,
+    insertText: qualifiedContext || isDefault
+      ? quoteIdentifier(object.name, index.snapshot.providerId)
+      : `${quoteIdentifier(namespace.snapshot.label, index.snapshot.providerId)}.${quoteIdentifier(object.name, index.snapshot.providerId)}`,
+    kind: object.kind,
+    remarks: object.remarks,
+    typeName: object.kind.toUpperCase()
+  }));
+}
+
+function columnCandidates(sources: IndexedSource[], qualifiedContext: boolean, providerId: string): CompletionCandidate[] {
+  const counts = new Map<string, number>();
+  for (const source of sources) {
+    for (const column of source.object.columns) {
+      const key = normalize(column.name);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  const result: CompletionCandidate[] = [];
+  for (const source of sources) {
+    for (const column of source.object.columns) {
+      const duplicate = (counts.get(normalize(column.name)) ?? 0) > 1;
+      const columnText = quoteIdentifier(column.name, providerId);
+      result.push({
+        label: column.name,
+        qualifiedLabel: `${source.namespace.snapshot.label}.${source.object.name}.${column.name}`,
+        insertText: qualifiedContext ? columnText
+          : duplicate ? `${quoteIdentifier(source.alias, providerId)}.${columnText}` : columnText,
+        kind: "column",
+        remarks: column.remarks,
+        typeName: column.typeName
+      });
+    }
+  }
+  return result;
+}
+
+function keywordCandidates(keywords: string[]): CompletionCandidate[] {
+  return keywords.map((keyword) => ({
+    label: keyword,
+    qualifiedLabel: keyword,
+    insertText: keyword,
+    kind: "keyword" as const,
+    remarks: "",
+    typeName: "KEYWORD"
+  }));
+}
+
+function quoteIdentifier(value: string, providerId: string): string {
+  const quote = normalize(providerId).includes("mysql") && !normalize(providerId).includes("oracle") ? "`" : "\"";
+  return `${quote}${value.replaceAll(quote, quote + quote)}${quote}`;
+}
+
+function uniqueNamespaces(index: CompletionIndex): IndexedNamespace[] {
+  return [...new Set(index.snapshot.namespaces.map((namespace) => index.namespaces.get(normalize(namespace.key))))]
+    .filter((value): value is IndexedNamespace => Boolean(value));
+}
+
+function splitIdentifierPath(value: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  let quote = "";
+  for (const character of value) {
+    if ((character === "`" || character === "\"") && (!quote || quote === character)) {
+      quote = quote ? "" : character;
       continue;
     }
-    if (/[A-Za-z_$\u0080-\uFFFF]/.test(char)) {
-      const start = index++;
-      while (index < sql.length && /[\w$\u0080-\uFFFF]/.test(sql[index])) index += 1;
-      tokens.push(wordToken(sql.slice(start, index), start, index, depth));
-      continue;
-    }
-    if (char === "(") {
-      tokens.push(symbolToken(char, index, depth));
-      depth += 1;
-      index += 1;
-      continue;
-    }
-    if (char === ")") {
-      depth = Math.max(0, depth - 1);
-      tokens.push(symbolToken(char, index, depth));
-      index += 1;
-      continue;
-    }
-    tokens.push(symbolToken(char, index, depth));
-    index += 1;
+    if (character === "." && !quote) {
+      if (current) result.push(current);
+      current = "";
+    } else current += character;
   }
-  return tokens;
+  if (current) result.push(current);
+  return result;
 }
 
-function skipLine(sql: string, start: number): number {
-  const newline = sql.indexOf("\n", start);
-  return newline < 0 ? sql.length : newline + 1;
-}
-
-function skipQuoted(sql: string, start: number, quote: string): number {
-  let index = start + 1;
-  while (index < sql.length) {
-    if (sql[index] === "\\") { index += 2; continue; }
-    if (sql[index] === quote && sql[index + 1] === quote) { index += 2; continue; }
-    if (sql[index] === quote) return index + 1;
-    index += 1;
-  }
-  return sql.length;
-}
-
-function wordToken(value: string, start: number, end: number, depth: number): SqlToken {
-  return { kind: "word", value, lower: value.toLocaleLowerCase(), start, end, depth };
-}
-
-function symbolToken(value: string, start: number, depth: number): SqlToken {
-  return { kind: "symbol", value, lower: value, start, end: start + 1, depth };
-}
-
-function lastStatementStart(tokens: SqlToken[]): number {
-  for (let index = tokens.length - 1; index >= 0; index -= 1) {
-    if (tokens[index].value === ";" && tokens[index].depth === 0) return index + 1;
-  }
-  return 0;
-}
-
-function unmatchedOpenDepth(tokens: SqlToken[]): number {
-  let depth = 0;
-  tokens.forEach((token) => {
-    if (token.value === "(") depth += 1;
-    else if (token.value === ")") depth = Math.max(0, depth - 1);
-  });
-  return depth;
-}
-
-function activeScopeStarts(tokens: SqlToken[], currentDepth: number): number[] {
-  const starts = new Array<number>(currentDepth + 1).fill(0);
-  const stack: number[] = [];
-  tokens.forEach((token, index) => {
-    if (token.value === "(") stack.push(index + 1);
-    else if (token.value === ")") stack.pop();
-  });
-  stack.forEach((start, index) => { starts[index + 1] = start; });
-  return starts;
-}
-
-function lastTokenIndex(tokens: SqlToken[], start: number, depth: number, value: string): number {
-  for (let index = tokens.length - 1; index >= start; index -= 1) {
-    if (tokens[index].depth === depth && tokens[index].lower === value) return index;
-  }
-  return -1;
-}
-
-function readQualifier(tokens: SqlToken[]): string[] {
-  if (tokens.length === 0) return [];
-  let dot = tokens.length - 1;
-  if (tokens[dot].value !== ".") {
-    if (tokens[dot].kind !== "word" || dot === 0 || tokens[dot - 1].value !== ".") return [];
-    dot -= 1;
-  }
-  const qualifier: string[] = [];
-  let index = dot - 1;
-  while (index >= 0 && tokens[index].kind === "word") {
-    qualifier.unshift(tokens[index].value);
-    if (index < 2 || tokens[index - 1].value !== ".") break;
-    index -= 2;
-  }
-  return qualifier.slice(-2);
-}
-
-function parseCtes(tokens: SqlToken[], suggestions: Suggestion[], defaultCatalog: string): Map<string, CompletionSource> {
-  const ctes = new Map<string, CompletionSource>();
-  let index = tokens.findIndex((token) => token.depth === 0 && token.kind === "word");
-  if (index < 0 || tokens[index].lower !== "with") return ctes;
-  index += 1;
-  if (tokens[index]?.lower === "recursive") index += 1;
-  while (index < tokens.length) {
-    const nameToken = tokens[index];
-    if (!nameToken || nameToken.kind !== "word" || nameToken.depth !== 0) break;
-    const name = nameToken.value;
-    index += 1;
-    let explicitColumns: string[] = [];
-    if (tokens[index]?.value === "(") {
-      const close = matchingClose(tokens, index);
-      if (close < 0) break;
-      explicitColumns = tokens.slice(index + 1, close).filter((token) => token.kind === "word" && token.depth === 1).map((token) => token.value);
-      index = close + 1;
-    }
-    if (tokens[index]?.lower !== "as" || tokens[index + 1]?.value !== "(") break;
-    const open = index + 1;
-    const close = matchingClose(tokens, open);
-    if (close < 0) break;
-    const columns = explicitColumns.length > 0
-      ? explicitColumns
-      : projectedColumns(tokens, open + 1, close, 1, ctes, suggestions, defaultCatalog);
-    ctes.set(name.toLocaleLowerCase(), { kind: "cte", name, alias: name, columns });
-    index = close + 1;
-    if (tokens[index]?.value !== ",") break;
-    index += 1;
-  }
-  return ctes;
-}
-
-function parseSources(
-  tokens: SqlToken[], start: number, end: number, depth: number,
-  ctes: Map<string, CompletionSource>, suggestions: Suggestion[], defaultCatalog: string
-): CompletionSource[] {
-  const sources: CompletionSource[] = [];
-  let expectSource = false;
-  for (let index = start + 1; index < end; index += 1) {
-    const token = tokens[index];
-    if (token.depth !== depth) continue;
-    if (token.lower === "from" || token.lower === "join" || token.value === "," && expectSource === false && sources.length > 0) {
-      expectSource = true;
-      continue;
-    }
-    if (!expectSource) continue;
-    if (sourceTerminators.has(token.lower)) { expectSource = token.lower === "join"; continue; }
-    if (token.value === "(") {
-      const close = matchingClose(tokens, index);
-      if (close < 0 || close >= end) break;
-      const aliasResult = readAlias(tokens, close + 1, depth);
-      const alias = aliasResult.alias || "derived";
-      const columns = projectedColumns(tokens, index + 1, close, depth + 1, ctes, suggestions, defaultCatalog);
-      sources.push({ kind: "derived", name: alias, alias, columns });
-      index = aliasResult.nextIndex - 1;
-      expectSource = false;
-      continue;
-    }
-    if (token.kind !== "word") continue;
-    const names = [token.value];
-    let cursor = index + 1;
-    while (tokens[cursor]?.value === "." && tokens[cursor + 1]?.kind === "word") {
-      names.push(tokens[cursor + 1].value);
-      cursor += 2;
-    }
-    const name = names[names.length - 1];
-    const catalog = names.length > 1 ? names[names.length - 2] : undefined;
-    const aliasResult = readAlias(tokens, cursor, depth);
-    const alias = aliasResult.alias || name;
-    const cte = names.length === 1 ? ctes.get(name.toLocaleLowerCase()) : undefined;
-    sources.push(cte ? { ...cte, alias } : { kind: "physical", name, alias, catalog });
-    index = aliasResult.nextIndex - 1;
-    expectSource = false;
-  }
-  return sources;
-}
-
-function readAlias(tokens: SqlToken[], start: number, depth: number): { alias?: string; nextIndex: number } {
-  let index = start;
-  if (tokens[index]?.lower === "as" && tokens[index]?.depth === depth) index += 1;
-  const token = tokens[index];
-  if (token?.kind === "word" && token.depth === depth && !aliasTerminators.has(token.lower)) {
-    return { alias: token.value, nextIndex: index + 1 };
-  }
-  return { nextIndex: start };
-}
-
-function projectedColumns(
-  tokens: SqlToken[], start: number, end: number, depth: number,
-  ctes: Map<string, CompletionSource>, suggestions: Suggestion[], defaultCatalog: string
-): string[] {
-  const select = tokens.findIndex((token, index) => index >= start && index < end && token.depth === depth && token.lower === "select");
-  if (select < 0) return [];
-  let from = end;
-  for (let index = select + 1; index < end; index += 1) {
-    if (tokens[index].depth === depth && tokens[index].lower === "from") { from = index; break; }
-  }
-  const segments: SqlToken[][] = [];
-  let segment: SqlToken[] = [];
-  for (let index = select + 1; index < from; index += 1) {
-    const token = tokens[index];
-    if (token.value === "," && token.depth === depth) { if (segment.length) segments.push(segment); segment = []; }
-    else segment.push(token);
-  }
-  if (segment.length) segments.push(segment);
-  const sources = from < end ? parseSources(tokens, select, end, depth, ctes, suggestions, defaultCatalog) : [];
-  const columns: string[] = [];
-  segments.forEach((part) => {
-    const atDepth = part.filter((token) => token.depth === depth);
-    const asIndex = atDepth.findIndex((token) => token.lower === "as");
-    if (asIndex >= 0 && atDepth[asIndex + 1]?.kind === "word") { columns.push(atDepth[asIndex + 1].value); return; }
-    const last = atDepth[atDepth.length - 1];
-    if (last?.kind === "word" && atDepth.length > 1 && atDepth[atDepth.length - 2]?.value !== ".") {
-      columns.push(last.value);
-      return;
-    }
-    if (last?.value === "*" && atDepth.length >= 2) {
-      const qualifierToken = atDepth.length >= 3 && atDepth[atDepth.length - 2]?.value === "."
-        ? atDepth[atDepth.length - 3]
-        : undefined;
-      const selected = qualifierToken?.kind === "word"
-        ? sources.filter((item) => item.alias.toLocaleLowerCase() === qualifierToken.value.toLocaleLowerCase())
-        : sources;
-      selected.forEach((source) => columns.push(...suggestionsForSource(source, suggestions, defaultCatalog).map((item) => item.label)));
-      return;
-    }
-    if (last?.kind === "word") columns.push(last.value);
-  });
-  return uniqueNames(columns);
-}
-
-function matchingClose(tokens: SqlToken[], openIndex: number): number {
-  if (tokens[openIndex]?.value !== "(") return -1;
-  let level = 0;
-  for (let index = openIndex; index < tokens.length; index += 1) {
-    if (tokens[index].value === "(") level += 1;
-    else if (tokens[index].value === ")") {
-      level -= 1;
-      if (level === 0) return index;
-    }
-  }
-  return -1;
-}
-
-function suggestionsForSource(source: CompletionSource, suggestions: Suggestion[], defaultCatalog: string): Suggestion[] {
-  if (source.kind !== "physical") {
-    return uniqueNames(source.columns ?? []).map((column) => ({
-      id: `${source.kind}:${source.alias.toLocaleLowerCase()}:${column.toLocaleLowerCase()}`,
-      label: column,
-      insertText: quoteIdentifier(column),
-      detail: `${source.kind === "cte" ? "CTE" : "派生表"} ${source.alias}`,
-      kind: "column" as const,
-      objectName: source.name
-    }));
-  }
-  return physicalColumns(suggestions, source.name, source.catalog || defaultCatalog || undefined);
-}
-
-function physicalColumns(suggestions: Suggestion[], table: string, catalog?: string): Suggestion[] {
-  const tableName = table.toLocaleLowerCase();
-  const catalogName = catalog?.toLocaleLowerCase();
-  const matches = suggestions.filter((item) => item.kind === "column"
-    && item.objectName?.toLocaleLowerCase() === tableName
-    && (!catalogName || item.catalog?.toLocaleLowerCase() === catalogName));
-  const seen = new Set<string>();
-  return matches.filter((item) => {
-    const name = catalogName
-      ? item.label.toLocaleLowerCase()
-      : `${item.catalog?.toLocaleLowerCase() ?? ""}:${item.label.toLocaleLowerCase()}`;
-    if (seen.has(name)) return false;
-    seen.add(name);
-    return true;
-  });
-}
-
-function uniqueNames(values: string[]): string[] {
+function deduplicate(values: CompletionCandidate[]): CompletionCandidate[] {
   const seen = new Set<string>();
   return values.filter((value) => {
-    const key = value.toLocaleLowerCase();
-    if (!value || seen.has(key)) return false;
+    const key = `${value.kind}\u0000${normalize(value.qualifiedLabel)}\u0000${normalize(value.insertText)}`;
+    if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
 }
 
-function quoteIdentifier(value: string): string {
-  return `\`${value.replace(/`/g, "``")}\``;
+function compareCandidates(left: CompletionCandidate, right: CompletionCandidate, prefix: string): number {
+  const leftName = normalize(left.label);
+  const rightName = normalize(right.label);
+  const leftExact = prefix && leftName === prefix ? 0 : 1;
+  const rightExact = prefix && rightName === prefix ? 0 : 1;
+  if (leftExact !== rightExact) return leftExact - rightExact;
+  const priority: Record<CompletionCandidate["kind"], number> = { column: 0, table: 1, view: 2, schema: 3, keyword: 4 };
+  return priority[left.kind] - priority[right.kind]
+    || leftName.localeCompare(rightName, undefined, { sensitivity: "base" })
+    || left.qualifiedLabel.localeCompare(right.qualifiedLabel, undefined, { sensitivity: "base" });
+}
+
+function lastIdentifier(value: string): string {
+  return value.split(".").at(-1) ?? value;
+}
+
+function unquote(value: string): string {
+  const trimmed = value.trim();
+  if ((trimmed.startsWith("`") && trimmed.endsWith("`"))
+    || (trimmed.startsWith("\"") && trimmed.endsWith("\""))) return trimmed.slice(1, -1);
+  return trimmed;
+}
+
+function normalize(value: string): string {
+  return unquote(value).toLocaleLowerCase();
 }

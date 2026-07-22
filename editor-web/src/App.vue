@@ -114,8 +114,9 @@
                   </el-tab-pane>
                 </el-tabs>
                 <MonacoEditor v-if="editors.active" ref="monacoEditor" class="editor-widget" :model-key="editors.active.id"
-                              :initial-value="editors.active.content" :theme="app.theme" :suggestions="metadata.suggestions"
-                              :default-catalog="editors.active.connection?.settings.schema || editors.active.connection?.settings.database || ''"
+                              :initial-value="editors.active.content" :theme="app.theme"
+                              :completion-key="activeCompletionKey" :provider-id="editors.active.connection?.providerId || 'generic'"
+                              :completion-candidate-limit="settings.completionCandidateLimit"
                               @dirty="markActiveDirty" @execute="executeFromEditor" @format="formatActive" />
                 <el-empty v-else class="workspace-empty" description="新建 SQL 标签开始查询">
                   <template #image><el-icon><Document /></el-icon></template>
@@ -176,6 +177,7 @@
                   :header-sorting-enabled="settings.headerSortingEnabled" :header-filtering-enabled="settings.headerFilteringEnabled"
                   :max-active-sessions="settings.maxActiveSessions" :idle-timeout-minutes="settings.idleTimeoutMinutes"
                   :transaction-disconnect-rollback-minutes="settings.transactionDisconnectRollbackMinutes"
+                  :completion-candidate-limit="settings.completionCandidateLimit"
                   :completion-cache-size="completionCacheSize" :completion-cache-environment-count="metadata.completionStats.environmentCount"
                   :completion-cache-loading-count="metadata.completionStats.loadingCount" :can-clear-completion-caches="metadata.canClearCompletions"
                   @update:theme="updateTheme" @update:max-rows="updateMaxRows"
@@ -186,7 +188,11 @@
                   @update:copy-separator="updateCopySeparator" @update:max-active-sessions="updateMaxActiveSessions"
                   @update:idle-timeout-minutes="updateIdleTimeoutMinutes"
                   @update:transaction-disconnect-rollback-minutes="updateTransactionDisconnectRollbackMinutes"
+                  @update:completion-candidate-limit="updateCompletionCandidateLimit"
                   @clear-completion-caches="clearCompletionCaches" />
+  <CompletionSchemaDialog v-model="completionSchemaDialog" :namespaces="completionSchemaNamespaces"
+                          :initial-selected-keys="completionSchemaInitialKeys" :refresh="completionSchemaRefresh"
+                          @confirm="completeSchemaSelection" @cancel="cancelSchemaSelection" />
   <CsvImportDialog v-model="csvDialog" :editor-id="editors.active?.id" @imported="objectExplorer?.resetTree()" />
 </template>
 
@@ -223,6 +229,7 @@ import {
 import { rpc } from "./bridge/rpc";
 import ConnectionDialog from "./components/ConnectionDialog.vue";
 import ConnectionManagerPanel from "./components/ConnectionManagerPanel.vue";
+import CompletionSchemaDialog from "./components/CompletionSchemaDialog.vue";
 import CsvImportDialog from "./components/CsvImportDialog.vue";
 import HistoryDrawer from "./components/HistoryDrawer.vue";
 import MonacoEditor from "./components/MonacoEditor.vue";
@@ -240,7 +247,9 @@ import type { ColumnLayoutScope } from "./columnLayout";
 import type { CopySeparator } from "./resultCopy";
 import { applyDocumentTheme } from "./theme";
 import { openRecentSql, openSqlFile, recentSqlFiles, saveSqlFile } from "./files/browserFiles";
-import type { BootstrapResponse, CompletionCache, CompletionProgress, CompletionSnapshot, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryResult, RecoveredEditor, SavedProfile, ThemePreference, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "./types";
+import { completionClient } from "./completion/client";
+import { initialCompletionNamespaceKeys } from "./completion/schemaSelection";
+import type { BootstrapResponse, CompletionCache, CompletionNamespaceDescriptor, CompletionNamespacesResponse, CompletionProgress, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryResult, RecoveredEditor, SavedProfile, ThemePreference, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "./types";
 
 const app = useAppStore(); const connections = useConnectionStore(); const metadata = useMetadataStore();
 const editors = useEditorStore(); const queries = useQueryStore(); const settings = useSettingsStore();
@@ -257,6 +266,19 @@ const workspaceOpened = ref(false);
 const workspaceCatalog = ref<WorkspaceSummary[]>([]);
 const workspaceLoading = ref(false);
 const currentWorkspace = ref<WorkspaceSummary>();
+const completionSchemaDialog = ref(false);
+const completionSchemaNamespaces = ref<CompletionNamespaceDescriptor[]>([]);
+const completionSchemaInitialKeys = ref<string[]>([]);
+const completionSchemaRefresh = ref(false);
+interface SchemaSelectionRequest {
+  namespaces: CompletionNamespaceDescriptor[];
+  initialKeys: string[];
+  refresh: boolean;
+  resolve: (value: CompletionNamespaceDescriptor[] | undefined) => void;
+}
+const schemaSelectionQueue: SchemaSelectionRequest[] = [];
+let activeSchemaSelection: SchemaSelectionRequest | undefined;
+const completionLoads = new Map<string, Promise<void>>();
 const draftSaveTimers = new Map<string, number>();
 const activeExecution = computed(() => editors.activeId ? queries.executions[editors.activeId] : undefined);
 const activeResultIndex = ref(0);
@@ -512,6 +534,7 @@ async function bootstrapWorkspace(recovered: RecoveredEditor[]): Promise<void> {
     const data = await rpc.request<BootstrapResponse>("app.bootstrap");
     connections.initialize(data.providers, data.profiles, data.systems ?? [], data.environments ?? []);
     settings.initialize(data.settings, data.recentFiles);
+    void refreshCompletionStats();
     for (const recent of await recentSqlFiles().catch(() => [])) {
       recentHandles.set(recent.name, recent.handle);
       if (!settings.recentFiles.includes(recent.name)) settings.recentFiles.push(recent.name);
@@ -529,6 +552,7 @@ async function bootstrapWorkspace(recovered: RecoveredEditor[]): Promise<void> {
     const active = recovered.find((item) => item.active);
     if (active) editors.activeId = active.id;
     if (!editors.tabs.length) await newEditor();
+    else if (editors.active?.connection) void ensureCompletionForEditor(editors.active);
     activeTool.value = editors.active?.connection ? "objects" : "connections";
     app.status = recovered.length ? `已打开 ${currentWorkspace.value?.name ?? "工作空间"} · 已恢复编辑器内容` : `已打开 ${currentWorkspace.value?.name ?? "工作空间"}`;
   } finally { app.loading = false; }
@@ -741,14 +765,51 @@ function ensureCompletionForEditor(tab: EditorTab, force = false): Promise<void>
   return loadCompletionSnapshot(tab.connection, { editorId: tab.id }, force);
 }
 
-async function loadCompletionSnapshot(profile: SavedProfile, source: { profileId?: string; editorId?: string }, force: boolean): Promise<void> {
+function loadCompletionSnapshot(profile: SavedProfile, source: { profileId?: string; editorId?: string }, force: boolean): Promise<void> {
   const context = connections.completionContext(profile);
-  if (!context) return;
-  const loadId = crypto.randomUUID();
-  if (!metadata.beginCompletion(context.key, context.label, loadId, profile.id, force)) return;
+  if (!context) return Promise.resolve();
+  const running = completionLoads.get(context.key);
+  if (running) return running;
+  const task = performCompletionLoad(profile, source, context, force).finally(() => {
+    if (completionLoads.get(context.key) === task) completionLoads.delete(context.key);
+  });
+  completionLoads.set(context.key, task);
+  return task;
+}
+
+async function performCompletionLoad(profile: SavedProfile, source: { profileId?: string; editorId?: string },
+                                     context: { key: string; label: string }, force: boolean): Promise<void> {
+  let cached = metadata.completionFor(context.key)?.summary;
+  if (!cached) {
+    cached = await completionClient.inspect(context.key, profile.providerId).catch(() => undefined);
+    if (cached) metadata.readyFromCache(context.key, context.label, cached);
+  }
+  if (cached && !force) return;
+
+  let namespaces: CompletionNamespaceDescriptor[];
   try {
-    const snapshot = await rpc.request<CompletionSnapshot>("metadata.completionSnapshot", { loadId, ...source }, 5 * 60_000);
-    if (!metadata.completeCompletion(context.key, loadId, snapshot)) return;
+    const response = await rpc.request<CompletionNamespacesResponse>("metadata.completionNamespaces", source, 60_000);
+    namespaces = response.namespaces;
+  } catch (error) {
+    ElMessage.error(message(error));
+    return;
+  }
+  const initialKeys = initialCompletionNamespaceKeys(namespaces, cached?.selectedNamespaceKeys, force);
+  const selected = await requestSchemaSelection(namespaces, initialKeys, force);
+  if (!selected) return;
+
+  const loadId = crypto.randomUUID();
+  if (!metadata.beginCompletion(context.key, context.label, loadId, profile.id, true)) return;
+  try {
+    const summary = await completionClient.refresh({
+      cacheKey: context.key,
+      providerId: profile.providerId,
+      workspaceId: rpc.activeWorkspaceId,
+      clientId: rpc.activeClientId,
+      body: { loadId, ...source, selectedNamespaces: selected.map((item) => ({ catalog: item.catalog, schema: item.schema })) }
+    });
+    if (!metadata.completeCompletion(context.key, loadId, summary)) return;
+    await refreshCompletionStats();
     const existing = completionNoticeTimers.get(context.key);
     if (existing !== undefined) window.clearTimeout(existing);
     completionNoticeTimers.set(context.key, window.setTimeout(() => {
@@ -758,6 +819,45 @@ async function loadCompletionSnapshot(profile: SavedProfile, source: { profileId
   } catch (error) {
     metadata.failCompletion(context.key, loadId, message(error));
   }
+}
+
+function requestSchemaSelection(namespaces: CompletionNamespaceDescriptor[], initialKeys: string[], refresh: boolean): Promise<CompletionNamespaceDescriptor[] | undefined> {
+  return new Promise((resolve) => {
+    schemaSelectionQueue.push({ namespaces, initialKeys, refresh, resolve });
+    showNextSchemaSelection();
+  });
+}
+
+function showNextSchemaSelection(): void {
+  if (activeSchemaSelection || !schemaSelectionQueue.length) return;
+  activeSchemaSelection = schemaSelectionQueue.shift();
+  if (!activeSchemaSelection) return;
+  completionSchemaNamespaces.value = activeSchemaSelection.namespaces;
+  completionSchemaInitialKeys.value = activeSchemaSelection.initialKeys;
+  completionSchemaRefresh.value = activeSchemaSelection.refresh;
+  completionSchemaDialog.value = true;
+}
+
+function completeSchemaSelection(namespaces: CompletionNamespaceDescriptor[]): void {
+  settleSchemaSelection(namespaces);
+}
+
+function cancelSchemaSelection(): void {
+  settleSchemaSelection(undefined);
+}
+
+function settleSchemaSelection(namespaces: CompletionNamespaceDescriptor[] | undefined): void {
+  const request = activeSchemaSelection;
+  if (!request) return;
+  activeSchemaSelection = undefined;
+  completionSchemaDialog.value = false;
+  request.resolve(namespaces);
+  window.setTimeout(showNextSchemaSelection, 0);
+}
+
+async function refreshCompletionStats(): Promise<void> {
+  try { metadata.applyPersistentStats(await completionClient.stats()); }
+  catch { /* IndexedDB unavailable: completion requests will report a concrete error when used. */ }
 }
 
 function refreshCompletionFromObjectExplorer(): void {
@@ -775,7 +875,8 @@ function completionMessage(cache: CompletionCache | undefined): string {
     return `${cache.label} · ${progress?.message || "正在扫描可见数据库…"}`;
   }
   if (cache.state === "error") return `${cache.label} 补全加载失败 · 请刷新数据库对象重试`;
-  return `${cache.label} 补全已更新 · ${cache.suggestions.length} 项`;
+  const count = (cache.summary?.objectCount ?? 0) + (cache.summary?.columnCount ?? 0);
+  return `${cache.label} 补全已更新 · ${count} 项`;
 }
 async function refreshConnectionCatalog(): Promise<void> {
   const catalog = await rpc.request<ConnectionCatalog>("connection.catalog");
@@ -1033,6 +1134,13 @@ async function updateTransactionDisconnectRollbackMinutes(value: number): Promis
   try { await rpc.request("settings.update", { key: "connection.transactionDisconnectRollbackMinutes", value: String(value) }); }
   catch (error) { settings.transactionDisconnectRollbackMinutes = previous; reportError(error); }
 }
+async function updateCompletionCandidateLimit(value: number): Promise<void> {
+  const normalized = Math.max(10, Math.min(1000, Math.round(value)));
+  const previous = settings.completionCandidateLimit;
+  settings.completionCandidateLimit = normalized;
+  try { await rpc.request("settings.update", { key: "editor.completionCandidateLimit", value: String(normalized) }); }
+  catch (error) { settings.completionCandidateLimit = previous; reportError(error); }
+}
 async function clearCompletionCaches(): Promise<void> {
   const stats = { ...metadata.completionStats };
   const size = formatCompletionBytes(stats.estimatedBytes);
@@ -1047,6 +1155,7 @@ async function clearCompletionCaches(): Promise<void> {
   }
   completionNoticeTimers.forEach((timer) => window.clearTimeout(timer));
   completionNoticeTimers.clear();
+  await completionClient.clear();
   metadata.clearCompletions();
   ElMessage.success(`已释放约 ${size} 的补全缓存`);
 }

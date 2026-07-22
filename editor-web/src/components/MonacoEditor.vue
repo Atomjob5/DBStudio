@@ -4,13 +4,14 @@
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import * as monaco from "monaco-editor";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
-import type { Suggestion } from "../types";
-import { resolveCompletionSuggestions } from "../sqlCompletion";
+import type { CompletionCandidate } from "../types";
+import { completionClient } from "../completion/client";
+import { completionDocumentation, truncateCompletionComment } from "../completion/presentation";
 
 (self as typeof self & { MonacoEnvironment: object }).MonacoEnvironment = { getWorker: () => new EditorWorker() };
 
 const props = defineProps<{ modelKey: string; initialValue: string; theme: "dark" | "light";
-  suggestions: Suggestion[]; defaultCatalog?: string }>();
+  completionKey: string; providerId: string; completionCandidateLimit: number }>();
 const emit = defineEmits<{
   dirty: [];
   execute: [scope: "current" | "script", selection: string, cursorOffset: number];
@@ -107,18 +108,27 @@ onMounted(() => {
   instance.value.addCommand(monaco.KeyCode.F5, () => trigger("script"));
   instance.value.addCommand(monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF, () => emit("format"));
   completionProvider = monaco.languages.registerCompletionItemProvider("dbstudio-mysql", {
-    triggerCharacters: [".", "`"],
-    provideCompletionItems(model, position) {
+    triggerCharacters: [".", "`", "\"", " "],
+    async provideCompletionItems(model, position, _context, token) {
       const word = model.getWordUntilPosition(position);
       const sqlBeforeCursor = model.getValueInRange({
         startLineNumber: 1, startColumn: 1,
         endLineNumber: position.lineNumber, endColumn: position.column
       });
-      const contextualSuggestions = resolveCompletionSuggestions(sqlBeforeCursor, props.suggestions, props.defaultCatalog);
-      return { suggestions: contextualSuggestions.map((item) => ({
-        label: item.label,
+      if (!props.completionKey || props.completionKey === "unbound") return { suggestions: [] };
+      const result = await completionClient.complete(props.completionKey, props.providerId, sqlBeforeCursor,
+        word.word, props.completionCandidateLimit);
+      if (token.isCancellationRequested) return { suggestions: [] };
+      return { incomplete: result.incomplete, suggestions: result.items.map((item, index) => ({
+        label: {
+          label: item.qualifiedLabel,
+          detail: item.remarks ? `  ${truncateCompletionComment(item.remarks)}` : undefined,
+          description: item.typeName || item.kind.toUpperCase()
+        },
         insertText: item.insertText,
-        detail: item.detail,
+        filterText: `${item.label} ${item.qualifiedLabel}`,
+        sortText: String(index).padStart(5, "0"),
+        documentation: { value: completionDocumentation(item) },
         kind: completionKind(item.kind),
         range: { startLineNumber: position.lineNumber, endLineNumber: position.lineNumber, startColumn: word.startColumn, endColumn: word.endColumn }
       })) };
@@ -127,12 +137,9 @@ onMounted(() => {
   switchModel(props.modelKey, props.initialValue);
 });
 
-function completionKind(kind: Suggestion["kind"]): monaco.languages.CompletionItemKind {
+function completionKind(kind: CompletionCandidate["kind"]): monaco.languages.CompletionItemKind {
   if (kind === "column") return monaco.languages.CompletionItemKind.Field;
-  if (kind === "function") return monaco.languages.CompletionItemKind.Function;
-  if (kind === "procedure") return monaco.languages.CompletionItemKind.Method;
-  if (["database", "catalog", "schema"].includes(kind)) return monaco.languages.CompletionItemKind.Module;
-  if (kind === "sequence") return monaco.languages.CompletionItemKind.Constant;
+  if (kind === "schema") return monaco.languages.CompletionItemKind.Module;
   if (kind === "view") return monaco.languages.CompletionItemKind.Interface;
   if (kind === "table") return monaco.languages.CompletionItemKind.Class;
   return monaco.languages.CompletionItemKind.Keyword;

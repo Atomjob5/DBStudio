@@ -69,6 +69,15 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
     if (profile) editorProfiles.set(String(payload.editorId), profile.id);
     return { connection: profile, connectionState: "suspended" }; }
   if (type === "editor.unbind") { editorProfiles.delete(String(payload.editorId)); return { connectionState: "unbound" }; }
+  if (type === "metadata.completionNamespaces") {
+    const profileId = String(payload.profileId ?? editorProfiles.get(String(payload.editorId)) ?? profiles[0]?.id ?? "");
+    return { providerId: "mysql", sourceProfileId: profileId, namespaces: [
+      { key: "catalog:eastwealthcrawler", catalog: "eastwealthcrawler", schema: "", label: "eastwealthcrawler",
+        kind: "catalog", current: true, system: false },
+      { key: "catalog:information_schema", catalog: "information_schema", schema: "", label: "information_schema",
+        kind: "catalog", current: false, system: true }
+    ] };
+  }
   if (type === "metadata.completionSnapshot") {
     const debugWindow = window as Window & { __DBSTUDIO_MOCK_COUNTS__?: Record<string, number> };
     const counts = debugWindow.__DBSTUDIO_MOCK_COUNTS__ ?? (debugWindow.__DBSTUDIO_MOCK_COUNTS__ = {});
@@ -83,16 +92,14 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
       sales_order: ["order_id", "customer_id", "created_at"],
       sales_order_item: ["order_id", "product_id", "quantity"]
     };
-    return { providerId: "mysql", sourceProfileId: profileId, generatedAt: new Date().toISOString(), suggestions: [
-      { id: "keyword-select", label: "SELECT", insertText: "SELECT", detail: "MySQL 关键字", kind: "keyword" },
-      { id: "database-demo", label: "eastwealthcrawler", insertText: "`eastwealthcrawler`", detail: "数据库 eastwealthcrawler", kind: "database", catalog: "eastwealthcrawler" },
-      ...tableNames.map((name) => ({ id: `table-${name}`, label: name, insertText: `\`${name}\``,
-        detail: `eastwealthcrawler.${name} · 表`, kind: "table", catalog: "eastwealthcrawler", objectName: name })),
-      ...Object.entries(columns).flatMap(([table, names]) => names.map((name) => ({
-        id: `column-${table}-${name}`, label: name, insertText: `\`${name}\``,
-        detail: `eastwealthcrawler.${table}.${name}`, kind: "column", catalog: "eastwealthcrawler", objectName: table
-      })))
-    ] };
+    return { formatVersion: 1, providerId: "mysql", sourceProfileId: profileId,
+      generatedAt: new Date().toISOString(), defaultNamespaceKey: "catalog:eastwealthcrawler",
+      selectedNamespaceKeys: ["catalog:eastwealthcrawler"], namespaces: [{ key: "catalog:eastwealthcrawler",
+        catalog: "eastwealthcrawler", schema: "", label: "eastwealthcrawler", objects: tableNames.map((name) => ({
+          name, kind: "table", remarks: "", columns: (columns[name] ?? []).map((column) => ({
+            name: column, typeName: "VARCHAR", remarks: ""
+          }))
+        })) }] };
   }
   if (type === "sql.complete") return [];
   if (type === "sql.format") return { text: payload.text };

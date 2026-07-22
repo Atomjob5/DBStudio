@@ -1,12 +1,15 @@
 package com.dbstudio.mysql;
 
 import com.dbstudio.spi.ColumnInfo;
+import com.dbstudio.spi.CompletionObjectInfo;
+import com.dbstudio.spi.DatabaseNamespace;
 import com.dbstudio.spi.DatabaseObject;
 import com.dbstudio.spi.DatabaseObjectType;
 import com.dbstudio.spi.DatabaseSession;
 import com.dbstudio.spi.MetadataAdapter;
 import com.dbstudio.spi.UniqueKeyInfo;
 import java.sql.DatabaseMetaData;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -16,12 +19,18 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** MySQL Catalog、表、字段、备注和唯一键到统一 SPI 模型的映射。 */
 public final class MySqlMetadataAdapter implements MetadataAdapter {
+    private static final Logger LOG = LoggerFactory.getLogger(MySqlMetadataAdapter.class);
+    private static final int COMPLETION_CHUNK_SIZE = 500;
     @Override
     public List<String> listCatalogs(DatabaseSession session) throws SQLException {
         List<String> catalogs = new ArrayList<String>();
@@ -36,6 +45,115 @@ public final class MySqlMetadataAdapter implements MetadataAdapter {
         catalogs.sort(String.CASE_INSENSITIVE_ORDER);
         return catalogs;
     }
+
+    @Override
+    public List<DatabaseNamespace> listCompletionNamespaces(DatabaseSession session) throws SQLException {
+        String current = session.currentCatalog();
+        List<DatabaseNamespace> result = new ArrayList<DatabaseNamespace>();
+        try (PreparedStatement statement = session.jdbcConnection().prepareStatement(
+                "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA ORDER BY SCHEMA_NAME");
+             ResultSet rows = statement.executeQuery()) {
+            while (rows.next()) {
+                String name = rows.getString(1);
+                result.add(DatabaseNamespace.catalog(name, current != null && current.equalsIgnoreCase(name),
+                        isSystemCatalog(name)));
+            }
+        }
+        return Collections.unmodifiableList(result);
+    }
+
+    @Override
+    public List<CompletionObjectInfo> listCompletionObjects(DatabaseSession session,
+                                                               List<DatabaseNamespace> namespaces,
+                                                               Set<DatabaseObjectType> types) throws SQLException {
+        return listCompletionObjects(session, namespaces, types, MetadataAdapter.CompletionLoadListener.NONE);
+    }
+
+    @Override
+    public List<CompletionObjectInfo> listCompletionObjects(DatabaseSession session,
+                                                               List<DatabaseNamespace> namespaces,
+                                                               Set<DatabaseObjectType> types,
+                                                               MetadataAdapter.CompletionLoadListener listener) throws SQLException {
+        try {
+            return batchCompletionObjects(session, namespaces, types);
+        } catch (SQLException batchFailure) {
+            LOG.warn("MySQL批量读取补全元数据失败，降级为逐对象读取 reason={}", batchFailure.getMessage());
+            listener.compatibilityFallback("批量读取失败，正在使用兼容方式加载…");
+            return MetadataAdapter.super.listCompletionObjects(session, namespaces, types);
+        }
+    }
+
+    private List<CompletionObjectInfo> batchCompletionObjects(DatabaseSession session,
+                                                                 List<DatabaseNamespace> namespaces,
+                                                                 Set<DatabaseObjectType> types) throws SQLException {
+        List<String> catalogs = new ArrayList<String>();
+        Set<String> seen = new LinkedHashSet<String>();
+        for (DatabaseNamespace namespace : namespaces) {
+            String catalog = namespace.catalog();
+            if (!catalog.isEmpty() && seen.add(catalog.toLowerCase(Locale.ROOT))) catalogs.add(catalog);
+        }
+        Map<String, DatabaseObject> objects = new LinkedHashMap<String, DatabaseObject>();
+        Map<String, List<ColumnInfo>> columns = new LinkedHashMap<String, List<ColumnInfo>>();
+        for (int start = 0; start < catalogs.size(); start += COMPLETION_CHUNK_SIZE) {
+            List<String> chunk = catalogs.subList(start, Math.min(catalogs.size(), start + COMPLETION_CHUNK_SIZE));
+            String placeholders = placeholders(chunk.size());
+            try (PreparedStatement statement = session.jdbcConnection().prepareStatement(
+                    "SELECT TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE,TABLE_COMMENT FROM information_schema.TABLES "
+                            + "WHERE TABLE_SCHEMA IN (" + placeholders + ") AND TABLE_TYPE IN ('BASE TABLE','VIEW','SYSTEM VIEW') "
+                            + "ORDER BY TABLE_SCHEMA,TABLE_NAME")) {
+                bind(statement, chunk);
+                try (ResultSet rows = statement.executeQuery()) {
+                    while (rows.next()) {
+                        DatabaseObjectType type = value(rows.getString(3)).toUpperCase(Locale.ROOT).contains("VIEW")
+                                ? DatabaseObjectType.VIEW : DatabaseObjectType.TABLE;
+                        if (!types.contains(type)) continue;
+                        String catalog = rows.getString(1); String name = rows.getString(2);
+                        objects.put(completionKey(catalog, name), new DatabaseObject(type, catalog, "", name,
+                                value(rows.getString(4)), Collections.<String, String>emptyMap()));
+                    }
+                }
+            }
+            try (PreparedStatement statement = session.jdbcConnection().prepareStatement(
+                    "SELECT TABLE_SCHEMA,TABLE_NAME,COLUMN_NAME,COLUMN_TYPE,COLUMN_COMMENT,ORDINAL_POSITION "
+                            + "FROM information_schema.COLUMNS WHERE TABLE_SCHEMA IN (" + placeholders + ") "
+                            + "ORDER BY TABLE_SCHEMA,TABLE_NAME,ORDINAL_POSITION")) {
+                bind(statement, chunk);
+                try (ResultSet rows = statement.executeQuery()) {
+                    while (rows.next()) {
+                        String key = completionKey(rows.getString(1), rows.getString(2));
+                        if (!objects.containsKey(key)) continue;
+                        List<ColumnInfo> values = columns.get(key);
+                        if (values == null) { values = new ArrayList<ColumnInfo>(); columns.put(key, values); }
+                        values.add(new ColumnInfo(rows.getString(3), rows.getString(4), 0, 0, true, "", false,
+                                rows.getInt(6), value(rows.getString(5))));
+                    }
+                }
+            }
+        }
+        List<CompletionObjectInfo> result = new ArrayList<CompletionObjectInfo>(objects.size());
+        for (Map.Entry<String, DatabaseObject> entry : objects.entrySet()) {
+            List<ColumnInfo> values = columns.get(entry.getKey());
+            result.add(new CompletionObjectInfo(entry.getValue(), values == null
+                    ? Collections.<ColumnInfo>emptyList() : values));
+        }
+        return Collections.unmodifiableList(result);
+    }
+
+    private static String placeholders(int size) {
+        StringBuilder result = new StringBuilder();
+        for (int index = 0; index < size; index++) { if (index > 0) result.append(','); result.append('?'); }
+        return result.toString();
+    }
+
+    private static void bind(PreparedStatement statement, List<String> values) throws SQLException {
+        for (int index = 0; index < values.size(); index++) statement.setString(index + 1, values.get(index));
+    }
+
+    private static String completionKey(String catalog, String objectName) {
+        return value(catalog).toUpperCase(Locale.ROOT) + '\u0000' + value(objectName).toUpperCase(Locale.ROOT);
+    }
+
+    private static String value(String value) { return value == null ? "" : value; }
 
     @Override
     public List<DatabaseObject> listObjects(
@@ -79,6 +197,27 @@ public final class MySqlMetadataAdapter implements MetadataAdapter {
                         primaryKeys.contains(name),
                         resultSet.getInt("ORDINAL_POSITION"),
                         resultSet.getString("REMARKS")));
+            }
+        }
+        Collections.sort(columns, new Comparator<ColumnInfo>() {
+            @Override public int compare(ColumnInfo left, ColumnInfo right) {
+                return Integer.compare(left.ordinal(), right.ordinal());
+            }
+        });
+        return columns;
+    }
+
+    @Override
+    public List<ColumnInfo> listCompletionColumns(DatabaseSession session, String catalog, String schema,
+                                                   String objectName) throws SQLException {
+        List<ColumnInfo> columns = new ArrayList<ColumnInfo>();
+        try (ResultSet resultSet = session.jdbcConnection().getMetaData()
+                .getColumns(catalog, schemaOrNull(schema), objectName, "%")) {
+            while (resultSet.next()) {
+                columns.add(new ColumnInfo(resultSet.getString("COLUMN_NAME"), resultSet.getString("TYPE_NAME"),
+                        resultSet.getInt("COLUMN_SIZE"), resultSet.getInt("DECIMAL_DIGITS"),
+                        resultSet.getInt("NULLABLE") != DatabaseMetaData.columnNoNulls, "", false,
+                        resultSet.getInt("ORDINAL_POSITION"), value(resultSet.getString("REMARKS"))));
             }
         }
         Collections.sort(columns, new Comparator<ColumnInfo>() {

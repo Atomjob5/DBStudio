@@ -2,7 +2,6 @@ package com.dbstudio.desktop.completion;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.dbstudio.spi.ColumnInfo;
@@ -46,36 +45,25 @@ class CompletionSnapshotServiceTest {
 
         assertEquals("fake", first.providerId());
         assertEquals("profile-1", first.sourceProfileId());
-        assertTrue(first.suggestions().stream().anyMatch(value -> "keyword".equals(value.kind()) && "SELECT".equals(value.label())));
-        assertTrue(first.suggestions().stream().anyMatch(value -> "database".equals(value.kind()) && "sales".equals(value.label())));
-        assertTrue(first.suggestions().stream().anyMatch(value -> "view".equals(value.kind()) && "orders_view".equals(value.label())));
-        assertTrue(first.suggestions().stream().anyMatch(value -> "function".equals(value.kind()) && "total_amount".equals(value.label())));
-        assertTrue(first.suggestions().stream().anyMatch(value -> "procedure".equals(value.kind()) && "archive_orders".equals(value.label())));
-
-        List<CompletionSnapshotService.Suggestion> ids = find(first, "column", "id");
-        assertEquals(2, ids.size(), "不同表里的同名字段必须保留");
-        assertNotEquals(ids.get(0).id(), ids.get(1).id());
-        assertTrue(ids.stream().anyMatch(value -> "订单编号".equals(value.remarks())));
-        assertEquals(first.suggestions().size(), new HashSet<String>(suggestionIds(first)).size());
-        assertEquals(suggestionIds(first), suggestionIds(second), "相同元数据必须生成稳定身份");
+        assertEquals(CompletionSnapshotService.FORMAT_VERSION, first.formatVersion());
+        assertEquals("catalog:sales", first.defaultNamespaceKey());
+        assertEquals(Arrays.asList("catalog:sales", "catalog:reporting"), first.selectedNamespaceKeys());
+        assertEquals(2, first.namespaces().size());
+        assertEquals(3, first.namespaces().stream().mapToInt(value -> value.objects().size()).sum());
+        assertTrue(first.namespaces().stream().flatMap(value -> value.objects().stream())
+                .anyMatch(value -> "view".equals(value.kind()) && "orders_view".equals(value.name())));
+        assertFalse(first.namespaces().stream().flatMap(value -> value.objects().stream())
+                .anyMatch(value -> "total_amount".equals(value.name()) || "archive_orders".equals(value.name())));
+        assertEquals(2, first.namespaces().stream().flatMap(value -> value.objects().stream())
+                .flatMap(value -> value.columns().stream()).filter(value -> "id".equals(value.name())).count());
+        assertTrue(first.namespaces().stream().flatMap(value -> value.objects().stream())
+                .flatMap(value -> value.columns().stream())
+                .anyMatch(value -> "订单编号".equals(value.remarks()) && "BIGINT".equals(value.typeName())));
+        assertEquals(first.selectedNamespaceKeys(), second.selectedNamespaceKeys());
+        assertEquals(first.namespaces().stream().map(value -> value.key()).collect(java.util.stream.Collectors.toList()),
+                second.namespaces().stream().map(value -> value.key()).collect(java.util.stream.Collectors.toList()));
         assertFalse(progress.isEmpty());
-        assertTrue(progress.stream().anyMatch(value -> value.startsWith("discovering:")));
         assertTrue(progress.stream().anyMatch(value -> value.startsWith("loading:")));
-    }
-
-    private static List<CompletionSnapshotService.Suggestion> find(
-            CompletionSnapshotService.Snapshot snapshot, String kind, String label) {
-        List<CompletionSnapshotService.Suggestion> values = new ArrayList<CompletionSnapshotService.Suggestion>();
-        for (CompletionSnapshotService.Suggestion value : snapshot.suggestions()) {
-            if (kind.equals(value.kind()) && label.equals(value.label())) values.add(value);
-        }
-        return values;
-    }
-
-    private static List<String> suggestionIds(CompletionSnapshotService.Snapshot snapshot) {
-        List<String> values = new ArrayList<String>();
-        for (CompletionSnapshotService.Suggestion suggestion : snapshot.suggestions()) values.add(suggestion.id());
-        return values;
     }
 
     private static DatabaseProvider provider() {

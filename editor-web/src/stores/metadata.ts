@@ -1,28 +1,25 @@
 import { computed, shallowRef } from "vue";
 import { defineStore } from "pinia";
-import type { CompletionCache, CompletionCacheStats, CompletionProgress, CompletionSnapshot, MetadataNode } from "../types";
-
-const emptySuggestions: CompletionCache["suggestions"] = [];
+import type { CompletionCache, CompletionCacheStats, CompletionCacheSummary, CompletionProgress, MetadataNode } from "../types";
 
 export const useMetadataStore = defineStore("metadata", () => {
   const activeTreeKey = shallowRef("unbound");
   const activeCompletionKey = shallowRef("unbound");
   const treeCaches = shallowRef<Record<string, MetadataNode[]>>({});
   const completionCaches = shallowRef<Record<string, CompletionCache>>({});
+  const persistentStats = shallowRef<Omit<CompletionCacheStats, "loadingCount">>({
+    environmentCount: 0, suggestionCount: 0, estimatedBytes: 0
+  });
   const roots = computed({
     get: () => treeCaches.value[activeTreeKey.value] ?? [],
     set: (value: MetadataNode[]) => setRoots(value, activeTreeKey.value)
   });
-  const suggestions = computed(() => completionCaches.value[activeCompletionKey.value]?.suggestions ?? emptySuggestions);
-  const completionStats = computed<CompletionCacheStats>(() => Object.values(completionCaches.value).reduce((stats, cache) => {
-    if (cache.state === "loading") stats.loadingCount += 1;
-    if (!cache.hasSnapshot) return stats;
-    stats.environmentCount += 1;
-    stats.suggestionCount += cache.suggestions.length;
-    stats.estimatedBytes += serializedUtf8Size(cache.suggestions);
-    return stats;
-  }, { environmentCount: 0, suggestionCount: 0, estimatedBytes: 0, loadingCount: 0 }));
-  const canClearCompletions = computed(() => Object.keys(completionCaches.value).length > 0);
+  const completionStats = computed<CompletionCacheStats>(() => ({
+    ...persistentStats.value,
+    loadingCount: Object.values(completionCaches.value).filter((cache) => cache.state === "loading").length
+  }));
+  const canClearCompletions = computed(() => persistentStats.value.environmentCount > 0
+    || Object.keys(completionCaches.value).length > 0);
 
   function activate(treeKey?: string, completionKey?: string): void {
     activeTreeKey.value = treeKey || "unbound";
@@ -43,14 +40,23 @@ export const useMetadataStore = defineStore("metadata", () => {
     return key ? completionCaches.value[key] : undefined;
   }
 
+  function readyFromCache(key: string, label: string, summary: CompletionCacheSummary): void {
+    const current = completionCaches.value[key];
+    if (current?.state === "loading") return;
+    completionCaches.value = { ...completionCaches.value, [key]: {
+      key, label, state: "ready", hasSnapshot: true, summary,
+      sourceProfileId: summary.sourceProfileId, generatedAt: summary.generatedAt
+    } };
+  }
+
   function beginCompletion(key: string, label: string, loadId: string, sourceProfileId: string, force = false): boolean {
     const current = completionCaches.value[key];
     if (current?.state === "loading") return false;
     if (!force && current?.hasSnapshot) return false;
     completionCaches.value = { ...completionCaches.value, [key]: {
-      key, label, state: "loading", suggestions: current?.suggestions ?? [],
-      hasSnapshot: current?.hasSnapshot ?? false, loadId, sourceProfileId,
-      generatedAt: current?.generatedAt, notice: "loading", startedAt: Date.now()
+      key, label, state: "loading", hasSnapshot: current?.hasSnapshot ?? false,
+      summary: current?.summary, loadId, sourceProfileId, generatedAt: current?.generatedAt,
+      notice: "loading", startedAt: Date.now()
     } };
     return true;
   }
@@ -61,12 +67,12 @@ export const useMetadataStore = defineStore("metadata", () => {
     completionCaches.value = { ...completionCaches.value, [entry.key]: { ...entry, progress } };
   }
 
-  function completeCompletion(key: string, loadId: string, snapshot: CompletionSnapshot): boolean {
+  function completeCompletion(key: string, loadId: string, summary: CompletionCacheSummary): boolean {
     const current = completionCaches.value[key];
     if (!current || current.loadId !== loadId) return false;
     completionCaches.value = { ...completionCaches.value, [key]: {
-      ...current, state: "ready", suggestions: [...snapshot.suggestions], hasSnapshot: true,
-      loadId: undefined, sourceProfileId: snapshot.sourceProfileId, generatedAt: snapshot.generatedAt,
+      ...current, state: "ready", hasSnapshot: true, summary, loadId: undefined,
+      sourceProfileId: summary.sourceProfileId, generatedAt: summary.generatedAt,
       progress: undefined, error: undefined, notice: "success"
     } };
     return true;
@@ -79,6 +85,10 @@ export const useMetadataStore = defineStore("metadata", () => {
       ...current, state: "error", loadId: undefined, progress: undefined, error, notice: "error"
     } };
     return true;
+  }
+
+  function applyPersistentStats(stats: Omit<CompletionCacheStats, "loadingCount">): void {
+    persistentStats.value = stats;
   }
 
   function dismissNotice(key: string): void {
@@ -98,17 +108,19 @@ export const useMetadataStore = defineStore("metadata", () => {
   function clearAll(): void {
     treeCaches.value = {};
     completionCaches.value = {};
+    persistentStats.value = { environmentCount: 0, suggestionCount: 0, estimatedBytes: 0 };
   }
 
   function clearCompletions(): CompletionCacheStats {
     const released = { ...completionStats.value };
     completionCaches.value = {};
+    persistentStats.value = { environmentCount: 0, suggestionCount: 0, estimatedBytes: 0 };
     return released;
   }
 
-  return { activeTreeKey, activeCompletionKey, roots, suggestions, completionCaches, completionStats, canClearCompletions,
-    activate, setRoots, clearTree, completionFor, beginCompletion, updateProgress,
-    completeCompletion, failCompletion, dismissNotice, statusFor, clearCompletions, clearAll };
+  return { activeTreeKey, activeCompletionKey, roots, completionCaches, completionStats, canClearCompletions,
+    activate, setRoots, clearTree, completionFor, readyFromCache, beginCompletion, updateProgress,
+    completeCompletion, failCompletion, applyPersistentStats, dismissNotice, statusFor, clearCompletions, clearAll };
 });
 
 export function serializedUtf8Size(value: unknown): number {

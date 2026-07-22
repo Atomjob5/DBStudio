@@ -3,8 +3,10 @@ package com.dbstudio.server;
 import com.dbstudio.desktop.DatabaseContext;
 import com.dbstudio.desktop.ProviderRegistry;
 import com.dbstudio.desktop.completion.CompletionSnapshotService;
+import com.dbstudio.desktop.completion.CompletionSnapshotService.ColumnSnapshot;
+import com.dbstudio.desktop.completion.CompletionSnapshotService.NamespaceSnapshot;
+import com.dbstudio.desktop.completion.CompletionSnapshotService.ObjectSnapshot;
 import com.dbstudio.desktop.completion.CompletionSnapshotService.Snapshot;
-import com.dbstudio.desktop.completion.CompletionSnapshotService.Suggestion;
 import com.dbstudio.desktop.csv.CsvService;
 import com.dbstudio.desktop.logging.SqlLogSupport;
 import com.dbstudio.desktop.persistence.ConnectionProfileRepository;
@@ -48,7 +50,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -89,6 +93,7 @@ public final class DbStudioApiController {
             "result.headerSortingEnabled", "result.headerFilteringEnabled",
             "connection.maxActiveSessions", "connection.idleTimeoutMinutes",
             "connection.transactionDisconnectRollbackMinutes",
+            "editor.completionCandidateLimit",
             "layout.leftWidth", "layout.editorHeight");
 
     private final ProviderRegistry providers;
@@ -349,39 +354,54 @@ public final class DbStudioApiController {
         }
     }
 
+    @PostMapping("/workspaces/{workspaceId}/metadata/completion-namespaces")
+    public Map<String, Object> completionNamespaces(@PathVariable String workspaceId,
+                                                     @RequestBody Map<String, Object> body) throws Exception {
+        Workspace workspace = workspaces.require(workspaceId);
+        SavedProfile saved = completionProfile(workspace, body);
+        char[] password = completionPassword(workspace, saved);
+        try {
+            DatabaseProvider provider = providers.require(saved.profile().providerId());
+            try (DatabaseContext temporary = new DatabaseContext(provider, saved.profile(), password)) {
+                List<Object> values = new ArrayList<Object>();
+                for (DatabaseNamespace namespace : provider.metadata().listCompletionNamespaces(temporary.metadataSession())) {
+                    values.add(completionNamespaceMap(namespace));
+                }
+                return ApiPayloads.map("providerId", provider.id(), "sourceProfileId", saved.profile().id().toString(),
+                        "namespaces", values);
+            } catch (SQLException exception) {
+                throw new ApiException("METADATA_LOAD_FAILED",
+                        "获取数据库Schema失败：" + safeMessage(exception), exception);
+            }
+        } finally { Arrays.fill(password, '\0'); }
+    }
+
     @PostMapping("/workspaces/{workspaceId}/metadata/completion-snapshot")
     public Map<String, Object> completionSnapshot(@PathVariable String workspaceId,
                                                    @RequestBody Map<String, Object> body) throws Exception {
         final Workspace workspace = workspaces.require(workspaceId);
         final String loadId = ApiPayloads.required(body, "loadId");
         LOG.info("补全快照请求开始 workspace={} loadId={}", workspaceId, loadId);
-        String editorId = ApiPayloads.text(body, "editorId");
-        String rawProfileId = ApiPayloads.text(body, "profileId");
-        if (editorId.isEmpty() == rawProfileId.isEmpty()) {
-            throw new ApiException("INVALID_COMPLETION_SOURCE", "补全快照必须且只能指定编辑标签或数据库链接");
-        }
-
-        final SavedProfile saved;
-        if (!editorId.isEmpty()) {
-            EditorSession editor = workspace.editors().require(editorId);
-            saved = workspace.binding(editor);
-            if (saved == null) throw new ApiException("NOT_CONNECTED", "当前编辑标签尚未选择数据库链接");
-        } else {
-            saved = profiles.find(profileId(rawProfileId)).orElseThrow(
-                    () -> new ApiException("PROFILE_NOT_FOUND", "数据库链接不存在或已删除"));
-        }
-
-        char[] password = workspace.cachedPassword(saved.profile().id());
-        if (password == null) password = secrets.load(saved.profile().secretRef()).orElse(null);
-        if (password == null) throw new ApiException("PASSWORD_REQUIRED", "获取补全信息需要数据库密码");
+        final SavedProfile saved = completionProfile(workspace, body);
+        char[] password = completionPassword(workspace, saved);
         try {
             DatabaseProvider provider = providers.require(saved.profile().providerId());
             try (DatabaseContext temporary = new DatabaseContext(provider, saved.profile(), password)) {
                 DatabaseSession session = temporary.metadataSession();
                 final String sourceProfileId = saved.profile().id().toString();
+                workspace.events().emit("metadata.completionProgress", ApiPayloads.map(
+                        "loadId", loadId, "phase", "discovering", "completed", 0,
+                        "total", 1, "message", "正在校验可见Schema…",
+                        "sourceProfileId", sourceProfileId, "environmentId", saved.environmentId()));
+                List<DatabaseNamespace> available = provider.metadata().listCompletionNamespaces(session);
+                List<DatabaseNamespace> selected = selectedCompletionNamespaces(body, available);
+                workspace.events().emit("metadata.completionProgress", ApiPayloads.map(
+                        "loadId", loadId, "phase", "discovering", "completed", 1,
+                        "total", 1, "message", "Schema范围已确认",
+                        "sourceProfileId", sourceProfileId, "environmentId", saved.environmentId()));
                 Snapshot snapshot;
                 synchronized (session) {
-                    snapshot = completionSnapshots.build(provider, session, sourceProfileId,
+                    snapshot = completionSnapshots.build(provider, session, sourceProfileId, selected,
                             new CompletionSnapshotService.ProgressListener() {
                                 @Override public void progress(String phase, int completed, int total, String message) {
                                     workspace.events().emit("metadata.completionProgress", ApiPayloads.map(
@@ -392,13 +412,9 @@ public final class DbStudioApiController {
                                 }
                             });
                 }
-                List<Object> values = new ArrayList<Object>();
-                for (Suggestion suggestion : snapshot.suggestions()) values.add(completionSuggestionMap(suggestion));
-                LOG.info("补全快照请求完成 workspace={} loadId={} suggestions={}", workspaceId, loadId,
-                        snapshot.suggestions().size());
-                return ApiPayloads.map("providerId", snapshot.providerId(),
-                        "sourceProfileId", snapshot.sourceProfileId(),
-                        "generatedAt", snapshot.generatedAt(), "suggestions", values);
+                LOG.info("补全快照请求完成 workspace={} loadId={} namespaces={}", workspaceId, loadId,
+                        snapshot.namespaces().size());
+                return completionSnapshotMap(snapshot);
             } catch (SQLException exception) {
                 LOG.warn("补全快照请求失败 workspace={} loadId={} reason={}", workspaceId, loadId,
                         safeMessage(exception), exception);
@@ -732,6 +748,14 @@ public final class DbStudioApiController {
                 throw new ApiException("INVALID_SETTING", "事务断连回滚时间必须在 1 到 1440 分钟之间");
             }
         }
+        if ("editor.completionCandidateLimit".equals(key)) {
+            try {
+                int limit = Integer.parseInt(value);
+                if (limit < 10 || limit > 1_000) throw new NumberFormatException();
+            } catch (NumberFormatException exception) {
+                throw new ApiException("INVALID_SETTING", "补全候选词数量必须在 10 到 1000 之间");
+            }
+        }
         settings.put(key, value);
         return ApiPayloads.map("key", key, "value", value);
     }
@@ -1048,6 +1072,7 @@ public final class DbStudioApiController {
         if (!result.containsKey("result.headerSortingEnabled")) result.put("result.headerSortingEnabled", "true");
         if (!result.containsKey("result.headerFilteringEnabled")) result.put("result.headerFilteringEnabled", "true");
         if (!result.containsKey("connection.maxActiveSessions")) result.put("connection.maxActiveSessions", "10");
+        if (!result.containsKey("editor.completionCandidateLimit")) result.put("editor.completionCandidateLimit", "100");
         if (!result.containsKey("connection.idleTimeoutMinutes")) result.put("connection.idleTimeoutMinutes", "10");
         if (!result.containsKey("connection.transactionDisconnectRollbackMinutes")) {
             result.put("connection.transactionDisconnectRollbackMinutes", "10");
@@ -1081,11 +1106,82 @@ public final class DbStudioApiController {
                 "revision", saved.revision());
     }
 
-    private static Map<String, Object> completionSuggestionMap(Suggestion value) {
-        return ApiPayloads.map("id", value.id(), "label", value.label(),
-                "insertText", value.insertText(), "detail", value.detail(), "kind", value.kind(),
-                "catalog", value.catalog(), "schema", value.schema(),
-                "objectName", value.objectName(), "remarks", value.remarks());
+    private SavedProfile completionProfile(Workspace workspace, Map<String, Object> body) throws SQLException {
+        String editorId = ApiPayloads.text(body, "editorId");
+        String rawProfileId = ApiPayloads.text(body, "profileId");
+        if (editorId.isEmpty() == rawProfileId.isEmpty()) {
+            throw new ApiException("INVALID_COMPLETION_SOURCE", "补全信息必须且只能指定编辑标签或数据库链接");
+        }
+        if (!editorId.isEmpty()) {
+            SavedProfile saved = workspace.binding(workspace.editors().require(editorId));
+            if (saved == null) throw new ApiException("NOT_CONNECTED", "当前编辑标签尚未选择数据库链接");
+            return saved;
+        }
+        return profiles.find(profileId(rawProfileId)).orElseThrow(
+                () -> new ApiException("PROFILE_NOT_FOUND", "数据库链接不存在或已删除"));
+    }
+
+    private char[] completionPassword(Workspace workspace, SavedProfile saved) throws Exception {
+        char[] password = workspace.cachedPassword(saved.profile().id());
+        if (password == null) password = secrets.load(saved.profile().secretRef()).orElse(null);
+        if (password == null) throw new ApiException("PASSWORD_REQUIRED", "获取补全信息需要数据库密码");
+        return password;
+    }
+
+    private static List<DatabaseNamespace> selectedCompletionNamespaces(
+            Map<String, Object> body, List<DatabaseNamespace> available) {
+        Object raw = body.get("selectedNamespaces");
+        if (!(raw instanceof List) || ((List<?>) raw).isEmpty()) {
+            throw new ApiException("INVALID_COMPLETION_NAMESPACE", "至少选择一个Schema用于SQL补全");
+        }
+        Map<String, DatabaseNamespace> allowed = new LinkedHashMap<String, DatabaseNamespace>();
+        for (DatabaseNamespace namespace : available) allowed.put(namespaceIdentity(
+                namespace.catalog(), namespace.schema()), namespace);
+        List<DatabaseNamespace> selected = new ArrayList<DatabaseNamespace>();
+        Set<String> seen = new LinkedHashSet<String>();
+        for (Object item : (List<?>) raw) {
+            if (!(item instanceof Map)) throw new ApiException("INVALID_COMPLETION_NAMESPACE", "Schema选择格式无效");
+            @SuppressWarnings("unchecked") Map<String, Object> value = (Map<String, Object>) item;
+            String identity = namespaceIdentity(ApiPayloads.text(value, "catalog"), ApiPayloads.text(value, "schema"));
+            DatabaseNamespace namespace = allowed.get(identity);
+            if (namespace == null) throw new ApiException("INVALID_COMPLETION_NAMESPACE", "选择了不可访问的Schema");
+            if (seen.add(identity)) selected.add(namespace);
+        }
+        return selected;
+    }
+
+    private static String namespaceIdentity(String catalog, String schema) {
+        return (catalog == null ? "" : catalog).toUpperCase(Locale.ROOT) + '\u0000'
+                + (schema == null ? "" : schema).toUpperCase(Locale.ROOT);
+    }
+
+    private static Map<String, Object> completionNamespaceMap(DatabaseNamespace value) {
+        return ApiPayloads.map("key", CompletionSnapshotService.namespaceKey(value.catalog(), value.schema()),
+                "catalog", value.catalog(), "schema", value.schema(), "label", value.label(),
+                "kind", value.kind().name().toLowerCase(Locale.ROOT), "current", value.current(),
+                "system", value.system());
+    }
+
+    private static Map<String, Object> completionSnapshotMap(Snapshot snapshot) {
+        List<Object> namespaces = new ArrayList<Object>();
+        for (NamespaceSnapshot namespace : snapshot.namespaces()) {
+            List<Object> objects = new ArrayList<Object>();
+            for (ObjectSnapshot object : namespace.objects()) {
+                List<Object> columns = new ArrayList<Object>();
+                for (ColumnSnapshot column : object.columns()) {
+                    columns.add(ApiPayloads.map("name", column.name(), "typeName", column.typeName(),
+                            "remarks", column.remarks()));
+                }
+                objects.add(ApiPayloads.map("name", object.name(), "kind", object.kind(),
+                        "remarks", object.remarks(), "columns", columns));
+            }
+            namespaces.add(ApiPayloads.map("key", namespace.key(), "catalog", namespace.catalog(),
+                    "schema", namespace.schema(), "label", namespace.label(), "objects", objects));
+        }
+        return ApiPayloads.map("formatVersion", snapshot.formatVersion(), "providerId", snapshot.providerId(),
+                "sourceProfileId", snapshot.sourceProfileId(), "generatedAt", snapshot.generatedAt(),
+                "defaultNamespaceKey", snapshot.defaultNamespaceKey(),
+                "selectedNamespaceKeys", snapshot.selectedNamespaceKeys(), "namespaces", namespaces);
     }
 
     private static Map<String, Object> systemMap(SystemEntry value) {

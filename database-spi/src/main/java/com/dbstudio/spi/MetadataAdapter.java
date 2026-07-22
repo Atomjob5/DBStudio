@@ -27,6 +27,11 @@ public interface MetadataAdapter {
         return Collections.unmodifiableList(result);
     }
 
+    /** Returns every namespace that may be explicitly selected for SQL completion, including system namespaces. */
+    default List<DatabaseNamespace> listCompletionNamespaces(DatabaseSession session) throws SQLException {
+        return listNamespaces(session);
+    }
+
     default List<DatabaseObject> listObjects(
             DatabaseSession session,
             String catalog,
@@ -52,7 +57,7 @@ public interface MetadataAdapter {
             for (DatabaseObjectType type : types) {
                 for (DatabaseObject object : listObjects(session, namespace, type)) {
                     List<ColumnInfo> columns = type == DatabaseObjectType.TABLE || type == DatabaseObjectType.VIEW
-                            ? listColumns(session, object.catalog(), object.schema(), object.name())
+                            ? listCompletionColumns(session, object.catalog(), object.schema(), object.name())
                             : Collections.<ColumnInfo>emptyList();
                     result.add(new CompletionObjectInfo(object, columns));
                 }
@@ -61,11 +66,31 @@ public interface MetadataAdapter {
         return Collections.unmodifiableList(result);
     }
 
+    default List<CompletionObjectInfo> listCompletionObjects(DatabaseSession session,
+                                                               List<DatabaseNamespace> namespaces,
+                                                               Set<DatabaseObjectType> types,
+                                                               CompletionLoadListener listener) throws SQLException {
+        return listCompletionObjects(session, namespaces, types);
+    }
+
+    interface CompletionLoadListener {
+        CompletionLoadListener NONE = new CompletionLoadListener() {
+            @Override public void compatibilityFallback(String message) { }
+        };
+        void compatibilityFallback(String message);
+    }
+
     List<ColumnInfo> listColumns(
             DatabaseSession session,
             String catalog,
             String schema,
             String objectName) throws SQLException;
+
+    /** Completion-only fallback that may omit keys, defaults and other expensive structural details. */
+    default List<ColumnInfo> listCompletionColumns(DatabaseSession session, String catalog, String schema,
+                                                    String objectName) throws SQLException {
+        return listColumns(session, catalog, schema, objectName);
+    }
 
     default boolean isBaseTable(DatabaseSession session, String catalog, String schema,
                                 String objectName) throws SQLException {

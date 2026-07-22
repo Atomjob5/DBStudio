@@ -23,6 +23,7 @@ describe("SettingsDrawer compact result settings", () => {
         completionCacheSize: "1.2 MB",
         completionCacheEnvironmentCount: 3,
         completionCacheLoadingCount: 1,
+        completionCandidateLimit: 100,
         canClearCompletionCaches: true
       },
       global: { plugins: [ElementPlus], stubs: { teleport: true } }
@@ -32,7 +33,7 @@ describe("SettingsDrawer compact result settings", () => {
   it("renders compact connection and result settings without the old alert", async () => {
     const wrapper = mountDrawer();
     await flushPromises();
-    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(11);
+    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(12);
     expect(wrapper.findComponent({ name: "ElAlert" }).exists()).toBe(false);
     const separator = wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "comma");
@@ -51,7 +52,7 @@ describe("SettingsDrawer compact result settings", () => {
       expect.stringContaining("事件触发更频繁"),
       expect.stringContaining("字段集合完全一致"),
       expect.stringContaining("自动转义"),
-      expect.stringContaining("UTF-8字节数估算")
+      expect.stringContaining("IndexedDB")
     ]));
 
     expect(wrapper.get('[data-testid="completion-cache-stats"]').text()).toContain("约 1.2 MB · 3个环境 · 1项加载中");
@@ -61,8 +62,9 @@ describe("SettingsDrawer compact result settings", () => {
     numbers[0].vm.$emit("update:modelValue", 12);
     numbers[1].vm.$emit("update:modelValue", 15);
     numbers[2].vm.$emit("update:modelValue", 20);
-    numbers[3].vm.$emit("update:modelValue", 2500);
-    numbers[4].vm.$emit("update:modelValue", 50);
+    numbers[3].vm.$emit("update:modelValue", 250);
+    numbers[4].vm.$emit("update:modelValue", 2500);
+    numbers[5].vm.$emit("update:modelValue", 50);
     const switches = wrapper.findAllComponents({ name: "ElSwitch" });
     switches[0].vm.$emit("update:modelValue", false);
     switches[1].vm.$emit("update:modelValue", false);
@@ -75,6 +77,7 @@ describe("SettingsDrawer compact result settings", () => {
     expect(wrapper.emitted("update:maxActiveSessions")?.[0]).toEqual([12]);
     expect(wrapper.emitted("update:idleTimeoutMinutes")?.[0]).toEqual([15]);
     expect(wrapper.emitted("update:transactionDisconnectRollbackMinutes")?.[0]).toEqual([20]);
+    expect(wrapper.emitted("update:completionCandidateLimit")?.[0]).toEqual([250]);
     expect(wrapper.emitted("update:maxRows")?.[0]).toEqual([2500]);
     expect(wrapper.emitted("update:streamBatchRows")?.[0]).toEqual([50]);
     expect(wrapper.emitted("update:copyHeaderOnDoubleClick")?.[0]).toEqual([false]);

@@ -10,6 +10,7 @@ import java.sql.Connection;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -175,18 +176,35 @@ class QueryWebSocketIntegrationTest {
         Map<String, Object> body = new HashMap<String, Object>();
         body.put("loadId", "completion-integration");
         body.put("editorId", editorId);
+        Map<String, Object> namespaceResponse = exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId
+                + "/metadata/completion-namespaces", Collections.<String, Object>singletonMap("editorId", editorId), cookie);
+        List<Map<String, Object>> available = (List<Map<String, Object>>) namespaceResponse.get("namespaces");
+        List<Map<String, Object>> selected = new ArrayList<Map<String, Object>>();
+        for (Map<String, Object> namespace : available) {
+            if (Boolean.TRUE.equals(namespace.get("system"))) continue;
+            Map<String, Object> value = new HashMap<String, Object>();
+            value.put("catalog", namespace.get("catalog")); value.put("schema", namespace.get("schema"));
+            selected.add(value);
+        }
+        body.put("selectedNamespaces", selected);
         Map<String, Object> snapshot = exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId
                 + "/metadata/completion-snapshot", body, cookie);
         assertEquals("mysql", snapshot.get("providerId"));
-        List<Map<String, Object>> suggestions = (List<Map<String, Object>>) snapshot.get("suggestions");
-        assertTrue(suggestions.stream().anyMatch(value -> "table".equals(value.get("kind"))
-                && "result_column_comment".equals(value.get("label"))));
-        assertTrue(suggestions.stream().anyMatch(value -> "column".equals(value.get("kind"))
-                && "订单编号".equals(value.get("remarks"))));
-        assertEquals(2, suggestions.stream().filter(value -> "column".equals(value.get("kind"))
-                && "id".equals(value.get("label"))).count());
-        assertEquals(2, suggestions.stream().filter(value -> "column".equals(value.get("kind"))
-                && "id".equals(value.get("label"))).map(value -> String.valueOf(value.get("id"))).distinct().count());
+        assertEquals(1, snapshot.get("formatVersion"));
+        List<Map<String, Object>> namespaces = (List<Map<String, Object>>) snapshot.get("namespaces");
+        List<Map<String, Object>> objects = new ArrayList<Map<String, Object>>();
+        List<Map<String, Object>> columns = new ArrayList<Map<String, Object>>();
+        for (Map<String, Object> namespace : namespaces) {
+            List<Map<String, Object>> namespaceObjects = (List<Map<String, Object>>) namespace.get("objects");
+            objects.addAll(namespaceObjects);
+            for (Map<String, Object> object : namespaceObjects) {
+                columns.addAll((List<Map<String, Object>>) object.get("columns"));
+            }
+        }
+        assertTrue(objects.stream().anyMatch(value -> "table".equals(value.get("kind"))
+                && "result_column_comment".equals(value.get("name"))));
+        assertTrue(columns.stream().anyMatch(value -> "订单编号".equals(value.get("remarks"))));
+        assertEquals(2, columns.stream().filter(value -> "id".equals(value.get("name"))).count());
 
         boolean receivedProgress = false;
         Map<String, Object> event;
