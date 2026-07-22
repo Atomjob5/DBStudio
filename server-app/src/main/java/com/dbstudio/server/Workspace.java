@@ -291,7 +291,7 @@ final class Workspace implements AutoCloseable {
             WorkspaceJdbcPool.Lease lease = reference.pool.borrow();
             try {
                 QueryRunner runner = new QueryRunner(lease.session(), editors.maxRows(), editors.streamBatchRows(),
-                        reference.context.resultColumnResolver(), false);
+                        reference.context.resultColumnResolver(), reference.context.provider().dialect(), false);
                 editor.attachRunner(runner);
                 ActiveLease created = new ActiveLease(reference.pool, lease, runner);
                 activeLeases.put(editorId, created); return created;

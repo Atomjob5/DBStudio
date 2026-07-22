@@ -25,6 +25,11 @@ public final class FatJarVerifier {
         if (!jarFile.isFile() || !distIndex.isFile()) throw new IllegalStateException("Build outputs are missing");
         try (ZipFile jar = new ZipFile(jarFile)) {
             assertNoNestedEditorWeb(jar);
+            requireLibrary(jar, "database-mysql-");
+            requireLibrary(jar, "database-oracle-");
+            requireLibrary(jar, "database-oceanbase-oracle-");
+            requireLibrary(jar, "ojdbc8-19.31.0.0");
+            requireLibrary(jar, "oceanbase-client-2.4.17");
             ZipEntry indexEntry = require(jar, RESOURCE_ROOT + "index.html");
             byte[] embeddedIndex = read(jar.getInputStream(indexEntry));
             byte[] currentIndex = read(new FileInputStream(distIndex));
@@ -52,6 +57,15 @@ public final class FatJarVerifier {
         ZipEntry entry = jar.getEntry(name);
         if (entry == null) throw new IllegalStateException("Fat JAR entry is missing: " + name);
         return entry;
+    }
+
+    private static void requireLibrary(ZipFile jar, String prefix) {
+        Enumeration<? extends ZipEntry> entries = jar.entries();
+        while (entries.hasMoreElements()) {
+            String name = entries.nextElement().getName();
+            if (name.startsWith("BOOT-INF/lib/" + prefix) && name.endsWith(".jar")) return;
+        }
+        throw new IllegalStateException("Fat JAR library is missing: " + prefix);
     }
 
     private static byte[] read(InputStream input) throws IOException {

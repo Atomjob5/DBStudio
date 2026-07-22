@@ -115,7 +115,7 @@
                 </el-tabs>
                 <MonacoEditor v-if="editors.active" ref="monacoEditor" class="editor-widget" :model-key="editors.active.id"
                               :initial-value="editors.active.content" :theme="app.theme" :suggestions="metadata.suggestions"
-                              :default-catalog="editors.active.connection?.settings.database ?? ''"
+                              :default-catalog="editors.active.connection?.settings.schema || editors.active.connection?.settings.database || ''"
                               @dirty="markActiveDirty" @execute="executeFromEditor" @format="formatActive" />
                 <el-empty v-else class="workspace-empty" description="新建 SQL 标签开始查询">
                   <template #image><el-icon><Document /></el-icon></template>

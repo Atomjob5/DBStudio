@@ -22,6 +22,9 @@
                              controls-position="right" style="width:100%" @update:model-value="setNumber(field.key, $event)" />
             <el-switch v-else-if="field.type === 'BOOLEAN'" :model-value="form.settings[field.key] === 'true'"
                        @update:model-value="form.settings[field.key] = String($event)" />
+            <el-select v-else-if="field.type === 'SELECT'" v-model="form.settings[field.key]" style="width:100%">
+              <el-option v-for="option in field.options ?? []" :key="option.value" :label="option.label" :value="option.value" />
+            </el-select>
             <el-input v-else-if="field.type === 'PASSWORD'" v-model="form.password" type="password" show-password
                       :placeholder="profile?.rememberPassword ? '留空则继续使用系统密钥库中的密码' : field.description" />
             <el-input v-else v-model="form.settings[field.key]" :placeholder="field.description" />

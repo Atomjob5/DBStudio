@@ -4,5 +4,6 @@ public enum FieldType {
     TEXT,
     INTEGER,
     PASSWORD,
-    BOOLEAN
+    BOOLEAN,
+    SELECT
 }

@@ -148,13 +148,7 @@ final class WorkspaceJdbcPool implements AutoCloseable {
 
     private boolean reset(DatabaseSession session) {
         try {
-            Connection connection = session.jdbcConnection();
-            connection.rollback();
-            connection.clearWarnings();
-            connection.setReadOnly(false);
-            if (connection.getAutoCommit()) connection.setAutoCommit(false);
-            String catalog = context.profile().setting("database");
-            if (catalog != null && !catalog.trim().isEmpty()) connection.setCatalog(catalog);
+            context.provider().connections().resetSession(session, context.profile());
             return true;
         } catch (SQLException exception) { return false; }
     }

@@ -9,14 +9,21 @@ import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.Writer;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.math.BigDecimal;
+import java.sql.Date;
+import java.sql.ParameterMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Savepoint;
 import java.sql.Statement;
+import java.sql.Time;
+import java.sql.Timestamp;
+import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -51,16 +58,22 @@ public final class CsvService {
     public long importFile(DatabaseSession session, SqlDialect dialect, String catalog, String table,
                            Path file, Charset charset, char delimiter,
                            Map<String, String> sourceToTarget) throws SQLException, IOException {
-        return importFile(session, dialect, catalog, table, file, charset, delimiter, sourceToTarget,
+        return importFile(session, dialect, catalog, "", table, file, charset, delimiter, sourceToTarget,
                 new LongConsumer() { @Override public void accept(long value) { } });
     }
 
     public long importFile(DatabaseSession session, SqlDialect dialect, String catalog, String table,
                            Path file, Charset charset, char delimiter, Map<String, String> sourceToTarget,
                            LongConsumer progress) throws SQLException, IOException {
+        return importFile(session, dialect, catalog, "", table, file, charset, delimiter, sourceToTarget, progress);
+    }
+
+    public long importFile(DatabaseSession session, SqlDialect dialect, String catalog, String schema, String table,
+                           Path file, Charset charset, char delimiter, Map<String, String> sourceToTarget,
+                           LongConsumer progress) throws SQLException, IOException {
         if (sourceToTarget.isEmpty()) throw new IllegalArgumentException("至少映射一个字段");
         Map<String, String> mapping = new LinkedHashMap<String, String>(sourceToTarget);
-        String target = qualifiedName(dialect, catalog, table);
+        String target = dialect.qualifiedName(catalog, schema, table);
         List<String> columns = mapping.values().stream().map(dialect::quoteIdentifier).collect(Collectors.toList());
         List<String> placeholders = mapping.values().stream().map(value -> "?").collect(Collectors.toList());
         String sql = "INSERT INTO " + target + " (" + String.join(", ", columns) + ") VALUES ("
@@ -71,13 +84,14 @@ public final class CsvService {
         try (BufferedReader reader = Files.newBufferedReader(file, charset);
              CSVParser parser = csvFormat(delimiter).parse(reader);
              PreparedStatement statement = session.jdbcConnection().prepareStatement(sql)) {
+            int[] parameterTypes = parameterTypes(statement, mapping.size());
             int pending = 0;
             for (CSVRecord record : parser) {
                 int parameter = 1;
                 for (String source : mapping.keySet()) {
                     String value = record.get(source);
-                    if (NULL_VALUE.equals(value)) statement.setObject(parameter++, null);
-                    else statement.setString(parameter++, value);
+                    bindValue(statement, parameter, value, parameterTypes[parameter - 1]);
+                    parameter++;
                 }
                 statement.addBatch();
                 pending++;
@@ -179,15 +193,88 @@ public final class CsvService {
     private static CSVFormat exportFormat(char delimiter) {
         return CSVFormat.DEFAULT.builder().setDelimiter(delimiter).setRecordSeparator(System.lineSeparator()).get();
     }
-    private static String qualifiedName(SqlDialect dialect, String catalog, String table) {
-        String quotedTable = dialect.quoteIdentifier(table);
-        return catalog == null || catalog.trim().isEmpty() ? quotedTable
-                : dialect.quoteIdentifier(catalog) + "." + quotedTable;
-    }
     private static long successfulRows(int[] batchCounts) {
         long count = 0;
         for (int batchCount : batchCounts) count += batchCount >= 0 ? batchCount : 1;
         return count;
+    }
+
+    private static int[] parameterTypes(PreparedStatement statement, int count) {
+        int[] result = new int[count];
+        java.util.Arrays.fill(result, Types.VARCHAR);
+        try {
+            ParameterMetaData metadata = statement.getParameterMetaData();
+            for (int index = 1; index <= count; index++) result[index - 1] = metadata.getParameterType(index);
+        } catch (SQLException ignored) {
+            // Some drivers do not expose parameter metadata before execution. String binding remains safe fallback.
+        }
+        return result;
+    }
+
+    private static void bindValue(PreparedStatement statement, int parameter, String value, int jdbcType)
+            throws SQLException {
+        if (NULL_VALUE.equals(value)) {
+            statement.setNull(parameter, jdbcType == Types.NULL ? Types.VARCHAR : jdbcType);
+            return;
+        }
+        try {
+            switch (jdbcType) {
+                case Types.TINYINT:
+                case Types.SMALLINT:
+                case Types.INTEGER:
+                case Types.BIGINT:
+                case Types.FLOAT:
+                case Types.REAL:
+                case Types.DOUBLE:
+                case Types.NUMERIC:
+                case Types.DECIMAL:
+                    statement.setBigDecimal(parameter, new BigDecimal(value));
+                    return;
+                case Types.DATE:
+                    statement.setDate(parameter, Date.valueOf(value));
+                    return;
+                case Types.TIME:
+                case Types.TIME_WITH_TIMEZONE:
+                    statement.setTime(parameter, Time.valueOf(value));
+                    return;
+                case Types.TIMESTAMP:
+                case Types.TIMESTAMP_WITH_TIMEZONE:
+                    statement.setTimestamp(parameter, Timestamp.valueOf(value));
+                    return;
+                case Types.BIT:
+                case Types.BOOLEAN:
+                    statement.setBoolean(parameter, "1".equals(value) || "true".equalsIgnoreCase(value)
+                            || "yes".equalsIgnoreCase(value));
+                    return;
+                case Types.BINARY:
+                case Types.VARBINARY:
+                case Types.LONGVARBINARY:
+                case Types.BLOB:
+                    statement.setBytes(parameter, binaryValue(value));
+                    return;
+                case Types.CLOB:
+                case Types.NCLOB:
+                    statement.setString(parameter, value);
+                    return;
+                default:
+                    statement.setString(parameter, value);
+            }
+        } catch (IllegalArgumentException exception) {
+            throw new SQLException("CSV字段值与目标数据库类型不匹配（参数" + parameter + "，JDBC类型"
+                    + jdbcType + "）：" + value, exception);
+        }
+    }
+
+    private static byte[] binaryValue(String value) {
+        String hex = value.startsWith("0x") || value.startsWith("0X") ? value.substring(2) : "";
+        if (!hex.isEmpty() && hex.length() % 2 == 0 && hex.matches("[0-9A-Fa-f]+")) {
+            byte[] bytes = new byte[hex.length() / 2];
+            for (int index = 0; index < hex.length(); index += 2) {
+                bytes[index / 2] = (byte) Integer.parseInt(hex.substring(index, index + 2), 16);
+            }
+            return bytes;
+        }
+        return value.getBytes(StandardCharsets.UTF_8);
     }
     private static String exportValue(String value) { return value == null ? NULL_VALUE : value; }
 

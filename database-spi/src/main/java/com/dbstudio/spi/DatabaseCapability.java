@@ -11,6 +11,9 @@ public enum DatabaseCapability {
     PROCEDURES,
     FUNCTIONS,
     PACKAGES,
+    SEQUENCES,
+    SYNONYMS,
+    TYPES,
     EXPLAIN_PLAN,
     EDITABLE_RESULTS
 }

@@ -25,6 +25,18 @@
         </dependency>
         <dependency>
             <groupId>com.dbstudio</groupId>
+            <artifactId>database-oracle</artifactId>
+            <version>${project.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.dbstudio</groupId>
+            <artifactId>database-oceanbase-oracle</artifactId>
+            <version>${project.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.dbstudio</groupId>
             <artifactId>editor-web</artifactId>
             <version>${project.version}</version>
             <scope>runtime</scope>

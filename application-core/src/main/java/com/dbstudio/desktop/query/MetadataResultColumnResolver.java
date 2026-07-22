@@ -91,16 +91,7 @@ public final class MetadataResultColumnResolver implements ResultColumnResolver 
     }
 
     private String qualified(String catalog, String schema, String table) {
-        List<String> parts = new ArrayList<String>();
-        if (!catalog.isEmpty()) parts.add(dialect.quoteIdentifier(catalog));
-        if (!schema.isEmpty() && !schema.equalsIgnoreCase(catalog)) parts.add(dialect.quoteIdentifier(schema));
-        parts.add(dialect.quoteIdentifier(table));
-        StringBuilder value = new StringBuilder();
-        for (String part : parts) {
-            if (value.length() > 0) value.append('.');
-            value.append(part);
-        }
-        return value.toString();
+        return dialect.qualifiedName(catalog, schema, table);
     }
 
     private String remarks(ResultColumn column) {

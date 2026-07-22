@@ -119,14 +119,14 @@ export function copyGrid(columns: Array<{ label: string; index: number }>, rows:
 }
 
 export function copyInPredicate(columns: Array<{ index: number; quotedLabel: string; jdbcType: number }>,
-                                rows: ViewRow[]): string | undefined {
+                                rows: ViewRow[], dialectId = "mysql"): string | undefined {
   if (!columns.length || !rows.length) return undefined;
   if (columns.length === 1) {
     const column = columns[0]; const values: string[] = []; let hasNull = false;
     for (const row of rows) {
       const value = row.cells[column.index];
       if (value === null || value === undefined) hasNull = true;
-      else values.push(sqlLiteral(value, column.jdbcType));
+      else values.push(sqlLiteral(value, column.jdbcType, dialectId));
     }
     const unique = [...new Set(values)];
     const parts: string[] = [];
@@ -136,19 +136,19 @@ export function copyInPredicate(columns: Array<{ index: number; quotedLabel: str
   }
   if (rows.some((row) => columns.some((column) => row.cells[column.index] == null))) return undefined;
   const tuples = rows.map((row) => `(${columns.map((column) =>
-    sqlLiteral(row.cells[column.index] as string, column.jdbcType)).join(", ")})`);
+    sqlLiteral(row.cells[column.index] as string, column.jdbcType, dialectId)).join(", ")})`);
   return `(${columns.map((column) => column.quotedLabel).join(", ")}) IN (${[...new Set(tuples)].join(", ")})`;
 }
 
 export type RowSqlMode = "insert" | "update" | "delete";
 
 export function copyRowSql(mode: RowSqlMode, target: QueryMutationTarget | undefined,
-                           visibleColumnIndices: number[], rows: ViewRow[]): string | undefined {
+                           visibleColumnIndices: number[], rows: ViewRow[], dialectId = "mysql"): string | undefined {
   if (!target || !rows.length) return undefined;
   const visible = target.columns.filter((column) => visibleColumnIndices.includes(column.resultIndex));
   if (mode === "insert") {
     if (!visible.length) return undefined;
-    return rows.map((row) => `INSERT INTO ${target.qualifiedName} (${visible.map((column) => column.quotedName).join(", ")}) VALUES (${visible.map((column) => sqlLiteral(row.cells[column.resultIndex] ?? null, column.jdbcType)).join(", ")});`).join("\n");
+    return rows.map((row) => `INSERT INTO ${target.qualifiedName} (${visible.map((column) => column.quotedName).join(", ")}) VALUES (${visible.map((column) => sqlLiteral(row.cells[column.resultIndex] ?? null, column.jdbcType, dialectId)).join(", ")});`).join("\n");
   }
   const key = chooseKey(target.uniqueKeys, rows);
   if (!key) return undefined;
@@ -159,10 +159,10 @@ export function copyRowSql(mode: RowSqlMode, target: QueryMutationTarget | undef
   return rows.map((row) => {
     const where = key.resultColumnIndices.map((index) => {
       const column = byIndex.get(index) as QueryMutationTarget["columns"][number];
-      return `${column.quotedName} = ${sqlLiteral(row.cells[index] ?? null, column.jdbcType)}`;
+      return `${column.quotedName} = ${sqlLiteral(row.cells[index] ?? null, column.jdbcType, dialectId)}`;
     }).join(" AND ");
     if (mode === "delete") return `DELETE FROM ${target.qualifiedName} WHERE ${where};`;
-    return `UPDATE ${target.qualifiedName} SET ${setters.map((column) => `${column.quotedName} = ${sqlLiteral(row.cells[column.resultIndex] ?? null, column.jdbcType)}`).join(", ")} WHERE ${where};`;
+    return `UPDATE ${target.qualifiedName} SET ${setters.map((column) => `${column.quotedName} = ${sqlLiteral(row.cells[column.resultIndex] ?? null, column.jdbcType, dialectId)}`).join(", ")} WHERE ${where};`;
   }).join("\n");
 }
 
@@ -172,13 +172,20 @@ function chooseKey(keys: QueryMutationKey[], rows: ViewRow[]): QueryMutationKey 
     .find((key) => rows.every((row) => key.resultColumnIndices.every((index) => row.cells[index] != null)));
 }
 
-export function sqlLiteral(value: string | null, jdbcType: number): string {
+export function sqlLiteral(value: string | null, jdbcType: number, dialectId = "mysql"): string {
   if (value === null) return "NULL";
-  if (BINARY_TYPES.has(jdbcType) && /^0x[0-9a-f]+$/i.test(value)) return value;
+  const oracle = dialectId === "oracle" || dialectId === "oceanbase-oracle";
+  if (BINARY_TYPES.has(jdbcType) && /^0x[0-9a-f]+$/i.test(value)) {
+    return oracle ? `HEXTORAW('${value.slice(2)}')` : value;
+  }
   if (NUMBER_TYPES.has(jdbcType) && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value)) return value;
   if (BOOLEAN_TYPES.has(jdbcType)) {
-    if (/^(?:true|1)$/i.test(value)) return "TRUE";
-    if (/^(?:false|0)$/i.test(value)) return "FALSE";
+    if (/^(?:true|1)$/i.test(value)) return oracle ? "1" : "TRUE";
+    if (/^(?:false|0)$/i.test(value)) return oracle ? "0" : "FALSE";
+  }
+  if (oracle && jdbcType === 91 && /^\d{4}-\d{2}-\d{2}$/.test(value)) return `DATE '${value}'`;
+  if (oracle && [92, 93, 2013, 2014].includes(jdbcType) && /^\d{4}-\d{2}-\d{2}[ T]/.test(value)) {
+    return `TIMESTAMP '${value.replace("T", " ")}'`;
   }
   return `'${value.replace(/\\/g, "\\\\").replace(/'/g, "''")}'`;
 }

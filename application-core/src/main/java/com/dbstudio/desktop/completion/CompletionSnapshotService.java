@@ -1,8 +1,10 @@
 package com.dbstudio.desktop.completion;
 
 import com.dbstudio.spi.ColumnInfo;
+import com.dbstudio.spi.CompletionObjectInfo;
 import com.dbstudio.spi.DatabaseCapability;
 import com.dbstudio.spi.DatabaseObject;
+import com.dbstudio.spi.DatabaseNamespace;
 import com.dbstudio.spi.DatabaseObjectType;
 import com.dbstudio.spi.DatabaseProvider;
 import com.dbstudio.spi.DatabaseSession;
@@ -32,41 +34,48 @@ public final class CompletionSnapshotService {
                     keyword, keyword, provider.displayName() + " 关键字", ""));
         }
 
-        listener.progress("discovering", 0, 0, "正在扫描可见数据库…");
-        List<String> catalogs = provider.metadata().listCatalogs(session);
-        List<ObjectEntry> objects = new ArrayList<ObjectEntry>();
-        for (int catalogIndex = 0; catalogIndex < catalogs.size(); catalogIndex++) {
-            String catalog = catalogs.get(catalogIndex);
-            add(suggestions, identities, suggestion("database", catalog, "", "", catalog,
-                    catalog, provider.dialect().quoteIdentifier(catalog), "数据库 " + catalog, ""));
-            collect(provider, session, catalog, DatabaseObjectType.TABLE, DatabaseCapability.TABLES, objects);
-            collect(provider, session, catalog, DatabaseObjectType.VIEW, DatabaseCapability.VIEWS, objects);
-            collect(provider, session, catalog, DatabaseObjectType.FUNCTION, DatabaseCapability.FUNCTIONS, objects);
-            collect(provider, session, catalog, DatabaseObjectType.PROCEDURE, DatabaseCapability.PROCEDURES, objects);
-            listener.progress("discovering", catalogIndex + 1, catalogs.size(), "已扫描 " + catalog);
+        listener.progress("discovering", 0, 0, "正在扫描可见数据库命名空间…");
+        List<DatabaseNamespace> namespaces = provider.metadata().listNamespaces(session);
+        Set<DatabaseObjectType> requestedTypes = new LinkedHashSet<DatabaseObjectType>();
+        for (int namespaceIndex = 0; namespaceIndex < namespaces.size(); namespaceIndex++) {
+            DatabaseNamespace namespace = namespaces.get(namespaceIndex);
+            String namespaceKind = namespace.kind() == com.dbstudio.spi.NamespaceKind.SCHEMA ? "schema" : "database";
+            add(suggestions, identities, suggestion(namespaceKind, namespace.catalog(), namespace.schema(), "",
+                    namespace.label(), namespace.label(), provider.dialect().quoteIdentifier(namespace.label()),
+                    ("schema".equals(namespaceKind) ? "Schema " : "数据库 ") + namespace.label(), ""));
+            listener.progress("discovering", namespaceIndex + 1, namespaces.size(), "已扫描 " + namespace.label());
         }
+        request(provider, requestedTypes, DatabaseObjectType.TABLE, DatabaseCapability.TABLES);
+        request(provider, requestedTypes, DatabaseObjectType.VIEW, DatabaseCapability.VIEWS);
+        request(provider, requestedTypes, DatabaseObjectType.FUNCTION, DatabaseCapability.FUNCTIONS);
+        request(provider, requestedTypes, DatabaseObjectType.PROCEDURE, DatabaseCapability.PROCEDURES);
+        request(provider, requestedTypes, DatabaseObjectType.SEQUENCE, DatabaseCapability.SEQUENCES);
+        List<CompletionObjectInfo> objects = new ArrayList<CompletionObjectInfo>(
+                provider.metadata().listCompletionObjects(session, namespaces, requestedTypes));
 
-        Collections.sort(objects, new Comparator<ObjectEntry>() {
-            @Override public int compare(ObjectEntry left, ObjectEntry right) {
-                int catalog = left.object.catalog().compareToIgnoreCase(right.object.catalog());
+        Collections.sort(objects, new Comparator<CompletionObjectInfo>() {
+            @Override public int compare(CompletionObjectInfo left, CompletionObjectInfo right) {
+                int catalog = left.object().catalog().compareToIgnoreCase(right.object().catalog());
                 if (catalog != 0) return catalog;
-                int type = left.object.type().name().compareTo(right.object.type().name());
-                return type != 0 ? type : left.object.name().compareToIgnoreCase(right.object.name());
+                int schema = left.object().schema().compareToIgnoreCase(right.object().schema());
+                if (schema != 0) return schema;
+                int type = left.object().type().name().compareTo(right.object().type().name());
+                return type != 0 ? type : left.object().name().compareToIgnoreCase(right.object().name());
             }
         });
         for (int index = 0; index < objects.size(); index++) {
-            DatabaseObject object = objects.get(index).object;
+            CompletionObjectInfo completionObject = objects.get(index);
+            DatabaseObject object = completionObject.object();
             String kind = kind(object.type());
-            String detail = qualified(object.catalog(), object.name()) + " · " + object.type().displayName();
+            String detail = qualified(object.catalog(), object.schema(), object.name()) + " · " + object.type().displayName();
             if (!object.remarks().trim().isEmpty()) detail += " · " + object.remarks().trim();
             add(suggestions, identities, suggestion(kind, object.catalog(), object.schema(), object.name(),
                     object.name(), object.name(), provider.dialect().quoteIdentifier(object.name()),
                     detail, object.remarks()));
 
             if (object.type() == DatabaseObjectType.TABLE || object.type() == DatabaseObjectType.VIEW) {
-                for (ColumnInfo column : provider.metadata().listColumns(
-                        session, object.catalog(), object.schema(), object.name())) {
-                    String columnDetail = qualified(object.catalog(), object.name()) + " · " + column.typeName();
+                for (ColumnInfo column : completionObject.columns()) {
+                    String columnDetail = qualified(object.catalog(), object.schema(), object.name()) + " · " + column.typeName();
                     if (column.primaryKey()) columnDetail += " · 主键";
                     if (!column.remarks().trim().isEmpty()) columnDetail += " · " + column.remarks().trim();
                     add(suggestions, identities, suggestion("column", object.catalog(), object.schema(),
@@ -74,24 +83,21 @@ public final class CompletionSnapshotService {
                             provider.dialect().quoteIdentifier(column.name()), columnDetail, column.remarks()));
                 }
             }
-            listener.progress("loading", index + 1, objects.size(), qualified(object.catalog(), object.name()));
+            listener.progress("loading", index + 1, objects.size(), qualified(object.catalog(), object.schema(), object.name()));
         }
         return new Snapshot(provider.id(), sourceProfileId, Instant.now().toString(), suggestions);
     }
 
-    private static void collect(DatabaseProvider provider, DatabaseSession session, String catalog,
-                                DatabaseObjectType type, DatabaseCapability capability,
-                                List<ObjectEntry> target) throws SQLException {
-        if (!provider.capabilities().supports(capability)) return;
-        for (DatabaseObject object : provider.metadata().listObjects(session, catalog, type)) {
-            target.add(new ObjectEntry(object));
-        }
+    private static void request(DatabaseProvider provider, Set<DatabaseObjectType> target,
+                                DatabaseObjectType type, DatabaseCapability capability) {
+        if (provider.capabilities().supports(capability)) target.add(type);
     }
 
     private static String kind(DatabaseObjectType type) {
         if (type == DatabaseObjectType.VIEW) return "view";
         if (type == DatabaseObjectType.FUNCTION) return "function";
         if (type == DatabaseObjectType.PROCEDURE) return "procedure";
+        if (type == DatabaseObjectType.SEQUENCE) return "sequence";
         return "table";
     }
 
@@ -107,13 +113,9 @@ public final class CompletionSnapshotService {
         if (identities.add(suggestion.id())) target.add(suggestion);
     }
 
-    private static String qualified(String catalog, String name) {
-        return catalog == null || catalog.trim().isEmpty() ? name : catalog + "." + name;
-    }
-
-    private static final class ObjectEntry {
-        private final DatabaseObject object;
-        private ObjectEntry(DatabaseObject object) { this.object = object; }
+    private static String qualified(String catalog, String schema, String name) {
+        String namespace = schema == null || schema.trim().isEmpty() ? catalog : schema;
+        return namespace == null || namespace.trim().isEmpty() ? name : namespace + "." + name;
     }
 
     public interface ProgressListener {

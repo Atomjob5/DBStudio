@@ -7,6 +7,25 @@ const providers = [{ id: "mysql", displayName: "MySQL", capabilities: ["TABLES",
   { key: "username", label: "用户名", type: "TEXT", required: true, defaultValue: "root", description: "用户名" },
   { key: "password", label: "密码", type: "PASSWORD", required: false, defaultValue: "", description: "密码" },
   { key: "timeoutSeconds", label: "连接超时（秒）", type: "NUMBER", required: true, defaultValue: "10", description: "连接超时" }
+] }, { id: "oracle", displayName: "Oracle 19c / 21c", capabilities: ["SCHEMAS", "TABLES", "VIEWS", "PROCEDURES", "PACKAGES", "SEQUENCES"], fields: [
+  { key: "host", label: "主机", type: "TEXT", required: true, defaultValue: "127.0.0.1", description: "数据库主机" },
+  { key: "port", label: "端口", type: "NUMBER", required: true, defaultValue: "1521", description: "监听端口" },
+  { key: "connectionMode", label: "连接方式", type: "SELECT", required: true, defaultValue: "service", description: "Oracle连接标识类型", options: [
+    { value: "service", label: "Service Name" }, { value: "sid", label: "SID" }
+  ] },
+  { key: "service", label: "Service Name / SID", type: "TEXT", required: true, defaultValue: "ORCL", description: "服务名或SID" },
+  { key: "username", label: "用户名", type: "TEXT", required: true, defaultValue: "system", description: "用户名" },
+  { key: "password", label: "密码", type: "PASSWORD", required: false, defaultValue: "", description: "密码" },
+  { key: "schema", label: "默认Schema", type: "TEXT", required: false, defaultValue: "", description: "默认Schema" },
+  { key: "timeoutSeconds", label: "连接超时（秒）", type: "NUMBER", required: true, defaultValue: "10", description: "连接超时" }
+] }, { id: "oceanbase-oracle", displayName: "OceanBase Oracle 模式", capabilities: ["SCHEMAS", "TABLES", "VIEWS", "PROCEDURES", "PACKAGES", "SEQUENCES"], fields: [
+  { key: "host", label: "主机", type: "TEXT", required: true, defaultValue: "127.0.0.1", description: "数据库主机" },
+  { key: "port", label: "端口", type: "NUMBER", required: true, defaultValue: "2881", description: "OceanBase端口" },
+  { key: "database", label: "数据库 / 服务名", type: "TEXT", required: true, defaultValue: "", description: "Oracle模式租户服务名" },
+  { key: "username", label: "用户名", type: "TEXT", required: true, defaultValue: "", description: "可包含租户及集群后缀" },
+  { key: "password", label: "密码", type: "PASSWORD", required: false, defaultValue: "", description: "密码" },
+  { key: "schema", label: "默认Schema", type: "TEXT", required: false, defaultValue: "", description: "默认Schema" },
+  { key: "timeoutSeconds", label: "连接超时（秒）", type: "NUMBER", required: true, defaultValue: "10", description: "连接超时" }
 ] }];
 const systems = [{ id: "system-demo", name: "核心系统", revision: "1" }];
 const environments = [{ id: "environment-dev", systemId: "system-demo", name: "DEV", revision: "1" }];

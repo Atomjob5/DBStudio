@@ -207,7 +207,8 @@ public final class EditorSessionRegistry implements AutoCloseable {
             DatabaseSession opened = current.openEditorSession();
             try {
                 ResultColumnResolver resolver = current.resultColumnResolver();
-                runner = new QueryRunner(opened, maxRows, streamBatchRows, resolver);
+                runner = new QueryRunner(opened, maxRows, streamBatchRows, resolver,
+                        current.provider().dialect(), true);
                 opened = null;
             } finally {
                 if (opened != null) opened.close();

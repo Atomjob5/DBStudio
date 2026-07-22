@@ -58,7 +58,7 @@ export const useConnectionStore = defineStore("connection", () => {
     if (!environment) return undefined;
     const system = systems.value.find((item) => item.id === environment.systemId);
     if (!system) return undefined;
-    return { key: `${system.id}:${environment.id}`, systemId: system.id, environmentId: environment.id,
+    return { key: `${system.id}:${environment.id}:${profile.providerId}`, systemId: system.id, environmentId: environment.id,
       label: `${system.name} / ${environment.name}` };
   }
 

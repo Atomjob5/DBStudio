@@ -145,20 +145,22 @@ describe("application stores", () => {
     expect(environmentOptions[1].children[0]).toMatchObject({ label: "SIT / 业务库", menuLabel: "业务库" });
   });
 
-  it("shares completion context by system and environment instead of connection revision", () => {
+  it("shares completion context by system, environment and provider instead of connection revision", () => {
     const connections = useConnectionStore();
     const first = { id: "p-1", providerId: "mysql", name: "主库", settings: {}, rememberPassword: false,
       environmentId: "e-dev", revision: "1" };
     const second = { ...first, id: "p-2", name: "只读库", revision: "8" };
     const sit = { ...first, id: "p-3", environmentId: "e-sit" };
-    connections.initialize([], [first, second, sit], [{ id: "s-order", name: "订单系统", revision: "1" }], [
+    const oracle = { ...first, id: "p-4", providerId: "oracle" };
+    connections.initialize([], [first, second, sit, oracle], [{ id: "s-order", name: "订单系统", revision: "1" }], [
       { id: "e-dev", systemId: "s-order", name: "DEV", revision: "1" },
       { id: "e-sit", systemId: "s-order", name: "SIT", revision: "1" }
     ]);
 
-    expect(connections.completionContext(first)?.key).toBe("s-order:e-dev");
-    expect(connections.completionContext(second)?.key).toBe("s-order:e-dev");
-    expect(connections.completionContext(sit)?.key).toBe("s-order:e-sit");
+    expect(connections.completionContext(first)?.key).toBe("s-order:e-dev:mysql");
+    expect(connections.completionContext(second)?.key).toBe("s-order:e-dev:mysql");
+    expect(connections.completionContext(sit)?.key).toBe("s-order:e-sit:mysql");
+    expect(connections.completionContext(oracle)?.key).toBe("s-order:e-dev:oracle");
   });
 
   it("deduplicates completion loads and atomically replaces an environment snapshot", () => {

@@ -8,6 +8,11 @@ public interface DatabaseSession extends AutoCloseable {
 
     String currentCatalog() throws SQLException;
 
+    default String currentSchema() throws SQLException {
+        String schema = jdbcConnection().getSchema();
+        return schema == null ? "" : schema;
+    }
+
     default void commit() throws SQLException {
         jdbcConnection().commit();
     }

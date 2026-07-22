@@ -664,12 +664,14 @@ async function copyCurrentSelection(includeHeaders = false): Promise<void> {
 
 function inPredicate(): string | undefined {
   return copyInPredicate(selectedCellColumns.value.map((column) => ({ index: column.index,
-    quotedLabel: column.quotedLabel || column.label, jdbcType: column.jdbcType ?? 12 })), selectedCellRows.value);
+    quotedLabel: column.quotedLabel || column.label, jdbcType: column.jdbcType ?? 12 })), selectedCellRows.value,
+    activeResult.value?.dialectId);
 }
 
 function rowSql(mode: "insert" | "update" | "delete"): string | undefined {
   return copyRowSql(mode, activeResult.value?.mutationTarget,
-    visibleColumnOptions.value.map((column) => column.index), selectedRowsInDisplayOrder.value);
+    visibleColumnOptions.value.map((column) => column.index), selectedRowsInDisplayOrder.value,
+    activeResult.value?.dialectId);
 }
 
 const canCopyIn = computed(() => selectionMode.value === "cells" && !!inPredicate());

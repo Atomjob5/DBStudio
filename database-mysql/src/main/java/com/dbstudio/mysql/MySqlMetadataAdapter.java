@@ -45,6 +45,9 @@ public final class MySqlMetadataAdapter implements MetadataAdapter {
             case TABLE: return tables(session, catalog, new String[]{"TABLE"}, DatabaseObjectType.TABLE);
             case VIEW: return tables(session, catalog, new String[]{"VIEW"}, DatabaseObjectType.VIEW);
             case INDEX: return indexes(session, catalog);
+            case CONSTRAINT: return queryNamedObjects(session, catalog, DatabaseObjectType.CONSTRAINT,
+                    "SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS "
+                            + "WHERE CONSTRAINT_SCHEMA=? ORDER BY TABLE_NAME, CONSTRAINT_NAME");
             case TRIGGER: return queryNamedObjects(session, catalog, DatabaseObjectType.TRIGGER,
                     "SELECT TRIGGER_NAME FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=? ORDER BY TRIGGER_NAME");
             case PROCEDURE: return routines(session, catalog, "PROCEDURE", DatabaseObjectType.PROCEDURE);

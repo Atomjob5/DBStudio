@@ -64,6 +64,13 @@ public final class MySqlConnectionAdapter implements ConnectionAdapter {
         return new JdbcDatabaseSession(connection);
     }
 
+    @Override
+    public void resetSession(DatabaseSession session, ConnectionProfile profile) throws SQLException {
+        ConnectionAdapter.super.resetSession(session, profile);
+        String catalog = profile.setting("database");
+        if (!catalog.trim().isEmpty()) session.jdbcConnection().setCatalog(catalog);
+    }
+
     public static String buildJdbcUrl(ConnectionProfile profile) {
         String host = required(profile, "host");
         if (host.contains("/") || host.contains("?") || host.contains("#")) {

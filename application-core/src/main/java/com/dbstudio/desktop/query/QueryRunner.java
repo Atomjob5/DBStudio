@@ -3,6 +3,8 @@ package com.dbstudio.desktop.query;
 import com.dbstudio.spi.DatabaseSession;
 import com.dbstudio.spi.SqlStatement;
 import com.dbstudio.spi.StatementType;
+import com.dbstudio.spi.SqlDialect;
+import com.dbstudio.spi.TransactionEffect;
 import java.io.IOException;
 import java.io.Reader;
 import java.sql.Blob;
@@ -38,19 +40,26 @@ public final class QueryRunner implements AutoCloseable {
     private final AtomicReference<Statement> activeStatement = new AtomicReference<Statement>();
     private final AtomicBoolean transactionDirty = new AtomicBoolean();
     private final ResultColumnResolver columnResolver;
+    private final SqlDialect dialect;
     private volatile int maxRows;
     private volatile int streamBatchRows;
 
     public QueryRunner(DatabaseSession session, int maxRows, int streamBatchRows,
                        ResultColumnResolver columnResolver) {
-        this(session, maxRows, streamBatchRows, columnResolver, true);
+        this(session, maxRows, streamBatchRows, columnResolver, null, true);
     }
 
     public QueryRunner(DatabaseSession session, int maxRows, int streamBatchRows,
                        ResultColumnResolver columnResolver, boolean ownsSession) {
+        this(session, maxRows, streamBatchRows, columnResolver, null, ownsSession);
+    }
+
+    public QueryRunner(DatabaseSession session, int maxRows, int streamBatchRows,
+                       ResultColumnResolver columnResolver, SqlDialect dialect, boolean ownsSession) {
         this.session = Objects.requireNonNull(session, "session");
         this.ownsSession = ownsSession;
         this.columnResolver = Objects.requireNonNull(columnResolver, "columnResolver");
+        this.dialect = dialect;
         this.maxRows = Math.max(1, maxRows);
         this.streamBatchRows = Math.max(1, streamBatchRows);
         this.executor = Executors.newSingleThreadExecutor(new ThreadFactory() {
@@ -194,8 +203,8 @@ public final class QueryRunner implements AutoCloseable {
             statement.setMaxRows(statementMaxRows + 1);
             activeStatement.set(statement);
             boolean hasResult = statement.execute(sqlStatement.text());
-            updateTransactionState(sqlStatement, hasResult);
-            if (sqlStatement.type().implicitlyCommitsInMySql()) {
+            TransactionEffect effect = updateTransactionState(sqlStatement, hasResult);
+            if (effect == TransactionEffect.IMPLICIT_COMMIT) {
                 columnResolver.invalidate();
             }
 
@@ -354,43 +363,27 @@ public final class QueryRunner implements AutoCloseable {
         return lower.contains("cancel") || lower.contains("interrupt");
     }
 
-    private void updateTransactionState(SqlStatement statement, boolean hasResult) {
-        StatementType type = statement.type();
-        String normalized = leadingKeyword(statement.text());
-        if (type.modifiesData() || type == StatementType.OTHER) {
-            transactionDirty.set(true);
-            return;
-        }
-        if (type == StatementType.DDL) {
+    private TransactionEffect updateTransactionState(SqlStatement statement, boolean hasResult) {
+        TransactionEffect effect = dialect == null
+                ? defaultTransactionEffect(statement, hasResult)
+                : dialect.transactionEffect(statement, hasResult);
+        if (effect == TransactionEffect.DIRTY) transactionDirty.set(true);
+        else if (effect == TransactionEffect.END || effect == TransactionEffect.IMPLICIT_COMMIT) {
             transactionDirty.set(false);
-            return;
         }
-        if (type == StatementType.TRANSACTION) {
-            if ("COMMIT".equals(normalized) || "ROLLBACK".equals(normalized)) transactionDirty.set(false);
-            else transactionDirty.set(true);
-            return;
-        }
-        if (type == StatementType.QUERY) {
-            /* WITH can prefix UPDATE/DELETE/INSERT in MySQL. If a statement classified as a
-             * query produces an update count instead of a ResultSet, pin the connection rather
-             * than risk returning an uncommitted transaction to the shared queue. */
-            if (!hasResult) {
-                transactionDirty.set(true);
-                return;
-            }
-            String upper = statement.text().toUpperCase(java.util.Locale.ROOT);
-            if (upper.matches("(?s).*\\bFOR\\s+(UPDATE|SHARE)\\b.*")
-                    || upper.matches("(?s).*\\bLOCK\\s+IN\\s+SHARE\\s+MODE\\b.*")) {
-                transactionDirty.set(true);
-            }
-        }
+        return effect;
     }
 
-    private static String leadingKeyword(String sql) {
-        if (sql == null) return "";
-        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(
-                "(?is)^\\s*(?:/\\*.*?\\*/\\s*)*(?:--[^\\r\\n]*(?:[\\r\\n]+|$)\\s*)*([a-z]+)").matcher(sql);
-        return matcher.find() ? matcher.group(1).toUpperCase(java.util.Locale.ROOT) : "";
+    private static TransactionEffect defaultTransactionEffect(SqlStatement statement, boolean hasResult) {
+        StatementType type = statement.type();
+        if (type.modifiesData() || type == StatementType.OTHER) return TransactionEffect.DIRTY;
+        if (type == StatementType.DDL) return TransactionEffect.IMPLICIT_COMMIT;
+        if (type == StatementType.TRANSACTION) {
+            String upper = statement.text().trim().toUpperCase(java.util.Locale.ROOT);
+            return upper.startsWith("COMMIT") || upper.startsWith("ROLLBACK")
+                    ? TransactionEffect.END : TransactionEffect.DIRTY;
+        }
+        return type == StatementType.QUERY && !hasResult ? TransactionEffect.DIRTY : TransactionEffect.NONE;
     }
 
     @Override

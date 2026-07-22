@@ -25,7 +25,7 @@
             <el-dropdown-menu>
               <el-dropdown-item command="open" :disabled="!isTableLike(data)">打开表数据</el-dropdown-item>
               <el-dropdown-item command="query" :disabled="!isTableLike(data)">生成 SELECT</el-dropdown-item>
-              <el-dropdown-item command="definition" :disabled="data.kind !== 'object' || data.objectType === 'INDEX'">查看定义</el-dropdown-item>
+              <el-dropdown-item command="definition" :disabled="data.kind !== 'object'">查看定义</el-dropdown-item>
               <el-dropdown-item command="refresh">刷新</el-dropdown-item>
             </el-dropdown-menu>
           </template>
@@ -88,7 +88,7 @@ function onCommand(command: string, node: MetadataNode): void {
   else if (command === "refresh") refresh();
 }
 function iconFor(node: MetadataNode): unknown {
-  if (node.kind === "catalog") return Coin;
+  if (node.kind === "catalog" || node.kind === "schema") return Coin;
   if (node.kind === "group") return Folder;
   if (node.kind === "column") return Tickets;
   if (node.objectType === "TABLE") return Grid;

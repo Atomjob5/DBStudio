@@ -14,6 +14,8 @@ import com.dbstudio.spi.ResultMutationSource;
 import com.dbstudio.spi.SqlDialect;
 import com.dbstudio.spi.SqlStatement;
 import com.dbstudio.spi.StatementType;
+import com.dbstudio.spi.DatabaseObject;
+import com.dbstudio.spi.TransactionEffect;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -197,6 +199,22 @@ public final class MySqlDialect implements SqlDialect {
         } catch (RuntimeException exception) {
             throw new IllegalArgumentException("无法格式化当前 SQL：" + exception.getMessage(), exception);
         }
+    }
+
+    @Override
+    public String previewQuery(DatabaseObject object, int maxRows) {
+        return "SELECT *\nFROM " + qualifiedName(object.catalog(), object.schema(), object.name())
+                + "\nLIMIT " + Math.max(1, maxRows) + ";";
+    }
+
+    @Override
+    public TransactionEffect transactionEffect(SqlStatement statement, boolean producedResultSet) {
+        TransactionEffect base = SqlDialect.super.transactionEffect(statement, producedResultSet);
+        if (base != TransactionEffect.NONE || statement.type() != StatementType.QUERY) return base;
+        String upper = statement.text().toUpperCase(Locale.ROOT);
+        return upper.matches("(?s).*\\bFOR\\s+(UPDATE|SHARE)\\b.*")
+                || upper.matches("(?s).*\\bLOCK\\s+IN\\s+SHARE\\s+MODE\\b.*")
+                ? TransactionEffect.DIRTY : TransactionEffect.NONE;
     }
 
     @Override

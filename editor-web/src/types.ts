@@ -1,4 +1,4 @@
-export type FieldType = "TEXT" | "NUMBER" | "PASSWORD" | "BOOLEAN";
+export type FieldType = "TEXT" | "NUMBER" | "PASSWORD" | "BOOLEAN" | "SELECT";
 export type ThemePreference = "system" | "light" | "dark";
 export type ResolvedTheme = "light" | "dark";
 
@@ -9,6 +9,7 @@ export interface ConnectionField {
   required: boolean;
   defaultValue: string;
   description: string;
+  options?: Array<{ value: string; label: string }>;
 }
 
 export interface ProviderInfo {
@@ -107,7 +108,7 @@ export interface ConnectionInput {
 export interface MetadataNode {
   id: string;
   label: string;
-  kind: "catalog" | "group" | "object" | "column";
+  kind: "catalog" | "schema" | "group" | "object" | "column";
   leaf: boolean;
   catalog?: string;
   schema?: string;
@@ -122,7 +123,7 @@ export interface Suggestion {
   label: string;
   insertText: string;
   detail: string;
-  kind: "keyword" | "database" | "table" | "view" | "column" | "function" | "procedure";
+  kind: "keyword" | "database" | "catalog" | "schema" | "table" | "view" | "column" | "function" | "procedure" | "sequence";
   catalog?: string;
   schema?: string;
   objectName?: string;
@@ -208,6 +209,7 @@ export interface QueryResult {
   columns: string[];
   columnDetails?: QueryColumn[];
   mutationTarget?: QueryMutationTarget;
+  dialectId?: string;
   rows: Array<Array<string | null>>;
   updateCount: number;
   truncated: boolean;

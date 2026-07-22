@@ -25,9 +25,11 @@ import com.dbstudio.desktop.security.SecretStore;
 import com.dbstudio.desktop.web.EditorSessionRegistry.EditorSession;
 import com.dbstudio.spi.ColumnInfo;
 import com.dbstudio.spi.ConnectionField;
+import com.dbstudio.spi.ConnectionFieldOption;
 import com.dbstudio.spi.ConnectionProfile;
 import com.dbstudio.spi.ConnectionTestResult;
 import com.dbstudio.spi.DatabaseCapability;
+import com.dbstudio.spi.DatabaseNamespace;
 import com.dbstudio.spi.DatabaseObject;
 import com.dbstudio.spi.DatabaseObjectType;
 import com.dbstudio.spi.DatabaseProvider;
@@ -281,33 +283,43 @@ public final class DbStudioApiController {
             if (kind.isEmpty() || "root".equals(kind)) {
                 context.resultColumnResolver().invalidate();
                 List<Map<String, Object>> nodes = new ArrayList<Map<String, Object>>();
-                for (String catalog : context.provider().metadata().listCatalogs(context.metadataSession())) {
-                    nodes.add(node("catalog", catalog, false, catalog, null, null, null,
-                            "数据库 " + catalog));
+                for (DatabaseNamespace namespace : context.provider().metadata().listNamespaces(context.metadataSession())) {
+                    String namespaceKind = namespace.kind().name().toLowerCase(java.util.Locale.ROOT);
+                    nodes.add(node(namespaceKind, namespace.label(), false, namespace.catalog(), namespace.schema(),
+                            null, null, namespace.kind() == com.dbstudio.spi.NamespaceKind.SCHEMA
+                                    ? "Schema " + namespace.label() : "数据库 " + namespace.label()));
                 }
                 return nodes;
             }
-            if ("catalog".equals(kind)) return metadataGroups(context.provider(), ApiPayloads.required(body, "catalog"));
+            if ("catalog".equals(kind) || "schema".equals(kind)) {
+                return metadataGroups(context.provider(), ApiPayloads.text(body, "catalog"),
+                        ApiPayloads.text(body, "schema"));
+            }
             if ("group".equals(kind)) {
-                String catalog = ApiPayloads.required(body, "catalog");
+                String catalog = ApiPayloads.text(body, "catalog");
+                String schema = ApiPayloads.text(body, "schema");
                 DatabaseObjectType type = objectType(ApiPayloads.required(body, "objectType"));
                 List<Map<String, Object>> nodes = new ArrayList<Map<String, Object>>();
                 for (DatabaseObject object : context.provider().metadata().listObjects(
-                        context.metadataSession(), catalog, type)) {
+                        context.metadataSession(), new DatabaseNamespace(catalog, schema,
+                                schema.isEmpty() ? catalog : schema,
+                                schema.isEmpty() ? com.dbstudio.spi.NamespaceKind.CATALOG
+                                        : com.dbstudio.spi.NamespaceKind.SCHEMA, false), type)) {
                     boolean leaf = object.type() != DatabaseObjectType.TABLE && object.type() != DatabaseObjectType.VIEW;
-                    nodes.add(node("object", object.name(), leaf, catalog, object.schema(),
+                    nodes.add(node("object", object.name(), leaf, object.catalog(), object.schema(),
                             object.type().name(), object.name(), object.remarks()));
                 }
                 return nodes;
             }
             if ("object".equals(kind)) {
-                String catalog = ApiPayloads.required(body, "catalog");
+                String catalog = ApiPayloads.text(body, "catalog");
+                String schema = ApiPayloads.text(body, "schema");
                 String name = ApiPayloads.required(body, "name");
                 List<Map<String, Object>> nodes = new ArrayList<Map<String, Object>>();
                 for (ColumnInfo column : context.provider().metadata().listColumns(
-                        context.metadataSession(), catalog, ApiPayloads.text(body, "schema"), name)) {
+                        context.metadataSession(), catalog, schema, name)) {
                     String detail = column.typeName() + (column.primaryKey() ? " · 主键" : "");
-                    nodes.add(node("column", column.name(), true, catalog, "", "COLUMN", column.name(), detail));
+                    nodes.add(node("column", column.name(), true, catalog, schema, "COLUMN", column.name(), detail));
                 }
                 return nodes;
             }
@@ -386,13 +398,8 @@ public final class DbStudioApiController {
     public Map<String, Object> metadataQuery(@PathVariable String workspaceId,
                                               @RequestBody Map<String, Object> body) {
         DatabaseContext context = databaseFor(workspaces.require(workspaceId), body);
-        String catalog = ApiPayloads.text(body, "catalog");
-        String name = ApiPayloads.required(body, "name");
-        String qualified = catalog.trim().isEmpty()
-                ? context.provider().dialect().quoteIdentifier(name)
-                : context.provider().dialect().quoteIdentifier(catalog) + "."
-                + context.provider().dialect().quoteIdentifier(name);
-        return ApiPayloads.map("sql", "SELECT *\nFROM " + qualified + "\nLIMIT 1000;");
+        DatabaseObject object = objectFrom(body);
+        return ApiPayloads.map("sql", context.provider().dialect().previewQuery(object, 1000));
     }
 
     @PostMapping("/workspaces/{workspaceId}/editors")
@@ -466,7 +473,7 @@ public final class DbStudioApiController {
         final QueryResultListener listener = new QueryResultListener() {
             @Override public void resultStarted(int resultIndex, String sql, StatementType type, List<String> columns) {
                 emitResultMetadata(workspace, editorId, resultIndex, sql, type, columns,
-                        basicColumnDetails(columns), null);
+                        basicColumnDetails(columns), null, context.provider().dialect().id());
             }
             @Override public void resultMetadata(int resultIndex, String sql, StatementType type,
                                                  List<ResultColumn> columns, ResultMutationTarget mutationTarget) {
@@ -480,7 +487,7 @@ public final class DbStudioApiController {
                             "quotedLabel", column.quotedLabel()));
                 }
                 emitResultMetadata(workspace, editorId, resultIndex, sql, type, labels, details,
-                        mutationTargetPayload(mutationTarget));
+                        mutationTargetPayload(mutationTarget), context.provider().dialect().id());
             }
             @Override public void rows(int resultIndex, List<List<String>> rows) {
                 workspace.events().emit("query.rows", ApiPayloads.map(
@@ -503,10 +510,12 @@ public final class DbStudioApiController {
 
     private void emitResultMetadata(Workspace workspace, String editorId, int resultIndex, String sql,
                                     StatementType type, List<String> columns,
-                                    List<Map<String, Object>> columnDetails, Map<String, Object> mutationTarget) {
+                                    List<Map<String, Object>> columnDetails, Map<String, Object> mutationTarget,
+                                    String dialectId) {
         workspace.events().emit("query.resultMeta", ApiPayloads.map("editorId", editorId,
                 "resultIndex", resultIndex, "sql", sql, "type", type.name(), "columns", columns,
                 "columnDetails", columnDetails, "mutationTarget", mutationTarget,
+                "dialectId", dialectId,
                 "rows", Collections.emptyList(), "updateCount", -1,
                 "truncated", false, "durationMs", 0, "complete", false));
     }
@@ -740,7 +749,8 @@ public final class DbStudioApiController {
             DatabaseContext context = workspace.requireEditorDatabase(editor);
             try (DatabaseSession session = context.openEditorSession()) {
                 long rows = csv.importFile(session, context.provider().dialect(),
-                        context.profile().setting("database"), table, workspace.requireUpload(uploadId),
+                        context.profile().setting("database"), context.profile().setting("schema"), table,
+                        workspace.requireUpload(uploadId),
                         charset, delimiter, mapping, count -> workspace.events().emit("task.progress",
                                 ApiPayloads.map("taskId", id, "message", "已导入 " + count + " 行", "rows", count)));
                 session.commit();
@@ -1011,9 +1021,13 @@ public final class DbStudioApiController {
         List<Object> fields = new ArrayList<Object>();
         for (ConnectionField field : provider.connectionFields()) {
             String type = "INTEGER".equals(field.type().name()) ? "NUMBER" : field.type().name();
+            List<Object> options = new ArrayList<Object>();
+            for (ConnectionFieldOption option : field.options()) {
+                options.add(ApiPayloads.map("value", option.value(), "label", option.label()));
+            }
             fields.add(ApiPayloads.map("key", field.key(), "label", field.label(), "type", type,
                     "required", field.required(), "defaultValue", field.defaultValue(),
-                    "description", field.description()));
+                    "description", field.description(), "options", options));
         }
         List<String> capabilities = new ArrayList<String>();
         for (DatabaseCapability capability : provider.capabilities().values()) capabilities.add(capability.name());
@@ -1045,26 +1059,31 @@ public final class DbStudioApiController {
                 "name", value.name(), "revision", value.revision());
     }
 
-    private static List<Map<String, Object>> metadataGroups(DatabaseProvider provider, String catalog) {
+    private static List<Map<String, Object>> metadataGroups(DatabaseProvider provider, String catalog, String schema) {
         List<Map<String, Object>> result = new ArrayList<Map<String, Object>>();
-        addGroup(result, provider, catalog, DatabaseObjectType.TABLE, DatabaseCapability.TABLES);
-        addGroup(result, provider, catalog, DatabaseObjectType.VIEW, DatabaseCapability.VIEWS);
-        addGroup(result, provider, catalog, DatabaseObjectType.INDEX, DatabaseCapability.INDEXES);
-        addGroup(result, provider, catalog, DatabaseObjectType.TRIGGER, DatabaseCapability.TRIGGERS);
-        addGroup(result, provider, catalog, DatabaseObjectType.PROCEDURE, DatabaseCapability.PROCEDURES);
-        addGroup(result, provider, catalog, DatabaseObjectType.FUNCTION, DatabaseCapability.FUNCTIONS);
+        addGroup(result, provider, catalog, schema, DatabaseObjectType.TABLE, DatabaseCapability.TABLES);
+        addGroup(result, provider, catalog, schema, DatabaseObjectType.VIEW, DatabaseCapability.VIEWS);
+        addGroup(result, provider, catalog, schema, DatabaseObjectType.INDEX, DatabaseCapability.INDEXES);
+        addGroup(result, provider, catalog, schema, DatabaseObjectType.CONSTRAINT, DatabaseCapability.CONSTRAINTS);
+        addGroup(result, provider, catalog, schema, DatabaseObjectType.TRIGGER, DatabaseCapability.TRIGGERS);
+        addGroup(result, provider, catalog, schema, DatabaseObjectType.SEQUENCE, DatabaseCapability.SEQUENCES);
+        addGroup(result, provider, catalog, schema, DatabaseObjectType.SYNONYM, DatabaseCapability.SYNONYMS);
+        addGroup(result, provider, catalog, schema, DatabaseObjectType.TYPE, DatabaseCapability.TYPES);
+        addGroup(result, provider, catalog, schema, DatabaseObjectType.PROCEDURE, DatabaseCapability.PROCEDURES);
+        addGroup(result, provider, catalog, schema, DatabaseObjectType.FUNCTION, DatabaseCapability.FUNCTIONS);
+        addGroup(result, provider, catalog, schema, DatabaseObjectType.PACKAGE, DatabaseCapability.PACKAGES);
         return result;
     }
 
-    private static void addGroup(List<Map<String, Object>> result, DatabaseProvider provider, String catalog,
+    private static void addGroup(List<Map<String, Object>> result, DatabaseProvider provider, String catalog, String schema,
                                  DatabaseObjectType type, DatabaseCapability capability) {
         if (provider.capabilities().supports(capability)) result.add(node("group", type.displayName(), false,
-                catalog, "", type.name(), null, type.displayName()));
+                catalog, schema, type.name(), null, type.displayName()));
     }
 
     private static Map<String, Object> node(String kind, String label, boolean leaf, String catalog,
                                              String schema, String objectType, String name, String detail) {
-        String rawId = kind + "|" + catalog + "|" + objectType + "|" + name + "|" + label;
+        String rawId = kind + "|" + catalog + "|" + schema + "|" + objectType + "|" + name + "|" + label;
         return ApiPayloads.map("id", UUID.nameUUIDFromBytes(rawId.getBytes(StandardCharsets.UTF_8)).toString(),
                 "label", label, "kind", kind, "leaf", leaf, "catalog", catalog,
                 "schema", schema, "objectType", objectType, "name", name, "detail", detail);

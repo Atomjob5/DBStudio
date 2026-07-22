@@ -131,7 +131,8 @@ function completionKind(kind: Suggestion["kind"]): monaco.languages.CompletionIt
   if (kind === "column") return monaco.languages.CompletionItemKind.Field;
   if (kind === "function") return monaco.languages.CompletionItemKind.Function;
   if (kind === "procedure") return monaco.languages.CompletionItemKind.Method;
-  if (kind === "database") return monaco.languages.CompletionItemKind.Module;
+  if (["database", "catalog", "schema"].includes(kind)) return monaco.languages.CompletionItemKind.Module;
+  if (kind === "sequence") return monaco.languages.CompletionItemKind.Constant;
   if (kind === "view") return monaco.languages.CompletionItemKind.Interface;
   if (kind === "table") return monaco.languages.CompletionItemKind.Class;
   return monaco.languages.CompletionItemKind.Keyword;

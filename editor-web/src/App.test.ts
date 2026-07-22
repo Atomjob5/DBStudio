@@ -281,7 +281,7 @@ describe("App result loading status toolbar", () => {
 
     expect(rpcRequest).toHaveBeenCalledWith("metadata.completionSnapshot",
       expect.objectContaining({ profileId: profile.id }), 300_000);
-    expect(useMetadataStore().completionFor("system-1:environment-dev")?.hasSnapshot).toBe(true);
+    expect(useMetadataStore().completionFor("system-1:environment-dev:mysql")?.hasSnapshot).toBe(true);
   });
 
   it("数据库对象手动刷新会强制原子重建当前环境补全", async () => {

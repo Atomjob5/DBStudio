@@ -13,7 +13,4 @@ public enum StatementType {
         return this == INSERT || this == UPDATE || this == DELETE;
     }
 
-    public boolean implicitlyCommitsInMySql() {
-        return this == DDL;
-    }
 }

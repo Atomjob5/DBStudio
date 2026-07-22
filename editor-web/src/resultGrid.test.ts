@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { QueryColumn, QueryMutationTarget } from "./types";
-import { copyGrid, copyInPredicate, copyRowSql, selectRows, visibleRows } from "./resultGrid";
+import { copyGrid, copyInPredicate, copyRowSql, selectRows, sqlLiteral, visibleRows } from "./resultGrid";
 
 const columns: QueryColumn[] = [
   { label: "id", name: "id", remarks: "", catalog: "db", schema: "", table: "orders", typeName: "BIGINT", jdbcType: -5, quotedLabel: "`id`" },
@@ -59,5 +59,11 @@ describe("result grid transformations", () => {
       .toBe("DELETE FROM `db`.`orders` WHERE `id` = 7;");
     expect(copyRowSql("insert", target, [1], rows))
       .toBe("INSERT INTO `db`.`orders` (`name`) VALUES ('O''Reilly');");
+  });
+
+  it("uses Oracle-compatible binary, date and boolean literals", () => {
+    expect(sqlLiteral("0x0aff", -3, "oracle")).toBe("HEXTORAW('0aff')");
+    expect(sqlLiteral("2026-07-22", 91, "oracle")).toBe("DATE '2026-07-22'");
+    expect(sqlLiteral("true", 16, "oceanbase-oracle")).toBe("1");
   });
 });
