@@ -4,9 +4,10 @@
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import * as monaco from "monaco-editor";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
-import type { CompletionCandidate } from "../types";
+import type { CompletionCandidate, CompletionResult } from "../types";
 import { completionClient } from "../completion/client";
 import { registerCompletionShortcut } from "../completion/monacoCommands";
+import { CompletionModelSynchronizer, isModelVersionChanged } from "../completion/modelSynchronizer";
 import { completionDocumentation, truncateCompletionComment } from "../completion/presentation";
 
 (self as typeof self & { MonacoEnvironment: object }).MonacoEnvironment = { getWorker: () => new EditorWorker() };
@@ -21,6 +22,9 @@ const emit = defineEmits<{
 const container = ref<HTMLElement>();
 const instance = shallowRef<monaco.editor.IStandaloneCodeEditor>();
 const models = new Map<string, monaco.editor.ITextModel>();
+const modelKeys = new WeakMap<monaco.editor.ITextModel, string>();
+const mirrorListeners = new Map<string, monaco.IDisposable>();
+const modelSynchronizer = new CompletionModelSynchronizer(completionClient);
 let contentListener: monaco.IDisposable | undefined;
 let completionProvider: monaco.IDisposable | undefined;
 let changingModel = false;
@@ -112,14 +116,21 @@ onMounted(() => {
   completionProvider = monaco.languages.registerCompletionItemProvider("dbstudio-mysql", {
     triggerCharacters: [".", "`", "\"", " "],
     async provideCompletionItems(model, position, _context, token) {
-      const word = model.getWordUntilPosition(position);
-      const sqlBeforeCursor = model.getValueInRange({
-        startLineNumber: 1, startColumn: 1,
-        endLineNumber: position.lineNumber, endColumn: position.column
-      });
       if (!props.completionKey || props.completionKey === "unbound") return { suggestions: [] };
-      const result = await completionClient.complete(props.completionKey, props.providerId, sqlBeforeCursor,
-        word.word, props.completionCandidateLimit);
+      const modelKey = modelKeys.get(model);
+      if (!modelKey) return { suggestions: [] };
+      const word = model.getWordUntilPosition(position);
+      const modelVersion = model.getVersionId();
+      const cursorOffset = model.getOffsetAt(position);
+      let result: CompletionResult;
+      try {
+        result = await modelSynchronizer.execute(modelKey, model, modelVersion,
+          () => completionClient.complete(props.completionKey, props.providerId, modelKey,
+            modelVersion, cursorOffset, word.word, props.completionCandidateLimit));
+      } catch (error) {
+        if (isModelVersionChanged(error)) return { suggestions: [] };
+        throw error;
+      }
       if (token.isCancellationRequested) return { suggestions: [] };
       return { incomplete: result.incomplete, suggestions: result.items.map((item, index) => ({
         label: {
@@ -149,6 +160,11 @@ function completionKind(kind: CompletionCandidate["kind"]): monaco.languages.Com
 
 watch(() => props.modelKey, (key) => switchModel(key, props.initialValue));
 watch(() => props.theme, (theme) => monaco.editor.setTheme(monacoTheme(theme)));
+watch(() => [props.completionKey, props.providerId], () => {
+  const model = instance.value?.getModel();
+  const key = model && modelKeys.get(model);
+  if (model && key && isCompletionBound()) synchronizeInBackground(key, model);
+});
 
 function switchModel(key: string, value: string): void {
   if (!instance.value || !key) return;
@@ -157,12 +173,33 @@ function switchModel(key: string, value: string): void {
   if (!model) {
     model = monaco.editor.createModel(value, "dbstudio-mysql", monaco.Uri.parse(`inmemory://dbstudio/${key}.sql`));
     models.set(key, model);
+    modelKeys.set(model, key);
+    registerMirrorListener(key, model);
   }
   instance.value.setModel(model);
   contentListener?.dispose();
   contentListener = model.onDidChangeContent(() => { if (!changingModel) emit("dirty"); });
   changingModel = false;
+  if (isCompletionBound()) synchronizeInBackground(key, model);
   instance.value.focus();
+}
+
+function isCompletionBound(): boolean {
+  return Boolean(props.completionKey && props.completionKey !== "unbound");
+}
+
+function registerMirrorListener(key: string, model: monaco.editor.ITextModel): void {
+  if (mirrorListeners.has(key)) return;
+  mirrorListeners.set(key, model.onDidChangeContent((event) => {
+    if (!isCompletionBound()) return;
+    modelSynchronizer.change(key, event.versionId, event.changes.map((change) => ({
+      rangeOffset: change.rangeOffset, rangeLength: change.rangeLength, text: change.text
+    })));
+  }));
+}
+
+function synchronizeInBackground(key: string, model: monaco.editor.ITextModel): void {
+  modelSynchronizer.synchronizeInBackground(key, model);
 }
 
 function trigger(scope: "current" | "script"): void {
@@ -185,6 +222,7 @@ function setValue(value: string, key = props.modelKey): void {
   changingModel = true;
   model.setValue(value);
   changingModel = false;
+  if (isCompletionBound()) synchronizeInBackground(key, model);
 }
 
 defineExpose({ getValue, setValue });
@@ -192,6 +230,9 @@ defineExpose({ getValue, setValue });
 onBeforeUnmount(() => {
   contentListener?.dispose();
   completionProvider?.dispose();
+  mirrorListeners.forEach((listener) => listener.dispose());
+  mirrorListeners.clear();
+  modelSynchronizer.releaseAll();
   instance.value?.dispose();
   models.forEach((model) => model.dispose());
 });

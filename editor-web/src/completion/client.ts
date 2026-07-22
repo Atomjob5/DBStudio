@@ -1,9 +1,10 @@
 import type { CompletionCacheStats, CompletionCacheSummary, CompletionResult } from "../types";
 import type { CompletionWorkerRequest, CompletionWorkerResponse, CompletionWorkerValue } from "./workerProtocol";
+import type { CompletionTextChange } from "./documentMirror";
 
 type Pending = { resolve: (value: CompletionWorkerValue) => void; reject: (error: Error) => void };
 
-class CompletionClient {
+export class CompletionClient {
   private worker?: Worker;
   private readonly pending = new Map<string, Pending>();
 
@@ -17,8 +18,24 @@ class CompletionClient {
       providerId: options.providerId, url, clientId: options.clientId, body: options.body }) as Promise<CompletionCacheSummary>;
   }
 
-  complete(cacheKey: string, providerId: string, sql: string, prefix: string, limit: number): Promise<CompletionResult> {
-    return this.send({ id: crypto.randomUUID(), type: "complete", cacheKey, providerId, sql, prefix, limit }) as Promise<CompletionResult>;
+  syncModel(modelKey: string, version: number, text: string): Promise<void> {
+    return this.send({ id: crypto.randomUUID(), type: "model.sync", modelKey, version, text }) as Promise<void>;
+  }
+
+  changeModel(modelKey: string, fromVersion: number, toVersion: number,
+              changes: CompletionTextChange[]): Promise<void> {
+    return this.send({ id: crypto.randomUUID(), type: "model.change", modelKey, fromVersion, toVersion,
+      changes }) as Promise<void>;
+  }
+
+  releaseModel(modelKey: string): Promise<void> {
+    return this.send({ id: crypto.randomUUID(), type: "model.release", modelKey }) as Promise<void>;
+  }
+
+  complete(cacheKey: string, providerId: string, modelKey: string, modelVersion: number,
+           cursorOffset: number, prefix: string, limit: number): Promise<CompletionResult> {
+    return this.send({ id: crypto.randomUUID(), type: "complete", cacheKey, providerId, modelKey,
+      modelVersion, cursorOffset, prefix, limit }) as Promise<CompletionResult>;
   }
 
   stats(): Promise<Omit<CompletionCacheStats, "loadingCount">> {

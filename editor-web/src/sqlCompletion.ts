@@ -1,6 +1,6 @@
 import { completionDialect } from "./completion/sqlDialect";
 import type { SqlCompletionDialect } from "./completion/sqlDialect";
-import { activeParenthesisDepth, lexCurrentStatement } from "./completion/sqlLexer";
+import { activeParenthesisDepth, lexStatementAt } from "./completion/sqlLexer";
 import type { SqlToken } from "./completion/sqlLexer";
 import type {
   CompletionCandidate,
@@ -57,6 +57,7 @@ export interface CompletionIndex {
 export interface CompletionRequest {
   providerId: string;
   sql: string;
+  cursorOffset?: number;
   prefix: string;
   limit: number;
 }
@@ -73,6 +74,7 @@ const ALIAS_TERMINATORS = new Set([
 ]);
 
 const COLUMN_CLAUSES = new Set(["select", "where", "on", "group", "order", "having", "set", "returning"]);
+const SET_OPERATORS = new Set(["union", "minus", "except", "intersect"]);
 
 export function buildCompletionIndex(snapshot: CompletionSnapshot): CompletionIndex {
   const namespaces = new Map<string, IndexedNamespace>();
@@ -101,12 +103,13 @@ export function buildCompletionIndex(snapshot: CompletionSnapshot): CompletionIn
 export function resolveCompletion(index: CompletionIndex | undefined, request: CompletionRequest): CompletionResult {
   const limit = Math.max(10, Math.min(1000, request.limit || 100));
   const dialect = completionDialect(request.providerId);
-  const allTokens = lexCurrentStatement(request.sql, dialect);
-  const tokens = withoutActivePrefix(allTokens, request.prefix, request.sql.length);
+  const cursorOffset = Math.max(0, Math.min(request.sql.length, request.cursorOffset ?? request.sql.length));
+  const statement = lexStatementAt(request.sql, cursorOffset, dialect);
+  const tokens = withoutActivePrefix(statement.beforeTokens, request.prefix, cursorOffset);
   const qualifier = readQualifier(tokens);
   const beforeQualifier = qualifier.parts.length ? tokens.slice(0, qualifier.start) : tokens;
   const tableContext = isTablePosition(beforeQualifier);
-  const scope = index ? buildActiveScope(index, tokens) : undefined;
+  const scope = index ? buildActiveScope(index, statement.tokens, statement.beforeTokens, cursorOffset) : undefined;
   const insertColumns = isInsertColumnPosition(tokens);
   const clause = activeClause(tokens, scope?.depth ?? activeParenthesisDepth(tokens));
   const columnContext = !tableContext && (insertColumns || qualifier.parts.length > 0
@@ -127,10 +130,10 @@ export function resolveCompletion(index: CompletionIndex | undefined, request: C
   return { items: filtered.slice(0, limit), incomplete: filtered.length > limit };
 }
 
-function withoutActivePrefix(tokens: SqlToken[], prefix: string, sqlLength: number): SqlToken[] {
+function withoutActivePrefix(tokens: SqlToken[], prefix: string, cursorOffset: number): SqlToken[] {
   if (!prefix) return tokens;
   const last = tokens.at(-1);
-  if (last?.kind === "word" && last.end === sqlLength && normalize(last.value) === normalize(prefix)) {
+  if (last?.kind === "word" && last.end === cursorOffset && normalize(last.value) === normalize(prefix)) {
     return tokens.slice(0, -1);
   }
   return tokens;
@@ -195,33 +198,45 @@ function activeClause(tokens: SqlToken[], preferredDepth: number): string {
   return clause;
 }
 
-function buildActiveScope(index: CompletionIndex, tokens: SqlToken[]): CompletionScope | undefined {
-  const activeDepth = activeParenthesisDepth(tokens);
-  const starts = activeScopeStarts(tokens, activeDepth);
+function buildActiveScope(index: CompletionIndex, tokens: SqlToken[], beforeTokens: SqlToken[],
+                          cursorOffset: number): CompletionScope | undefined {
+  const activeDepth = activeParenthesisDepth(beforeTokens);
+  const ranges = activeScopeRanges(tokens, beforeTokens, activeDepth);
   let parent: CompletionScope | undefined;
   let inheritedCtes = new Map<string, CompletionSource>();
   for (let depth = 0; depth <= activeDepth; depth += 1) {
-    const start = starts[depth] ?? 0;
-    const localCtes = parseCtes(index, tokens, start, depth, inheritedCtes);
+    const range = ranges[depth] ?? { start: 0, end: tokens.length };
+    const localCtes = parseCtes(index, tokens, range.start, depth, inheritedCtes);
     inheritedCtes = new Map([...inheritedCtes, ...localCtes]);
-    const select = lastTokenIndex(tokens, start, depth, "select");
+    const branchStart = lastSetOperatorBefore(tokens, range.start, range.end, depth, cursorOffset) + 1;
+    const branchEnd = firstSetOperatorAfter(tokens, branchStart, range.end, depth, cursorOffset);
+    const select = lastTokenIndexBefore(tokens, branchStart, branchEnd, depth, "select", cursorOffset);
     if (depth > 0 && select < 0) continue;
-    const scopeStart = select >= 0 ? select : start;
-    const sources = parseSources(index, tokens, scopeStart, tokens.length, depth, inheritedCtes);
+    const scopeStart = select >= 0 ? select : branchStart;
+    const sources = parseSources(index, tokens, scopeStart, branchEnd, depth, inheritedCtes);
     if (depth === 0 || select >= 0) parent = { depth, start: scopeStart, sources, parent };
   }
   return parent;
 }
 
-function activeScopeStarts(tokens: SqlToken[], currentDepth: number): number[] {
-  const starts = new Array<number>(currentDepth + 1).fill(0);
-  const stack: number[] = [];
-  tokens.forEach((token, index) => {
-    if (token.value === "(") stack.push(index + 1);
+function activeScopeRanges(tokens: SqlToken[], beforeTokens: SqlToken[], currentDepth: number): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [{ start: 0, end: tokens.length }];
+  const stack: SqlToken[] = [];
+  for (const token of beforeTokens) {
+    if (token.value === "(") stack.push(token);
     else if (token.value === ")") stack.pop();
-  });
-  stack.forEach((start, index) => { starts[index + 1] = start; });
-  return starts;
+  }
+  for (let depth = 1; depth <= currentDepth; depth += 1) {
+    const openOffset = stack[depth - 1]?.start;
+    const open = openOffset === undefined ? -1 : tokens.findIndex((token) => token.start === openOffset && token.value === "(");
+    if (open < 0) {
+      ranges.push({ start: 0, end: tokens.length });
+      continue;
+    }
+    const close = matchingClose(tokens, open);
+    ranges.push({ start: open + 1, end: close < 0 ? tokens.length : close });
+  }
+  return ranges;
 }
 
 function parseCtes(index: CompletionIndex, tokens: SqlToken[], start: number, depth: number,
@@ -580,9 +595,31 @@ function nextSignificant(tokens: SqlToken[], start: number, depth: number): numb
   return -1;
 }
 
-function lastTokenIndex(tokens: SqlToken[], start: number, depth: number, value: string): number {
-  for (let cursor = tokens.length - 1; cursor >= start; cursor -= 1) {
-    if (tokens[cursor].depth === depth && tokens[cursor].lower === value && !tokens[cursor].quoted) return cursor;
+function lastSetOperatorBefore(tokens: SqlToken[], start: number, end: number, depth: number,
+                               cursorOffset: number): number {
+  for (let cursor = Math.min(end, tokens.length) - 1; cursor >= start; cursor -= 1) {
+    const token = tokens[cursor];
+    if (token.start >= cursorOffset) continue;
+    if (token.depth === depth && token.kind === "word" && !token.quoted && SET_OPERATORS.has(token.lower)) return cursor;
+  }
+  return start - 1;
+}
+
+function firstSetOperatorAfter(tokens: SqlToken[], start: number, end: number, depth: number,
+                               cursorOffset: number): number {
+  for (let cursor = start; cursor < end; cursor += 1) {
+    const token = tokens[cursor];
+    if (token.start < cursorOffset) continue;
+    if (token.depth === depth && token.kind === "word" && !token.quoted && SET_OPERATORS.has(token.lower)) return cursor;
+  }
+  return end;
+}
+
+function lastTokenIndexBefore(tokens: SqlToken[], start: number, end: number, depth: number,
+                              value: string, cursorOffset: number): number {
+  for (let cursor = Math.min(end, tokens.length) - 1; cursor >= start; cursor -= 1) {
+    const token = tokens[cursor];
+    if (token.start < cursorOffset && token.depth === depth && token.lower === value && !token.quoted) return cursor;
   }
   return -1;
 }

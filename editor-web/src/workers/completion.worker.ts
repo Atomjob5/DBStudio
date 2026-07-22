@@ -4,6 +4,7 @@ import { buildCompletionIndex, resolveCompletion } from "../sqlCompletion";
 import type { CompletionIndex } from "../sqlCompletion";
 import type { CompletionCacheSummary, CompletionSnapshot } from "../types";
 import type { CompletionWorkerRequest, CompletionWorkerResponse } from "../completion/workerProtocol";
+import { CompletionDocumentMirror } from "../completion/documentMirror";
 
 interface StoredSnapshot {
   cacheKey: string;
@@ -17,6 +18,7 @@ const DATABASE_VERSION = 1;
 const FORMAT_VERSION = 1;
 const MAX_MEMORY_INDEXES = 2;
 const indexes = new Map<string, CompletionIndex>();
+const documents = new CompletionDocumentMirror(20);
 
 self.onmessage = (event: MessageEvent<CompletionWorkerRequest>) => {
   void handle(event.data).then(
@@ -26,6 +28,18 @@ self.onmessage = (event: MessageEvent<CompletionWorkerRequest>) => {
 };
 
 async function handle(request: CompletionWorkerRequest) {
+  if (request.type === "model.sync") {
+    documents.sync(request.modelKey, request.version, request.text);
+    return undefined;
+  }
+  if (request.type === "model.change") {
+    documents.change(request.modelKey, request.fromVersion, request.toVersion, request.changes);
+    return undefined;
+  }
+  if (request.type === "model.release") {
+    documents.release(request.modelKey);
+    return undefined;
+  }
   if (request.type === "inspect") {
     const stored = await loadValid(request.cacheKey, request.providerId);
     if (!stored) return undefined;
@@ -51,6 +65,10 @@ async function handle(request: CompletionWorkerRequest) {
     return summary;
   }
   if (request.type === "complete") {
+    const sql = documents.read(request.modelKey, request.modelVersion);
+    if (!Number.isInteger(request.cursorOffset) || request.cursorOffset < 0 || request.cursorOffset > sql.length) {
+      throw Object.assign(new Error("补全光标位置与编辑器模型不一致"), { code: "MODEL_OUT_OF_SYNC" });
+    }
     let index = indexes.get(request.cacheKey);
     if (!index) {
       const stored = await loadValid(request.cacheKey, request.providerId);
@@ -59,7 +77,8 @@ async function handle(request: CompletionWorkerRequest) {
         remember(request.cacheKey, index);
       }
     } else touch(request.cacheKey, index);
-    return resolveCompletion(index, request);
+    return resolveCompletion(index, { providerId: request.providerId, sql, cursorOffset: request.cursorOffset,
+      prefix: request.prefix, limit: request.limit });
   }
   if (request.type === "clear") {
     indexes.clear();

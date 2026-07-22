@@ -120,6 +120,56 @@ describe("handwritten context-aware SQL completion", () => {
       .toEqual(["customer_id"]);
   });
 
+  it("uses sources after the cursor when completing in the select list", () => {
+    const cbsacIndex = buildCompletionIndex({ ...snapshot, providerId: "oracle",
+      defaultNamespaceKey: "schema:CBSAC", selectedNamespaceKeys: ["schema:CBSAC"],
+      namespaces: [{ key: "schema:CBSAC", catalog: "", schema: "CBSAC", label: "CBSAC", objects: [
+        { name: "CUSTOMERS", kind: "table", remarks: "客户", columns: [
+          { name: "ID", typeName: "NUMBER", remarks: "客户编号" },
+          { name: "CUSTOMER_NAME", typeName: "VARCHAR2(100)", remarks: "客户名称" }
+        ] }
+      ] }] });
+    const sql = "select a.* from CBSAC.CUSTOMERS a where a.ID<=20";
+    const result = resolveCompletion(cbsacIndex, { providerId: "oracle", sql,
+      cursorOffset: "select a.".length, prefix: "", limit: 100 });
+    const values = result.items.filter((item) => item.kind === "column");
+    expect(values.map((item) => item.displayLabel)).toEqual(["CUSTOMER_NAME", "ID"]);
+    expect(values.map((item) => item.insertText)).toEqual(["CUSTOMER_NAME", "ID"]);
+    expect(values.find((item) => item.displayLabel === "ID"))
+      .toMatchObject({ documentationPath: "CBSAC.CUSTOMERS.ID", remarks: "客户编号", typeName: "NUMBER" });
+  });
+
+  it("filters a partial field before a later FROM clause", () => {
+    const sql = "select o.cus from orders o where o.id > 0";
+    const result = resolveCompletion(index, { providerId: "mysql", sql,
+      cursorOffset: "select o.cus".length, prefix: "cus", limit: 100 });
+    expect(result.items.filter((item) => item.kind === "column").map((item) => item.displayLabel))
+      .toEqual(["customer_id"]);
+  });
+
+  it("isolates the cursor statement and its UNION branch", () => {
+    const sql = "select ';' from customers x; select a.* from orders a union select a.* from customers a; select 1";
+    const cursorOffset = sql.indexOf("a.* from orders") + 2;
+    const values = resolveCompletion(index, { providerId: "mysql", sql, cursorOffset,
+      prefix: "", limit: 100 }).items.filter((item) => item.kind === "column");
+    expect(values.map((item) => item.displayLabel)).toEqual(["customer_id", "id"]);
+  });
+
+  it("keeps outer sources visible without leaking a sibling subquery", () => {
+    const correlated = "select (select a.* from customers b) from orders a";
+    const correlatedCursor = correlated.indexOf("a.*") + 2;
+    expect(resolveCompletion(index, { providerId: "mysql", sql: correlated,
+      cursorOffset: correlatedCursor, prefix: "", limit: 100 }).items
+      .filter((item) => item.kind === "column").map((item) => item.displayLabel))
+      .toEqual(["customer_id", "id"]);
+
+    const siblings = "select (select x.* from orders a), (select 1 from customers x) from orders z";
+    const siblingCursor = siblings.indexOf("x.*") + 2;
+    expect(resolveCompletion(index, { providerId: "mysql", sql: siblings,
+      cursorOffset: siblingCursor, prefix: "", limit: 100 }).items
+      .filter((item) => item.kind === "column")).toEqual([]);
+  });
+
   it("limits candidates and marks the result incomplete", () => {
     const result = resolveCompletion(index, { providerId: "mysql", sql: "select * from orders where ", prefix: "", limit: 10 });
     expect(result.items).toHaveLength(10);
