@@ -8,8 +8,13 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import com.dbstudio.desktop.logging.SqlLogSupport;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+/** 查询历史仓库；SQL 正文仅用于用户历史记录，日志只输出指纹和执行结果统计。 */
 public final class QueryHistoryRepository {
+    private static final Logger LOG = LoggerFactory.getLogger(QueryHistoryRepository.class);
     private final Connection connection;
     public QueryHistoryRepository(AppDatabase database) { this.connection = database.connection(); }
 
@@ -28,6 +33,8 @@ public final class QueryHistoryRepository {
             statement.executeUpdate();
         }
         trim(5_000);
+        LOG.debug("写入查询历史 profile={} status={} rows={} sqlFingerprint={}", entry.profileId(),
+                entry.status(), entry.rowCount(), SqlLogSupport.fingerprint(entry.sql()));
     }
 
     public synchronized List<QueryHistoryEntry> recent(int limit) throws SQLException {

@@ -6,6 +6,12 @@ import java.util.ArrayList;
 import java.util.Set;
 import java.util.List;
 
+/**
+ * 数据库元数据适配器。
+ *
+ * <p>负责把不同数据库的数据字典映射为统一的命名空间、对象、字段和约束模型。默认方法提供
+ * 兼容性降级实现，具体 Provider 可用批量字典查询覆盖以提升补全性能。</p>
+ */
 public interface MetadataAdapter {
     default List<String> listCatalogs(DatabaseSession session) throws SQLException {
         return Collections.emptyList();

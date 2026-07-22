@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
+/** SQL 方言适配器：统一标识符引用、脚本拆分、分类、事务影响判断和安全 SQL 文本生成。 */
 public interface SqlDialect {
     String id();
 
@@ -67,12 +68,12 @@ public interface SqlDialect {
         return "'" + value.replace("'", "''") + "'";
     }
 
-    /** Physical source column names in result order when the projection can be resolved safely. */
+    /** 当查询投影可以安全解析时，按结果顺序返回物理来源字段名。 */
     default List<String> resultColumnNames(String sql) {
         return Collections.emptyList();
     }
 
-    /** Returns a physical source only when row mutation SQL can be generated without guessing. */
+    /** 只有无需猜测即可生成行级变更 SQL 时，才返回物理来源信息。 */
     default Optional<ResultMutationSource> resultMutationSource(String sql) {
         return Optional.empty();
     }

@@ -13,10 +13,17 @@ import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
 import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
 import org.springframework.web.socket.server.HandshakeInterceptor;
 import org.springframework.web.util.UriComponentsBuilder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+/**
+ * 注册本机 Workspace WebSocket，并在握手阶段校验 Workspace、客户端归属和可选访问令牌。
+ * 业务事件不直接在这里处理，建立连接后统一交给 {@link WorkspaceWebSocketHandler}。
+ */
 @Configuration
 @EnableWebSocket
 public class WebSocketConfiguration implements WebSocketConfigurer {
+    private static final Logger LOG = LoggerFactory.getLogger(WebSocketConfiguration.class);
     private final WorkspaceWebSocketHandler handler;
     private final WorkspaceRegistry workspaces;
     private final LocalAccessToken token;
@@ -45,20 +52,31 @@ public class WebSocketConfiguration implements WebSocketConfigurer {
         @Override
         public boolean beforeHandshake(ServerHttpRequest request, ServerHttpResponse response,
                                        WebSocketHandler handler, Map<String, Object> attributes) {
-            if (!(request instanceof ServletServerHttpRequest)) return false;
+            if (!(request instanceof ServletServerHttpRequest)) {
+                LOG.warn("拒绝非Servlet WebSocket握手");
+                return false;
+            }
             HttpServletRequest servlet = ((ServletServerHttpRequest) request).getServletRequest();
-            if (!token.authenticated(servlet)) return false;
+            if (!token.authenticated(servlet)) {
+                LOG.warn("拒绝未认证WebSocket握手 path={}", request.getURI().getPath());
+                return false;
+            }
             List<String> ids = UriComponentsBuilder.fromUri(request.getURI()).build()
                     .getQueryParams().get("workspaceId");
             List<String> clients = UriComponentsBuilder.fromUri(request.getURI()).build()
                     .getQueryParams().get("clientId");
-            if (ids == null || ids.size() != 1 || clients == null || clients.size() != 1) return false;
+            if (ids == null || ids.size() != 1 || clients == null || clients.size() != 1) {
+                LOG.warn("拒绝缺少Workspace或clientId的WebSocket握手");
+                return false;
+            }
             try {
                 workspaces.requireOwned(ids.get(0), clients.get(0));
                 attributes.put(WorkspaceWebSocketHandler.WORKSPACE_ATTRIBUTE, ids.get(0));
                 attributes.put(WorkspaceWebSocketHandler.CLIENT_ATTRIBUTE, clients.get(0));
                 return true;
             } catch (ApiException exception) {
+                LOG.warn("拒绝WebSocket握手 workspaceId={} clientId={} code={}", ids.get(0), clients.get(0),
+                        exception.getCode());
                 return false;
             }
         }

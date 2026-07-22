@@ -1,5 +1,6 @@
 package com.dbstudio.desktop.query;
 
+import com.dbstudio.desktop.logging.SqlLogSupport;
 import com.dbstudio.spi.DatabaseSession;
 import com.dbstudio.spi.SqlStatement;
 import com.dbstudio.spi.StatementType;
@@ -18,6 +19,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -26,8 +28,19 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 
+/**
+ * 单编辑器 SQL 执行器。
+ *
+ * <p>所有操作都提交到同一个单线程执行器，保证同一 JDBC 会话上的 SQL、事务、分页和取消
+ * 按顺序执行。结果读取采用固定 JDBC 抓取大小，并使用独立的展示上限和 WebSocket 批次。</p>
+ */
 public final class QueryRunner implements AutoCloseable {
+    private static final Logger LOG = LoggerFactory.getLogger(QueryRunner.class);
     public static final int JDBC_FETCH_SIZE = 500;
     public static final int DEFAULT_STREAM_BATCH_ROWS = 100;
     public static final int DEFAULT_MAX_ROWS = 1_000;
@@ -86,39 +99,51 @@ public final class QueryRunner implements AutoCloseable {
                                                      final boolean stopOnError,
                                                      final QueryResultListener listener) {
         final List<SqlStatement> copied = Collections.unmodifiableList(new ArrayList<SqlStatement>(statements));
-        return CompletableFuture.supplyAsync(() -> executeBlocking(copied, stopOnError, listener), executor);
+        final Map<String, String> loggingContext = MDC.getCopyOfContextMap();
+        return CompletableFuture.supplyAsync(() -> withLoggingContext(loggingContext,
+                () -> executeBlocking(copied, stopOnError, listener)), executor);
     }
 
     public CompletableFuture<Void> commit() {
-        return CompletableFuture.runAsync(() -> {
+        final Map<String, String> loggingContext = MDC.getCopyOfContextMap();
+        return CompletableFuture.runAsync(() -> withLoggingContext(loggingContext, () -> {
             try {
                 session.commit();
                 transactionDirty.set(false);
+                LOG.info("事务提交成功");
             } catch (SQLException exception) {
+                LOG.warn("事务提交失败 sqlState={} errorCode={}", exception.getSQLState(), exception.getErrorCode(), exception);
                 throw new QueryExecutionException("提交失败：" + exception.getMessage(), exception);
             }
-        }, executor);
+            return null;
+        }), executor);
     }
 
     public CompletableFuture<Void> rollback() {
-        return CompletableFuture.runAsync(() -> {
+        final Map<String, String> loggingContext = MDC.getCopyOfContextMap();
+        return CompletableFuture.runAsync(() -> withLoggingContext(loggingContext, () -> {
             try {
                 session.rollback();
                 transactionDirty.set(false);
+                LOG.info("事务回滚成功");
             } catch (SQLException exception) {
+                LOG.warn("事务回滚失败 sqlState={} errorCode={}", exception.getSQLState(), exception.getErrorCode(), exception);
                 throw new QueryExecutionException("回滚失败：" + exception.getMessage(), exception);
             }
-        }, executor);
+            return null;
+        }), executor);
     }
 
     /**
-     * Re-executes a read-only result on this editor's JDBC session and returns a window of rows.
-     * Keeping this work on the editor executor preserves connection and transaction isolation.
+     * 在当前编辑器 JDBC 会话上重新执行只读结果并返回一个分页窗口。
+     * 任务仍提交到编辑器专属执行器，以保持连接顺序和事务隔离级别。
      */
     public CompletableFuture<PageResult> fetchPage(final String sql, final int offset, final int limit) {
         if (offset < 0) throw new IllegalArgumentException("offset must not be negative");
         if (limit < 1) throw new IllegalArgumentException("limit must be positive");
-        return CompletableFuture.supplyAsync(() -> fetchPageBlocking(sql, offset, limit), executor);
+        final Map<String, String> loggingContext = MDC.getCopyOfContextMap();
+        return CompletableFuture.supplyAsync(() -> withLoggingContext(loggingContext,
+                () -> fetchPageBlocking(sql, offset, limit)), executor);
     }
 
     public boolean cancel() {
@@ -126,8 +151,10 @@ public final class QueryRunner implements AutoCloseable {
         if (statement == null) return false;
         try {
             statement.cancel();
+            LOG.info("取消当前SQL执行");
             return true;
         } catch (SQLException exception) {
+            LOG.warn("取消SQL执行失败", exception);
             throw new QueryExecutionException("取消执行失败：" + exception.getMessage(), exception);
         }
     }
@@ -138,6 +165,8 @@ public final class QueryRunner implements AutoCloseable {
     public void setStreamBatchRows(int streamBatchRows) { this.streamBatchRows = Math.max(1, streamBatchRows); }
 
     private PageResult fetchPageBlocking(String sql, int offset, int limit) {
+        Instant started = Instant.now();
+        LOG.info("分页查询开始 offset={} limit={} {}", offset, limit, SqlLogSupport.summary(sql));
         try (Statement statement = session.jdbcConnection().createStatement()) {
             statement.setFetchSize(JDBC_FETCH_SIZE);
             activeStatement.set(statement);
@@ -160,9 +189,14 @@ public final class QueryRunner implements AutoCloseable {
                     rows.add(Collections.unmodifiableList(row));
                 }
                 boolean hasMore = resultSet.next();
-                return new PageResult(rows, hasMore);
+                PageResult result = new PageResult(rows, hasMore);
+                LOG.info("分页查询完成 rows={} hasMore={} durationMs={}", rows.size(), hasMore,
+                        Duration.between(started, Instant.now()).toMillis());
+                return result;
             }
         } catch (SQLException exception) {
+            LOG.warn("分页查询失败 sqlState={} errorCode={} durationMs={}", exception.getSQLState(),
+                    exception.getErrorCode(), Duration.between(started, Instant.now()).toMillis(), exception);
             throw new QueryExecutionException("加载更多结果失败：" + sanitize(exception), exception);
         } finally {
             activeStatement.set(null);
@@ -172,6 +206,8 @@ public final class QueryRunner implements AutoCloseable {
     private QueryExecution executeBlocking(List<SqlStatement> statements, boolean stopOnError,
                                            QueryResultListener listener) {
         Instant started = Instant.now();
+        LOG.info("SQL批次开始 statements={} stopOnError={} maxRows={} streamBatchRows={}",
+                statements.size(), stopOnError, maxRows, streamBatchRows);
         List<StatementResult> results = new ArrayList<StatementResult>();
         boolean cancelled = false;
         for (SqlStatement sqlStatement : statements) {
@@ -190,7 +226,11 @@ public final class QueryRunner implements AutoCloseable {
                 if (stopOnError) break;
             }
         }
-        return new QueryExecution(results, Duration.between(started, Instant.now()), cancelled);
+        QueryExecution execution = new QueryExecution(results, Duration.between(started, Instant.now()), cancelled);
+        LOG.info("SQL批次完成 statements={} results={} cancelled={} failed={} affectedRows={} durationMs={}",
+                statements.size(), results.size(), cancelled, execution.failed(), execution.affectedRows(),
+                execution.duration().toMillis());
+        return execution;
     }
 
     private List<StatementResult> executeOne(SqlStatement sqlStatement, int firstResultIndex,
@@ -198,6 +238,10 @@ public final class QueryRunner implements AutoCloseable {
         Instant started = Instant.now();
         final int statementMaxRows = maxRows;
         final int statementBatchRows = streamBatchRows;
+        LOG.info("SQL语句开始 index={} type={} {}", firstResultIndex, sqlStatement.type(),
+                SqlLogSupport.summary(sqlStatement.text()));
+        String preview = SqlLogSupport.preview(sqlStatement.text());
+        if (!preview.isEmpty()) LOG.debug("SQL语句预览 index={} text={}", firstResultIndex, preview);
         try (Statement statement = session.jdbcConnection().createStatement()) {
             statement.setFetchSize(JDBC_FETCH_SIZE);
             statement.setMaxRows(statementMaxRows + 1);
@@ -237,8 +281,13 @@ public final class QueryRunner implements AutoCloseable {
                 listener.resultCompleted(firstResultIndex, output);
                 outputs.add(output);
             }
+            LOG.info("SQL语句完成 index={} results={} durationMs={} transactionEffect={}", firstResultIndex,
+                    outputs.size(), Duration.between(started, Instant.now()).toMillis(), effect);
             return outputs;
         } catch (SQLException exception) {
+            LOG.warn("SQL语句失败 index={} sqlState={} errorCode={} durationMs={} message={}", firstResultIndex,
+                    exception.getSQLState(), exception.getErrorCode(),
+                    Duration.between(started, Instant.now()).toMillis(), sanitize(exception), exception);
             StatementResult failure = new StatementResult(sqlStatement.text(), sqlStatement.type(),
                     Collections.<String>emptyList(), Collections.<List<String>>emptyList(), -1, false,
                     Duration.between(started, Instant.now()), sanitize(exception));
@@ -354,7 +403,24 @@ public final class QueryRunner implements AutoCloseable {
 
     private static String sanitize(SQLException exception) {
         String message = exception.getMessage();
-        return message == null || message.trim().isEmpty() ? exception.getClass().getSimpleName() : message;
+        return message == null || message.trim().isEmpty() ? exception.getClass().getSimpleName()
+                : SqlLogSupport.sanitizeMessage(message);
+    }
+
+    /**
+     * 异步执行器不会自动继承 servlet 线程的 MDC，这里显式复制并在任务结束后恢复，避免
+     * requestId 泄漏到下一个 JDBC 任务，同时让查询日志可以按请求维度串联。
+     */
+    private static <T> T withLoggingContext(Map<String, String> context, Supplier<T> action) {
+        Map<String, String> previous = MDC.getCopyOfContextMap();
+        try {
+            MDC.clear();
+            if (context != null) MDC.setContextMap(context);
+            return action.get();
+        } finally {
+            MDC.clear();
+            if (previous != null) MDC.setContextMap(previous);
+        }
     }
 
     private static boolean isCancellation(String message) {
@@ -371,6 +437,8 @@ public final class QueryRunner implements AutoCloseable {
         else if (effect == TransactionEffect.END || effect == TransactionEffect.IMPLICIT_COMMIT) {
             transactionDirty.set(false);
         }
+        LOG.debug("事务状态更新 statementType={} hasResult={} effect={} dirty={}", statement.type(), hasResult,
+                effect, transactionDirty.get());
         return effect;
     }
 
@@ -388,12 +456,14 @@ public final class QueryRunner implements AutoCloseable {
 
     @Override
     public void close() {
-        try { cancel(); } catch (RuntimeException ignored) { }
+        try { cancel(); } catch (RuntimeException exception) { LOG.debug("关闭执行器时取消SQL失败", exception); }
         executor.shutdownNow();
         if (transactionDirty.getAndSet(false)) {
-            try { session.rollback(); } catch (SQLException ignored) { }
+            try { session.rollback(); } catch (SQLException exception) { LOG.warn("关闭执行器时回滚失败", exception); }
         }
-        if (ownsSession) try { session.close(); } catch (SQLException ignored) { }
+        if (ownsSession) try { session.close(); }
+        catch (SQLException exception) { LOG.warn("关闭JDBC会话失败", exception); }
+        LOG.debug("SQL执行器已关闭 ownsSession={}", ownsSession);
     }
 
     public static final class QueryExecutionException extends RuntimeException {

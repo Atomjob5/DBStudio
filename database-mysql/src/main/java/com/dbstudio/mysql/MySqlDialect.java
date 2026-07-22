@@ -250,8 +250,8 @@ public final class MySqlDialect implements SqlDialect {
             SQLExprTableSource source = (SQLExprTableSource) block.getFrom();
             String table = normalizedIdentifier(source.getTableName());
             if (table.isEmpty()) return Optional.empty();
-            // MySQL treats the qualifier before a table as a JDBC catalog (database), while
-            // Druid exposes a two-part name through getSchema(). Normalize that difference here.
+            // MySQL 将表名前的限定符视为 JDBC Catalog（数据库），而不是 Oracle 式 Schema；
+            // Druid 会通过 getSchema() 暴露两段式名称，这里统一归一化差异。
             String catalog = normalizedIdentifier(source.getCatalog());
             if (catalog.isEmpty()) catalog = normalizedIdentifier(source.getSchema());
             return Optional.of(new ResultMutationSource(catalog, "", table));

@@ -12,24 +12,34 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Properties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+/** MySQL JDBC 连接适配器：密码只通过 Properties 传给驱动，不拼接到 URL 或日志。 */
 public final class MySqlConnectionAdapter implements ConnectionAdapter {
+    private static final Logger LOG = LoggerFactory.getLogger(MySqlConnectionAdapter.class);
     static final int DEFAULT_PORT = 3306;
     static final int DEFAULT_TIMEOUT_SECONDS = 10;
 
     @Override
     public ConnectionTestResult test(ConnectionProfile profile, char[] password) {
         Instant started = Instant.now();
+        LOG.info("MySQL连接测试开始 profile={} host={} port={}", profile.id(), profile.setting("host"),
+                profile.intSetting("port", DEFAULT_PORT));
         try (DatabaseSession session = connect(profile, password);
              Statement statement = session.jdbcConnection().createStatement();
              ResultSet resultSet = statement.executeQuery("SELECT VERSION()")) {
             resultSet.next();
-            return new ConnectionTestResult(
+            ConnectionTestResult result = new ConnectionTestResult(
                     true,
                     "连接成功",
                     resultSet.getString(1),
                     Duration.between(started, Instant.now()));
+            LOG.info("MySQL连接测试完成 profile={} success=true durationMs={}", profile.id(),
+                    result.latency().toMillis());
+            return result;
         } catch (SQLException | IllegalArgumentException exception) {
+            LOG.warn("MySQL连接测试失败 profile={} reason={}", profile.id(), sanitize(exception.getMessage()));
             return ConnectionTestResult.failure(
                     sanitize(exception.getMessage()),
                     Duration.between(started, Instant.now()));
@@ -55,12 +65,15 @@ public final class MySqlConnectionAdapter implements ConnectionAdapter {
         properties.setProperty("serverTimezone", "UTC");
         properties.setProperty("sslMode", "DISABLED");
 
+        long started = System.nanoTime();
         java.sql.Connection connection = DriverManager.getConnection(buildJdbcUrl(profile), properties);
         connection.setAutoCommit(false);
         String catalog = profile.setting("database");
         if (!catalog.trim().isEmpty()) {
             connection.setCatalog(catalog);
         }
+        LOG.info("MySQL JDBC连接建立 profile={} durationMs={}", profile.id(),
+                (System.nanoTime() - started) / 1_000_000L);
         return new JdbcDatabaseSession(connection);
     }
 
@@ -80,7 +93,7 @@ public final class MySqlConnectionAdapter implements ConnectionAdapter {
         if (port < 1 || port > 65_535) {
             throw new IllegalArgumentException("端口必须在 1 到 65535 之间");
         }
-        // The catalog is selected with Connection.setCatalog so names never have to be placed in a URL.
+        // Catalog 通过 Connection.setCatalog 设置，避免把用户输入的数据库名拼进 JDBC URL。
         return "jdbc:mysql://" + host + ":" + port + "/";
     }
 

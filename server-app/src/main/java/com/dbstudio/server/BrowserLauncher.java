@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationListener;
 import org.springframework.stereotype.Component;
 
+/** 服务启动后打开本机浏览器；日志中只记录不含令牌的基础地址。 */
 @Component
 public final class BrowserLauncher implements ApplicationListener<WebServerInitializedEvent> {
     private static final Logger LOG = LoggerFactory.getLogger(BrowserLauncher.class);
@@ -26,10 +27,12 @@ public final class BrowserLauncher implements ApplicationListener<WebServerIniti
         Thread opener = new Thread(new Runnable() {
             @Override public void run() {
                 try {
-                    if (Desktop.isDesktopSupported()) Desktop.getDesktop().browse(URI.create(url));
-                    else LOG.warn("无法自动打开浏览器，请在本机打开：{}", url);
+                    if (Desktop.isDesktopSupported()) {
+                        Desktop.getDesktop().browse(URI.create(url));
+                        LOG.info("已请求打开本机浏览器 address={} tokenEnabled={}", base, token.enabled());
+                    } else LOG.warn("无法自动打开浏览器，请在本机打开基础地址：{}", base);
                 } catch (Exception exception) {
-                    LOG.warn("无法自动打开浏览器，请在本机打开：{}", url);
+                    LOG.warn("无法自动打开浏览器，请在本机打开基础地址：{}", base, exception);
                 }
             }
         }, "dbstudio-browser-launcher");

@@ -13,18 +13,28 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Properties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+/** Oracle JDBC 连接适配器，支持 Service Name 与 SID 两种 URL 形式。 */
 public final class OracleConnectionAdapter implements ConnectionAdapter {
+    private static final Logger LOG = LoggerFactory.getLogger(OracleConnectionAdapter.class);
     static final int DEFAULT_PORT = 1521;
     static final int DEFAULT_TIMEOUT_SECONDS = 10;
 
     @Override public ConnectionTestResult test(ConnectionProfile profile, char[] password) {
         Instant started = Instant.now();
+        LOG.info("Oracle连接测试开始 profile={} host={} port={} mode={}", profile.id(), profile.setting("host"),
+                profile.intSetting("port", DEFAULT_PORT), profile.setting("connectionMode"));
         try (DatabaseSession session = connect(profile, password)) {
-            return new ConnectionTestResult(true, "连接成功",
+            ConnectionTestResult result = new ConnectionTestResult(true, "连接成功",
                     session.jdbcConnection().getMetaData().getDatabaseProductVersion(),
                     Duration.between(started, Instant.now()));
+            LOG.info("Oracle连接测试完成 profile={} success=true durationMs={}", profile.id(),
+                    result.latency().toMillis());
+            return result;
         } catch (SQLException | IllegalArgumentException exception) {
+            LOG.warn("Oracle连接测试失败 profile={} reason={}", profile.id(), sanitize(exception.getMessage()));
             return ConnectionTestResult.failure(sanitize(exception.getMessage()),
                     Duration.between(started, Instant.now()));
         }
@@ -39,9 +49,15 @@ public final class OracleConnectionAdapter implements ConnectionAdapter {
         properties.setProperty("password", new String(password));
         properties.setProperty("oracle.net.CONNECT_TIMEOUT", Integer.toString(
                 profile.intSetting("timeoutSeconds", DEFAULT_TIMEOUT_SECONDS) * 1000));
+        long started = System.nanoTime();
         Connection connection = DriverManager.getConnection(buildJdbcUrl(profile), properties);
         OracleJdbcSession session = new OracleJdbcSession(connection);
-        try { OracleSessionSupport.initialize(session, profile); return session; }
+        try {
+            OracleSessionSupport.initialize(session, profile);
+            LOG.info("Oracle JDBC连接建立 profile={} durationMs={}", profile.id(),
+                    (System.nanoTime() - started) / 1_000_000L);
+            return session;
+        }
         catch (SQLException exception) { connection.close(); throw exception; }
     }
 

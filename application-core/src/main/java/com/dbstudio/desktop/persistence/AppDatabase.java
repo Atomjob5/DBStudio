@@ -10,14 +10,24 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Instant;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+/**
+ * DBStudio 本地 SQLite 数据库。
+ *
+ * <p>迁移按版本顺序执行，每个结构变更在事务内完成；失败时回滚当前迁移，避免恢复草稿、
+ * 连接目录或设置出现半套结构。</p>
+ */
 public final class AppDatabase implements AutoCloseable {
+    private static final Logger LOG = LoggerFactory.getLogger(AppDatabase.class);
     private static final int SCHEMA_VERSION = 4;
     private final Connection connection;
 
     public AppDatabase(Path dataDirectory) throws SQLException, IOException {
         Files.createDirectories(dataDirectory);
         connection = DriverManager.getConnection("jdbc:sqlite:" + dataDirectory.resolve("dbstudio.db"));
+        LOG.info("打开本地SQLite数据库 path={}", dataDirectory.resolve("dbstudio.db"));
         try (Statement statement = connection.createStatement()) {
             statement.execute("PRAGMA foreign_keys = ON");
             statement.execute("PRAGMA journal_mode = WAL");
@@ -33,13 +43,14 @@ public final class AppDatabase implements AutoCloseable {
             statement.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)");
         }
         int version = currentVersion();
-        if (version == 0) { migrateToV1(); recordVersion(1); version = 1; }
-        if (version == 1) { migrateToV2(); recordVersion(2); version = 2; }
-        if (version == 2) { migrateToV3(); recordVersion(3); version = 3; }
-        if (version == 3) { migrateToV4(); recordVersion(4); version = 4; }
+        if (version == 0) { LOG.info("执行SQLite迁移 V1"); migrateToV1(); recordVersion(1); version = 1; }
+        if (version == 1) { LOG.info("执行SQLite迁移 V2"); migrateToV2(); recordVersion(2); version = 2; }
+        if (version == 2) { LOG.info("执行SQLite迁移 V3"); migrateToV3(); recordVersion(3); version = 3; }
+        if (version == 3) { LOG.info("执行SQLite迁移 V4"); migrateToV4(); recordVersion(4); version = 4; }
         if (version > SCHEMA_VERSION) {
             throw new SQLException("Local database schema is newer than this application: " + version);
         }
+        LOG.info("本地SQLite数据库就绪 schemaVersion={}", version);
     }
 
     private int currentVersion() throws SQLException {
@@ -66,6 +77,7 @@ public final class AppDatabase implements AutoCloseable {
             statement.execute("CREATE TABLE app_setting (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL)");
             connection.commit();
         } catch (SQLException exception) {
+            LOG.error("SQLite迁移V1失败，正在回滚", exception);
             connection.rollback();
             throw exception;
         } finally {
@@ -121,6 +133,7 @@ public final class AppDatabase implements AutoCloseable {
             }
             connection.commit();
         } catch (SQLException exception) {
+            LOG.error("SQLite迁移V3失败，正在回滚", exception);
             connection.rollback();
             throw exception;
         } finally {
@@ -158,6 +171,7 @@ public final class AppDatabase implements AutoCloseable {
                     + "normal_exit INTEGER NOT NULL DEFAULT 0)");
             connection.commit();
         } catch (SQLException exception) {
+            LOG.error("SQLite迁移V4失败，正在回滚", exception);
             connection.rollback();
             throw exception;
         } finally {
@@ -173,5 +187,8 @@ public final class AppDatabase implements AutoCloseable {
         }
     }
 
-    @Override public void close() throws SQLException { connection.close(); }
+    @Override public void close() throws SQLException {
+        connection.close();
+        LOG.info("关闭本地SQLite数据库");
+    }
 }

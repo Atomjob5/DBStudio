@@ -12,7 +12,7 @@ import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Component;
 
-/** Creates privacy-preserving, stable identifiers without persisting raw MAC addresses. */
+/** 使用本机网卡摘要创建稳定标识，不保存也不记录原始 MAC 地址。 */
 @Component
 public final class MachineIdentity {
     private static final String INSTALLATION_ID = "installation.id";

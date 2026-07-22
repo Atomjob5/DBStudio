@@ -1,6 +1,7 @@
 package com.dbstudio.server;
 
 import com.dbstudio.desktop.DatabaseContext;
+import com.dbstudio.desktop.logging.SqlLogSupport;
 import com.dbstudio.spi.DatabaseSession;
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -8,9 +9,18 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-/** A small workspace-scoped JDBC queue with transaction pinning and disconnect generations. */
+/**
+ * Workspace 范围内的 JDBC 队列。
+ *
+ * <p>非事务查询借用空闲连接，执行结束后重置并归还；事务或锁定查询会通过
+ * {@code pinnedEditorId} 固定连接。断连退休只递增代次，不复用旧代次连接，避免半开
+ * JDBC 被下一次 SQL 误用。</p>
+ */
 final class WorkspaceJdbcPool implements AutoCloseable {
+    private static final Logger LOG = LoggerFactory.getLogger(WorkspaceJdbcPool.class);
     private final String key;
     private final DatabaseContext context;
     private final EditorConnectionLimiter limiter;
@@ -33,21 +43,25 @@ final class WorkspaceJdbcPool implements AutoCloseable {
             if (entry.generation != generation || entry.retired || entry.borrowed || entry.pinnedEditorId != null) continue;
             if (!valid(entry.session)) { closeEntry(entry); iterator.remove(); continue; }
             entry.borrowed = true; entry.lastUsed = System.currentTimeMillis(); limiter.touch(entry.permitKey);
+            LOG.debug("借用JDBC连接 pool={} generation={} physicalCount={}", key, generation, entries.size());
             return new Lease(this, entry);
         }
 
         final Entry created = new Entry(generation, key + ":" + UUID.randomUUID().toString());
         if (!limiter.acquire(created.permitKey, created, new Runnable() {
-            @Override public void run() { /* Entry control has already closed the JDBC session. */ }
+            @Override public void run() { /* Entry 控制对象已负责关闭对应 JDBC 会话。 */ }
         })) throw new ApiException("CONNECTION_LIMIT_REACHED", "已达到最大活动链接数，请处理事务或等待空闲链接回收");
         try {
             created.session = context.openEditorSession();
             created.borrowed = true;
             created.lastUsed = System.currentTimeMillis();
             entries.add(created);
+            LOG.info("创建JDBC连接 pool={} generation={} physicalCount={}", key, generation, entries.size());
             return new Lease(this, created);
         } catch (SQLException exception) {
             limiter.release(created.permitKey);
+            LOG.warn("创建JDBC连接失败 pool={} generation={} message={}", key, generation,
+                    SqlLogSupport.sanitizeMessage(exception.getMessage()));
             throw exception;
         }
     }
@@ -56,6 +70,7 @@ final class WorkspaceJdbcPool implements AutoCloseable {
         for (Entry entry : entries) {
             if (!entry.closed && editorId.equals(entry.pinnedEditorId)) {
                 entry.borrowed = true; entry.lastUsed = System.currentTimeMillis(); limiter.touch(entry.permitKey);
+                LOG.debug("借用事务固定JDBC连接 pool={} editorId={}", key, editorId);
                 return new Lease(this, entry);
             }
         }
@@ -67,13 +82,19 @@ final class WorkspaceJdbcPool implements AutoCloseable {
         entry.pinnedEditorId = editorId;
         entry.borrowed = false;
         entry.lastUsed = System.currentTimeMillis();
+        LOG.info("固定JDBC连接到事务编辑器 pool={} editorId={}", key, editorId);
     }
 
     synchronized void release(Lease lease) {
         Entry entry = owned(lease);
-        if (entry.pinnedEditorId != null) { entry.borrowed = false; entry.lastUsed = System.currentTimeMillis(); return; }
+        if (entry.pinnedEditorId != null) {
+            entry.borrowed = false; entry.lastUsed = System.currentTimeMillis();
+            LOG.debug("释放事务固定JDBC借用 pool={} editorId={}", key, entry.pinnedEditorId);
+            return;
+        }
         if (!reset(entry.session)) { closeAndRemove(entry); return; }
         entry.borrowed = false; entry.lastUsed = System.currentTimeMillis();
+        LOG.debug("归还JDBC连接 pool={} physicalCount={}", key, entries.size());
     }
 
     synchronized void unpinAndRelease(String editorId) {
@@ -82,6 +103,7 @@ final class WorkspaceJdbcPool implements AutoCloseable {
         entry.pinnedEditorId = null;
         if (!reset(entry.session)) { closeAndRemove(entry); return; }
         entry.borrowed = false; entry.lastUsed = System.currentTimeMillis();
+        LOG.info("解除事务固定并归还JDBC连接 pool={} editorId={}", key, editorId);
     }
 
     synchronized void closePinned(String editorId) {
@@ -100,6 +122,7 @@ final class WorkspaceJdbcPool implements AutoCloseable {
     synchronized void retireUnpinned() {
         long now = System.currentTimeMillis();
         generation++;
+        LOG.warn("退休非事务JDBC连接代次 pool={} newGeneration={}", key, generation);
         for (Entry entry : entries) {
             if (entry.closed || entry.pinnedEditorId != null) continue;
             entry.retired = true; entry.retiredAt = now;
@@ -113,7 +136,10 @@ final class WorkspaceJdbcPool implements AutoCloseable {
             if (entry.closed) { iterator.remove(); continue; }
             if (entry.borrowed || entry.pinnedEditorId != null) continue;
             long since = entry.retired ? entry.retiredAt : entry.lastUsed;
-            if (since <= cutoffMillis) { closeEntry(entry); iterator.remove(); }
+            if (since <= cutoffMillis) {
+                LOG.info("回收空闲JDBC连接 pool={} generation={} retired={}", key, entry.generation, entry.retired);
+                closeEntry(entry); iterator.remove();
+            }
         }
         if (entries.isEmpty()) context.suspendMetadata();
     }
@@ -142,7 +168,8 @@ final class WorkspaceJdbcPool implements AutoCloseable {
         if (entry.closed) return;
         entry.closed = true; entry.borrowed = false;
         DatabaseSession session = entry.session; entry.session = null;
-        if (session != null) try { session.close(); } catch (SQLException ignored) { }
+        if (session != null) try { session.close(); }
+        catch (SQLException exception) { LOG.warn("关闭JDBC连接失败 pool={} generation={}", key, entry.generation, exception); }
         limiter.release(entry.permitKey);
     }
 
@@ -150,13 +177,19 @@ final class WorkspaceJdbcPool implements AutoCloseable {
         try {
             context.provider().connections().resetSession(session, context.profile());
             return true;
-        } catch (SQLException exception) { return false; }
+        } catch (SQLException exception) {
+            LOG.warn("重置JDBC会话失败 pool={} message={}", key, SqlLogSupport.sanitizeMessage(exception.getMessage()));
+            return false;
+        }
     }
 
     private static boolean valid(DatabaseSession session) {
         if (session == null) return false;
         try { return !session.isClosed() && session.jdbcConnection().isValid(2); }
-        catch (SQLException exception) { return false; }
+        catch (SQLException exception) {
+            LOG.debug("JDBC健康检查失败", exception);
+            return false;
+        }
     }
 
     private void ensureOpen() throws SQLException {
@@ -167,6 +200,7 @@ final class WorkspaceJdbcPool implements AutoCloseable {
         closed = true;
         for (Entry entry : new ArrayList<Entry>(entries)) closeEntry(entry);
         entries.clear(); context.close();
+        LOG.info("关闭JDBC连接池 pool={}", key);
     }
 
     static final class Lease {

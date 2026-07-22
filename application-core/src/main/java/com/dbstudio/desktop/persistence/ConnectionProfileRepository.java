@@ -13,8 +13,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+/** 连接目录持久化仓库；密码仅保存到系统密钥库，SQLite 只保存配置和密钥引用。 */
 public final class ConnectionProfileRepository {
+    private static final Logger LOG = LoggerFactory.getLogger(ConnectionProfileRepository.class);
     private final Connection connection;
     private final ObjectMapper objectMapper;
 
@@ -47,6 +51,7 @@ public final class ConnectionProfileRepository {
                 }
             }
         }
+        LOG.debug("读取连接目录 profiles={}", profiles.size());
         return profiles;
     }
 
@@ -75,9 +80,11 @@ public final class ConnectionProfileRepository {
             statement.setString(8, environmentId);
             statement.executeUpdate();
         }
+        LOG.info("保存连接配置 profile={} provider={} environment={} rememberPassword={}",
+                profile.id(), profile.providerId(), environmentId, rememberPassword);
     }
 
-    /** Compatibility helper used by callers that do not yet provide a catalog location. */
+    /** 兼容尚未提供目录位置的旧调用方，选择当前最早创建的有效环境。 */
     public synchronized void save(ConnectionProfile profile, boolean rememberPassword) throws SQLException {
         String environmentId = null;
         try (PreparedStatement statement = connection.prepareStatement(
@@ -97,9 +104,10 @@ public final class ConnectionProfileRepository {
             statement.setString(1, now); statement.setString(2, now); statement.setString(3, id.toString());
             if (statement.executeUpdate() == 0) throw new SQLException("Connection profile not found: " + id);
         }
+        LOG.info("软删除连接配置 profile={}", id);
     }
 
-    /** Moves a profile in the catalog without changing its connection revision. */
+    /** 只移动连接在目录中的环境归属，不改变配置 revision，已绑定编辑器无需重连。 */
     public synchronized void moveToEnvironment(UUID id, String environmentId) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(
                 "SELECT 1 FROM connection_environment e JOIN connection_system s ON s.id=e.system_id "
@@ -117,6 +125,7 @@ public final class ConnectionProfileRepository {
                 throw new SQLException("Connection profile not found: " + id);
             }
         }
+        LOG.info("移动连接配置 profile={} environment={}", id, environmentId);
     }
 
     public static final class SavedProfile {

@@ -1,5 +1,6 @@
 package com.dbstudio.server;
 
+import com.dbstudio.desktop.logging.SqlLogSupport;
 import com.dbstudio.desktop.AppDirectories;
 import com.dbstudio.desktop.persistence.SettingsRepository;
 import com.dbstudio.desktop.persistence.WorkspaceRepository;
@@ -19,10 +20,18 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-/** Persistent workspace catalog plus in-process runtimes and exclusive browser ownership. */
+/**
+ * 工作空间目录、进程内运行时和浏览器独占关系的统一协调器。
+ *
+ * <p>目录数据保存到 SQLite，运行时对象只保存在当前进程。一个 Workspace 同时只允许
+ * 一个健康浏览器持有 owner；WebSocket 断开时运行时仍会保留，以便事务保护和异常恢复。</p>
+ */
 @org.springframework.stereotype.Component
 public final class WorkspaceRegistry implements AutoCloseable {
+    private static final Logger LOG = LoggerFactory.getLogger(WorkspaceRegistry.class);
     private final Map<String, Workspace> runtimes = new ConcurrentHashMap<String, Workspace>();
     private final Map<String, String> owners = new ConcurrentHashMap<String, String>();
     private final Map<String, ScheduledFuture<?>> transactionExpiry =
@@ -56,18 +65,25 @@ public final class WorkspaceRegistry implements AutoCloseable {
         scheduler.scheduleAtFixedRate(new Runnable() {
             @Override public void run() { reapIdleConnections(); }
         }, 1L, 1L, TimeUnit.MINUTES);
+        LOG.info("Workspace运行时已启动 maxSessions={} idleTimeoutMinutes={} transactionRollbackMinutes={}",
+                limiter.maximum(), idleTimeoutMinutes, transactionRollbackMinutes);
     }
 
     List<WorkspaceRecord> catalog() throws SQLException { return repository.findAll(); }
 
     WorkspaceRecord createCatalog(String name) throws SQLException {
         String localUuid = UUID.randomUUID().toString();
-        return repository.create(machineIdentity.workspaceId(localUuid), localUuid,
+        WorkspaceRecord created = repository.create(machineIdentity.workspaceId(localUuid), localUuid,
                 machineIdentity.fingerprint(), name);
+        LOG.info("创建Workspace workspaceId={} name={}", created.id(), created.name());
+        return created;
     }
 
     WorkspaceRecord renameCatalog(String id, String name) throws SQLException {
-        validateId(id); return repository.rename(id, name);
+        validateId(id);
+        WorkspaceRecord renamed = repository.rename(id, name);
+        LOG.info("重命名Workspace workspaceId={} name={}", id, name);
+        return renamed;
     }
 
     synchronized void deleteCatalog(String id) throws SQLException {
@@ -80,6 +96,7 @@ public final class WorkspaceRegistry implements AutoCloseable {
         runtime = runtimes.remove(id);
         if (runtime != null) runtime.close();
         repository.softDelete(id);
+        LOG.info("删除Workspace workspaceId={}", id);
     }
 
     synchronized WorkspaceOpen open(String id, String clientId, boolean reconnect) throws SQLException {
@@ -96,6 +113,8 @@ public final class WorkspaceRegistry implements AutoCloseable {
         boolean recovery = !(reconnect && sameOwner) && (record.dirtyCount() > 0 || record.transactionCount() > 0
                 || runtime.hasTransactions());
         boolean processRestarted = recoveryWasCreatedByEarlierRun(id);
+        LOG.info("打开Workspace workspaceId={} clientId={} recoveryRequired={} processRestarted={}", id,
+                clientId, recovery, processRestarted);
         return new WorkspaceOpen(runtime, record, recovery, processRestarted);
     }
 
@@ -106,7 +125,7 @@ public final class WorkspaceRegistry implements AutoCloseable {
         return false;
     }
 
-    /** Compatibility entry used by older tests and clients while the chooser endpoint is adopted. */
+    /** 工作空间选择页逐步迁移期间，为旧客户端保留的兼容创建入口。 */
     WorkspaceRegistration create(String id) {
         validateId(id);
         try {
@@ -115,7 +134,9 @@ public final class WorkspaceRegistry implements AutoCloseable {
             Workspace existing = runtimes.get(id);
             Workspace runtime = runtime(id);
             return new WorkspaceRegistration(runtime, existing == null);
-        } catch (SQLException exception) { throw new ApiException("WORKSPACE_STORE_FAILED", exception.getMessage(), exception); }
+        } catch (SQLException exception) {
+            throw new ApiException("WORKSPACE_STORE_FAILED", SqlLogSupport.sanitizeMessage(exception.getMessage()), exception);
+        }
     }
 
     Workspace require(String id) {
@@ -136,6 +157,7 @@ public final class WorkspaceRegistry implements AutoCloseable {
     synchronized void browserConnected(String id, String clientId) {
         if (!clientId.equals(owners.get(id))) throw new ApiException("WORKSPACE_OWNERSHIP_REQUIRED", "当前窗口没有占用该工作空间");
         cancelTransactionExpiry(id); require(id).browserConnected();
+        LOG.info("Workspace事件通道已连接 workspaceId={} clientId={}", id, clientId);
     }
 
     synchronized void browserDisconnected(String id, String clientId) {
@@ -143,6 +165,7 @@ public final class WorkspaceRegistry implements AutoCloseable {
         Workspace workspace = runtimes.get(id);
         if (workspace == null || workspace.events().connected()) return;
         workspace.browserDisconnected();
+        LOG.warn("Workspace浏览器断开 workspaceId={} hasTransactions={}", id, workspace.hasTransactions());
         if (workspace.hasTransactions()) scheduleTransactionExpiry(id, workspace);
     }
 
@@ -151,12 +174,14 @@ public final class WorkspaceRegistry implements AutoCloseable {
         Workspace workspace = runtimes.get(id);
         if (workspace != null && workspace.events().connected()) workspace.events().closeSession();
         owners.remove(id);
+        LOG.info("Workspace客户端主动关闭 workspaceId={} clientId={}", id, clientId);
     }
 
     synchronized void expireNow(String id) {
         cancelTransactionExpiry(id); owners.remove(id);
         Workspace workspace = runtimes.remove(id);
         if (workspace != null) workspace.close();
+        LOG.warn("Workspace运行时已过期 workspaceId={}", id);
     }
 
     void setMaxRows(int maxRows) {
@@ -167,10 +192,17 @@ public final class WorkspaceRegistry implements AutoCloseable {
         int bounded=Math.max(1,Math.min(1_000,rows));
         for (Workspace workspace:runtimes.values()) workspace.editors().setStreamBatchRows(bounded);
     }
-    void setMaxActiveSessions(int maximum) { limiter.setMaximum(maximum); }
-    void setIdleTimeoutMinutes(int minutes) { idleTimeoutMinutes=Math.max(1,Math.min(1_440,minutes)); }
+    void setMaxActiveSessions(int maximum) {
+        limiter.setMaximum(maximum);
+        LOG.info("更新最大活动JDBC会话数 maximum={}", limiter.maximum());
+    }
+    void setIdleTimeoutMinutes(int minutes) {
+        idleTimeoutMinutes=Math.max(1,Math.min(1_440,minutes));
+        LOG.info("更新JDBC空闲回收时间 minutes={}", idleTimeoutMinutes);
+    }
     void setTransactionRollbackMinutes(int minutes) {
         transactionRollbackMinutes=Math.max(1,Math.min(1_440,minutes));
+        LOG.info("更新事务断连保护时间 minutes={}", transactionRollbackMinutes);
     }
 
     void broadcast(String type,Object payload) {
@@ -198,7 +230,10 @@ public final class WorkspaceRegistry implements AutoCloseable {
 
     private void reapIdleConnections() {
         long cutoff=System.currentTimeMillis()-TimeUnit.MINUTES.toMillis(idleTimeoutMinutes);
-        for(Workspace workspace:runtimes.values()) workspace.reapIdle(cutoff);
+        for(Workspace workspace:runtimes.values()) {
+            try { workspace.reapIdle(cutoff); }
+            catch (RuntimeException exception) { LOG.warn("回收Workspace空闲连接失败 workspaceId={}", workspace.id(), exception); }
+        }
     }
 
     private synchronized void scheduleTransactionExpiry(final String id,final Workspace workspace) {
@@ -207,6 +242,7 @@ public final class WorkspaceRegistry implements AutoCloseable {
             transactionExpiry.remove(id);
             if(!workspace.events().connected()&&workspace.hasTransactions()){
                 workspace.rollbackDisconnectedTransactions();
+                LOG.warn("Workspace断连事务超过保护时间，自动回滚 workspaceId={}", id);
                 workspace.events().emit("transaction.autoRolledBack",ApiPayloads.map(
                         "workspaceId",id,"message","断连事务已超过保护时间并自动回滚"));
             }

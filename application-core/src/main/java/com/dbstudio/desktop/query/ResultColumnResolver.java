@@ -2,7 +2,7 @@ package com.dbstudio.desktop.query;
 
 import java.util.List;
 
-/** Resolves optional database metadata without using the active streaming query connection. */
+/** 使用独立元数据会话解析可选列信息，不在活动流式查询连接上执行额外语句。 */
 public interface ResultColumnResolver {
     ResolvedResultMetadata resolve(String sql, List<ResultColumn> columns);
     void invalidate();

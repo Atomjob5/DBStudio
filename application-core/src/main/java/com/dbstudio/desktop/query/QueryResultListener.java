@@ -3,7 +3,7 @@ package com.dbstudio.desktop.query;
 import com.dbstudio.spi.StatementType;
 import java.util.List;
 
-/** Receives ordered query output on the editor session's dedicated query thread. */
+/** 在编辑器专属查询线程上接收有序查询输出。 */
 public interface QueryResultListener {
     void resultStarted(int resultIndex, String sql, StatementType type, List<String> columns);
     default void resultMetadata(int resultIndex, String sql, StatementType type, List<ResultColumn> columns) {

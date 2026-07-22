@@ -15,17 +15,27 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Properties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+/** OceanBase Oracle 模式连接适配器，建连后额外探测租户是否支持 Oracle 语义。 */
 public final class OceanBaseOracleConnectionAdapter implements ConnectionAdapter {
+    private static final Logger LOG = LoggerFactory.getLogger(OceanBaseOracleConnectionAdapter.class);
     static final int DEFAULT_PORT = 2881;
 
     @Override public ConnectionTestResult test(ConnectionProfile profile, char[] password) {
         Instant started = Instant.now();
+        LOG.info("OceanBase Oracle连接测试开始 profile={} host={} port={}", profile.id(), profile.setting("host"),
+                profile.intSetting("port", DEFAULT_PORT));
         try (DatabaseSession session = connect(profile, password)) {
-            return new ConnectionTestResult(true, "连接成功（Oracle模式）",
+            ConnectionTestResult result = new ConnectionTestResult(true, "连接成功（Oracle模式）",
                     session.jdbcConnection().getMetaData().getDatabaseProductVersion(),
                     Duration.between(started, Instant.now()));
+            LOG.info("OceanBase Oracle连接测试完成 profile={} success=true durationMs={}", profile.id(),
+                    result.latency().toMillis());
+            return result;
         } catch (SQLException | IllegalArgumentException exception) {
+            LOG.warn("OceanBase Oracle连接测试失败 profile={} reason={}", profile.id(), sanitize(exception.getMessage()));
             return ConnectionTestResult.failure(sanitize(exception.getMessage()), Duration.between(started, Instant.now()));
         }
     }
@@ -42,11 +52,14 @@ public final class OceanBaseOracleConnectionAdapter implements ConnectionAdapter
         properties.setProperty("compatibleOjdbcVersion", "8");
         properties.setProperty("useUnicode", "true");
         properties.setProperty("characterEncoding", "UTF-8");
+        long started = System.nanoTime();
         Connection connection = DriverManager.getConnection(buildJdbcUrl(profile), properties);
         OracleJdbcSession session = new OracleJdbcSession(connection);
         try {
             verifyOracleMode(session);
             OracleSessionSupport.initialize(session, profile);
+            LOG.info("OceanBase Oracle JDBC连接建立 profile={} durationMs={}", profile.id(),
+                    (System.nanoTime() - started) / 1_000_000L);
             return session;
         } catch (SQLException exception) { connection.close(); throw exception; }
     }

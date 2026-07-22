@@ -115,7 +115,7 @@ public final class MetadataResultColumnResolver implements ResultColumnResolver 
                 result.put(normalized(column.name()), column.remarks());
             }
         } catch (SQLException ignored) {
-            // Column remarks are optional and must never fail the query result stream.
+            // 字段备注属于可选元数据，读取失败不能阻断正在流式传输的查询结果。
         }
         return Collections.unmodifiableMap(result);
     }

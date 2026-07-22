@@ -18,11 +18,22 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-/** Builds a database-independent, immutable completion snapshot from a metadata session. */
+/**
+ * 补全快照生成器。
+ *
+ * <p>服务只依赖数据库 SPI，不持有连接生命周期；调用方负责提供临时元数据会话并在完成后关闭。
+ * 生成过程中通过进度回调报告阶段，只有全部对象成功枚举后才返回不可变快照。</p>
+ */
 public final class CompletionSnapshotService {
+    private static final Logger LOG = LoggerFactory.getLogger(CompletionSnapshotService.class);
+
     public Snapshot build(DatabaseProvider provider, DatabaseSession session, String sourceProfileId,
                           ProgressListener progress) throws SQLException {
+        long started = System.nanoTime();
+        LOG.info("开始生成SQL补全快照 provider={} sourceProfile={}", provider.id(), sourceProfileId);
         ProgressListener listener = progress == null ? ProgressListener.NONE : progress;
         List<Suggestion> suggestions = new ArrayList<Suggestion>();
         Set<String> identities = new LinkedHashSet<String>();
@@ -85,7 +96,11 @@ public final class CompletionSnapshotService {
             }
             listener.progress("loading", index + 1, objects.size(), qualified(object.catalog(), object.schema(), object.name()));
         }
-        return new Snapshot(provider.id(), sourceProfileId, Instant.now().toString(), suggestions);
+        Snapshot snapshot = new Snapshot(provider.id(), sourceProfileId, Instant.now().toString(), suggestions);
+        LOG.info("SQL补全快照生成完成 provider={} sourceProfile={} namespaces={} objects={} suggestions={} durationMs={}",
+                provider.id(), sourceProfileId, namespaces.size(), objects.size(), suggestions.size(),
+                (System.nanoTime() - started) / 1_000_000L);
+        return snapshot;
     }
 
     private static void request(DatabaseProvider provider, Set<DatabaseObjectType> target,

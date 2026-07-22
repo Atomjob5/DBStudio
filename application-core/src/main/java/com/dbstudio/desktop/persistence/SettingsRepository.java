@@ -5,8 +5,12 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+/** SQLite 用户设置仓库；只保存白名单键和值，不保存密码或令牌。 */
 public final class SettingsRepository {
+    private static final Logger LOG = LoggerFactory.getLogger(SettingsRepository.class);
     private final Connection connection;
     public SettingsRepository(AppDatabase database) { this.connection = database.connection(); }
 
@@ -15,7 +19,9 @@ public final class SettingsRepository {
                 "SELECT setting_value FROM app_setting WHERE setting_key=?")) {
             statement.setString(1, key);
             try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next() ? Optional.of(resultSet.getString(1)) : Optional.<String>empty();
+                Optional<String> value = resultSet.next() ? Optional.of(resultSet.getString(1)) : Optional.<String>empty();
+                LOG.debug("读取应用设置 key={} exists={}", key, value.isPresent());
+                return value;
             }
         }
     }
@@ -28,5 +34,6 @@ public final class SettingsRepository {
             statement.setString(2, value);
             statement.executeUpdate();
         }
+        LOG.info("更新应用设置 key={}", key);
     }
 }

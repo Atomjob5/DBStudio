@@ -35,12 +35,22 @@ import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVParser;
 import org.apache.commons.csv.CSVPrinter;
 import org.apache.commons.csv.CSVRecord;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+/**
+ * CSV导入导出服务。
+ *
+ * <p>文件内容只在本地流式处理，批量导入使用保存点保证失败可回滚；日志只记录文件元数据和行数，
+ * 不记录文件内容或密码。</p>
+ */
 public final class CsvService {
+    private static final Logger LOG = LoggerFactory.getLogger(CsvService.class);
     public static final String NULL_VALUE = "\\N";
     public static final int DEFAULT_BATCH_SIZE = 500;
 
     public Preview preview(Path file, Charset charset, char delimiter, int maxRows) throws IOException {
+        LOG.debug("CSV预览开始 file={} charset={} delimiter={} maxRows={}", file, charset.name(), delimiter, maxRows);
         try (BufferedReader reader = Files.newBufferedReader(file, charset);
              CSVParser parser = csvFormat(delimiter).parse(reader)) {
             List<String> headers = new ArrayList<String>(parser.getHeaderNames());
@@ -51,6 +61,7 @@ public final class CsvService {
                 for (String header : headers) row.add(record.isMapped(header) ? record.get(header) : "");
                 rows.add(row);
             }
+            LOG.info("CSV预览完成 file={} columns={} rows={}", file, headers.size(), rows.size());
             return new Preview(headers, rows);
         }
     }
@@ -72,6 +83,9 @@ public final class CsvService {
                            Path file, Charset charset, char delimiter, Map<String, String> sourceToTarget,
                            LongConsumer progress) throws SQLException, IOException {
         if (sourceToTarget.isEmpty()) throw new IllegalArgumentException("至少映射一个字段");
+        long started = System.nanoTime();
+        LOG.info("CSV导入开始 target={} file={} mappingCount={} delimiter={}",
+                dialect.qualifiedName(catalog, schema, table), file, sourceToTarget.size(), delimiter);
         Map<String, String> mapping = new LinkedHashMap<String, String>(sourceToTarget);
         String target = dialect.qualifiedName(catalog, schema, table);
         List<String> columns = mapping.values().stream().map(dialect::quoteIdentifier).collect(Collectors.toList());
@@ -106,11 +120,15 @@ public final class CsvService {
                 progress.accept(count);
             }
             session.jdbcConnection().releaseSavepoint(savepoint);
+            LOG.info("CSV导入完成 target={} file={} rows={} durationMs={}", target, file, count,
+                    (System.nanoTime() - started) / 1_000_000L);
             return count;
         } catch (SQLException exception) {
+            LOG.warn("CSV导入失败 target={} file={} rows={}，已回滚保存点", target, file, count, exception);
             session.jdbcConnection().rollback(savepoint);
             throw exception;
         } catch (IOException exception) {
+            LOG.warn("CSV导入读取失败 target={} file={} rows={}，已回滚保存点", target, file, count, exception);
             session.jdbcConnection().rollback(savepoint);
             throw exception;
         } catch (RuntimeException exception) {
@@ -157,9 +175,12 @@ public final class CsvService {
         }
     }
 
-    /** Streams directly to the supplied HTTP writer without retaining result rows. */
+    /** 直接流式写入 HTTP 输出，不把完整结果集保留在内存。 */
     public long exportQuery(DatabaseSession session, String sql, Writer writer, char delimiter,
                             LongConsumer progress) throws SQLException, IOException {
+        long started = System.nanoTime();
+        LOG.info("CSV完整导出开始 sqlFingerprint={} delimiter={}",
+                com.dbstudio.desktop.logging.SqlLogSupport.fingerprint(sql), delimiter);
         try (Statement statement = session.jdbcConnection().createStatement();
              CSVPrinter printer = new CSVPrinter(writer, exportFormat(delimiter))) {
             statement.setFetchSize(QueryRunner.JDBC_FETCH_SIZE);
@@ -181,6 +202,9 @@ public final class CsvService {
                     if (rows % DEFAULT_BATCH_SIZE == 0) { printer.flush(); progress.accept(rows); }
                 }
                 progress.accept(rows);
+                LOG.info("CSV完整导出完成 sqlFingerprint={} rows={} durationMs={}",
+                        com.dbstudio.desktop.logging.SqlLogSupport.fingerprint(sql), rows,
+                        (System.nanoTime() - started) / 1_000_000L);
                 return rows;
             }
         }
@@ -206,7 +230,7 @@ public final class CsvService {
             ParameterMetaData metadata = statement.getParameterMetaData();
             for (int index = 1; index <= count; index++) result[index - 1] = metadata.getParameterType(index);
         } catch (SQLException ignored) {
-            // Some drivers do not expose parameter metadata before execution. String binding remains safe fallback.
+            // 部分驱动在执行前不提供参数元数据，此时退回字符串绑定，避免导入流程被驱动能力阻断。
         }
         return result;
     }

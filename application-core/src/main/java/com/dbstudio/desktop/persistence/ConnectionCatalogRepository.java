@@ -10,7 +10,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
-/** Persists the user-defined System -> Environment connection catalog. */
+/** 持久化用户维护的“系统 → 环境 → 连接”目录。 */
 public final class ConnectionCatalogRepository {
     private final Connection connection;
 

@@ -5,6 +5,7 @@ import com.dbstudio.desktop.persistence.ConnectionProfileRepository.SavedProfile
 import com.dbstudio.desktop.query.QueryExecution;
 import com.dbstudio.desktop.query.QueryResultListener;
 import com.dbstudio.desktop.query.QueryRunner;
+import com.dbstudio.desktop.logging.SqlLogSupport;
 import com.dbstudio.desktop.query.QueryRunner.PageResult;
 import com.dbstudio.desktop.web.EditorSessionRegistry;
 import com.dbstudio.desktop.web.EditorSessionRegistry.EditorSession;
@@ -28,9 +29,17 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-/** Runtime state for one persistent workspace. Editors are logical; JDBC sessions come from queues. */
+/**
+ * 单个持久化 Workspace 的进程内运行时。
+ *
+ * <p>编辑器只保存逻辑连接绑定，非事务 SQL 从对应连接池借用 JDBC；事务或锁定查询完成后
+ * 会把连接固定到编辑器，直到提交、回滚、切换连接或断连保护超时。</p>
+ */
 final class Workspace implements AutoCloseable {
+    private static final Logger LOG = LoggerFactory.getLogger(Workspace.class);
     private final String id;
     private final EditorSessionRegistry editors;
     private final WorkspaceEventChannel events;
@@ -59,6 +68,7 @@ final class Workspace implements AutoCloseable {
                 thread.setDaemon(true); return thread;
             }
         });
+        LOG.info("创建Workspace运行时 workspaceId={} maxRows={} streamBatchRows={}", id, maxRows, streamBatchRows);
     }
 
     String id() { return id; }
@@ -90,13 +100,16 @@ final class Workspace implements AutoCloseable {
         if (existing != null) { created.close(); return existing.context; }
         ContextReference reference = new ContextReference(created,
                 new WorkspaceJdbcPool(id + ":" + key, created, limiter));
-        contexts.put(key, reference); return created;
+        contexts.put(key, reference);
+        LOG.info("注册Workspace数据库上下文 workspaceId={} bindingKey={}", id, key);
+        return created;
     }
 
     synchronized void discardUnusedContext(String key) {
         ContextReference reference = contexts.get(key);
         if (reference != null && reference.references == 0 && reference.pool.physicalCount() == 0
                 && contexts.remove(key, reference)) reference.pool.close();
+        LOG.debug("释放未使用Workspace数据库上下文 workspaceId={} bindingKey={}", id, key);
     }
 
     synchronized void bind(EditorSession editor, SavedProfile profile, DatabaseContext context) {
@@ -115,6 +128,7 @@ final class Workspace implements AutoCloseable {
         bindings.put(editorId, profile);
         if (hadContext) releaseContext(oldKey);
         emitConnectionState(editor, "ready", "链接已绑定，将在执行时借用数据库连接");
+        LOG.info("编辑器绑定数据库链接 workspaceId={} editorId={} profileId={}", id, editorId, profile.profile().id());
     }
 
     synchronized void bindLogical(EditorSession editor, SavedProfile profile) {
@@ -131,6 +145,8 @@ final class Workspace implements AutoCloseable {
         bindings.put(editorId, profile);
         editor.bindLogical(newKey);
         emitConnectionState(editor, "credentials-required", "执行时需要数据库密码");
+        LOG.info("编辑器建立逻辑数据库绑定 workspaceId={} editorId={} profileId={}", id, editorId,
+                profile.profile().id());
     }
 
     synchronized void unbind(EditorSession editor) {
@@ -141,6 +157,7 @@ final class Workspace implements AutoCloseable {
         editor.unbind();
         if (previous != null) releaseContext(bindingKey(previous));
         emitConnectionState(editor, "unbound", "已解除数据库链接");
+        LOG.info("编辑器解除数据库绑定 workspaceId={} editorId={}", id, editorId);
     }
 
     SavedProfile binding(EditorSession editor) { return bindings.get(editor.id().toString()); }
@@ -156,22 +173,28 @@ final class Workspace implements AutoCloseable {
                  final EditorSessionRegistry.ExecutionCallback callback) {
         ensureBound(editor);
         if (editor.activeExecutionId() != null) throw new ApiException("QUERY_BUSY", "当前标签已有查询正在执行");
+        LOG.info("Workspace开始执行SQL workspaceId={} editorId={} statements={} stopOnError={}", id,
+                editor.id(), statements.size(), stopOnError);
         final ActiveLease active = acquireRunner(editor);
         try {
             return editors.execute(editor, statements, stopOnError, started, listener,
                     new EditorSessionRegistry.ExecutionCallback() {
                         @Override public void completed(UUID executionId, QueryExecution execution, Throwable failure) {
                             /*
-                             * Completing the browser-visible execution must not wait for JDBC reset/catalog
-                             * restoration. Some drivers may block while a lease is returned, which previously
-                             * left the UI permanently busy even though every result event had already arrived.
-                             * The runner is still attached here, so the callback can report the final transaction
-                             * state. Lease cleanup is guaranteed afterwards.
+                             * 浏览器可见的执行完成事件不能等待 JDBC 重置或 Catalog 恢复。
+                             * 某些驱动归还连接时可能阻塞，若先清理会话，界面会在结果已经到达后仍停留在忙碌状态。
+                             * 此时 runner 仍然挂在编辑器上，因此可以先报告最终事务状态，再保证租约清理。
                              */
-                            try {
-                                callback.completed(executionId, execution, failure);
-                            } finally {
-                                finishExecutionLease(editor, active);
+                            try (LoggingContext ignored = LoggingContext.open(null, id, null,
+                                    editor.id().toString(), executionId.toString())) {
+                                try {
+                                    callback.completed(executionId, execution, failure);
+                                } finally {
+                                    finishExecutionLease(editor, active);
+                                    LOG.info("Workspace SQL执行回调完成 workspaceId={} editorId={} executionId={} failed={}",
+                                            id, editor.id(), executionId,
+                                            failure != null || (execution != null && execution.failed()));
+                                }
                             }
                         }
                     });
@@ -183,6 +206,7 @@ final class Workspace implements AutoCloseable {
     CompletableFuture<PageResult> fetchPage(final EditorSession editor, String sql, int offset, int limit) {
         ensureBound(editor);
         if (editor.activeExecutionId() != null) throw new ApiException("QUERY_BUSY", "当前标签已有查询正在执行");
+        LOG.info("Workspace开始分页 workspaceId={} editorId={} offset={} limit={}", id, editor.id(), offset, limit);
         final ActiveLease active = acquireRunner(editor);
         return active.runner.fetchPage(sql, offset, limit).whenComplete((result, failure) -> {
             if (!active.runner.isTransactionDirty()) finishExecutionLease(editor, active);
@@ -194,6 +218,8 @@ final class Workspace implements AutoCloseable {
         if (active == null || !active.runner.isTransactionDirty()) return CompletableFuture.completedFuture(null);
         return active.runner.commit().whenComplete((ignored, failure) -> {
             if (failure == null) releasePinned(editor, active);
+            if (failure != null) LOG.warn("Workspace事务提交失败 workspaceId={} editorId={}", id, editor.id(), failure);
+            else LOG.info("Workspace事务提交完成 workspaceId={} editorId={}", id, editor.id());
         });
     }
 
@@ -201,8 +227,11 @@ final class Workspace implements AutoCloseable {
         ActiveLease active = activeLeases.get(editor.id().toString());
         if (active == null) return CompletableFuture.completedFuture(null);
         return active.runner.rollback().whenComplete((ignored, failure) -> {
-            if (failure == null) releasePinned(editor, active);
-            else {
+            if (failure == null) {
+                releasePinned(editor, active);
+                LOG.info("Workspace事务回滚完成 workspaceId={} editorId={}", id, editor.id());
+            } else {
+                LOG.warn("Workspace事务回滚失败 workspaceId={} editorId={}", id, editor.id(), failure);
                 synchronized (Workspace.this) {
                     String editorId = editor.id().toString();
                     activeLeases.remove(editorId, active);
@@ -215,6 +244,7 @@ final class Workspace implements AutoCloseable {
     synchronized void browserDisconnected() {
         if (disconnected) return;
         disconnected = true;
+        LOG.warn("Workspace进入浏览器断连状态 workspaceId={} editors={}", id, editors.all().size());
         for (EditorSession editor : editors.all()) {
             ActiveLease active = activeLeases.get(editor.id().toString());
             if (active != null && active.runner.isTransactionDirty()
@@ -224,7 +254,10 @@ final class Workspace implements AutoCloseable {
         for (ContextReference reference : contexts.values()) reference.pool.retireUnpinned();
     }
 
-    synchronized void browserConnected() { disconnected = false; }
+    synchronized void browserConnected() {
+        disconnected = false;
+        LOG.info("Workspace恢复浏览器连接 workspaceId={}", id);
+    }
 
     synchronized boolean hasTransactions() {
         for (ActiveLease active : activeLeases.values()) if (active.runner.isTransactionDirty()) return true;
@@ -242,7 +275,10 @@ final class Workspace implements AutoCloseable {
             ActiveLease active = activeLeases.get(editor.id().toString());
             if (active == null || !active.runner.isTransactionDirty()) continue;
             try { active.runner.rollback().get(); }
-            catch (Exception ignored) { active.pool.closePinned(editor.id().toString()); }
+            catch (Exception exception) {
+                LOG.warn("断连事务回滚失败 workspaceId={} editorId={}", id, editor.id(), exception);
+                active.pool.closePinned(editor.id().toString());
+            }
             releasePinned(editor, active);
         }
     }
@@ -253,7 +289,10 @@ final class Workspace implements AutoCloseable {
             for (Map.Entry<String, ContextReference> entry : new ArrayList<Map.Entry<String, ContextReference>>(contexts.entrySet())) {
                 ContextReference reference = entry.getValue();
                 if (reference.references <= 0 && reference.pool.physicalCount() == 0
-                        && contexts.remove(entry.getKey(), reference)) reference.pool.close();
+                        && contexts.remove(entry.getKey(), reference)) {
+                    LOG.debug("回收空闲数据库上下文 workspaceId={} bindingKey={}", id, entry.getKey());
+                    reference.pool.close();
+                }
             }
         }
     }
@@ -264,6 +303,7 @@ final class Workspace implements AutoCloseable {
         releaseEditorLease(editor, true);
         editors.close(editorId);
         if (previous != null) releaseContext(bindingKey(previous));
+        LOG.info("关闭编辑器 workspaceId={} editorId={}", id, editorId);
     }
 
     void cachePassword(UUID profileId, char[] password) {
@@ -294,11 +334,15 @@ final class Workspace implements AutoCloseable {
                         reference.context.resultColumnResolver(), reference.context.provider().dialect(), false);
                 editor.attachRunner(runner);
                 ActiveLease created = new ActiveLease(reference.pool, lease, runner);
-                activeLeases.put(editorId, created); return created;
+                activeLeases.put(editorId, created);
+                LOG.debug("借用编辑器JDBC会话 workspaceId={} editorId={} bindingKey={}", id, editorId, editor.bindingKey());
+                return created;
             } catch (RuntimeException exception) {
                 reference.pool.release(lease); throw exception;
             }
         } catch (SQLException exception) {
+            LOG.warn("借用编辑器JDBC会话失败 workspaceId={} editorId={} message={}", id, editorId,
+                    safeMessage(exception), exception);
             throw new ApiException("CONNECTION_REOPEN_FAILED", "数据库连接失败：" + safeMessage(exception));
         }
     }
@@ -308,11 +352,13 @@ final class Workspace implements AutoCloseable {
         if (active.runner.isTransactionDirty()) {
             active.pool.pin(editorId, active.lease);
             emitConnectionState(editor, "ready", "事务连接已固定到当前编辑器");
+            LOG.info("JDBC会话固定到事务 workspaceId={} editorId={}", id, editorId);
             return;
         }
         if (!activeLeases.remove(editorId, active)) return;
         editor.detachRunner(); active.runner.close(); active.pool.release(active.lease);
         emitConnectionState(editor, "ready", "数据库连接已归还队列");
+        LOG.debug("JDBC会话归还队列 workspaceId={} editorId={}", id, editorId);
     }
 
     private synchronized void releasePinned(EditorSession editor, ActiveLease active) {
@@ -320,6 +366,7 @@ final class Workspace implements AutoCloseable {
         activeLeases.remove(editorId, active);
         editor.detachRunner(); active.runner.close(); active.pool.unpinAndRelease(editorId);
         emitConnectionState(editor, "ready", "事务已结束，数据库连接已归还队列");
+        LOG.info("事务JDBC会话解除固定 workspaceId={} editorId={}", id, editorId);
     }
 
     private synchronized void releaseEditorLease(EditorSession editor, boolean rollback) {
@@ -367,20 +414,26 @@ final class Workspace implements AutoCloseable {
 
     void removeUpload(String uploadId) {
         Path path = uploads.remove(uploadId);
-        if (path != null) try { Files.deleteIfExists(path); } catch (IOException ignored) { }
+        if (path != null) try { Files.deleteIfExists(path); }
+        catch (IOException exception) { LOG.warn("删除Workspace临时文件失败 workspaceId={} uploadId={}", id, uploadId, exception); }
     }
 
     String startTask(final String kind, final TaskOperation operation) {
         final String taskId = UUID.randomUUID().toString(); activeTasks.incrementAndGet();
+        LOG.info("Workspace任务开始 workspaceId={} taskId={} kind={}", id, taskId, kind);
         tasks.submit(new Runnable() {
             @Override public void run() {
                 try {
                     Object result = operation.run(taskId);
                     events.emit("task.completed", ApiPayloads.map("taskId", taskId, "kind", kind, "result", result));
                 } catch (Exception exception) {
+                    LOG.warn("Workspace任务失败 workspaceId={} taskId={} kind={}", id, taskId, kind, exception);
                     events.emit("task.completed", ApiPayloads.map("taskId", taskId, "kind", kind,
                             "error", ApiPayloads.map("code", "TASK_FAILED", "message", safeMessage(exception))));
-                } finally { activeTasks.decrementAndGet(); }
+                } finally {
+                    activeTasks.decrementAndGet();
+                    LOG.info("Workspace任务结束 workspaceId={} taskId={} kind={}", id, taskId, kind);
+                }
             }
         });
         return taskId;
@@ -390,7 +443,8 @@ final class Workspace implements AutoCloseable {
         Throwable current = error;
         while (current.getCause() != null) current = current.getCause();
         String message = current.getMessage();
-        return message == null || message.trim().isEmpty() ? current.getClass().getSimpleName() : message;
+        return message == null || message.trim().isEmpty() ? current.getClass().getSimpleName()
+                : SqlLogSupport.sanitizeMessage(message);
     }
 
     @Override public synchronized void close() {
@@ -401,15 +455,17 @@ final class Workspace implements AutoCloseable {
         contexts.clear(); bindings.clear();
         for (char[] password : credentials.values()) java.util.Arrays.fill(password, '\0');
         credentials.clear(); events.close(); deleteTemporaryDirectory();
+        LOG.info("Workspace运行时已关闭 workspaceId={}", id);
     }
 
     private void deleteTemporaryDirectory() {
         if (!Files.exists(temporaryDirectory)) return;
         try (Stream<Path> paths = Files.walk(temporaryDirectory)) {
             paths.sorted(Comparator.reverseOrder()).forEach(path -> {
-                try { Files.deleteIfExists(path); } catch (IOException ignored) { }
+                try { Files.deleteIfExists(path); }
+                catch (IOException exception) { LOG.warn("删除Workspace临时路径失败 workspaceId={} path={}", id, path, exception); }
             });
-        } catch (IOException ignored) { }
+        } catch (IOException exception) { LOG.warn("扫描Workspace临时目录失败 workspaceId={}", id, exception); }
     }
 
     interface TaskOperation { Object run(String taskId) throws Exception; }

@@ -4,7 +4,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/** Immutable metadata used only to generate safe clipboard SQL for a result row. */
+/** 仅用于生成安全剪贴板行 SQL 的不可变元数据。 */
 public final class ResultMutationTarget {
     private final String qualifiedName;
     private final List<Column> columns;

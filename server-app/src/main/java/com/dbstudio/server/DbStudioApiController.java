@@ -6,6 +6,7 @@ import com.dbstudio.desktop.completion.CompletionSnapshotService;
 import com.dbstudio.desktop.completion.CompletionSnapshotService.Snapshot;
 import com.dbstudio.desktop.completion.CompletionSnapshotService.Suggestion;
 import com.dbstudio.desktop.csv.CsvService;
+import com.dbstudio.desktop.logging.SqlLogSupport;
 import com.dbstudio.desktop.persistence.ConnectionProfileRepository;
 import com.dbstudio.desktop.persistence.ConnectionProfileRepository.SavedProfile;
 import com.dbstudio.desktop.persistence.ConnectionCatalogRepository;
@@ -69,10 +70,19 @@ import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+/**
+ * DBStudio 本地 HTTP API。
+ *
+ * <p>控制器只负责鉴权后的参数校验、Workspace 编排和事件映射，数据库会话的创建、事务和
+ * 结果流式读取由核心服务完成。日志记录请求的业务维度和 SQL 指纹，不输出密码、令牌或完整 SQL。</p>
+ */
 @RestController
 @RequestMapping("/api/v1")
 public final class DbStudioApiController {
+    private static final Logger LOG = LoggerFactory.getLogger(DbStudioApiController.class);
     private static final List<String> SETTING_KEYS = Arrays.asList(
             "ui.theme", "result.maxRows", "result.streamBatchRows", "result.columnLayoutScope",
             "result.copyHeaderOnDoubleClick", "result.copySeparator",
@@ -141,11 +151,12 @@ public final class DbStudioApiController {
             } catch (ApiException exception) {
                 if ("PROFILE_NOT_FOUND".equals(exception.getCode())) {
                     restored.add(ApiPayloads.map("editorId", editorId, "recoveryStatus", "profileUnavailable",
-                            "connectionState", "unbound", "message", exception.getMessage()));
+                            "connectionState", "unbound", "message", SqlLogSupport.sanitizeMessage(exception.getMessage())));
                 } else if ("PASSWORD_REQUIRED".equals(exception.getCode())
                         || "CONNECTION_FAILED".equals(exception.getCode())) {
                     restored.add(ApiPayloads.map("editorId", editorId, "recoveryStatus", "passwordRequired",
-                            "connectionState", "credentials-required", "message", exception.getMessage()));
+                            "connectionState", "credentials-required", "message",
+                            SqlLogSupport.sanitizeMessage(exception.getMessage())));
                 } else throw exception;
             }
         }
@@ -343,6 +354,7 @@ public final class DbStudioApiController {
                                                    @RequestBody Map<String, Object> body) throws Exception {
         final Workspace workspace = workspaces.require(workspaceId);
         final String loadId = ApiPayloads.required(body, "loadId");
+        LOG.info("补全快照请求开始 workspace={} loadId={}", workspaceId, loadId);
         String editorId = ApiPayloads.text(body, "editorId");
         String rawProfileId = ApiPayloads.text(body, "profileId");
         if (editorId.isEmpty() == rawProfileId.isEmpty()) {
@@ -382,10 +394,14 @@ public final class DbStudioApiController {
                 }
                 List<Object> values = new ArrayList<Object>();
                 for (Suggestion suggestion : snapshot.suggestions()) values.add(completionSuggestionMap(suggestion));
+                LOG.info("补全快照请求完成 workspace={} loadId={} suggestions={}", workspaceId, loadId,
+                        snapshot.suggestions().size());
                 return ApiPayloads.map("providerId", snapshot.providerId(),
                         "sourceProfileId", snapshot.sourceProfileId(),
                         "generatedAt", snapshot.generatedAt(), "suggestions", values);
             } catch (SQLException exception) {
+                LOG.warn("补全快照请求失败 workspace={} loadId={} reason={}", workspaceId, loadId,
+                        safeMessage(exception), exception);
                 throw new ApiException("METADATA_LOAD_FAILED",
                         "获取数据库补全信息失败：" + safeMessage(exception), exception);
             }
@@ -413,6 +429,7 @@ public final class DbStudioApiController {
                 "connectionState", editor.bound() ? "ready" : "unbound");
         SavedProfile binding = workspace.binding(editor);
         if (binding != null) result.put("connection", profileMap(binding));
+        LOG.info("创建编辑器 workspace={} editor={} bound={}", workspaceId, editor.id(), editor.bound());
         return result;
     }
 
@@ -424,6 +441,7 @@ public final class DbStudioApiController {
         EditorSession editor = workspace.editors().require(editorId);
         resolveTransactionBeforeSwitch(workspace, editor, ApiPayloads.text(body, "transactionAction"));
         SavedProfile binding = bindEditor(workspace, editor, ApiPayloads.required(body, "profileId"), body);
+        LOG.info("编辑器绑定数据库 workspace={} editor={} profile={}", workspaceId, editorId, binding.profile().id());
         return ApiPayloads.map("connection", profileMap(binding), "connectionState", "ready");
     }
 
@@ -435,6 +453,7 @@ public final class DbStudioApiController {
         EditorSession editor = workspace.editors().require(editorId);
         resolveTransactionBeforeSwitch(workspace, editor, transactionAction);
         workspace.unbind(editor);
+        LOG.info("编辑器解绑数据库 workspace={} editor={}", workspaceId, editorId);
         return ApiPayloads.map("connectionState", "unbound");
     }
 
@@ -469,6 +488,8 @@ public final class DbStudioApiController {
         final DatabaseContext context = workspace.requireEditorDatabase(editor);
         final List<SqlStatement> statements = selectStatements(context.provider(), body);
         boolean stopOnError = ApiPayloads.bool(body, "stopOnError", true);
+        LOG.info("SQL执行请求开始 workspace={} editor={} statements={} stopOnError={}",
+                workspaceId, editorId, statements.size(), stopOnError);
 
         final QueryResultListener listener = new QueryResultListener() {
             @Override public void resultStarted(int resultIndex, String sql, StatementType type, List<String> columns) {
@@ -505,6 +526,7 @@ public final class DbStudioApiController {
                 id -> workspace.events().emit("query.started", ApiPayloads.map(
                         "editorId", editorId, "executionId", id.toString())), listener,
                 (id, execution, failure) -> finishExecution(workspace, context, editorId, id, execution, failure));
+        LOG.info("SQL执行任务已创建 workspace={} editor={} execution={}", workspaceId, editorId, executionId);
         return ApiPayloads.map("executionId", executionId.toString());
     }
 
@@ -550,7 +572,10 @@ public final class DbStudioApiController {
         Workspace workspace = workspaces.require(workspaceId);
         for (EditorSession editor : workspace.editors().all()) {
             if (editor.activeExecutionId() != null && editor.activeExecutionId().toString().equals(executionId)) {
-                return ApiPayloads.map("cancelled", editor.cancel());
+                boolean cancelled = editor.cancel();
+                LOG.info("取消SQL执行 workspace={} editor={} execution={} cancelled={}", workspaceId,
+                        editor.id(), executionId, cancelled);
+                return ApiPayloads.map("cancelled", cancelled);
             }
         }
         return ApiPayloads.map("cancelled", false);
@@ -579,6 +604,8 @@ public final class DbStudioApiController {
         }
         PageResult page = workspace.fetchPage(editor, source.sql(), offset, limit).get(120, TimeUnit.SECONDS);
         editor.appendResultRows(resultIndex, page.rows(), page.hasMore());
+        LOG.info("结果分页完成 workspace={} editor={} resultIndex={} offset={} rows={} hasMore={}",
+                workspaceId, editorId, resultIndex, offset, page.rows().size(), page.hasMore());
         return ApiPayloads.map("resultIndex", resultIndex, "offset", offset, "rows", page.rows(),
                 "hasMore", page.hasMore(), "nextOffset", offset + page.rows().size());
     }
@@ -596,6 +623,7 @@ public final class DbStudioApiController {
         workspace.events().emit("transaction.status", ApiPayloads.map(
                 "editorId", editorId, "dirty", false, "state", "none", "message", message));
         workspaceRepository.updateTransactionState(workspaceId, editorId, "none");
+        LOG.info("事务操作完成 workspace={} editor={} action={}", workspaceId, editorId, action);
         return ApiPayloads.map("dirty", false, "message", message);
     }
 
@@ -714,6 +742,7 @@ public final class DbStudioApiController {
         if (file.isEmpty()) throw new ApiException("EMPTY_UPLOAD", "请选择非空的 CSV 或 TSV 文件");
         Workspace workspace = workspaces.require(workspaceId);
         Path path = workspace.storeUpload(file.getOriginalFilename(), file.getInputStream());
+        LOG.info("CSV文件已上传 workspace={} name={} bytes={}", workspaceId, file.getOriginalFilename(), file.getSize());
         String delimiter = path.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".tsv") ? "\t" : ",";
         return ApiPayloads.map("uploadId", workspace.uploadId(path), "name", file.getOriginalFilename(),
                 "delimiter", delimiter);
@@ -728,6 +757,8 @@ public final class DbStudioApiController {
                 ? "UTF-8" : ApiPayloads.text(body, "charset"));
         char delimiter = delimiter(body);
         CsvService.Preview preview = csv.preview(workspace.requireUpload(uploadId), charset, delimiter, 5);
+        LOG.info("CSV预览完成 workspace={} uploadId={} rows={} columns={}", workspaceId, uploadId,
+                preview.rows().size(), preview.headers().size());
         return ApiPayloads.map("uploadId", uploadId, "name", workspace.requireUpload(uploadId).getFileName().toString(),
                 "delimiter", String.valueOf(delimiter), "charset", charset.name(),
                 "headers", preview.headers(), "rows", preview.rows());
@@ -754,6 +785,7 @@ public final class DbStudioApiController {
                         charset, delimiter, mapping, count -> workspace.events().emit("task.progress",
                                 ApiPayloads.map("taskId", id, "message", "已导入 " + count + " 行", "rows", count)));
                 session.commit();
+                LOG.info("CSV导入任务完成 workspace={} task={} editor={} rows={}", workspaceId, id, editorId, rows);
                 return ApiPayloads.map("rows", rows);
             } finally {
                 workspace.removeUpload(uploadId);
@@ -783,9 +815,11 @@ public final class DbStudioApiController {
         StreamingResponseBody body = output -> {
             DatabaseContext context = workspace.requireEditorDatabase(editor);
             try (DatabaseSession session = context.openEditorSession()) {
+                LOG.info("CSV完整导出开始 workspace={} editor={} resultIndex={} sqlFingerprint={}", workspaceId,
+                        editorId, resultIndex, SqlLogSupport.fingerprint(sql));
                 csv.exportQuery(session, sql, new OutputStreamWriter(output, StandardCharsets.UTF_8), ',', count -> { });
             } catch (SQLException exception) {
-                throw new IOException("完整导出失败：" + exception.getMessage(), exception);
+                throw new IOException("完整导出失败：" + SqlLogSupport.sanitizeMessage(exception.getMessage()), exception);
             }
         };
         return csvResponse("dbstudio-full-result.csv", body);
@@ -814,6 +848,9 @@ public final class DbStudioApiController {
         workspace.events().emit("query.executionComplete", ApiPayloads.map("editorId", editorId,
                 "executionId", executionId.toString(), "cancelled", cancelled, "failed", failed,
                 "durationMs", duration, "transactionDirty", editor.transactionDirty()));
+        LOG.info("SQL执行完成 workspace={} editor={} execution={} failed={} cancelled={} durationMs={} results={}",
+                workspace.id(), editorId, executionId, failed, cancelled, duration,
+                execution == null ? 0 : execution.results().size());
         try { workspaceRepository.updateTransactionState(workspace.id(), editorId,
                 editor.transactionDirty() ? "active" : "none"); } catch (SQLException ignored) { }
         try {
@@ -835,7 +872,8 @@ public final class DbStudioApiController {
         Throwable current = error;
         while (current.getCause() != null) current = current.getCause();
         String message = current.getMessage();
-        return message == null || message.trim().isEmpty() ? current.getClass().getSimpleName() : message;
+        return message == null || message.trim().isEmpty() ? current.getClass().getSimpleName()
+                : SqlLogSupport.sanitizeMessage(message);
     }
 
     private static List<SqlStatement> selectStatements(DatabaseProvider provider, Map<String, Object> body) {

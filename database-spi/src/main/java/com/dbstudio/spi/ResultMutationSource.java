@@ -2,7 +2,7 @@ package com.dbstudio.spi;
 
 import java.util.Objects;
 
-/** Physical table parsed from a query that is safe for generated row SQL. */
+/** 从查询中安全解析出的物理表来源，用于生成行级 SQL。 */
 public final class ResultMutationSource {
     private final String catalog;
     private final String schema;

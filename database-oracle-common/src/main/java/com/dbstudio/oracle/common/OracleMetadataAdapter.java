@@ -29,6 +29,12 @@ import java.util.Set;
 import java.util.TreeMap;
 
 /** Metadata implementation shared by native Oracle and OceanBase Oracle mode. */
+/**
+ * Oracle 数据字典适配器。
+ *
+ * <p>优先使用 ALL_* 视图获取可访问 Schema；权限不足时回退到 JDBC DatabaseMetaData，确保对象树和
+ * 补全仍能提供可理解的部分结果。</p>
+ */
 public class OracleMetadataAdapter implements MetadataAdapter {
     private static final Set<String> SYSTEM_SCHEMAS = Collections.unmodifiableSet(new LinkedHashSet<String>(Arrays.asList(
             "SYS", "SYSTEM", "SYSAUX", "OUTLN", "DBSNMP", "APPQOSSYS", "AUDSYS", "CTXSYS", "DVSYS",
@@ -170,7 +176,7 @@ public class OracleMetadataAdapter implements MetadataAdapter {
                 try (ResultSet result = statement.executeQuery()) {
                     if (result.next()) return text(result.getObject(1));
                 }
-            } catch (SQLException ignored) { /* Fall through to ALL_SOURCE for program units. */ }
+            } catch (SQLException ignored) { /* 降级到 ALL_SOURCE 查询过程、函数和包的源码。 */ }
         }
         if (Arrays.asList(DatabaseObjectType.PROCEDURE, DatabaseObjectType.FUNCTION,
                 DatabaseObjectType.PACKAGE, DatabaseObjectType.TYPE, DatabaseObjectType.TRIGGER).contains(object.type())) {

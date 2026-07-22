@@ -3,14 +3,25 @@ package com.dbstudio.server;
 import com.dbstudio.desktop.web.EditorSessionRegistry.EditorSession;
 import java.util.HashMap;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-/** Process-wide admission controller for physical editor JDBC sessions. */
+/**
+ * 进程级物理编辑器 JDBC 会话准入控制器。
+ *
+ * <p>逻辑编辑器可以很多，但真正打开的 JDBC 会话受全局上限约束。达到上限时只驱逐
+ * 可安全暂停的最久未使用会话，事务固定或正在执行的会话不会被强制关闭。</p>
+ */
 @org.springframework.stereotype.Component
 public final class EditorConnectionLimiter {
+    private static final Logger LOG = LoggerFactory.getLogger(EditorConnectionLimiter.class);
     private final Map<String, ActiveSession> active = new HashMap<String, ActiveSession>();
     private int maximum = 10;
 
-    public synchronized void setMaximum(int value) { maximum = Math.max(1, Math.min(100, value)); }
+    public synchronized void setMaximum(int value) {
+        maximum = Math.max(1, Math.min(100, value));
+        LOG.info("设置物理编辑器JDBC会话上限 maximum={}", maximum);
+    }
     public synchronized int maximum() { return maximum; }
     public synchronized int activeCount() { return active.size(); }
 
@@ -26,8 +37,12 @@ public final class EditorConnectionLimiter {
         ActiveSession existing = active.get(key);
         if (existing != null) { existing.touched = System.currentTimeMillis(); return true; }
         if (active.size() >= maximum) evictOldestSafe();
-        if (active.size() >= maximum) return false;
+        if (active.size() >= maximum) {
+            LOG.warn("物理编辑器JDBC会话达到上限 key={} active={} maximum={}", key, active.size(), maximum);
+            return false;
+        }
         active.put(key, new ActiveSession(control, suspendedCallback));
+        LOG.debug("申请物理编辑器JDBC会话 key={} active={}", key, active.size());
         return true;
     }
 
@@ -36,7 +51,9 @@ public final class EditorConnectionLimiter {
         if (value != null) value.touched = System.currentTimeMillis();
     }
 
-    public synchronized void release(String key) { active.remove(key); }
+    public synchronized void release(String key) {
+        if (active.remove(key) != null) LOG.debug("释放物理编辑器JDBC会话 key={} active={}", key, active.size());
+    }
 
     private void evictOldestSafe() {
         String candidateKey = null;
@@ -48,8 +65,12 @@ public final class EditorConnectionLimiter {
                 candidateKey = entry.getKey(); candidate = value;
             }
         }
-        if (candidate == null || !candidate.control.suspend()) return;
+        if (candidate == null || !candidate.control.suspend()) {
+            LOG.debug("没有可安全暂停的物理JDBC会话 active={} maximum={}", active.size(), maximum);
+            return;
+        }
         active.remove(candidateKey);
+        LOG.info("为新会话暂停最久未使用JDBC会话 key={} active={}", candidateKey, active.size());
         try { candidate.suspendedCallback.run(); } catch (RuntimeException ignored) { }
     }
 

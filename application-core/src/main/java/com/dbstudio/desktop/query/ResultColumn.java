@@ -1,6 +1,6 @@
 package com.dbstudio.desktop.query;
 
-/** Immutable JDBC result column metadata. Index is implicit in the containing list. */
+/** 不可变的 JDBC 结果列元数据，列索引由所在列表的顺序隐含表达。 */
 public final class ResultColumn {
     private final String label;
     private final String name;

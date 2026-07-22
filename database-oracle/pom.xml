@@ -10,6 +10,7 @@
         <dependency><groupId>com.dbstudio</groupId><artifactId>database-spi</artifactId><version>${project.version}</version></dependency>
         <dependency><groupId>com.dbstudio</groupId><artifactId>database-oracle-common</artifactId><version>${project.version}</version></dependency>
         <dependency><groupId>com.oracle.database.jdbc</groupId><artifactId>ojdbc8</artifactId><version>${oracle.jdbc.version}</version></dependency>
+        <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId></dependency>
         <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><scope>test</scope></dependency>
         <dependency><groupId>com.dbstudio</groupId><artifactId>database-spi</artifactId><version>${project.version}</version><type>test-jar</type><scope>test</scope></dependency>
     </dependencies>

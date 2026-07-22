@@ -9,12 +9,22 @@ import java.util.concurrent.BlockingQueue;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.PingMessage;
 import org.springframework.web.socket.WebSocketSession;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+/**
+ * Workspace 的有界事件通道。
+ *
+ * <p>业务线程只负责把事件放入队列，单独发送线程按顺序写入当前 WebSocket。新连接替换旧连接时，
+ * 发送失败只能摘除失败的旧 Socket，不能误伤随后建立的新 Socket。</p>
+ */
 final class WorkspaceEventChannel implements AutoCloseable {
+    private static final Logger LOG = LoggerFactory.getLogger(WorkspaceEventChannel.class);
     private final BlockingQueue<String> queue = new ArrayBlockingQueue<String>(128);
     private final Object monitor = new Object();
     private final ObjectMapper mapper;
     private final Thread sender;
+    private final String workspaceId;
     private volatile WebSocketSession session;
     private volatile String clientId;
     private volatile long lastPongAt;
@@ -25,6 +35,7 @@ final class WorkspaceEventChannel implements AutoCloseable {
 
     WorkspaceEventChannel(ObjectMapper mapper, String workspaceId) {
         this.mapper = mapper;
+        this.workspaceId = workspaceId;
         this.sender = new Thread(new Runnable() { @Override public void run() { sendLoop(); } },
                 "dbstudio-events-" + workspaceId.substring(0, Math.min(8, workspaceId.length())));
         this.sender.setDaemon(true);
@@ -36,6 +47,9 @@ final class WorkspaceEventChannel implements AutoCloseable {
         if (!connected() && transientEvent(type)) return;
         try {
             String json = mapper.writeValueAsString(ApiPayloads.map("version", 1, "type", type, "payload", payload));
+            if (queue.remainingCapacity() == 0) {
+                LOG.warn("Workspace事件队列已满，发送线程正在等待 workspaceId={} type={}", workspaceId, type);
+            }
             queue.put(json);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
@@ -61,7 +75,13 @@ final class WorkspaceEventChannel implements AutoCloseable {
         this.session = value;
         this.clientId = ownerClientId;
         this.lastPongAt = System.currentTimeMillis();
-        if (previous != null && previous != value) try { previous.close(); } catch (IOException ignored) { }
+        if (previous != null && previous != value) {
+            LOG.info("WebSocket替换旧连接 workspaceId={} oldSession={} newSession={}", workspaceId,
+                    previous.getId(), value.getId());
+            try { previous.close(); } catch (IOException exception) {
+                LOG.debug("关闭旧WebSocket失败 workspaceId={}", workspaceId, exception);
+            }
+        }
         synchronized (monitor) { monitor.notifyAll(); }
     }
 
@@ -113,20 +133,23 @@ final class WorkspaceEventChannel implements AutoCloseable {
             WebSocketSession target = null;
             try {
                 if (pending == null) pending = queue.take();
-                /* Resolve the socket after an event is available. Otherwise the sender can retain
-                 * a closed browser tab while waiting on an empty queue and deliver the replacement
-                 * socket's workspace.ready event to that stale session. */
+                /* 只有队列确实有事件后才解析 Socket。否则发送线程可能在空队列等待期间保留
+                 * 已关闭的浏览器标签，并把新连接的 workspace.ready 错发给旧会话。 */
                 target = awaitSession();
                 if (target == null) continue;
-                synchronized (target) { target.sendMessage(new TextMessage(pending)); }
+                try (LoggingContext ignored = LoggingContext.open(null, workspaceId, clientId, null, null)) {
+                    synchronized (target) { target.sendMessage(new TextMessage(pending)); }
+                }
                 pending = null;
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
                 return;
             } catch (IOException | IllegalStateException exception) {
-                /* A new socket may already be attached. Detach only the socket on which this send
-                 * failed, never whichever socket happens to be current now. */
-                if (target != null) detach(target);
+                /* 此时可能已经挂载了新 Socket；只摘除本次发送失败的 Socket，不能摘除当前新连接。 */
+                if (target != null) {
+                    LOG.warn("Workspace事件发送失败 workspaceId={} session={}", workspaceId, target.getId(), exception);
+                    detach(target);
+                }
             }
         }
     }

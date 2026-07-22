@@ -20,8 +20,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 /**
- * Registry of logical SQL editors. A logical editor can stay bound to a database while its
- * physical QueryRunner/JDBC session is suspended and recreated on demand.
+ * 编辑器会话注册表。
+ *
+ * <p>编辑标签是逻辑会话，可在空闲回收后保留连接绑定并重新激活物理 QueryRunner/JDBC；同一标签
+ * 同时只允许一个执行任务。该类由 HTTP 工作线程调用，实际 SQL 在每个标签自己的执行器中运行。</p>
  */
 public final class EditorSessionRegistry implements AutoCloseable {
     private final ConcurrentHashMap<UUID, EditorSession> sessions =
@@ -39,7 +41,7 @@ public final class EditorSessionRegistry implements AutoCloseable {
         return create(UUID.randomUUID());
     }
 
-    /** Creates an idempotent logical editor for browser workspace recovery. */
+    /** 为浏览器 Workspace 恢复幂等创建逻辑编辑器，重复提交同一 UUID 返回已有标签。 */
     public EditorSession create(UUID id) {
         if (id == null) throw new RpcException("INVALID_EDITOR_ID", "查询标签 ID 无效");
         EditorSession created = new EditorSession(id, "查询 " + sequence.getAndIncrement());
@@ -47,7 +49,7 @@ public final class EditorSessionRegistry implements AutoCloseable {
         return existing == null ? created : existing;
     }
 
-    /** Backwards-compatible eager creation used by core contract tests. */
+    /** 兼容旧核心契约测试的立即连接创建入口。 */
     public EditorSession create(DatabaseContext context) throws SQLException {
         EditorSession session = create();
         session.bind(context, context.profile().id().toString());
@@ -170,13 +172,13 @@ public final class EditorSessionRegistry implements AutoCloseable {
         public long lastTouched() { return lastTouched; }
         public void touch() { lastTouched = System.currentTimeMillis(); }
 
-        /** Attaches a runner backed by a workspace JDBC lease. */
+        /** 挂载由 Workspace JDBC 租约支持的执行器。 */
         public synchronized void attachRunner(QueryRunner value) {
             if (runner != null && runner != value) throw new RpcException("QUERY_BUSY", "编辑标签已有数据库任务");
             runner = value; touch();
         }
 
-        /** Detaches a leased runner without closing its JDBC session. */
+        /** 拆下租约执行器但不关闭底层 JDBC，会话归还由 Workspace 池负责。 */
         public synchronized QueryRunner detachRunner() {
             QueryRunner current = runner;
             runner = null; touch(); return current;

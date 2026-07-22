@@ -5,6 +5,7 @@ import com.dbstudio.spi.DatabaseSession;
 import java.sql.SQLException;
 import java.sql.Statement;
 
+/** Oracle 与 OceanBase Oracle 模式共用的会话初始化、Schema 切换和归还前重置逻辑。 */
 public final class OracleSessionSupport {
     private OracleSessionSupport() { }
 

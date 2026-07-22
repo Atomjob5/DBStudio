@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 
+/** MySQL Catalog、表、字段、备注和唯一键到统一 SPI 模型的映射。 */
 public final class MySqlMetadataAdapter implements MetadataAdapter {
     @Override
     public List<String> listCatalogs(DatabaseSession session) throws SQLException {

@@ -9,9 +9,12 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-/** Persistent workspace catalog and crash-recovery journal. */
+/** Workspace 目录、编辑器检查点和异常恢复草稿仓库。所有写入均同步串行化，避免 SQLite 连接并发冲突。 */
 public final class WorkspaceRepository {
+    private static final Logger LOG = LoggerFactory.getLogger(WorkspaceRepository.class);
     private final Connection connection;
 
     public WorkspaceRepository(AppDatabase database) {
@@ -30,6 +33,7 @@ public final class WorkspaceRepository {
              ResultSet rows = statement.executeQuery()) {
             while (rows.next()) result.add(workspace(rows));
         }
+        LOG.debug("读取Workspace目录 count={}", result.size());
         return Collections.unmodifiableList(result);
     }
 
@@ -57,7 +61,9 @@ public final class WorkspaceRepository {
             statement.setString(3, machineFingerprint); statement.setString(4, normalizedName(name));
             statement.setString(5, now); statement.setString(6, now); statement.executeUpdate();
         }
-        return find(id).get();
+        WorkspaceRecord created = find(id).get();
+        LOG.info("创建Workspace id={} name={}", id, created.name());
+        return created;
     }
 
     public synchronized WorkspaceRecord rename(String id, String name) throws SQLException {
@@ -67,7 +73,9 @@ public final class WorkspaceRepository {
             statement.setString(3, id);
             if (statement.executeUpdate() == 0) throw new SQLException("Workspace not found: " + id);
         }
-        return find(id).get();
+        WorkspaceRecord renamed = find(id).get();
+        LOG.info("重命名Workspace id={} name={}", id, renamed.name());
+        return renamed;
     }
 
     public synchronized void softDelete(String id) throws SQLException {
@@ -77,6 +85,7 @@ public final class WorkspaceRepository {
             statement.setString(1, now); statement.setString(2, now); statement.setString(3, id);
             if (statement.executeUpdate() == 0) throw new SQLException("Workspace not found: " + id);
         }
+        LOG.info("软删除Workspace id={}", id);
     }
 
     public synchronized void opened(String id) throws SQLException {
@@ -99,10 +108,11 @@ public final class WorkspaceRepository {
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             bindDraft(statement, draft); statement.executeUpdate();
         }
+        LOG.debug("保存Workspace恢复草稿 workspace={} editor={} dirty={} transactionState={}",
+                draft.workspaceId(), draft.editorId(), draft.dirty(), draft.transactionState());
         /*
-         * A stable checkpoint represents content that was actually saved to a file. A brand-new
-         * temporary tab may be clean only because the user has not typed yet; checkpointing it
-         * would incorrectly resurrect that tab after the user chooses to discard crash recovery.
+         * 稳定检查点只代表真正保存到文件的内容。全新的临时标签即使当前没有脏内容，
+         * 也可能只是用户尚未输入；如果把它写入检查点，放弃异常恢复时会错误地重新打开该标签。
          */
         if (!draft.dirty() && hasSavedFile(draft)) saveCheckpoint(draft);
     }
