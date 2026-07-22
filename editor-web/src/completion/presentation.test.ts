@@ -9,8 +9,8 @@ describe("completion presentation", () => {
   });
 
   it("keeps the full qualified path, type and comment in documentation", () => {
-    const documentation = completionDocumentation({ label: "id", qualifiedLabel: "sales.orders.id",
-      insertText: "`id`", kind: "column", typeName: "BIGINT", remarks: "完整字段注释" });
+    const documentation = completionDocumentation({ displayLabel: "id", documentationPath: "sales.orders.id",
+      insertText: "id", filterText: "id sales.orders.id", kind: "column", typeName: "BIGINT", remarks: "完整字段注释" });
     expect(documentation).toContain("sales.orders.id");
     expect(documentation).toContain("BIGINT");
     expect(documentation).toContain("完整字段注释");

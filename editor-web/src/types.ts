@@ -177,9 +177,10 @@ export interface CompletionCacheSummary {
 }
 
 export interface CompletionCandidate {
-  label: string;
-  qualifiedLabel: string;
+  displayLabel: string;
+  documentationPath: string;
   insertText: string;
+  filterText: string;
   kind: "keyword" | "schema" | "table" | "view" | "column";
   remarks: string;
   typeName: string;

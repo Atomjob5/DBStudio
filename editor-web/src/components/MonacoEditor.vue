@@ -6,6 +6,7 @@ import * as monaco from "monaco-editor";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import type { CompletionCandidate } from "../types";
 import { completionClient } from "../completion/client";
+import { registerCompletionShortcut } from "../completion/monacoCommands";
 import { completionDocumentation, truncateCompletionComment } from "../completion/presentation";
 
 (self as typeof self & { MonacoEnvironment: object }).MonacoEnvironment = { getWorker: () => new EditorWorker() };
@@ -106,6 +107,7 @@ onMounted(() => {
   });
   instance.value.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => trigger("current"));
   instance.value.addCommand(monaco.KeyCode.F5, () => trigger("script"));
+  registerCompletionShortcut(instance.value, monaco.KeyCode.F6);
   instance.value.addCommand(monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF, () => emit("format"));
   completionProvider = monaco.languages.registerCompletionItemProvider("dbstudio-mysql", {
     triggerCharacters: [".", "`", "\"", " "],
@@ -121,12 +123,12 @@ onMounted(() => {
       if (token.isCancellationRequested) return { suggestions: [] };
       return { incomplete: result.incomplete, suggestions: result.items.map((item, index) => ({
         label: {
-          label: item.qualifiedLabel,
+          label: item.displayLabel,
           detail: item.remarks ? `  ${truncateCompletionComment(item.remarks)}` : undefined,
           description: item.typeName || item.kind.toUpperCase()
         },
         insertText: item.insertText,
-        filterText: `${item.label} ${item.qualifiedLabel}`,
+        filterText: item.filterText,
         sortText: String(index).padStart(5, "0"),
         documentation: { value: completionDocumentation(item) },
         kind: completionKind(item.kind),

@@ -1,4 +1,7 @@
-import { GenericSQL, MySQL } from "dt-sql-parser";
+import { completionDialect } from "./completion/sqlDialect";
+import type { SqlCompletionDialect } from "./completion/sqlDialect";
+import { activeParenthesisDepth, lexCurrentStatement } from "./completion/sqlLexer";
+import type { SqlToken } from "./completion/sqlLexer";
 import type {
   CompletionCandidate,
   CompletionNamespaceSnapshot,
@@ -7,31 +10,47 @@ import type {
   CompletionSnapshot
 } from "./types";
 
-type SqlParser = MySQL | GenericSQL;
-type ParserSyntax = { syntaxContextType?: string; wordRanges?: Array<{ text?: string }> };
-type ParserEntity = {
-  entityContextType?: string;
-  text?: string;
-  isAccessible?: boolean;
-  _alias?: { text?: string };
-  position?: { endTokenIndex?: number };
-};
-type ParserToken = { tokenIndex: number; text?: string; channel?: number };
+interface IndexedObject {
+  snapshot: CompletionObjectSnapshot;
+  columns: CompletionObjectSnapshot["columns"];
+}
 
 interface IndexedNamespace {
   snapshot: CompletionNamespaceSnapshot;
-  objects: Map<string, CompletionObjectSnapshot>;
+  objects: Map<string, IndexedObject>;
+  sortedObjects: IndexedObject[];
 }
 
-interface IndexedSource {
-  namespace: IndexedNamespace;
-  object: CompletionObjectSnapshot;
+interface CompletionSource {
+  kind: "physical" | "cte" | "derived";
+  name: string;
   alias: string;
+  namespaceName?: string;
+  namespace?: IndexedNamespace;
+  object?: IndexedObject;
+  columns?: string[];
+}
+
+interface CompletionScope {
+  depth: number;
+  start: number;
+  sources: CompletionSource[];
+  parent?: CompletionScope;
+}
+
+interface Qualifier {
+  parts: string[];
+  start: number;
+}
+
+interface CandidateRank extends CompletionCandidate {
+  namespacePriority?: number;
 }
 
 export interface CompletionIndex {
   snapshot: CompletionSnapshot;
   namespaces: Map<string, IndexedNamespace>;
+  namespaceValues: IndexedNamespace[];
   defaultNamespace?: IndexedNamespace;
 }
 
@@ -42,286 +61,566 @@ export interface CompletionRequest {
   limit: number;
 }
 
-const HEAL_IDENTIFIER = "__dbstudio_completion__";
+const SOURCE_TERMINATORS = new Set([
+  "where", "on", "group", "order", "having", "limit", "offset", "fetch", "union", "minus",
+  "except", "intersect", "window", "qualify", "set", "values", "returning", "connect", "start",
+  "for", "when", "matched"
+]);
+
+const ALIAS_TERMINATORS = new Set([
+  ...SOURCE_TERMINATORS, "from", "join", "left", "right", "full", "inner", "outer", "cross",
+  "straight_join", "as", "using", "and", "or", "then", "else", "end", "into", "update", "select"
+]);
+
+const COLUMN_CLAUSES = new Set(["select", "where", "on", "group", "order", "having", "set", "returning"]);
 
 export function buildCompletionIndex(snapshot: CompletionSnapshot): CompletionIndex {
   const namespaces = new Map<string, IndexedNamespace>();
+  const namespaceValues: IndexedNamespace[] = [];
   let defaultNamespace: IndexedNamespace | undefined;
   for (const value of snapshot.namespaces) {
+    const sortedObjects = value.objects.map((object) => ({
+      snapshot: object,
+      columns: [...object.columns].sort((left, right) => compareName(left.name, right.name))
+    })).sort((left, right) => compareName(left.snapshot.name, right.snapshot.name));
     const indexed: IndexedNamespace = {
       snapshot: value,
-      objects: new Map(value.objects.map((object) => [normalize(object.name), object]))
+      objects: new Map(sortedObjects.map((object) => [normalize(object.snapshot.name), object])),
+      sortedObjects
     };
+    namespaceValues.push(indexed);
     for (const name of [value.key, value.label, value.catalog, value.schema]) {
       if (name) namespaces.set(normalize(name), indexed);
     }
     if (value.key === snapshot.defaultNamespaceKey) defaultNamespace = indexed;
   }
-  return { snapshot, namespaces, defaultNamespace };
+  namespaceValues.sort((left, right) => compareName(left.snapshot.label, right.snapshot.label));
+  return { snapshot, namespaces, namespaceValues, defaultNamespace };
 }
 
 export function resolveCompletion(index: CompletionIndex | undefined, request: CompletionRequest): CompletionResult {
   const limit = Math.max(10, Math.min(1000, request.limit || 100));
-  const parser = parserFor(request.providerId);
-  const position = caretPosition(request.sql);
-  let syntax: ParserSyntax[] = [];
-  let keywords: string[] = [];
-  let entities: ParserEntity[] = [];
-  let tokens: ParserToken[] = [];
-  try {
-    const suggestions = parser.getSuggestionAtCaretPosition(request.sql, position);
-    syntax = (suggestions?.syntax ?? []) as ParserSyntax[];
-    keywords = (suggestions?.keywords ?? []) as string[];
-    const healing = healStatement(parser, request.sql);
-    const healedSql = healing.sql;
-    entities = (parser.getAllEntities(healedSql, healing.caret) ?? []) as ParserEntity[];
-    tokens = parser.getAllTokens(healedSql) as ParserToken[];
-  } catch {
-    // Keep parser-provided statement starters as the only safe fallback for a broken statement.
-    try { keywords = (parser.getSuggestionAtCaretPosition("", { lineNumber: 1, column: 1 })?.keywords ?? []) as string[]; }
-    catch { keywords = []; }
-  }
-
-  const qualifier = syntaxQualifier(syntax)
-    || tokenQualifier(tokens, needsHealing(request.sql), request.prefix);
-  const tableContext = syntax.some((item) => item.syntaxContextType === "table" || item.syntaxContextType === "view");
-  const hasAccessibleSources = entities.some((entity) => entity.entityContextType === "table" && entity.isAccessible);
-  const columnContext = syntax.some((item) => item.syntaxContextType === "column")
-    || (!tableContext && hasAccessibleSources);
-  const candidates: CompletionCandidate[] = [];
+  const dialect = completionDialect(request.providerId);
+  const allTokens = lexCurrentStatement(request.sql, dialect);
+  const tokens = withoutActivePrefix(allTokens, request.prefix, request.sql.length);
+  const qualifier = readQualifier(tokens);
+  const beforeQualifier = qualifier.parts.length ? tokens.slice(0, qualifier.start) : tokens;
+  const tableContext = isTablePosition(beforeQualifier);
+  const scope = index ? buildActiveScope(index, tokens) : undefined;
+  const insertColumns = isInsertColumnPosition(tokens);
+  const clause = activeClause(tokens, scope?.depth ?? activeParenthesisDepth(tokens));
+  const columnContext = !tableContext && (insertColumns || qualifier.parts.length > 0
+    || Boolean(scope?.sources.length && COLUMN_CLAUSES.has(clause)));
+  const prefix = normalize(request.prefix);
+  const candidates: CandidateRank[] = [];
 
   if (index && tableContext) {
-    if (qualifier) {
-      const namespace = index.namespaces.get(normalize(qualifier));
-      if (namespace) candidates.push(...objectCandidates(index, namespace, true));
-    } else {
-      for (const namespace of uniqueNamespaces(index)) {
-        candidates.push(namespaceCandidate(index, namespace));
-        candidates.push(...objectCandidates(index, namespace, false));
-      }
-    }
+    candidates.push(...tableCandidates(index, qualifier.parts, prefix, limit + 1));
   } else if (index && columnContext) {
-    const sources = resolveSources(index, entities, tokens);
-    const selected = qualifier
-      ? sources.filter((source) => normalize(source.alias) === normalize(qualifier)
-        || normalize(source.object.name) === normalize(qualifier))
-      : sources;
-    if (selected.length) candidates.push(...columnCandidates(selected, Boolean(qualifier), request.providerId));
+    candidates.push(...columnCandidates(index, scope, qualifier.parts, prefix, limit + 1));
   }
 
-  candidates.push(...keywordCandidates(keywords));
-  const prefix = normalize(request.prefix);
+  candidates.push(...keywordCandidates(dialect, tableContext ? "table" : columnContext ? "column" : clause, prefix));
   const filtered = deduplicate(candidates)
-    .filter((candidate) => !prefix || normalize(candidate.label).startsWith(prefix)
-      || normalize(lastIdentifier(candidate.qualifiedLabel)).startsWith(prefix)
-      || normalize(unquote(candidate.insertText)).startsWith(prefix))
+    .filter((candidate) => matchesPrefix(candidate, prefix))
     .sort((left, right) => compareCandidates(left, right, prefix));
   return { items: filtered.slice(0, limit), incomplete: filtered.length > limit };
 }
 
-function namespaceCandidate(index: CompletionIndex, namespace: IndexedNamespace): CompletionCandidate {
-  return {
-    label: namespace.snapshot.label,
-    qualifiedLabel: namespace.snapshot.label,
-    insertText: quoteIdentifier(namespace.snapshot.label, index.snapshot.providerId),
-    kind: "schema",
-    remarks: "",
-    typeName: "SCHEMA"
-  };
+function withoutActivePrefix(tokens: SqlToken[], prefix: string, sqlLength: number): SqlToken[] {
+  if (!prefix) return tokens;
+  const last = tokens.at(-1);
+  if (last?.kind === "word" && last.end === sqlLength && normalize(last.value) === normalize(prefix)) {
+    return tokens.slice(0, -1);
+  }
+  return tokens;
 }
 
-function parserFor(providerId: string): SqlParser {
-  return normalize(providerId).includes("mysql") && !normalize(providerId).includes("oracle")
-    ? new MySQL()
-    : new GenericSQL({ diagnostics: false });
+function readQualifier(tokens: SqlToken[]): Qualifier {
+  if (tokens.at(-1)?.value !== ".") return { parts: [], start: tokens.length };
+  const parts: string[] = [];
+  let index = tokens.length - 2;
+  let start = tokens.length - 1;
+  while (index >= 0 && tokens[index].kind === "word") {
+    parts.unshift(tokens[index].value);
+    start = index;
+    if (index < 2 || tokens[index - 1].value !== "." || tokens[index - 2].kind !== "word") break;
+    index -= 2;
+  }
+  return { parts: parts.slice(-2), start: Math.max(start, 0) };
 }
 
-function caretPosition(sql: string): { lineNumber: number; column: number } {
-  const lines = sql.split("\n");
-  return { lineNumber: lines.length, column: (lines.at(-1)?.length ?? 0) + 1 };
+function isTablePosition(tokens: SqlToken[]): boolean {
+  const last = tokens.at(-1);
+  if (!last) return false;
+  const depth = activeParenthesisDepth(tokens);
+  if (last.value === ",") return activeClause(tokens, depth) === "from";
+  if (last.kind !== "word") return false;
+  if (last.lower === "from" || last.lower === "join") return true;
+  const statement = statementKind(tokens, 0, last.depth);
+  if (last.lower === "update") return statement === "update";
+  if (last.lower === "into") return statement === "insert" || statement === "merge";
+  return last.lower === "using" && statement === "merge";
 }
 
-function needsHealing(sql: string): boolean {
-  return /\.\s*$/.test(sql);
+function isInsertColumnPosition(tokens: SqlToken[]): boolean {
+  if (statementKind(tokens, 0, 0) !== "insert") return false;
+  const stack: number[] = [];
+  tokens.forEach((token, index) => {
+    if (token.value === "(") stack.push(index);
+    else if (token.value === ")") stack.pop();
+  });
+  const open = stack.at(-1);
+  if (open === undefined) return false;
+  let cursor = open - 1;
+  if (tokens[cursor]?.kind !== "word") return false;
+  cursor -= 1;
+  while (cursor >= 1 && tokens[cursor]?.value === "." && tokens[cursor - 1]?.kind === "word") cursor -= 2;
+  return tokens[cursor]?.lower === "into";
 }
 
-function healStatement(parser: SqlParser, sql: string): { sql: string; caret: { lineNumber: number; column: number } } {
-  const atCaret = needsHealing(sql) ? `${sql}${HEAL_IDENTIFIER}` : sql;
-  const tokens = parser.getAllTokens(atCaret) as ParserToken[];
-  let parentheses = 0;
+function activeClause(tokens: SqlToken[], preferredDepth: number): string {
+  let clause = "";
+  let depth = preferredDepth;
+  if (!tokens.some((token) => token.depth === depth && token.kind === "word")) {
+    depth = Math.max(0, depth - 1);
+  }
   for (const token of tokens) {
-    if (token.channel !== 0) continue;
-    if (token.text === "(") parentheses += 1;
-    else if (token.text === ")") parentheses = Math.max(0, parentheses - 1);
+    if (token.depth !== depth || token.kind !== "word" || token.quoted) continue;
+    if (token.lower === "select" || token.lower === "from" || token.lower === "where" || token.lower === "on"
+      || token.lower === "group" || token.lower === "order" || token.lower === "having" || token.lower === "set"
+      || token.lower === "returning" || token.lower === "values") clause = token.lower;
+    else if (token.lower === "join") clause = "from";
   }
-  return { sql: `${atCaret}${")".repeat(parentheses)}`, caret: caretPosition(atCaret) };
+  return clause;
 }
 
-function syntaxQualifier(syntax: ParserSyntax[]): string {
-  for (const item of syntax) {
-    if (!item.wordRanges?.length) continue;
-    const words = item.wordRanges.map((word) => word.text ?? "").filter((word) => word && word !== ".");
-    if (item.wordRanges.some((word) => word.text === ".") && words.length) return unquote(words.at(-1) ?? "");
+function buildActiveScope(index: CompletionIndex, tokens: SqlToken[]): CompletionScope | undefined {
+  const activeDepth = activeParenthesisDepth(tokens);
+  const starts = activeScopeStarts(tokens, activeDepth);
+  let parent: CompletionScope | undefined;
+  let inheritedCtes = new Map<string, CompletionSource>();
+  for (let depth = 0; depth <= activeDepth; depth += 1) {
+    const start = starts[depth] ?? 0;
+    const localCtes = parseCtes(index, tokens, start, depth, inheritedCtes);
+    inheritedCtes = new Map([...inheritedCtes, ...localCtes]);
+    const select = lastTokenIndex(tokens, start, depth, "select");
+    if (depth > 0 && select < 0) continue;
+    const scopeStart = select >= 0 ? select : start;
+    const sources = parseSources(index, tokens, scopeStart, tokens.length, depth, inheritedCtes);
+    if (depth === 0 || select >= 0) parent = { depth, start: scopeStart, sources, parent };
   }
-  return "";
+  return parent;
 }
 
-function resolveSources(index: CompletionIndex, entities: ParserEntity[], tokens: ParserToken[]): IndexedSource[] {
-  const result: IndexedSource[] = [];
-  for (const entity of entities) {
-    if (entity.entityContextType !== "table" || !entity.isAccessible || !entity.text) continue;
-    const path = splitIdentifierPath(entity.text).filter((part) => normalize(part) !== normalize(HEAL_IDENTIFIER));
-    if (!path.length) continue;
-    const objectName = path.at(-1) ?? "";
-    const namespace = path.length > 1 ? index.namespaces.get(normalize(path.at(-2) ?? "")) : index.defaultNamespace;
-    const object = namespace?.objects.get(normalize(objectName));
-    if (!namespace || !object) continue;
-    const alias = unquote(entity._alias?.text || aliasFromTokens(entity, tokens) || object.name);
-    result.push({ namespace, object, alias });
-  }
-  return result;
+function activeScopeStarts(tokens: SqlToken[], currentDepth: number): number[] {
+  const starts = new Array<number>(currentDepth + 1).fill(0);
+  const stack: number[] = [];
+  tokens.forEach((token, index) => {
+    if (token.value === "(") stack.push(index + 1);
+    else if (token.value === ")") stack.pop();
+  });
+  stack.forEach((start, index) => { starts[index + 1] = start; });
+  return starts;
 }
 
-function tokenQualifier(tokens: ParserToken[], trailingDot: boolean, prefix: string): string {
-  const visible = tokens.filter((token) => token.channel === 0 && token.text);
-  let dotIndex = -1;
-  const healingIndex = visible.findIndex((token) => token.text === HEAL_IDENTIFIER);
-  if (trailingDot && healingIndex > 1 && visible[healingIndex - 1]?.text === ".") {
-    dotIndex = healingIndex - 1;
-  } else if (prefix && normalize(visible.at(-1)?.text ?? "") === normalize(prefix) && visible.at(-2)?.text === ".") {
-    dotIndex = visible.length - 2;
-  }
-  return dotIndex > 0 ? unquote(visible[dotIndex - 1].text ?? "") : "";
-}
-
-function aliasFromTokens(entity: ParserEntity, tokens: ParserToken[]): string {
-  const end = entity.position?.endTokenIndex;
-  if (end === undefined) return "";
-  const following = tokens.filter((token) => token.channel === 0 && token.tokenIndex > end && token.text);
-  let candidate = following[0]?.text ?? "";
-  if (normalize(candidate) === "as") candidate = following[1]?.text ?? "";
-  if (!candidate || ALIAS_BOUNDARIES.has(normalize(candidate)) || /^[,;()=.]+$/.test(candidate)) return "";
-  return unquote(candidate);
-}
-
-const ALIAS_BOUNDARIES = new Set([
-  "where", "join", "left", "right", "full", "inner", "cross", "on", "using", "group", "order",
-  "having", "limit", "offset", "fetch", "union", "minus", "except", "intersect", "connect", "start"
-]);
-
-function objectCandidates(index: CompletionIndex, namespace: IndexedNamespace, qualifiedContext: boolean): CompletionCandidate[] {
-  const isDefault = namespace === index.defaultNamespace;
-  return namespace.snapshot.objects.map((object) => ({
-    label: object.name,
-    qualifiedLabel: `${namespace.snapshot.label}.${object.name}`,
-    insertText: qualifiedContext || isDefault
-      ? quoteIdentifier(object.name, index.snapshot.providerId)
-      : `${quoteIdentifier(namespace.snapshot.label, index.snapshot.providerId)}.${quoteIdentifier(object.name, index.snapshot.providerId)}`,
-    kind: object.kind,
-    remarks: object.remarks,
-    typeName: object.kind.toUpperCase()
-  }));
-}
-
-function columnCandidates(sources: IndexedSource[], qualifiedContext: boolean, providerId: string): CompletionCandidate[] {
-  const counts = new Map<string, number>();
-  for (const source of sources) {
-    for (const column of source.object.columns) {
-      const key = normalize(column.name);
-      counts.set(key, (counts.get(key) ?? 0) + 1);
+function parseCtes(index: CompletionIndex, tokens: SqlToken[], start: number, depth: number,
+                   inherited: Map<string, CompletionSource>): Map<string, CompletionSource> {
+  const ctes = new Map<string, CompletionSource>();
+  let cursor = nextWordIndex(tokens, start, depth);
+  if (cursor < 0 || tokens[cursor].lower !== "with") return ctes;
+  cursor = nextSignificant(tokens, cursor + 1, depth);
+  if (tokens[cursor]?.lower === "recursive") cursor = nextSignificant(tokens, cursor + 1, depth);
+  while (cursor >= 0 && cursor < tokens.length) {
+    const nameToken = tokens[cursor];
+    if (nameToken?.kind !== "word" || nameToken.depth !== depth) break;
+    const name = nameToken.value;
+    cursor = nextSignificant(tokens, cursor + 1, depth);
+    let explicitColumns: string[] = [];
+    if (tokens[cursor]?.value === "(") {
+      const close = matchingClose(tokens, cursor);
+      if (close < 0) break;
+      explicitColumns = tokens.slice(cursor + 1, close)
+        .filter((token) => token.kind === "word" && token.depth === depth + 1)
+        .map((token) => token.value);
+      cursor = nextSignificant(tokens, close + 1, depth);
     }
+    if (tokens[cursor]?.lower !== "as") break;
+    const open = nextSignificant(tokens, cursor + 1, depth);
+    if (tokens[open]?.value !== "(") break;
+    const close = matchingClose(tokens, open);
+    if (close < 0) break;
+    const available = new Map([...inherited, ...ctes]);
+    const columns = explicitColumns.length ? explicitColumns
+      : projectedColumns(index, tokens, open + 1, close, depth + 1, available);
+    ctes.set(normalize(name), { kind: "cte", name, alias: name, columns: uniqueNames(columns) });
+    cursor = nextSignificant(tokens, close + 1, depth);
+    if (tokens[cursor]?.value !== ",") break;
+    cursor = nextSignificant(tokens, cursor + 1, depth);
   }
-  const result: CompletionCandidate[] = [];
-  for (const source of sources) {
-    for (const column of source.object.columns) {
-      const duplicate = (counts.get(normalize(column.name)) ?? 0) > 1;
-      const columnText = quoteIdentifier(column.name, providerId);
-      result.push({
-        label: column.name,
-        qualifiedLabel: `${source.namespace.snapshot.label}.${source.object.name}.${column.name}`,
-        insertText: qualifiedContext ? columnText
-          : duplicate ? `${quoteIdentifier(source.alias, providerId)}.${columnText}` : columnText,
-        kind: "column",
-        remarks: column.remarks,
-        typeName: column.typeName
-      });
+  return ctes;
+}
+
+function parseSources(index: CompletionIndex, tokens: SqlToken[], start: number, end: number, depth: number,
+                      ctes: Map<string, CompletionSource>): CompletionSource[] {
+  const sources: CompletionSource[] = [];
+  const kind = statementKind(tokens, start, depth);
+  let sourceList = false;
+  let expectSource = false;
+  for (let cursor = start; cursor < end; cursor += 1) {
+    const token = tokens[cursor];
+    if (token.depth !== depth) continue;
+    if (token.kind === "word" && !token.quoted) {
+      const introducer = token.lower === "from" || token.lower === "join"
+        || token.lower === "update" && kind === "update"
+        || token.lower === "into" && (kind === "insert" || kind === "merge")
+        || token.lower === "using" && kind === "merge";
+      if (introducer) { sourceList = true; expectSource = true; continue; }
+      if (SOURCE_TERMINATORS.has(token.lower)) { sourceList = false; expectSource = false; continue; }
     }
-  }
-  return result;
-}
-
-function keywordCandidates(keywords: string[]): CompletionCandidate[] {
-  return keywords.map((keyword) => ({
-    label: keyword,
-    qualifiedLabel: keyword,
-    insertText: keyword,
-    kind: "keyword" as const,
-    remarks: "",
-    typeName: "KEYWORD"
-  }));
-}
-
-function quoteIdentifier(value: string, providerId: string): string {
-  const quote = normalize(providerId).includes("mysql") && !normalize(providerId).includes("oracle") ? "`" : "\"";
-  return `${quote}${value.replaceAll(quote, quote + quote)}${quote}`;
-}
-
-function uniqueNamespaces(index: CompletionIndex): IndexedNamespace[] {
-  return [...new Set(index.snapshot.namespaces.map((namespace) => index.namespaces.get(normalize(namespace.key))))]
-    .filter((value): value is IndexedNamespace => Boolean(value));
-}
-
-function splitIdentifierPath(value: string): string[] {
-  const result: string[] = [];
-  let current = "";
-  let quote = "";
-  for (const character of value) {
-    if ((character === "`" || character === "\"") && (!quote || quote === character)) {
-      quote = quote ? "" : character;
+    if (token.value === "," && sourceList) { expectSource = true; continue; }
+    if (!expectSource) continue;
+    if (token.value === "(") {
+      const close = matchingClose(tokens, cursor);
+      if (close < 0 || close >= end) break;
+      const aliasResult = readAlias(tokens, close + 1, depth);
+      const alias = aliasResult.alias || "derived";
+      sources.push({ kind: "derived", name: alias, alias,
+        columns: projectedColumns(index, tokens, cursor + 1, close, depth + 1, ctes) });
+      cursor = aliasResult.nextIndex - 1;
+      expectSource = false;
       continue;
     }
-    if (character === "." && !quote) {
-      if (current) result.push(current);
-      current = "";
-    } else current += character;
+    if (token.kind !== "word") continue;
+    const names = [token.value];
+    let next = cursor + 1;
+    while (tokens[next]?.value === "." && tokens[next + 1]?.kind === "word"
+      && tokens[next]?.depth === depth && tokens[next + 1]?.depth === depth) {
+      names.push(tokens[next + 1].value);
+      next += 2;
+    }
+    const name = names.at(-1) ?? token.value;
+    const aliasResult = readAlias(tokens, next, depth);
+    const alias = aliasResult.alias || name;
+    const cte = names.length === 1 ? ctes.get(normalize(name)) : undefined;
+    sources.push(cte ? { ...cte, alias } : physicalSource(index, names, alias));
+    cursor = aliasResult.nextIndex - 1;
+    expectSource = false;
   }
-  if (current) result.push(current);
+  return deduplicateSources(sources);
+}
+
+function physicalSource(index: CompletionIndex, names: string[], alias: string): CompletionSource {
+  const name = names.at(-1) ?? "";
+  const namespaceName = names.length > 1 ? names.at(-2) : undefined;
+  const namespace = namespaceName ? index.namespaces.get(normalize(namespaceName)) : index.defaultNamespace;
+  return { kind: "physical", name, alias, namespaceName, namespace,
+    object: namespace?.objects.get(normalize(name)) };
+}
+
+function readAlias(tokens: SqlToken[], start: number, depth: number): { alias?: string; nextIndex: number } {
+  let cursor = nextSignificant(tokens, start, depth);
+  const original = cursor < 0 ? start : cursor;
+  if (tokens[cursor]?.lower === "as" && !tokens[cursor]?.quoted) cursor = nextSignificant(tokens, cursor + 1, depth);
+  const token = tokens[cursor];
+  if (token?.kind === "word" && token.depth === depth
+    && (token.quoted || !ALIAS_TERMINATORS.has(token.lower))) {
+    return { alias: token.value, nextIndex: cursor + 1 };
+  }
+  return { nextIndex: original };
+}
+
+function projectedColumns(index: CompletionIndex, tokens: SqlToken[], start: number, end: number, depth: number,
+                          ctes: Map<string, CompletionSource>): string[] {
+  const select = firstTokenIndex(tokens, start, end, depth, "select");
+  if (select < 0) return [];
+  let from = end;
+  for (let cursor = select + 1; cursor < end; cursor += 1) {
+    if (tokens[cursor].depth === depth && tokens[cursor].lower === "from") { from = cursor; break; }
+  }
+  const sources = from < end ? parseSources(index, tokens, select, end, depth, ctes) : [];
+  const segments: SqlToken[][] = [];
+  let segment: SqlToken[] = [];
+  for (let cursor = select + 1; cursor < from; cursor += 1) {
+    const token = tokens[cursor];
+    if (token.value === "," && token.depth === depth) { if (segment.length) segments.push(segment); segment = []; }
+    else segment.push(token);
+  }
+  if (segment.length) segments.push(segment);
+  const result: string[] = [];
+  for (const value of segments) {
+    const visible = value.filter((token) => token.depth === depth);
+    const asIndex = visible.findIndex((token) => token.lower === "as" && !token.quoted);
+    if (asIndex >= 0 && visible[asIndex + 1]?.kind === "word") {
+      result.push(visible[asIndex + 1].value);
+      continue;
+    }
+    const last = visible.at(-1);
+    if (last?.kind === "word" && visible.length > 1 && visible.at(-2)?.value !== "."
+      && !isKeyword(last.lower)) {
+      result.push(last.value);
+      continue;
+    }
+    if (last?.value === "*") {
+      const qualifier = visible.at(-2)?.value === "." && visible.at(-3)?.kind === "word"
+        ? visible.at(-3)?.value : "";
+      const selected = qualifier ? sources.filter((source) => same(source.alias, qualifier) || same(source.name, qualifier)) : sources;
+      for (const source of selected) result.push(...sourceColumnNames(source));
+      continue;
+    }
+    if (last?.kind === "word" && (visible.length === 1 || visible.at(-2)?.value === ".")) result.push(last.value);
+  }
+  return uniqueNames(result);
+}
+
+function sourceColumnNames(source: CompletionSource): string[] {
+  if (source.kind === "physical") return source.object?.columns.map((column) => column.name) ?? [];
+  return source.columns ?? [];
+}
+
+function tableCandidates(index: CompletionIndex, qualifier: string[], prefix: string, maximum: number): CandidateRank[] {
+  if (qualifier.length > 1) return [];
+  if (qualifier.length === 1) {
+    const namespace = index.namespaces.get(normalize(qualifier[0]));
+    return namespace ? objectCandidates(index, namespace, true, prefix, maximum) : [];
+  }
+  const result: CandidateRank[] = [];
+  for (const namespace of index.namespaceValues) {
+    if (matchesName(namespace.snapshot.label, prefix)) {
+      result.push({
+        displayLabel: namespace.snapshot.label,
+        documentationPath: namespace.snapshot.label,
+        insertText: namespace.snapshot.label,
+        filterText: namespace.snapshot.label,
+        kind: "schema",
+        remarks: "",
+        typeName: "SCHEMA",
+        namespacePriority: namespace === index.defaultNamespace ? 0 : 1
+      });
+    }
+    result.push(...objectCandidates(index, namespace, false, prefix, maximum));
+  }
   return result;
 }
 
-function deduplicate(values: CompletionCandidate[]): CompletionCandidate[] {
+function objectCandidates(index: CompletionIndex, namespace: IndexedNamespace, qualified: boolean,
+                          prefix: string, maximum: number): CandidateRank[] {
+  const isDefault = namespace === index.defaultNamespace;
+  const result: CandidateRank[] = [];
+  for (const indexed of namespace.sortedObjects) {
+    const object = indexed.snapshot;
+    if (!matchesName(object.name, prefix)) continue;
+    const path = `${namespace.snapshot.label}.${object.name}`;
+    const contextual = qualified || isDefault ? object.name : path;
+    result.push({
+      displayLabel: contextual,
+      documentationPath: path,
+      insertText: contextual,
+      filterText: `${object.name} ${path}`,
+      kind: object.kind,
+      remarks: object.remarks,
+      typeName: object.kind.toUpperCase(),
+      namespacePriority: isDefault ? 0 : 1
+    });
+    if (result.length >= maximum) break;
+  }
+  return result;
+}
+
+function columnCandidates(index: CompletionIndex, scope: CompletionScope | undefined, qualifier: string[],
+                          prefix: string, maximum: number): CandidateRank[] {
+  let sources: CompletionSource[] = [];
+  if (qualifier.length >= 2) {
+    const namespace = index.namespaces.get(normalize(qualifier.at(-2) ?? ""));
+    const object = namespace?.objects.get(normalize(qualifier.at(-1) ?? ""));
+    if (namespace && object) sources = [{ kind: "physical", name: object.snapshot.name,
+      alias: object.snapshot.name, namespaceName: namespace.snapshot.label, namespace, object }];
+  } else if (qualifier.length === 1) {
+    sources = findQualifiedSources(scope, qualifier[0]);
+  } else if (scope) {
+    sources = scope.sources;
+  }
+  const resolved = sources.filter((source) => source.kind !== "physical" || Boolean(source.object));
+  if (!resolved.length) return [];
+  const explicitlyQualified = qualifier.length > 0;
+  const qualifyWithAlias = !explicitlyQualified && resolved.length > 1;
+  const result: CandidateRank[] = [];
+  for (const source of resolved) {
+    let sourceMatches = 0;
+    if (source.kind === "physical" && source.namespace && source.object) {
+      for (const column of source.object.columns) {
+        if (!matchesName(column.name, prefix)) continue;
+        const contextual = qualifyWithAlias ? `${source.alias}.${column.name}` : column.name;
+        const path = `${source.namespace.snapshot.label}.${source.object.snapshot.name}.${column.name}`;
+        result.push({ displayLabel: contextual, documentationPath: path, insertText: contextual,
+          filterText: `${column.name} ${source.alias}.${column.name} ${path}`, kind: "column",
+          remarks: column.remarks, typeName: column.typeName,
+          namespacePriority: source.namespace === index.defaultNamespace ? 0 : 1 });
+        sourceMatches += 1;
+        if (sourceMatches >= maximum) break;
+      }
+    } else {
+      for (const column of [...(source.columns ?? [])].sort(compareName)) {
+        if (!matchesName(column, prefix)) continue;
+        const contextual = qualifyWithAlias ? `${source.alias}.${column}` : column;
+        result.push({ displayLabel: contextual, documentationPath: `${source.alias}.${column}`,
+          insertText: contextual, filterText: `${column} ${source.alias}.${column}`, kind: "column",
+          remarks: "", typeName: source.kind === "cte" ? "CTE" : "DERIVED" });
+        sourceMatches += 1;
+        if (sourceMatches >= maximum) break;
+      }
+    }
+  }
+  return result;
+}
+
+function findQualifiedSources(scope: CompletionScope | undefined, qualifier: string): CompletionSource[] {
+  let current = scope;
+  while (current) {
+    const matches = current.sources.filter((source) => same(source.alias, qualifier) || same(source.name, qualifier));
+    if (matches.length) return matches;
+    current = current.parent;
+  }
+  return [];
+}
+
+function keywordCandidates(dialect: SqlCompletionDialect, context: string, prefix: string): CandidateRank[] {
+  const values = context === "table" ? []
+    : context === "column" || COLUMN_CLAUSES.has(context) ? dialect.expressionKeywords
+      : context === "from" ? dialect.sourceKeywords : dialect.statementKeywords;
+  return values.filter((keyword) => matchesName(keyword, prefix)).map((keyword) => ({
+    displayLabel: keyword,
+    documentationPath: keyword,
+    insertText: keyword,
+    filterText: keyword,
+    kind: "keyword" as const,
+    remarks: "",
+    typeName: "KEYWORD",
+    namespacePriority: 2
+  }));
+}
+
+function deduplicate(values: CandidateRank[]): CandidateRank[] {
   const seen = new Set<string>();
   return values.filter((value) => {
-    const key = `${value.kind}\u0000${normalize(value.qualifiedLabel)}\u0000${normalize(value.insertText)}`;
+    const key = `${value.kind}\u0000${normalize(value.documentationPath)}\u0000${normalize(value.insertText)}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
 }
 
-function compareCandidates(left: CompletionCandidate, right: CompletionCandidate, prefix: string): number {
-  const leftName = normalize(left.label);
-  const rightName = normalize(right.label);
+function deduplicateSources(values: CompletionSource[]): CompletionSource[] {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const key = `${value.kind}\u0000${normalize(value.alias)}\u0000${normalize(value.namespaceName ?? "")}\u0000${normalize(value.name)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function compareCandidates(left: CandidateRank, right: CandidateRank, prefix: string): number {
+  const leftName = normalize(lastIdentifier(left.displayLabel));
+  const rightName = normalize(lastIdentifier(right.displayLabel));
   const leftExact = prefix && leftName === prefix ? 0 : 1;
   const rightExact = prefix && rightName === prefix ? 0 : 1;
   if (leftExact !== rightExact) return leftExact - rightExact;
+  if ((left.namespacePriority ?? 1) !== (right.namespacePriority ?? 1)) {
+    return (left.namespacePriority ?? 1) - (right.namespacePriority ?? 1);
+  }
   const priority: Record<CompletionCandidate["kind"], number> = { column: 0, table: 1, view: 2, schema: 3, keyword: 4 };
   return priority[left.kind] - priority[right.kind]
-    || leftName.localeCompare(rightName, undefined, { sensitivity: "base" })
-    || left.qualifiedLabel.localeCompare(right.qualifiedLabel, undefined, { sensitivity: "base" });
+    || compareName(leftName, rightName)
+    || compareName(left.documentationPath, right.documentationPath);
+}
+
+function matchesPrefix(candidate: CompletionCandidate, prefix: string): boolean {
+  if (!prefix) return true;
+  return normalize(lastIdentifier(candidate.displayLabel)).startsWith(prefix)
+    || normalize(lastIdentifier(candidate.insertText)).startsWith(prefix)
+    || candidate.filterText.split(/\s+/).some((value) => normalize(lastIdentifier(value)).startsWith(prefix));
+}
+
+function matchesName(value: string, prefix: string): boolean {
+  return !prefix || normalize(value).startsWith(prefix);
+}
+
+function statementKind(tokens: SqlToken[], start: number, depth: number): string {
+  for (let cursor = start; cursor < tokens.length; cursor += 1) {
+    const token = tokens[cursor];
+    if (token.depth !== depth || token.kind !== "word" || token.quoted) continue;
+    if (token.lower === "with" || token.lower === "recursive") continue;
+    if (["select", "insert", "update", "delete", "merge"].includes(token.lower)) return token.lower;
+  }
+  return "";
+}
+
+function matchingClose(tokens: SqlToken[], openIndex: number): number {
+  if (tokens[openIndex]?.value !== "(") return -1;
+  let level = 0;
+  for (let cursor = openIndex; cursor < tokens.length; cursor += 1) {
+    if (tokens[cursor].value === "(") level += 1;
+    else if (tokens[cursor].value === ")" && --level === 0) return cursor;
+  }
+  return -1;
+}
+
+function nextWordIndex(tokens: SqlToken[], start: number, depth: number): number {
+  for (let cursor = start; cursor < tokens.length; cursor += 1) {
+    if (tokens[cursor].depth === depth && tokens[cursor].kind === "word") return cursor;
+  }
+  return -1;
+}
+
+function nextSignificant(tokens: SqlToken[], start: number, depth: number): number {
+  for (let cursor = start; cursor < tokens.length; cursor += 1) {
+    if (tokens[cursor].depth === depth) return cursor;
+  }
+  return -1;
+}
+
+function lastTokenIndex(tokens: SqlToken[], start: number, depth: number, value: string): number {
+  for (let cursor = tokens.length - 1; cursor >= start; cursor -= 1) {
+    if (tokens[cursor].depth === depth && tokens[cursor].lower === value && !tokens[cursor].quoted) return cursor;
+  }
+  return -1;
+}
+
+function firstTokenIndex(tokens: SqlToken[], start: number, end: number, depth: number, value: string): number {
+  for (let cursor = start; cursor < end; cursor += 1) {
+    if (tokens[cursor].depth === depth && tokens[cursor].lower === value && !tokens[cursor].quoted) return cursor;
+  }
+  return -1;
+}
+
+function uniqueNames(values: string[]): string[] {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const key = normalize(value);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function isKeyword(value: string): boolean {
+  return ALIAS_TERMINATORS.has(value) || SOURCE_TERMINATORS.has(value)
+    || ["select", "distinct", "all", "case", "when", "then", "else", "end"].includes(value);
 }
 
 function lastIdentifier(value: string): string {
   return value.split(".").at(-1) ?? value;
 }
 
-function unquote(value: string): string {
-  const trimmed = value.trim();
-  if ((trimmed.startsWith("`") && trimmed.endsWith("`"))
-    || (trimmed.startsWith("\"") && trimmed.endsWith("\""))) return trimmed.slice(1, -1);
-  return trimmed;
+function same(left: string, right: string): boolean {
+  return normalize(left) === normalize(right);
+}
+
+function compareName(left: string, right: string): number {
+  return left.localeCompare(right, undefined, { sensitivity: "base" });
 }
 
 function normalize(value: string): string {
-  return unquote(value).toLocaleLowerCase();
+  return value.trim().toLocaleLowerCase();
 }
