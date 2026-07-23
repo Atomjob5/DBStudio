@@ -22,7 +22,8 @@ const rpcMock = vi.hoisted(() => ({
 }));
 const rpcRequest = rpcMock.request;
 const completionMock = vi.hoisted(() => ({
-  inspect: vi.fn(), refresh: vi.fn(), stats: vi.fn(), clear: vi.fn(), complete: vi.fn()
+  inspect: vi.fn(), refresh: vi.fn(), stats: vi.fn(), clear: vi.fn(), complete: vi.fn(),
+  resolveResultColumnRemarks: vi.fn()
 }));
 vi.mock("./bridge/rpc", () => ({
   rpc: {
@@ -60,6 +61,7 @@ describe("App result loading status toolbar", () => {
     completionMock.stats.mockReset().mockResolvedValue({ environmentCount: 0, suggestionCount: 0, estimatedBytes: 0 });
     completionMock.clear.mockReset().mockResolvedValue(undefined);
     completionMock.complete.mockReset().mockResolvedValue({ items: [], incomplete: false });
+    completionMock.resolveResultColumnRemarks.mockReset().mockResolvedValue([]);
     rpcMock.ensureOperational.mockClear();
     rpcMock.listeners.clear();
     rpcRequest.mockImplementation(async (type: string, payload: Record<string, unknown>) => {
@@ -343,24 +345,70 @@ describe("App result loading status toolbar", () => {
     const profile = completionProfile();
     connections.initialize([], [profile], [{ id: "system-1", name: "核心系统", revision: "1" }],
       [{ id: "environment-dev", systemId: "system-1", name: "DEV", revision: "1" }]);
-    editors.patch("bootstrap-editor", { connection: profile, connectionState: "suspended" });
+    editors.patch("bootstrap-editor", { connection: profile, connectionState: "active" });
     await nextTick();
 
     metadata.beginCompletion("system-1:environment-dev", "DEV", "status-load", profile.id);
     metadata.updateProgress({ loadId: "status-load", phase: "loading", completed: 37, total: 240,
       message: "sales.orders", environmentId: "environment-dev" });
     await nextTick();
-    expect(wrapper.find(".completion-status").text()).toContain("37/240 · sales.orders");
+    expect(wrapper.find(".system-status-summary").text()).toContain("37/240 · sales.orders");
 
     metadata.completeCompletion("system-1:environment-dev", "status-load", completionSummary(profile.id));
     await nextTick();
-    expect(wrapper.find(".completion-status").text()).toContain("补全已更新 · 1 项");
+    expect(wrapper.find(".system-status-summary").text()).toContain("补全已更新 · 1 项");
 
     metadata.beginCompletion("system-1:environment-dev", "DEV", "failed-load", profile.id, true);
     metadata.failCompletion("system-1:environment-dev", "failed-load", "连接失败");
     await nextTick();
-    expect(wrapper.find(".completion-status").text()).toContain("补全加载失败");
-    expect(wrapper.find(".completion-status").attributes("title")).toBe("连接失败");
+    expect(wrapper.find(".system-status-summary").text()).toContain("连接失败");
+  });
+
+  it("uses the completion worker to enrich result remarks without requesting metadata", async () => {
+    const connections = useConnectionStore();
+    const editors = useEditorStore();
+    const queries = useQueryStore();
+    const profile = completionProfile();
+    connections.initialize([], [profile], [{ id: "system-1", name: "核心系统", revision: "1" }],
+      [{ id: "environment-dev", systemId: "system-1", name: "DEV", revision: "1" }]);
+    editors.patch("bootstrap-editor", { connection: profile, connectionState: "active" });
+    completionMock.resolveResultColumnRemarks.mockResolvedValueOnce([{ index: 0, remarks: "订单编号" }]);
+    rpcRequest.mockClear();
+
+    rpcMock.listeners.get("query.started")?.forEach((listener) => listener({ editorId: "bootstrap-editor", executionId: "execution-remarks" }));
+    rpcMock.listeners.get("query.resultMeta")?.forEach((listener) => listener({ editorId: "bootstrap-editor", resultIndex: 0,
+      sql: "select id from orders", type: "QUERY", columns: ["id"], columnDetails: [
+        { label: "id", name: "id", remarks: "", catalog: "sales", schema: "", table: "orders", typeName: "BIGINT" }
+      ], rows: [], updateCount: -1, truncated: false, durationMs: 0, complete: false }));
+    await flushPromises();
+
+    expect(completionMock.resolveResultColumnRemarks).toHaveBeenCalledWith("system-1:environment-dev:mysql", "mysql", [{
+      index: 0, catalog: "sales", schema: "", table: "orders", name: "id"
+    }]);
+    expect(queries.executions["bootstrap-editor"].results[0].columnDetails?.[0].remarks).toBe("订单编号");
+    expect(rpcRequest).not.toHaveBeenCalledWith("metadata.completionNamespaces", expect.anything(), expect.anything());
+  });
+
+  it("keeps the left execution status scoped to the active editor", async () => {
+    const editors = useEditorStore();
+    const queries = useQueryStore();
+    editors.add({ id: "active-editor", title: "当前", content: "", dirty: false, transactionDirty: false,
+      busy: false, connectionState: "unbound" });
+    editors.add({ id: "background-editor", title: "后台", content: "", dirty: false, transactionDirty: false,
+      busy: false, connectionState: "unbound" });
+    editors.activeId = "active-editor";
+    queries.start("active-editor", "active-execution");
+    queries.complete("active-editor", { durationMs: 12, failed: false, cancelled: false });
+    queries.start("background-editor", "background-execution");
+    queries.complete("background-editor", { durationMs: 99, failed: true, cancelled: false });
+    await nextTick();
+
+    expect(wrapper.get(".execution-status").text()).toContain("执行完成 · 12 ms");
+    expect(wrapper.get(".execution-status").text()).not.toContain("99");
+    wrapper.findComponent({ name: "ResultPanel" }).vm.$emit("selected-row-count", 3);
+    await nextTick();
+    expect(wrapper.get(".status-execution-zone").text()).toContain("已选中 3 行");
+    expect(wrapper.get(".status-system-zone").text()).toContain("未选择链接");
   });
 
   it("确认后只清理补全缓存并使迟到快照失效", async () => {

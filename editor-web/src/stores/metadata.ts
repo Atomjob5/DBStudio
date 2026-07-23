@@ -93,7 +93,7 @@ export const useMetadataStore = defineStore("metadata", () => {
 
   function dismissNotice(key: string): void {
     const current = completionCaches.value[key];
-    if (!current || current.notice !== "success") return;
+    if (!current?.notice) return;
     completionCaches.value = { ...completionCaches.value, [key]: { ...current, notice: undefined } };
   }
 

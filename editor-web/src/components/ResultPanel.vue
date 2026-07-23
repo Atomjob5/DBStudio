@@ -44,7 +44,7 @@
            @keydown="tableKeydown" @pointermove="autoScrollSelection">
         <el-auto-resizer v-slot="{ width, height }">
           <el-table-v2 :columns="tableColumns" :data="displayRows" :width="width" :height="height"
-                       row-key="sourceIndex" :row-height="32" :header-height="32" fixed />
+                       row-key="sourceIndex" :row-height="32" :header-height="headerHeight" fixed />
         </el-auto-resizer>
       </div>
       <el-result v-else icon="success" title="语句执行完成" :sub-title="`影响行数：${activeResult?.updateCount ?? 0}`" />
@@ -67,7 +67,7 @@ import { computed, h, onBeforeUnmount, ref, watch } from "vue";
 import { ElMessage, TableV2FixedDir } from "element-plus";
 import { CopyDocument, DataAnalysis, Download, RefreshLeft } from "@element-plus/icons-vue";
 import type { Column } from "element-plus";
-import type { QueryExecutionState } from "../types";
+import type { QueryExecutionState, SelectedResultColumn } from "../types";
 import { matchesColumnQuery, resultColumnOptions, type ColumnOption } from "../columnFilter";
 import { autoColumnWidth, clampColumnWidth, columnIdentityKeys, defaultColumnWidth, moveColumnsToEdge,
   type ColumnEdge, type DropSide } from "../columnLayout";
@@ -89,6 +89,8 @@ const emit = defineEmits<{
   "export-loaded": [resultIndex: number];
   "export-full": [resultIndex: number];
   "update:active-result-index": [resultIndex: number];
+  "selected-column": [column: SelectedResultColumn | undefined];
+  "selected-row-count": [count: number];
 }>();
 const columnLayouts = useColumnLayoutStore();
 const settings = useSettingsStore();
@@ -111,6 +113,7 @@ const sorts = ref<Record<string, ResultSort | undefined>>({});
 const filters = ref<Record<string, ResultFilter[]>>({});
 const cellRange = ref<CellRange>();
 const cellAnchor = ref<CellPoint>();
+const selectedColumnIndex = ref<number>();
 const selectingCells = ref(false);
 const selectingRows = ref(false);
 const rowDragAnchor = ref<number>();
@@ -120,6 +123,7 @@ const selectedRowSources = ref<number[]>([]);
 const rowAnchor = ref<number>();
 const selectionMode = ref<"cells" | "rows">("cells");
 const activeResult = computed(() => props.execution?.results.find((item) => item.resultIndex === activeIndex.value) ?? props.execution?.results[0]);
+const headerHeight = computed(() => settings.showColumnRemarksInHeader ? 48 : 32);
 const resultKey = computed(() => String(activeResult.value?.resultIndex ?? 0));
 const activeSort = computed(() => sorts.value[resultKey.value]);
 const activeFilters = computed(() => filters.value[resultKey.value] ?? []);
@@ -162,6 +166,7 @@ watch(() => props.execution?.executionId, () => {
   closeHeaderMenu(); closeDataMenu();
 });
 watch(activeIndex, () => { clearSelection(); columnQuery.value = ""; closeHeaderMenu(); closeDataMenu(); });
+watch(() => activeResult.value?.columnDetails, () => emitSelectedColumn());
 watch([
   () => props.execution?.executionId,
   () => props.execution?.editorId,
@@ -264,9 +269,13 @@ function renderHeader(column: ColumnOption, identity: string) {
     onDragend: endColumnDrag
   }, [
     h("span", {
-      class: "result-column-title",
+      class: "result-column-labels",
       onDblclick: (event: MouseEvent) => copyDoubleClickedHeader(event, column)
-    }, column.label),
+    }, [
+      h("span", { class: "result-column-title" }, column.label),
+      settings.showColumnRemarksInHeader && column.remarks
+        ? h("span", { class: "result-column-remarks", title: column.remarks }, column.remarks) : undefined
+    ]),
     selected && view && view.selected.length > 1 && firstSelected === identity
       ? h("span", { class: "column-selection-count" }, `${view.selected.length}列`) : undefined,
     h(ResultHeaderTools, {
@@ -527,6 +536,8 @@ function clearSelection(): void {
   selectingRows.value = false;
   cellRange.value = undefined;
   cellAnchor.value = undefined;
+  selectedColumnIndex.value = undefined;
+  emit("selected-column", undefined);
   selectedRowSources.value = [];
   rowAnchor.value = undefined;
 }
@@ -542,6 +553,9 @@ function startCellSelection(event: PointerEvent, row: number, column: number): v
   if (event.shiftKey && cellAnchor.value) cellRange.value = { start: cellAnchor.value, end: point };
   else { cellAnchor.value = point; cellRange.value = { start: point, end: point }; }
   selectingCells.value = true;
+  const selected = visibleColumnOptions.value[column];
+  selectedColumnIndex.value = selected?.index;
+  emitSelectedColumn();
   window.removeEventListener("pointerup", finishCellSelection);
   window.addEventListener("pointerup", finishCellSelection, { once: true });
 }
@@ -561,6 +575,8 @@ function selectResultRow(event: PointerEvent, sourceIndex: number): void {
   event.preventDefault(); event.stopPropagation();
   tableHost.value?.focus();
   selectionMode.value = "rows";
+  selectedColumnIndex.value = undefined;
+  emit("selected-column", undefined);
   cellRange.value = undefined; cellAnchor.value = undefined;
   const order = displayRows.value.map((row) => row.sourceIndex);
   const before = [...selectedRowSources.value];
@@ -605,6 +621,8 @@ function openCellMenu(event: MouseEvent, row: number, column: number, rowData: V
   }
   selectionMode.value = "cells";
   selectedRowSources.value = [];
+  selectedColumnIndex.value = visibleColumnOptions.value[column]?.index;
+  emitSelectedColumn();
   if (!inRange(cellRange.value, row, column)) {
     const point = { row, column };
     cellAnchor.value = point; cellRange.value = { start: point, end: point };
@@ -615,11 +633,24 @@ function openCellMenu(event: MouseEvent, row: number, column: number, rowData: V
 function openRowMenu(event: MouseEvent, sourceIndex: number): void {
   event.preventDefault(); event.stopPropagation();
   selectionMode.value = "rows";
+  selectedColumnIndex.value = undefined;
+  emit("selected-column", undefined);
   cellRange.value = undefined; cellAnchor.value = undefined;
   if (!selectedRowSources.value.includes(sourceIndex)) {
     selectedRowSources.value = [sourceIndex]; rowAnchor.value = sourceIndex;
   }
   openDataMenu(event, "rows");
+}
+
+function emitSelectedColumn(): void {
+  const index = selectedColumnIndex.value;
+  if (index === undefined) return;
+  const column = columnOptions.value.find((item) => item.index === index);
+  if (!column) { emit("selected-column", undefined); return; }
+  emit("selected-column", {
+    label: column.label, name: column.name, remarks: column.remarks, typeName: column.typeName,
+    catalog: column.catalog, schema: column.schema, table: column.table
+  });
 }
 
 function openDataMenu(event: MouseEvent, mode: "cells" | "rows"): void {
@@ -644,10 +675,15 @@ const selectedRowsInDisplayOrder = computed(() => {
   const selected = new Set(selectedRowSources.value);
   return displayRows.value.filter((row) => selected.has(row.sourceIndex));
 });
+const selectedRowCount = computed(() => selectionMode.value === "cells"
+  ? selectedCellRows.value.length
+  : selectedRowsInDisplayOrder.value.length);
 const hasDataSelection = computed(() => selectionMode.value === "cells"
   ? selectedCellColumns.value.length > 0 && selectedCellRows.value.length > 0
   : selectedRowsInDisplayOrder.value.length > 0);
 const copySelectionTitle = computed(() => selectionMode.value === "rows" ? "复制选中行" : "复制选中单元格");
+
+watch(selectedRowCount, (count) => emit("selected-row-count", count), { immediate: true });
 
 function selectedCopyText(includeHeaders = false): string {
   if (selectionMode.value === "rows") {
@@ -818,6 +854,10 @@ onBeforeUnmount(() => {
   position: relative; display: flex; width: 100%; height: 100%; align-items: center; gap: 5px;
   padding: 0 10px; outline: none; user-select: none; cursor: grab;
 }
+.result-column-labels {
+  display: flex; min-width: 24px; flex: 1; flex-direction: column; justify-content: center;
+  overflow: hidden; line-height: 15px;
+}
 .result-column-header:active { cursor: grabbing; }
 .result-column-header.selected { background: var(--db-accent-soft); color: var(--db-accent); }
 .result-column-header:focus-visible { box-shadow: inset 0 0 0 1.5px var(--db-accent); }
@@ -827,7 +867,9 @@ onBeforeUnmount(() => {
 }
 .result-column-header.drop-before::before { left: 0; }
 .result-column-header.drop-after::after { right: 0; }
-.result-column-title { min-width: 24px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.result-column-title, .result-column-remarks { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.result-column-title { font-weight: 600; }
+.result-column-remarks { color: var(--db-muted); font-size: 10px; font-weight: 400; }
 .column-selection-count {
   flex: none; padding: 1px 5px; border-radius: 8px; background: var(--db-accent); color: #fff; font-size: 9px;
 }

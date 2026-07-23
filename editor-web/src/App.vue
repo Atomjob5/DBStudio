@@ -102,69 +102,48 @@
                                   @create-profile="openCreateProfile" @edit-profile="openEditProfile" />
         </el-splitter-panel>
         <el-splitter-panel :min="500">
-          <el-splitter layout="vertical" lazy>
-            <el-splitter-panel v-model:size="editorHeight" :min="220">
-              <section class="editor-area fill">
-                <el-tabs v-if="editors.tabs.length" v-model="editors.activeId" closable class="editor-tabs"
-                         @tab-remove="(name) => closeTab(String(name))">
-                  <el-tab-pane v-for="tab in editors.tabs" :key="tab.id" :name="tab.id">
-                    <template #label>
-                      <span class="editor-tab-label"><i v-if="tab.dirty" class="dirty-dot" aria-label="未保存" />{{ tab.title }}</span>
-                    </template>
-                  </el-tab-pane>
-                </el-tabs>
-                <MonacoEditor v-if="editors.active" ref="monacoEditor" class="editor-widget" :model-key="editors.active.id"
-                              :initial-value="editors.active.content" :theme="app.theme"
-                              :completion-key="activeCompletionKey" :provider-id="editors.active.connection?.providerId || 'generic'"
-                              :completion-candidate-limit="settings.completionCandidateLimit"
-                              @dirty="markActiveDirty" @execute="executeFromEditor" @format="formatActive" />
-                <el-empty v-else class="workspace-empty" description="新建 SQL 标签开始查询">
-                  <template #image><el-icon><Document /></el-icon></template>
-                  <el-button round @click="newEditor()">新建查询</el-button>
-                </el-empty>
-              </section>
-            </el-splitter-panel>
-            <el-splitter-panel :min="150" collapsible>
-              <ResultPanel v-model:active-result-index="activeResultIndex" :execution="activeExecution"
-                           @export-loaded="exportLoaded" @export-full="exportFull" />
-            </el-splitter-panel>
-          </el-splitter>
+          <div ref="resultContentPanel" class="result-content-panel">
+            <el-splitter class="result-content-splitter" layout="vertical" lazy>
+              <el-splitter-panel v-model:size="editorHeight" :min="220">
+                <section class="editor-area fill">
+                  <el-tabs v-if="editors.tabs.length" v-model="editors.activeId" closable class="editor-tabs"
+                           @tab-remove="(name) => closeTab(String(name))">
+                    <el-tab-pane v-for="tab in editors.tabs" :key="tab.id" :name="tab.id">
+                      <template #label>
+                        <span class="editor-tab-label"><i v-if="tab.dirty" class="dirty-dot" aria-label="未保存" />{{ tab.title }}</span>
+                      </template>
+                    </el-tab-pane>
+                  </el-tabs>
+                  <MonacoEditor v-if="editors.active" ref="monacoEditor" class="editor-widget" :model-key="editors.active.id"
+                                :initial-value="editors.active.content" :theme="app.theme"
+                                :completion-key="activeCompletionKey" :provider-id="editors.active.connection?.providerId || 'generic'"
+                                :completion-candidate-limit="settings.completionCandidateLimit"
+                                @dirty="markActiveDirty" @execute="executeFromEditor" @format="formatActive" />
+                  <el-empty v-else class="workspace-empty" description="新建 SQL 标签开始查询">
+                    <template #image><el-icon><Document /></el-icon></template>
+                    <el-button round @click="newEditor()">新建查询</el-button>
+                  </el-empty>
+                </section>
+              </el-splitter-panel>
+              <el-splitter-panel :min="150" collapsible>
+                <ResultPanel v-model:active-result-index="activeResultIndex" :execution="activeExecution"
+                             @export-loaded="exportLoaded" @export-full="exportFull"
+                             @selected-column="selectedResultColumn = $event"
+                             @selected-row-count="selectedResultRowCount = $event" />
+              </el-splitter-panel>
+            </el-splitter>
+          </div>
         </el-splitter-panel>
       </el-splitter>
     </el-main>
 
-    <el-footer class="status-bar" height="24px" aria-live="polite">
-      <span class="status-item"><i class="status-dot" :class="activeConnectionStatusClass" />{{ app.status }}</span>
-      <span v-if="app.transportState !== 'ready'" class="status-item transport-status" :class="app.transportState">
-        <Loading v-if="app.transportState !== 'offline'" class="is-loading" />
-        <WarningFilled v-else />{{ transportStatusText }}
-      </span>
-      <span v-if="completionStatus" class="status-item completion-status" :class="completionStatus.state"
-            :title="completionStatus.error || completionStatusText">
-        <Loading v-if="completionStatus.state === 'loading'" class="is-loading" />
-        <WarningFilled v-else-if="completionStatus.state === 'error'" />
-        <CircleCheckFilled v-else />
-        {{ completionStatusText }}
-      </span>
-      <div class="status-result-actions" role="toolbar" aria-label="结果数据加载工具栏">
-        <el-tooltip :content="nextPageTooltip" placement="top">
-          <el-button text :icon="ArrowDown" aria-label="下一页数据" :disabled="!canLoadMore"
-                     :loading="activeResultLoading?.mode === 'next'" @click="loadNextResultPage" />
-        </el-tooltip>
-        <el-tooltip :content="allRowsTooltip" placement="top">
-          <el-button text :icon="DArrowRight" style="rotate: 90deg;" aria-label="获取全部数据" :disabled="!canLoadMore"
-                     :loading="activeResultLoading?.mode === 'all'" @click="loadAllResultRows" />
-        </el-tooltip>
-      </div>
-      <span class="status-spacer" />
-      <span v-if="editors.active?.transactionState === 'disconnected-protected'" class="status-item transaction-warning"><WarningFilled />事务断连保护中</span>
-      <span v-else-if="editors.active?.transactionDirty" class="status-item transaction-warning"><WarningFilled />未提交事务</span>
-      <span v-else-if="editors.active?.transactionState === 'auto-rolled-back' || editors.active?.transactionState === 'lost'"
-            class="status-item transaction-warning"><WarningFilled />上次事务已回滚</span>
-      <span class="status-item"><i class="status-dot" :class="editors.active?.busy ? 'busy' : 'neutral'" />
-        {{ connectionSessionText }}
-      </span>
-    </el-footer>
+    <AppStatusBar :execution-text="activeExecutionText" :busy="Boolean(editors.active?.busy)"
+                  :selected-row-count="selectedResultRowCount" :result-content-offset="resultContentOffset"
+                  :selected-column="selectedResultColumn"
+                  :show-selected-column-remarks="settings.showSelectedColumnRemarks" :system-items="systemStatusItems"
+                  :can-load-more="canLoadMore" :loading-mode="activeResultLoading?.mode"
+                  :next-page-tooltip="nextPageTooltip" :all-rows-tooltip="allRowsTooltip"
+                  @load-next="loadNextResultPage" @load-all="loadAllResultRows" @dismiss-task="dismissStatusTask" />
   </el-container>
 
   <ConnectionDialog v-model="connectionDialog" :providers="connections.providers" :systems="connections.systems"
@@ -175,6 +154,8 @@
                   :stream-batch-rows="settings.streamBatchRows" :column-layout-scope="settings.columnLayoutScope"
                   :copy-header-on-double-click="settings.copyHeaderOnDoubleClick" :copy-separator="settings.copySeparator"
                   :header-sorting-enabled="settings.headerSortingEnabled" :header-filtering-enabled="settings.headerFilteringEnabled"
+                  :show-column-remarks-in-header="settings.showColumnRemarksInHeader"
+                  :show-selected-column-remarks="settings.showSelectedColumnRemarks"
                   :max-active-sessions="settings.maxActiveSessions" :idle-timeout-minutes="settings.idleTimeoutMinutes"
                   :transaction-disconnect-rollback-minutes="settings.transactionDisconnectRollbackMinutes"
                   :completion-candidate-limit="settings.completionCandidateLimit"
@@ -185,6 +166,8 @@
                   @update:copy-header-on-double-click="updateCopyHeaderOnDoubleClick"
                   @update:header-sorting-enabled="updateHeaderSortingEnabled"
                   @update:header-filtering-enabled="updateHeaderFilteringEnabled"
+                  @update:show-column-remarks-in-header="updateShowColumnRemarksInHeader"
+                  @update:show-selected-column-remarks="updateShowSelectedColumnRemarks"
                   @update:copy-separator="updateCopySeparator" @update:max-active-sessions="updateMaxActiveSessions"
                   @update:idle-timeout-minutes="updateIdleTimeoutMinutes"
                   @update:transaction-disconnect-rollback-minutes="updateTransactionDisconnectRollbackMinutes"
@@ -202,18 +185,13 @@ import { ElMessage, ElMessageBox, ElNotification } from "element-plus";
 import type { CascaderProps } from "element-plus";
 import {
   ArrowDown,
-  ArrowRightBold,
-  Bottom,
-  CircleCheckFilled,
   Clock,
   Close,
   Coin,
   Connection,
-  DArrowRight,
   Document,
   DocumentChecked,
   FolderOpened,
-  Loading,
   Moon,
   MoreFilled,
   Plus,
@@ -223,8 +201,7 @@ import {
   Sunny,
   SwitchButton,
   Upload,
-  VideoPlay,
-  WarningFilled
+  VideoPlay
 } from "@element-plus/icons-vue";
 import { rpc } from "./bridge/rpc";
 import ConnectionDialog from "./components/ConnectionDialog.vue";
@@ -236,6 +213,7 @@ import MonacoEditor from "./components/MonacoEditor.vue";
 import ObjectExplorer from "./components/ObjectExplorer.vue";
 import ResultPanel from "./components/ResultPanel.vue";
 import SettingsDrawer from "./components/SettingsDrawer.vue";
+import AppStatusBar from "./components/AppStatusBar.vue";
 import WorkspaceChooser from "./components/WorkspaceChooser.vue";
 import { useAppStore } from "./stores/app";
 import { useConnectionStore } from "./stores/connection";
@@ -243,16 +221,18 @@ import { useEditorStore } from "./stores/editor";
 import { formatCompletionBytes, useMetadataStore } from "./stores/metadata";
 import { useQueryStore } from "./stores/query";
 import { useSettingsStore } from "./stores/settings";
+import { useStatusBarStore } from "./stores/statusBar";
 import type { ColumnLayoutScope } from "./columnLayout";
 import type { CopySeparator } from "./resultCopy";
 import { applyDocumentTheme } from "./theme";
 import { openRecentSql, openSqlFile, recentSqlFiles, saveSqlFile } from "./files/browserFiles";
 import { completionClient } from "./completion/client";
 import { initialCompletionNamespaceKeys } from "./completion/schemaSelection";
-import type { BootstrapResponse, CompletionCache, CompletionNamespaceDescriptor, CompletionNamespacesResponse, CompletionProgress, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryResult, RecoveredEditor, SavedProfile, ThemePreference, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "./types";
+import type { BootstrapResponse, CompletionCache, CompletionNamespaceDescriptor, CompletionNamespacesResponse, CompletionProgress, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryResult, RecoveredEditor, SavedProfile, SelectedResultColumn, StatusBarSystemItem, ThemePreference, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "./types";
 
 const app = useAppStore(); const connections = useConnectionStore(); const metadata = useMetadataStore();
 const editors = useEditorStore(); const queries = useQueryStore(); const settings = useSettingsStore();
+const statusBar = useStatusBarStore();
 const connectionDialog = ref(false); const historyDrawer = ref(false); const settingsDrawer = ref(false); const csvDialog = ref(false);
 const leftWidth = ref(248); const lastLeftWidth = ref(248); const editorHeight = ref("62%");
 const activeTool = ref<"objects" | "connections">("connections"); const panelOpen = ref(true);
@@ -261,6 +241,8 @@ const connectionCascader = ref();
 const connectionCascaderOpen = ref(false);
 const objectExplorer = ref<InstanceType<typeof ObjectExplorer>>();
 const monacoEditor = ref<{ getValue(key?: string): string; setValue(value: string, key?: string): void }>();
+const resultContentPanel = ref<HTMLElement>();
+const resultContentOffset = ref(0);
 const recentHandles = new Map<string, FileSystemFileHandle>();
 const workspaceOpened = ref(false);
 const workspaceCatalog = ref<WorkspaceSummary[]>([]);
@@ -285,6 +267,8 @@ const activeResultIndex = ref(0);
 const activeResult = computed(() => activeExecution.value?.results.find((result) => result.resultIndex === activeResultIndex.value)
   ?? activeExecution.value?.results[0]);
 const resultLoading = ref<{ editorId: string; resultIndex: number; mode: "next" | "all" }>();
+const selectedResultColumn = ref<SelectedResultColumn>();
+const selectedResultRowCount = ref(0);
 const activeResultLoading = computed(() => {
   const loading = resultLoading.value;
   return loading && loading.editorId === editors.activeId
@@ -301,8 +285,6 @@ const activeConnectionKey = computed(() => editors.active?.connection ? `${edito
 const activeCompletionContext = computed(() => connections.completionContext(editors.active?.connection));
 const activeCompletionKey = computed(() => activeCompletionContext.value?.key ?? "unbound");
 const activeCompletionLoading = computed(() => metadata.completionFor(activeCompletionKey.value)?.state === "loading");
-const completionStatus = computed(() => metadata.statusFor(activeCompletionKey.value));
-const completionStatusText = computed(() => completionMessage(completionStatus.value));
 const completionCacheSize = computed(() => formatCompletionBytes(metadata.completionStats.estimatedBytes));
 const activeConnectionValue = computed(() => editors.active?.connection ? `${editors.active.connection.id}@${editors.active.connection.revision}` : undefined);
 const activeConnectionPath = computed(() => connections.pathFor(editors.active?.connection));
@@ -314,29 +296,77 @@ const activeConnectionDisplay = computed(() => {
 });
 const activeConnectionTooltip = computed(() => `${activeConnectionPath.value}${editors.active?.connection?.stale
   ? " · 配置已更新，重新选择后生效" : editors.active?.connection?.unavailable ? " · 配置已删除，当前会话仍可继续使用" : ""}`);
-const activeConnectionStatusClass = computed(() => !activeConnected.value ? "offline" : ["ready", "active"].includes(editors.active?.connectionState ?? "") ? "online" : "neutral");
 const connectionCascaderProps: CascaderProps = { emitPath: false };
 const canExecute = computed(() => Boolean(activeConnected.value && !editors.active?.busy && app.transportState === "ready"));
 const transportStatusText = computed(() => app.transportState === "recovering" ? "正在恢复浏览器工作区…"
   : app.transportState === "connecting" ? "正在建立事件通道…"
     : app.transportState === "offline" ? "事件通道不可用" : "事件通道重连中…");
-const connectionSessionText = computed(() => editors.active?.busy ? "正在执行"
-  : editors.active?.connectionState === "unbound" && editors.active?.connection ? "链接配置不可用"
+const connectionSessionText = computed(() => editors.active?.connectionState === "unbound" && editors.active?.connection ? "链接配置不可用"
     : !activeConnected.value ? "未选择链接"
     : editors.active?.connectionState === "credentials-required" ? "需要重新输入密码"
-      : editors.active?.connectionState === "suspended" ? "链接已暂停" : "自动提交关闭");
+      : editors.active?.connectionState === "suspended" ? "链接已暂停" : "链接正常 · 自动提交关闭");
+const activeExecutionText = computed(() => {
+  const execution = activeExecution.value;
+  if (editors.active?.busy || execution?.busy) return "正在执行…";
+  if (!execution) return "尚未执行 SQL";
+  return `${execution.cancelled ? "执行已取消" : execution.failed ? "执行失败" : "执行完成"} · ${execution.durationMs} ms`;
+});
+const activeTransactionText = computed(() => editors.active?.transactionState === "disconnected-protected" ? "事务断连保护中"
+  : editors.active?.transactionDirty ? "未提交事务"
+    : editors.active?.transactionState === "auto-rolled-back" || editors.active?.transactionState === "lost"
+      ? "上次事务已回滚" : undefined);
+const systemStatusItems = computed<StatusBarSystemItem[]>(() => {
+  const connectionState = editors.active?.connectionState;
+  const values: StatusBarSystemItem[] = [{
+    id: "system:session",
+    label: "数据库会话",
+    message: connectionSessionText.value,
+    tone: connectionState === "unbound" && editors.active?.connection ? "error"
+      : connectionState === "credentials-required" || connectionState === "suspended" ? "warning"
+        : activeConnected.value ? "success" : "neutral",
+    updatedAt: 0
+  }];
+  if (activeTransactionText.value) {
+    values.push({ id: "system:transaction", label: "事务状态", message: activeTransactionText.value,
+      tone: "warning", updatedAt: 1 });
+  }
+  for (const task of Object.values(statusBar.tasks)) {
+    values.push({ id: task.id, label: task.label, message: task.message, tone: task.state,
+      updatedAt: task.updatedAt, dismissible: task.dismissible });
+  }
+  for (const cache of Object.values(metadata.completionCaches)) {
+    if (!cache.notice) continue;
+    values.push({ id: `completion:${cache.key}`, label: `${cache.label} SQL补全`,
+      message: cache.error || completionMessage(cache),
+      tone: cache.state === "loading" ? "running" : cache.state === "error" ? "error" : "success",
+      updatedAt: cache.startedAt ?? 0, dismissible: cache.state === "error" });
+  }
+  if (app.transportState !== "ready") values.push({ id: "system:transport", label: "事件通道",
+    message: transportStatusText.value, tone: app.transportState === "offline" ? "error" : "running",
+    updatedAt: Number.MAX_SAFE_INTEGER });
+  return values;
+});
 const panelVisible = computed(() => panelOpen.value && numericPanelWidth(leftWidth.value) > 0);
 const disposers: Array<() => void> = [];
 const colorSchemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
 let layoutSaveTimer: number | undefined;
+let resultContentResizeObserver: ResizeObserver | undefined;
 const completionNoticeTimers = new Map<string, number>();
 
 watch(leftWidth, (value) => {
   const width = numericPanelWidth(value);
   if (width > 0) lastLeftWidth.value = width;
 });
+watch(resultContentPanel, async () => {
+  await nextTick();
+  observeResultContentPanel();
+}, { flush: "post" });
 
 onMounted(async () => {
+  if (typeof ResizeObserver !== "undefined") {
+    resultContentResizeObserver = new ResizeObserver(measureResultContentOffset);
+  }
+  observeResultContentPanel();
   app.setSystemTheme(colorSchemeQuery?.matches ? "dark" : "light");
   colorSchemeQuery?.addEventListener?.("change", systemThemeChanged);
   installEventHandlers();
@@ -350,12 +380,15 @@ onMounted(async () => {
   } finally { workspaceLoading.value = false; }
   window.addEventListener("keydown", handleShortcut);
   window.addEventListener("pagehide", flushDrafts);
+  window.addEventListener("resize", measureResultContentOffset);
 });
 onBeforeUnmount(() => {
   disposers.forEach((dispose) => dispose());
+  resultContentResizeObserver?.disconnect();
   colorSchemeQuery?.removeEventListener?.("change", systemThemeChanged);
   window.removeEventListener("keydown", handleShortcut);
   window.removeEventListener("pagehide", flushDrafts);
+  window.removeEventListener("resize", measureResultContentOffset);
   if (layoutSaveTimer !== undefined) window.clearTimeout(layoutSaveTimer);
   completionNoticeTimers.forEach((timer) => window.clearTimeout(timer));
   draftSaveTimers.forEach((timer) => window.clearTimeout(timer));
@@ -364,17 +397,48 @@ onBeforeUnmount(() => {
 watch(() => app.theme, (theme) => applyDocumentTheme(theme), { immediate: true });
 watch(() => activeExecution.value?.executionId, () => {
   activeResultIndex.value = activeExecution.value?.results[0]?.resultIndex ?? 0;
+  selectedResultColumn.value = undefined;
+  selectedResultRowCount.value = 0;
 });
 watch(() => [editors.activeId, activeConnectionKey.value, activeCompletionKey.value] as const, () => {
   metadata.activate(activeConnectionKey.value, activeCompletionKey.value);
 });
 watch(() => editors.activeId, (current, previous) => {
+  selectedResultColumn.value = undefined;
+  selectedResultRowCount.value = 0;
   if (previous) void persistDraftById(previous, true);
   if (current) scheduleDraft(current);
+});
+watch(activeResultIndex, () => {
+  selectedResultColumn.value = undefined;
+  selectedResultRowCount.value = 0;
+});
+watch(() => settings.showSelectedColumnRemarks, (enabled) => {
+  if (!enabled) selectedResultColumn.value = undefined;
 });
 
 function systemThemeChanged(event: MediaQueryListEvent): void {
   app.setSystemTheme(event.matches ? "dark" : "light");
+}
+
+function resultContentElement(): HTMLElement | undefined {
+  return resultContentPanel.value;
+}
+
+function observeResultContentPanel(): void {
+  resultContentResizeObserver?.disconnect();
+  const element = resultContentElement();
+  if (!element) {
+    resultContentOffset.value = 0;
+    return;
+  }
+  resultContentResizeObserver?.observe(element);
+  measureResultContentOffset();
+}
+
+function measureResultContentOffset(): void {
+  const element = resultContentElement();
+  resultContentOffset.value = element ? Math.max(0, Math.round(element.getBoundingClientRect().left)) : 0;
 }
 
 watch([leftWidth, editorHeight], () => {
@@ -416,6 +480,7 @@ function installEventHandlers(): void {
   disposers.push(rpc.on("query.resultMeta", (raw) => {
     const data = raw as QueryResult & { editorId: string };
     queries.addResult(data.editorId, { ...data, rows: [], complete: false });
+    void resolveResultColumnRemarks(data.editorId, data.resultIndex, data.columnDetails);
   }));
   disposers.push(rpc.on("query.rows", (raw) => {
     const data = raw as { editorId: string; resultIndex: number; rows: Array<Array<string | null>> };
@@ -439,9 +504,20 @@ function installEventHandlers(): void {
     editors.patch(data.editorId, { transactionDirty: data.dirty, transactionState: data.dirty ? "active" : "none" });
     scheduleDraft(data.editorId); app.status = data.message;
   }));
+  disposers.push(rpc.on("task.started", (raw) => {
+    const data = raw as { taskId: string; kind: string; message?: string };
+    if (data.taskId) statusBar.start(data.taskId, data.kind || "background", data.message);
+  }));
   disposers.push(rpc.on("task.progress", (raw) => {
-    const data = raw as { message?: string };
-    if (data.message) app.status = data.message;
+    const data = raw as { taskId: string; kind?: string; message?: string; rows?: number; completed?: number; total?: number };
+    if (data.taskId) statusBar.progress(data.taskId, data.kind || "background", data.message || "正在处理…",
+      data.completed ?? data.rows, data.total);
+  }));
+  disposers.push(rpc.on("task.completed", (raw) => {
+    const data = raw as { taskId: string; kind: string; result?: { rows?: number }; error?: { message?: string } };
+    if (!data.taskId) return;
+    const success = data.result?.rows === undefined ? undefined : `已处理 ${data.result.rows} 行`;
+    statusBar.complete(data.taskId, data.kind || "background", data.error?.message, success);
   }));
   disposers.push(rpc.on("metadata.completionProgress", (raw) => {
     metadata.updateProgress(raw as CompletionProgress);
@@ -542,7 +618,7 @@ async function bootstrapWorkspace(recovered: RecoveredEditor[]): Promise<void> {
     app.applyBootstrap(data);
     leftWidth.value = Number(data.settings["layout.leftWidth"] ?? 248);
     editorHeight.value = data.settings["layout.editorHeight"] ?? "62%";
-    editors.clear(); queries.clear(); resultLoading.value = undefined;
+    editors.clear(); queries.clear(); statusBar.clear(); resultLoading.value = undefined;
     for (const value of [...recovered].sort((left, right) => left.sortOrder - right.sortOrder)) {
       editors.add({ id: value.id, title: value.title, content: value.content, filePath: value.filePath,
         dirty: value.dirty, transactionDirty: value.transactionState === "active" || value.transactionState === "disconnected-protected",
@@ -556,6 +632,24 @@ async function bootstrapWorkspace(recovered: RecoveredEditor[]): Promise<void> {
     activeTool.value = editors.active?.connection ? "objects" : "connections";
     app.status = recovered.length ? `已打开 ${currentWorkspace.value?.name ?? "工作空间"} · 已恢复编辑器内容` : `已打开 ${currentWorkspace.value?.name ?? "工作空间"}`;
   } finally { app.loading = false; }
+}
+
+async function resolveResultColumnRemarks(editorId: string, resultIndex: number,
+                                          columnDetails: QueryResult["columnDetails"]): Promise<void> {
+  const executionId = queries.executions[editorId]?.executionId;
+  const tab = editors.tabs.find((item) => item.id === editorId);
+  const context = connections.completionContext(tab?.connection);
+  if (!executionId || !tab?.connection || !context
+      || !columnDetails?.some((column) => !column.remarks && column.table && column.name)) return;
+  try {
+    const resolved = await completionClient.resolveResultColumnRemarks(context.key, tab.connection.providerId,
+      columnDetails.flatMap((column, index) => column.remarks ? [] : [{
+        index, catalog: column.catalog, schema: column.schema, table: column.table, name: column.name
+      }]));
+    queries.applyColumnRemarks(editorId, executionId, resultIndex, resolved);
+  } catch {
+    // 字段备注是可选展示信息；缓存不可用或损坏不能影响查询结果。
+  }
 }
 
 function scheduleDraft(editorId: string): void {
@@ -1113,6 +1207,16 @@ async function updateHeaderFilteringEnabled(value: boolean): Promise<void> {
   try { await rpc.request("settings.update", { key: "result.headerFilteringEnabled", value: String(value) }); }
   catch (error) { settings.headerFilteringEnabled = previous; reportError(error); }
 }
+async function updateShowColumnRemarksInHeader(value: boolean): Promise<void> {
+  const previous = settings.showColumnRemarksInHeader; settings.showColumnRemarksInHeader = value;
+  try { await rpc.request("settings.update", { key: "result.showColumnRemarksInHeader", value: String(value) }); }
+  catch (error) { settings.showColumnRemarksInHeader = previous; reportError(error); }
+}
+async function updateShowSelectedColumnRemarks(value: boolean): Promise<void> {
+  const previous = settings.showSelectedColumnRemarks; settings.showSelectedColumnRemarks = value;
+  try { await rpc.request("settings.update", { key: "statusBar.showSelectedColumnRemarks", value: String(value) }); }
+  catch (error) { settings.showSelectedColumnRemarks = previous; reportError(error); }
+}
 async function updateCopySeparator(value: CopySeparator): Promise<void> {
   const previous = settings.copySeparator; settings.copySeparator = value;
   try { await rpc.request("settings.update", { key: "result.copySeparator", value }); }
@@ -1158,6 +1262,10 @@ async function clearCompletionCaches(): Promise<void> {
   await completionClient.clear();
   metadata.clearCompletions();
   ElMessage.success(`已释放约 ${size} 的补全缓存`);
+}
+function dismissStatusTask(id: string): void {
+  if (id.startsWith("completion:")) metadata.dismissNotice(id.slice("completion:".length));
+  else statusBar.dismiss(id);
 }
 function dataCommand(command: string): void {
   if (command === "import" && editors.active?.connection) csvDialog.value = true;
@@ -1339,7 +1447,7 @@ function message(error: unknown): string { return error instanceof Error ? error
   color: var(--db-muted);
   font: 11px/1.2 "SF Mono", Menlo, monospace;
 }
-.toolbar-spacer, .status-spacer { flex: 1; }
+.toolbar-spacer { flex: 1; }
 .workspace { display: flex; gap: 6px; padding: 8px 8px 6px 0; min-height: 0; overflow: hidden; }
 .activity-bar { width: 40px; flex:none; display:flex; flex-direction:column; align-items:center; gap:4px; padding:5px 3px; border:1px solid var(--db-border); border-left:0; border-radius:0 11px 11px 0; background:var(--db-panel-soft); box-shadow:var(--db-shadow-sm); }
 .activity-bar :deep(.el-button) { position:relative; width:32px; height:32px; margin:0; padding:0; border-radius:8px; color:var(--db-text-secondary); }
@@ -1360,6 +1468,13 @@ function message(error: unknown): string { return error instanceof Error ? error
   border-color: var(--db-border);
   background: var(--db-surface-raised);
   color: var(--db-text-secondary);
+}
+.result-content-panel,
+.result-content-splitter {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
 }
 .editor-area { display: flex; flex-direction: column; background: var(--db-editor-bg); }
 .editor-tabs {
@@ -1383,51 +1498,6 @@ function message(error: unknown): string { return error instanceof Error ? error
   font-size: 22px;
   box-shadow: inset 0 0 0 1px var(--db-border-soft);
 }
-.status-bar {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 0 10px;
-  color: var(--db-text-secondary);
-  font-size: 11px;
-  background: transparent;
-}
-.status-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-.status-item svg { width: 12px; height: 12px; }
-.transport-status {
-  padding-left: 10px;
-  border-left: 1px solid var(--db-border-soft);
-  color: var(--db-accent);
-}
-.transport-status.offline { color: var(--db-warning); }
-.transport-status .is-loading { animation: rotating 1.4s linear infinite; }
-.completion-status {
-  min-width: 0;
-  max-width: min(42vw, 520px);
-  overflow: hidden;
-  padding-left: 10px;
-  border-left: 1px solid var(--db-border-soft);
-  text-overflow: ellipsis;
-}
-.completion-status.loading { color: var(--db-accent); }
-.completion-status.error { color: var(--db-warning); }
-.completion-status.ready { color: var(--db-success); }
-.completion-status .is-loading { animation: rotating 1.4s linear infinite; }
-.status-result-actions {
-  height: 18px;
-  display: inline-flex;
-  align-items: center;
-  gap: 1px;
-  padding-left: 7px;
-  border-left: 1px solid var(--db-border-soft);
-}
-.status-result-actions :deep(.el-button) { width: 20px; height: 20px; min-height: 20px; padding: 0; border-radius: 5px; }
-.status-result-actions :deep(.el-button .el-icon) { width: 12px; height: 12px; }
-.status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--db-muted); }
-.status-dot.online { background: var(--db-success); }
-.status-dot.busy { background: var(--db-accent); box-shadow: 0 0 0 3px var(--db-accent-soft); }
-.status-dot.offline { background: var(--db-muted); }
-.transaction-warning { color: var(--db-warning); font-weight: 550; }
 :deep(.editor-tabs .el-tabs__content) { display: none; }
 :deep(.editor-tabs .el-tabs__header) { height: 35px; background: transparent; }
 :deep(.editor-tabs .el-tabs__nav-wrap::after) { display: none; }

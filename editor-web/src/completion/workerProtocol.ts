@@ -1,4 +1,5 @@
-import type { CompletionCacheStats, CompletionCacheSummary, CompletionResult } from "../types";
+import type { CompletionCacheStats, CompletionCacheSummary, CompletionResult, ResolvedResultColumnRemark,
+  ResultColumnRemarkLookup } from "../types";
 import type { CompletionTextChange } from "./documentMirror";
 
 export type CompletionWorkerRequest =
@@ -9,11 +10,13 @@ export type CompletionWorkerRequest =
   | { id: string; type: "model.release"; modelKey: string }
   | { id: string; type: "complete"; cacheKey: string; providerId: string; modelKey: string;
       modelVersion: number; cursorOffset: number; prefix: string; limit: number }
+  | { id: string; type: "result-columns.resolve"; cacheKey: string; providerId: string;
+      columns: ResultColumnRemarkLookup[] }
   | { id: string; type: "stats" }
   | { id: string; type: "clear" };
 
 export type CompletionWorkerValue = CompletionCacheSummary | CompletionResult
-  | Omit<CompletionCacheStats, "loadingCount"> | undefined;
+  | ResolvedResultColumnRemark[] | Omit<CompletionCacheStats, "loadingCount"> | undefined;
 
 export interface CompletionWorkerResponse {
   id: string;

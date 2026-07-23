@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 
-import { buildCompletionIndex, resolveCompletion } from "../sqlCompletion";
+import { buildCompletionIndex, resolveCompletion, resolveResultColumnRemarks } from "../sqlCompletion";
 import type { CompletionIndex } from "../sqlCompletion";
 import type { CompletionCacheSummary, CompletionSnapshot } from "../types";
 import type { CompletionWorkerRequest, CompletionWorkerResponse } from "../completion/workerProtocol";
@@ -80,6 +80,10 @@ async function handle(request: CompletionWorkerRequest) {
     return resolveCompletion(index, { providerId: request.providerId, sql, cursorOffset: request.cursorOffset,
       prefix: request.prefix, limit: request.limit });
   }
+  if (request.type === "result-columns.resolve") {
+    const index = await completionIndex(request.cacheKey, request.providerId);
+    return resolveResultColumnRemarks(index, request.columns);
+  }
   if (request.type === "clear") {
     indexes.clear();
     await clearStore();
@@ -103,6 +107,18 @@ async function handle(request: CompletionWorkerRequest) {
     stats.estimatedBytes += record.summary.estimatedBytes;
   }
   return stats;
+}
+
+async function completionIndex(cacheKey: string, providerId: string): Promise<CompletionIndex | undefined> {
+  let index = indexes.get(cacheKey);
+  if (!index) {
+    const stored = await loadValid(cacheKey, providerId);
+    if (stored) {
+      index = buildCompletionIndex(stored.snapshot);
+      remember(cacheKey, index);
+    }
+  } else touch(cacheKey, index);
+  return index;
 }
 
 function validateSnapshot(value: unknown, providerId: string): CompletionSnapshot {

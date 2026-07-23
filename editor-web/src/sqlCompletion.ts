@@ -7,7 +7,9 @@ import type {
   CompletionNamespaceSnapshot,
   CompletionObjectSnapshot,
   CompletionResult,
-  CompletionSnapshot
+  CompletionSnapshot,
+  ResolvedResultColumnRemark,
+  ResultColumnRemarkLookup
 } from "./types";
 
 interface IndexedObject {
@@ -98,6 +100,30 @@ export function buildCompletionIndex(snapshot: CompletionSnapshot): CompletionIn
   }
   namespaceValues.sort((left, right) => compareName(left.snapshot.label, right.snapshot.label));
   return { snapshot, namespaces, namespaceValues, defaultNamespace };
+}
+
+export function resolveResultColumnRemarks(index: CompletionIndex | undefined,
+                                           columns: ResultColumnRemarkLookup[]): ResolvedResultColumnRemark[] {
+  if (!index) return [];
+  const resolved: ResolvedResultColumnRemark[] = [];
+  for (const source of columns) {
+    if (!source.table || !source.name) continue;
+    const namespace = resultNamespace(index, source.catalog, source.schema);
+    const object = namespace?.objects.get(normalize(source.table));
+    const column = object?.columns.find((value) => normalize(value.name) === normalize(source.name));
+    if (column?.remarks) resolved.push({ index: source.index, remarks: column.remarks });
+  }
+  return resolved;
+}
+
+function resultNamespace(index: CompletionIndex, catalog: string, schema: string): IndexedNamespace | undefined {
+  if (!catalog && !schema) return index.defaultNamespace;
+  const matches = index.namespaceValues.filter((namespace) => {
+    const value = namespace.snapshot;
+    return (!catalog || normalize(value.catalog) === normalize(catalog))
+      && (!schema || normalize(value.schema) === normalize(schema));
+  });
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 export function resolveCompletion(index: CompletionIndex | undefined, request: CompletionRequest): CompletionResult {

@@ -137,6 +137,17 @@
         </el-form-item>
         <el-form-item class="compact-setting-row">
           <template #label>
+            <div class="setting-label"><span>表头显示字段备注</span>
+              <el-tooltip content="字段名下方显示一行字段备注；超长内容会省略，不影响默认列宽。" placement="top">
+                <el-icon class="setting-help" tabindex="0" aria-label="表头字段备注说明"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </div>
+          </template>
+          <el-switch size="small" :model-value="showColumnRemarksInHeader"
+                     @update:model-value="$emit('update:showColumnRemarksInHeader', $event === true)" />
+        </el-form-item>
+        <el-form-item class="compact-setting-row">
+          <template #label>
             <div class="setting-label"><span>多列复制分隔符</span>
               <el-tooltip content="用于右键复制多列时连接字段；包含分隔符、引号或换行的内容会自动转义。" placement="top">
                 <el-icon class="setting-help" tabindex="0" aria-label="多列复制分隔符说明"><QuestionFilled /></el-icon>
@@ -149,6 +160,21 @@
             <el-radio-button value="semicolon" aria-label="分号分隔符">;</el-radio-button>
             <el-radio-button value="pipe" aria-label="竖线分隔符">|</el-radio-button>
           </el-radio-group>
+        </el-form-item>
+      </section>
+
+      <section class="settings-section status-bar-settings">
+        <div class="section-heading"><div><strong>状态栏</strong><span>控制当前结果列的辅助信息</span></div></div>
+        <el-form-item class="compact-setting-row">
+          <template #label>
+            <div class="setting-label"><span>显示选中列字段备注</span>
+              <el-tooltip content="点击结果单元格后在状态栏显示字段备注；双击备注可查看和复制完整内容。" placement="top">
+                <el-icon class="setting-help" tabindex="0" aria-label="状态栏字段备注说明"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </div>
+          </template>
+          <el-switch size="small" :model-value="showSelectedColumnRemarks"
+                     @update:model-value="$emit('update:showSelectedColumnRemarks', $event === true)" />
         </el-form-item>
       </section>
     </el-form>
@@ -165,6 +191,7 @@ defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: Resolv
   streamBatchRows: number; columnLayoutScope: ColumnLayoutScope; copyHeaderOnDoubleClick: boolean;
   copySeparator: CopySeparator; maxActiveSessions: number; idleTimeoutMinutes: number;
   headerSortingEnabled: boolean; headerFilteringEnabled: boolean;
+  showColumnRemarksInHeader: boolean; showSelectedColumnRemarks: boolean;
   transactionDisconnectRollbackMinutes: number;
   completionCacheSize: string; completionCacheEnvironmentCount: number; completionCacheLoadingCount: number;
   completionCandidateLimit: number; canClearCompletionCaches: boolean }>();
@@ -173,6 +200,7 @@ const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme"
   "update:columnLayoutScope": [value: ColumnLayoutScope]; "update:copyHeaderOnDoubleClick": [value: boolean];
   "update:copySeparator": [value: CopySeparator]; "update:maxActiveSessions": [value: number];
   "update:headerSortingEnabled": [value: boolean]; "update:headerFilteringEnabled": [value: boolean];
+  "update:showColumnRemarksInHeader": [value: boolean]; "update:showSelectedColumnRemarks": [value: boolean];
   "update:idleTimeoutMinutes": [value: number]; "update:transactionDisconnectRollbackMinutes": [value: number];
   "update:completionCandidateLimit": [value: number];
   clearCompletionCaches: [] }>();

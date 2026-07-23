@@ -2,7 +2,7 @@ package com.dbstudio.desktop.query;
 
 import java.util.List;
 
-/** 使用独立元数据会话解析可选列信息，不在活动流式查询连接上执行额外语句。 */
+/** 解析结果列来源以及结果集安全编辑所需的可选元数据。 */
 public interface ResultColumnResolver {
     ResolvedResultMetadata resolve(String sql, List<ResultColumn> columns);
     void invalidate();

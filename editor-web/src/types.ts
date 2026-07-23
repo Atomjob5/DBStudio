@@ -190,6 +190,19 @@ export interface CompletionResult {
   items: CompletionCandidate[];
   incomplete: boolean;
 }
+
+export interface ResultColumnRemarkLookup {
+  index: number;
+  catalog: string;
+  schema: string;
+  table: string;
+  name: string;
+}
+
+export interface ResolvedResultColumnRemark {
+  index: number;
+  remarks: string;
+}
 export interface CompletionProgress {
   loadId: string;
   phase: "discovering" | "loading";
@@ -261,6 +274,38 @@ export interface QueryColumn {
   typeName: string;
   jdbcType?: number;
   quotedLabel?: string;
+}
+
+export interface SelectedResultColumn {
+  label: string;
+  name: string;
+  remarks: string;
+  typeName: string;
+  catalog: string;
+  schema: string;
+  table: string;
+}
+
+export interface StatusBarTask {
+  id: string;
+  kind: string;
+  label: string;
+  message: string;
+  state: "running" | "success" | "error";
+  completed?: number;
+  total?: number;
+  startedAt: number;
+  updatedAt: number;
+  dismissible?: boolean;
+}
+
+export interface StatusBarSystemItem {
+  id: string;
+  label: string;
+  message: string;
+  tone: "neutral" | "running" | "success" | "warning" | "error";
+  updatedAt: number;
+  dismissible?: boolean;
 }
 
 export interface QueryMutationColumn {

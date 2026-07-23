@@ -90,7 +90,8 @@ public final class DbStudioApiController {
     private static final List<String> SETTING_KEYS = Arrays.asList(
             "ui.theme", "result.maxRows", "result.streamBatchRows", "result.columnLayoutScope",
             "result.copyHeaderOnDoubleClick", "result.copySeparator",
-            "result.headerSortingEnabled", "result.headerFilteringEnabled",
+            "result.headerSortingEnabled", "result.headerFilteringEnabled", "result.showColumnRemarksInHeader",
+            "statusBar.showSelectedColumnRemarks",
             "connection.maxActiveSessions", "connection.idleTimeoutMinutes",
             "connection.transactionDisconnectRollbackMinutes",
             "editor.completionCandidateLimit",
@@ -713,9 +714,11 @@ public final class DbStudioApiController {
         if ("result.copyHeaderOnDoubleClick".equals(key) && !Arrays.asList("true", "false").contains(value)) {
             throw new ApiException("INVALID_SETTING", "双击复制列名设置无效");
         }
-        if (("result.headerSortingEnabled".equals(key) || "result.headerFilteringEnabled".equals(key))
+        if (("result.headerSortingEnabled".equals(key) || "result.headerFilteringEnabled".equals(key)
+                || "result.showColumnRemarksInHeader".equals(key)
+                || "statusBar.showSelectedColumnRemarks".equals(key))
                 && !Arrays.asList("true", "false").contains(value)) {
-            throw new ApiException("INVALID_SETTING", "结果表头功能设置无效");
+            throw new ApiException("INVALID_SETTING", "开关设置无效");
         }
         if ("result.copySeparator".equals(key)
                 && !Arrays.asList("comma", "tab", "semicolon", "pipe").contains(value)) {
@@ -1071,6 +1074,8 @@ public final class DbStudioApiController {
         if (!result.containsKey("result.copySeparator")) result.put("result.copySeparator", "comma");
         if (!result.containsKey("result.headerSortingEnabled")) result.put("result.headerSortingEnabled", "true");
         if (!result.containsKey("result.headerFilteringEnabled")) result.put("result.headerFilteringEnabled", "true");
+        if (!result.containsKey("result.showColumnRemarksInHeader")) result.put("result.showColumnRemarksInHeader", "false");
+        if (!result.containsKey("statusBar.showSelectedColumnRemarks")) result.put("statusBar.showSelectedColumnRemarks", "true");
         if (!result.containsKey("connection.maxActiveSessions")) result.put("connection.maxActiveSessions", "10");
         if (!result.containsKey("editor.completionCandidateLimit")) result.put("editor.completionCandidateLimit", "100");
         if (!result.containsKey("connection.idleTimeoutMinutes")) result.put("connection.idleTimeoutMinutes", "10");

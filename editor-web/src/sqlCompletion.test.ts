@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCompletionIndex, resolveCompletion } from "./sqlCompletion";
+import { buildCompletionIndex, resolveCompletion, resolveResultColumnRemarks } from "./sqlCompletion";
 import type { CompletionSnapshot } from "./types";
 
 const snapshot: CompletionSnapshot = {
@@ -34,6 +34,18 @@ const snapshot: CompletionSnapshot = {
 const index = buildCompletionIndex(snapshot);
 
 describe("handwritten context-aware SQL completion", () => {
+  it("resolves result remarks only from an exact cached source", () => {
+    expect(resolveResultColumnRemarks(index, [
+      { index: 0, catalog: "SALES", schema: "", table: "ORDERS", name: "ID" },
+      { index: 1, catalog: "", schema: "", table: "orders", name: "customer_id" },
+      { index: 2, catalog: "missing", schema: "", table: "orders", name: "id" },
+      { index: 3, catalog: "", schema: "", table: "", name: "total" }
+    ])).toEqual([
+      { index: 0, remarks: "订单编号" },
+      { index: 1, remarks: "客户编号" }
+    ]);
+  });
+
   it("completes tables and views after a namespace qualifier", () => {
     expect(metadata("select * from sales.").map((item) => [item.displayLabel, item.kind]))
       .toEqual([["orders", "table"], ["sys_user", "table"], ["customers", "view"]]);

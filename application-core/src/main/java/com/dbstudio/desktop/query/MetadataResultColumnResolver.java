@@ -1,6 +1,5 @@
 package com.dbstudio.desktop.query;
 
-import com.dbstudio.spi.ColumnInfo;
 import com.dbstudio.spi.DatabaseSession;
 import com.dbstudio.spi.MetadataAdapter;
 import com.dbstudio.spi.ResultMutationSource;
@@ -11,7 +10,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -21,7 +19,6 @@ public final class MetadataResultColumnResolver implements ResultColumnResolver 
     private final MetadataAdapter metadata;
     private final DatabaseSession session;
     private final SqlDialect dialect;
-    private final Map<String, Map<String, String>> cache = new HashMap<String, Map<String, String>>();
 
     public MetadataResultColumnResolver(MetadataAdapter metadata, DatabaseSession session, SqlDialect dialect) {
         this.metadata = metadata;
@@ -37,11 +34,7 @@ public final class MetadataResultColumnResolver implements ResultColumnResolver 
             if (sourceNames.size() == columns.size() && !sourceNames.get(index).isEmpty()) {
                 column = column.withName(sourceNames.get(index));
             }
-            String remarks = column.remarks();
-            if (remarks.isEmpty() && !column.table().isEmpty() && !column.name().isEmpty()) {
-                remarks = remarks(column);
-            }
-            resolved.add(remarks.isEmpty() ? column : column.withRemarks(remarks));
+            resolved.add(column);
         }
         List<ResultColumn> immutable = Collections.unmodifiableList(resolved);
         return new ResolvedResultMetadata(immutable, mutationTarget(sql, immutable));
@@ -94,35 +87,7 @@ public final class MetadataResultColumnResolver implements ResultColumnResolver 
         return dialect.qualifiedName(catalog, schema, table);
     }
 
-    private String remarks(ResultColumn column) {
-        String key = normalized(column.catalog()) + '\u0000' + normalized(column.schema()) + '\u0000' + normalized(column.table());
-        Map<String, String> tableColumns;
-        synchronized (session) {
-            tableColumns = cache.get(key);
-            if (tableColumns == null) {
-                tableColumns = load(column);
-                cache.put(key, tableColumns);
-            }
-        }
-        String value = tableColumns.get(normalized(column.name()));
-        return value == null ? "" : value;
-    }
+    @Override public void invalidate() { }
 
-    private Map<String, String> load(ResultColumn source) {
-        Map<String, String> result = new HashMap<String, String>();
-        try {
-            for (ColumnInfo column : metadata.listColumns(session, source.catalog(), source.schema(), source.table())) {
-                result.put(normalized(column.name()), column.remarks());
-            }
-        } catch (SQLException ignored) {
-            // 字段备注属于可选元数据，读取失败不能阻断正在流式传输的查询结果。
-        }
-        return Collections.unmodifiableMap(result);
-    }
-
-    @Override public void invalidate() {
-        synchronized (session) { cache.clear(); }
-    }
-
-    private static String normalized(String value) { return value.toLowerCase(Locale.ROOT); }
+    private static String normalized(String value) { return value.toLowerCase(java.util.Locale.ROOT); }
 }

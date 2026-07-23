@@ -106,6 +106,39 @@ describe("ResultPanel streaming rendering", () => {
       .toEqual(["#", "id", "customer_name", "amount"]);
   });
 
+  it("shows a bounded second header line and emits the physical column selected by a cell", async () => {
+    const settings = useSettingsStore();
+    const remarks = "这是一段非常长的字段备注，用于验证表头不会因为备注内容持续变宽或换行导致结果集布局变形";
+    const wrapper = mount(ResultPanel, { props: { activeResultIndex: 0, execution: {
+      executionId: "execution-remarks", editorId: "editor-1", busy: false, cancelled: false,
+      failed: false, durationMs: 4,
+      results: [{ resultIndex: 0, sql: "select id from orders", type: "QUERY", columns: ["id"],
+        columnDetails: [{ label: "id", name: "id", remarks, catalog: "sales", schema: "", table: "orders", typeName: "BIGINT" }],
+        rows: [["1"]], updateCount: -1, truncated: false, durationMs: 3, complete: true }]
+    } }, global: { plugins: [ElementPlus] } });
+    const table = () => wrapper.findComponent({ name: "ElTableV2" });
+    expect(table().props("headerHeight")).toBe(32);
+    const width = (table().props("columns") as Column[])[1].width;
+
+    settings.showColumnRemarksInHeader = true;
+    await nextTick();
+    expect(table().props("headerHeight")).toBe(48);
+    const column = (table().props("columns") as Column[])[1];
+    expect(column.width).toBe(width);
+    const header = column.headerCellRenderer?.({} as never) as VNode;
+    const labels = (header.children as VNode[])[0];
+    const remark = (labels.children as VNode[])[1];
+    expect(remark.children).toBe(remarks);
+    expect(remark.props?.title).toBe(remarks);
+
+    const row = (table().props("data") as Array<{ sourceIndex: number; cells: string[] }>)[0];
+    const cell = column.cellRenderer?.({ rowData: row, rowIndex: 0 } as never) as VNode;
+    cell.props?.onPointerdown({ button: 0, preventDefault: vi.fn() });
+    expect(wrapper.emitted("selected-column")?.at(-1)?.[0]).toEqual({
+      label: "id", name: "id", remarks, typeName: "BIGINT", catalog: "sales", schema: "", table: "orders"
+    });
+  });
+
   it("keeps selections per result, supports duplicate labels and resets for a new execution", async () => {
     const result = (resultIndex: number, rows: string[][]) => ({
       resultIndex, sql: "select a.id, b.id", type: "QUERY", columns: ["id", "id"],
@@ -309,6 +342,7 @@ describe("ResultPanel streaming rendering", () => {
     await wrapper.get(".table-host").trigger("keydown", { metaKey: true, key: "c" });
     await flushPromises();
     expect(clipboardWrite).toHaveBeenLastCalledWith("1,Apple\n2,Banana");
+    expect(wrapper.emitted("selected-row-count")?.at(-1)).toEqual([2]);
 
     const rowNumber = columns[0];
     expect(rowNumber.width).toBe(34);
@@ -322,6 +356,7 @@ describe("ResultPanel streaming rendering", () => {
     await wrapper.get(".table-host").trigger("keydown", { metaKey: true, key: "c" });
     await flushPromises();
     expect(clipboardWrite).toHaveBeenLastCalledWith("1,Apple\n2,Banana\n3,Cherry");
+    expect(wrapper.emitted("selected-row-count")?.at(-1)).toEqual([3]);
 
     rowThree.props?.onContextmenu({ preventDefault: vi.fn(), stopPropagation: vi.fn(), clientX: 20, clientY: 30 });
     await nextTick();

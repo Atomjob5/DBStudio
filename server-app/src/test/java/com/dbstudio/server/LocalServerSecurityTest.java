@@ -204,6 +204,8 @@ class LocalServerSecurityTest {
         assertTrue(defaults.getBody().contains("\"result.copySeparator\":\"comma\""));
         assertTrue(defaults.getBody().contains("\"result.headerSortingEnabled\":\"true\""));
         assertTrue(defaults.getBody().contains("\"result.headerFilteringEnabled\":\"true\""));
+        assertTrue(defaults.getBody().contains("\"result.showColumnRemarksInHeader\":\"false\""));
+        assertTrue(defaults.getBody().contains("\"statusBar.showSelectedColumnRemarks\":\"true\""));
         assertTrue(defaults.getBody().contains("\"connection.maxActiveSessions\":\"10\""));
         assertTrue(defaults.getBody().contains("\"connection.idleTimeoutMinutes\":\"10\""));
         assertTrue(defaults.getBody().contains("\"connection.transactionDisconnectRollbackMinutes\":\"10\""));
@@ -237,7 +239,8 @@ class LocalServerSecurityTest {
                     new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
         }
 
-        for (String key : Arrays.asList("result.headerSortingEnabled", "result.headerFilteringEnabled")) {
+        for (String key : Arrays.asList("result.headerSortingEnabled", "result.headerFilteringEnabled",
+                "result.showColumnRemarksInHeader", "statusBar.showSelectedColumnRemarks")) {
             setting.put("key", key);
             setting.put("value", "false");
             assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,

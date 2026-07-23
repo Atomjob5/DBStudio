@@ -421,6 +421,7 @@ final class Workspace implements AutoCloseable {
     String startTask(final String kind, final TaskOperation operation) {
         final String taskId = UUID.randomUUID().toString(); activeTasks.incrementAndGet();
         LOG.info("Workspace任务开始 workspaceId={} taskId={} kind={}", id, taskId, kind);
+        events.emit("task.started", ApiPayloads.map("taskId", taskId, "kind", kind));
         tasks.submit(new Runnable() {
             @Override public void run() {
                 try {

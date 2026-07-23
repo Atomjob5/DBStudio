@@ -11,6 +11,8 @@ export const useSettingsStore = defineStore("settings", () => {
   const copySeparator = ref<CopySeparator>("comma");
   const headerSortingEnabled = ref(true);
   const headerFilteringEnabled = ref(true);
+  const showColumnRemarksInHeader = ref(false);
+  const showSelectedColumnRemarks = ref(true);
   const maxActiveSessions = ref(10);
   const idleTimeoutMinutes = ref(10);
   const transactionDisconnectRollbackMinutes = ref(10);
@@ -28,6 +30,8 @@ export const useSettingsStore = defineStore("settings", () => {
     copySeparator.value = separator === "tab" || separator === "semicolon" || separator === "pipe" ? separator : "comma";
     headerSortingEnabled.value = settings["result.headerSortingEnabled"] !== "false";
     headerFilteringEnabled.value = settings["result.headerFilteringEnabled"] !== "false";
+    showColumnRemarksInHeader.value = settings["result.showColumnRemarksInHeader"] === "true";
+    showSelectedColumnRemarks.value = settings["statusBar.showSelectedColumnRemarks"] !== "false";
     const maximum = Number.parseInt(settings["connection.maxActiveSessions"] ?? "10", 10);
     maxActiveSessions.value = Number.isFinite(maximum) ? maximum : 10;
     const idle = Number.parseInt(settings["connection.idleTimeoutMinutes"] ?? "10", 10);
@@ -40,7 +44,7 @@ export const useSettingsStore = defineStore("settings", () => {
   }
 
   return { maxResultRows, streamBatchRows, columnLayoutScope, copyHeaderOnDoubleClick, copySeparator,
-    headerSortingEnabled, headerFilteringEnabled,
+    headerSortingEnabled, headerFilteringEnabled, showColumnRemarksInHeader, showSelectedColumnRemarks,
     maxActiveSessions, idleTimeoutMinutes, transactionDisconnectRollbackMinutes,
     completionCandidateLimit,
     recentFiles, initialize };

@@ -38,6 +38,18 @@ export const useQueryStore = defineStore("query", () => {
     replaceExecution(editorId, { ...execution, results: execution.results.map((item) => item === result ? updated : item) });
   }
 
+  function applyColumnRemarks(editorId: string, executionId: string, resultIndex: number,
+                              remarks: Array<{ index: number; remarks: string }>): void {
+    const execution = executions.value[editorId];
+    const result = execution?.results.find((item) => item.resultIndex === resultIndex);
+    if (!execution || execution.executionId !== executionId || !result?.columnDetails || !remarks.length) return;
+    const byIndex = new Map(remarks.map((item) => [item.index, item.remarks]));
+    const columnDetails = result.columnDetails.map((column, index) => column.remarks || !byIndex.get(index)
+      ? column : { ...column, remarks: byIndex.get(index) as string });
+    const updated = { ...result, columnDetails };
+    replaceExecution(editorId, { ...execution, results: execution.results.map((item) => item === result ? updated : item) });
+  }
+
   function complete(editorId: string, values: Partial<QueryExecutionState>): void {
     const execution = executions.value[editorId];
     if (!execution) { if (import.meta.env.DEV) console.warn(`Ignoring late query completion for ${editorId}`); return; }
@@ -65,5 +77,6 @@ export const useQueryStore = defineStore("query", () => {
   }
 
   function clear(): void { executions.value = {}; }
-  return { executions, start, addResult, appendRows, completeResult, complete, markHistorical, clearEditor, clear };
+  return { executions, start, addResult, appendRows, completeResult, applyColumnRemarks,
+    complete, markHistorical, clearEditor, clear };
 });

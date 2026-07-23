@@ -1,4 +1,5 @@
-import type { CompletionCacheStats, CompletionCacheSummary, CompletionResult } from "../types";
+import type { CompletionCacheStats, CompletionCacheSummary, CompletionResult, ResolvedResultColumnRemark,
+  ResultColumnRemarkLookup } from "../types";
 import type { CompletionWorkerRequest, CompletionWorkerResponse, CompletionWorkerValue } from "./workerProtocol";
 import type { CompletionTextChange } from "./documentMirror";
 
@@ -36,6 +37,12 @@ export class CompletionClient {
            cursorOffset: number, prefix: string, limit: number): Promise<CompletionResult> {
     return this.send({ id: crypto.randomUUID(), type: "complete", cacheKey, providerId, modelKey,
       modelVersion, cursorOffset, prefix, limit }) as Promise<CompletionResult>;
+  }
+
+  resolveResultColumnRemarks(cacheKey: string, providerId: string,
+                             columns: ResultColumnRemarkLookup[]): Promise<ResolvedResultColumnRemark[]> {
+    return this.send({ id: crypto.randomUUID(), type: "result-columns.resolve", cacheKey, providerId,
+      columns }) as Promise<ResolvedResultColumnRemark[]>;
   }
 
   stats(): Promise<Omit<CompletionCacheStats, "loadingCount">> {

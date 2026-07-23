@@ -253,8 +253,8 @@ class QueryWebSocketIntegrationTest {
             List<Map<String, Object>> columns = (List<Map<String, Object>>) payload.get("columnDetails");
             assertEquals("order_id", columns.get(0).get("label"));
             assertEquals("id", columns.get(0).get("name"));
-            assertEquals("订单编号", columns.get(0).get("remarks"));
-            assertEquals("订单金额", columns.get(1).get("remarks"));
+            assertEquals("", columns.get(0).get("remarks"));
+            assertEquals("", columns.get(1).get("remarks"));
             assertEquals("", columns.get(2).get("remarks"));
             return;
         }
