@@ -16,7 +16,18 @@
       </section>
 
       <section class="settings-section connection-settings">
-        <div class="section-heading"><div><strong>数据库连接</strong><span>控制活动会话与空闲回收</span></div></div>
+        <div class="section-heading"><div><strong>数据库连接</strong><span>控制事务模式、活动会话与空闲回收</span></div></div>
+        <el-form-item class="compact-setting-row">
+          <template #label>
+            <div class="setting-label"><span>自动提交事务</span>
+              <el-tooltip content="开启后，每条DML成功执行即提交，无法再通过回滚按钮撤销。" placement="top">
+                <el-icon class="setting-help" tabindex="0" aria-label="自动提交事务说明"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </div>
+          </template>
+          <el-switch size="small" aria-label="自动提交事务" :model-value="autoCommit"
+                     @update:model-value="$emit('update:autoCommit', $event === true)" />
+        </el-form-item>
         <el-form-item class="compact-setting-row">
           <template #label>
             <div class="setting-label"><span>最大活动链接数</span>
@@ -192,6 +203,7 @@ defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: Resolv
   copySeparator: CopySeparator; maxActiveSessions: number; idleTimeoutMinutes: number;
   headerSortingEnabled: boolean; headerFilteringEnabled: boolean;
   showColumnRemarksInHeader: boolean; showSelectedColumnRemarks: boolean;
+  autoCommit: boolean;
   transactionDisconnectRollbackMinutes: number;
   completionCacheSize: string; completionCacheEnvironmentCount: number; completionCacheLoadingCount: number;
   completionCandidateLimit: number; canClearCompletionCaches: boolean }>();
@@ -199,6 +211,7 @@ const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme"
   "update:maxRows": [value: number]; "update:streamBatchRows": [value: number];
   "update:columnLayoutScope": [value: ColumnLayoutScope]; "update:copyHeaderOnDoubleClick": [value: boolean];
   "update:copySeparator": [value: CopySeparator]; "update:maxActiveSessions": [value: number];
+  "update:autoCommit": [value: boolean];
   "update:headerSortingEnabled": [value: boolean]; "update:headerFilteringEnabled": [value: boolean];
   "update:showColumnRemarksInHeader": [value: boolean]; "update:showSelectedColumnRemarks": [value: boolean];
   "update:idleTimeoutMinutes": [value: number]; "update:transactionDisconnectRollbackMinutes": [value: number];

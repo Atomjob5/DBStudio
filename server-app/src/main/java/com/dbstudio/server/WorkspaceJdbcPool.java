@@ -25,11 +25,12 @@ final class WorkspaceJdbcPool implements AutoCloseable {
     private final DatabaseContext context;
     private final EditorConnectionLimiter limiter;
     private final List<Entry> entries = new ArrayList<Entry>();
+    private boolean autoCommit;
     private long generation;
     private boolean closed;
 
-    WorkspaceJdbcPool(String key, DatabaseContext context, EditorConnectionLimiter limiter) {
-        this.key = key; this.context = context; this.limiter = limiter;
+    WorkspaceJdbcPool(String key, DatabaseContext context, EditorConnectionLimiter limiter, boolean autoCommit) {
+        this.key = key; this.context = context; this.limiter = limiter; this.autoCommit = autoCommit;
     }
 
     DatabaseContext context() { return context; }
@@ -53,12 +54,18 @@ final class WorkspaceJdbcPool implements AutoCloseable {
         })) throw new ApiException("CONNECTION_LIMIT_REACHED", "已达到最大活动链接数，请处理事务或等待空闲链接回收");
         try {
             created.session = context.openEditorSession();
+            applyAutoCommit(created.session);
             created.borrowed = true;
             created.lastUsed = System.currentTimeMillis();
             entries.add(created);
             LOG.info("创建JDBC连接 pool={} generation={} physicalCount={}", key, generation, entries.size());
             return new Lease(this, created);
         } catch (SQLException exception) {
+            if (created.session != null) {
+                try { created.session.close(); }
+                catch (SQLException closeFailure) { exception.addSuppressed(closeFailure); }
+                created.session = null;
+            }
             limiter.release(created.permitKey);
             LOG.warn("创建JDBC连接失败 pool={} generation={} message={}", key, generation,
                     SqlLogSupport.sanitizeMessage(exception.getMessage()));
@@ -150,6 +157,19 @@ final class WorkspaceJdbcPool implements AutoCloseable {
         return count;
     }
 
+    synchronized void setAutoCommit(boolean enabled) {
+        if (autoCommit == enabled) return;
+        for (Entry entry : entries) {
+            if (!entry.closed && (entry.borrowed || entry.pinnedEditorId != null)) {
+                throw new IllegalStateException("Cannot change auto-commit while a JDBC lease is active");
+            }
+        }
+        autoCommit = enabled;
+        for (Entry entry : new ArrayList<Entry>(entries)) closeEntry(entry);
+        entries.clear();
+        LOG.info("更新连接池自动提交模式 pool={} autoCommit={}", key, enabled);
+    }
+
     private Entry findPinned(String editorId) {
         for (Entry entry : entries) if (!entry.closed && editorId.equals(entry.pinnedEditorId)) return entry;
         return null;
@@ -175,12 +195,20 @@ final class WorkspaceJdbcPool implements AutoCloseable {
 
     private boolean reset(DatabaseSession session) {
         try {
+            Connection connection = session.jdbcConnection();
+            if (connection.getAutoCommit()) connection.setAutoCommit(false);
             context.provider().connections().resetSession(session, context.profile());
+            applyAutoCommit(session);
             return true;
         } catch (SQLException exception) {
             LOG.warn("重置JDBC会话失败 pool={} message={}", key, SqlLogSupport.sanitizeMessage(exception.getMessage()));
             return false;
         }
+    }
+
+    private void applyAutoCommit(DatabaseSession session) throws SQLException {
+        Connection connection = session.jdbcConnection();
+        if (connection.getAutoCommit() != autoCommit) connection.setAutoCommit(autoCommit);
     }
 
     private static boolean valid(DatabaseSession session) {

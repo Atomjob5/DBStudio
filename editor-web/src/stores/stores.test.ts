@@ -248,6 +248,7 @@ describe("application stores", () => {
     settings.initialize({ "result.maxRows": "2500", "result.streamBatchRows": "75", "result.columnLayoutScope": "editor",
       "result.copyHeaderOnDoubleClick": "false", "result.copySeparator": "tab",
       "result.showColumnRemarksInHeader": "true", "statusBar.showSelectedColumnRemarks": "false",
+      "connection.autoCommit": "true",
       "connection.maxActiveSessions": "12", "connection.idleTimeoutMinutes": "30",
       "editor.completionCandidateLimit": "250" }, []);
     expect(settings.maxResultRows).toBe(2500);
@@ -257,6 +258,7 @@ describe("application stores", () => {
     expect(settings.copySeparator).toBe("tab");
     expect(settings.showColumnRemarksInHeader).toBe(true);
     expect(settings.showSelectedColumnRemarks).toBe(false);
+    expect(settings.autoCommit).toBe(true);
     expect(settings.maxActiveSessions).toBe(12);
     expect(settings.idleTimeoutMinutes).toBe(30);
     expect(settings.completionCandidateLimit).toBe(250);
@@ -266,6 +268,7 @@ describe("application stores", () => {
     expect(settings.copySeparator).toBe("comma");
     expect(settings.showColumnRemarksInHeader).toBe(false);
     expect(settings.showSelectedColumnRemarks).toBe(true);
+    expect(settings.autoCommit).toBe(false);
     expect(settings.maxActiveSessions).toBe(10);
     expect(settings.idleTimeoutMinutes).toBe(10);
     expect(settings.completionCandidateLimit).toBe(100);

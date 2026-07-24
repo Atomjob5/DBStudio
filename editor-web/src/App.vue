@@ -166,7 +166,8 @@
                   :header-sorting-enabled="settings.headerSortingEnabled" :header-filtering-enabled="settings.headerFilteringEnabled"
                   :show-column-remarks-in-header="settings.showColumnRemarksInHeader"
                   :show-selected-column-remarks="settings.showSelectedColumnRemarks"
-                  :max-active-sessions="settings.maxActiveSessions" :idle-timeout-minutes="settings.idleTimeoutMinutes"
+                  :max-active-sessions="settings.maxActiveSessions" :auto-commit="settings.autoCommit"
+                  :idle-timeout-minutes="settings.idleTimeoutMinutes"
                   :transaction-disconnect-rollback-minutes="settings.transactionDisconnectRollbackMinutes"
                   :completion-candidate-limit="settings.completionCandidateLimit"
                   :completion-cache-size="completionCacheSize" :completion-cache-environment-count="metadata.completionStats.environmentCount"
@@ -179,6 +180,7 @@
                   @update:show-column-remarks-in-header="updateShowColumnRemarksInHeader"
                   @update:show-selected-column-remarks="updateShowSelectedColumnRemarks"
                   @update:copy-separator="updateCopySeparator" @update:max-active-sessions="updateMaxActiveSessions"
+                  @update:auto-commit="updateAutoCommit"
                   @update:idle-timeout-minutes="updateIdleTimeoutMinutes"
                   @update:transaction-disconnect-rollback-minutes="updateTransactionDisconnectRollbackMinutes"
                   @update:completion-candidate-limit="updateCompletionCandidateLimit"
@@ -327,7 +329,8 @@ const transportStatusText = computed(() => app.transportState === "recovering" ?
 const connectionSessionText = computed(() => editors.active?.connectionState === "unbound" && editors.active?.connection ? "链接配置不可用"
     : !activeConnected.value ? "未选择链接"
     : editors.active?.connectionState === "credentials-required" ? "需要重新输入密码"
-      : editors.active?.connectionState === "suspended" ? "链接已暂停" : "链接正常 · 自动提交关闭");
+      : editors.active?.connectionState === "suspended" ? "链接已暂停"
+        : `链接正常 · 自动提交${settings.autoCommit ? "开启" : "关闭"}`);
 const activeExecutionText = computed(() => {
   const execution = activeExecution.value;
   if (editors.active?.executionPhase === "cancelling") return "正在取消…";
@@ -1307,6 +1310,11 @@ async function updateMaxActiveSessions(value: number): Promise<void> {
   const previous = settings.maxActiveSessions; settings.maxActiveSessions = value;
   try { await rpc.request("settings.update", { key: "connection.maxActiveSessions", value: String(value) }); }
   catch (error) { settings.maxActiveSessions = previous; reportError(error); }
+}
+async function updateAutoCommit(value: boolean): Promise<void> {
+  const previous = settings.autoCommit; settings.autoCommit = value;
+  try { await rpc.request("settings.update", { key: "connection.autoCommit", value: String(value) }); }
+  catch (error) { settings.autoCommit = previous; reportError(error); }
 }
 async function updateIdleTimeoutMinutes(value: number): Promise<void> {
   const previous = settings.idleTimeoutMinutes; settings.idleTimeoutMinutes = value;

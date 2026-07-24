@@ -140,6 +140,23 @@ class QueryRunnerTest {
     }
 
     @Test
+    void doesNotMarkTransactionsDirtyWhenJdbcAutoCommitIsEnabled() throws Exception {
+        final Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
+        connection.setAutoCommit(true);
+        try (QueryRunner runner = new QueryRunner(session(connection), 10, 10)) {
+            QueryExecution execution = runner.execute(Arrays.asList(
+                    sql("CREATE TABLE auto_commit_sample(id INTEGER)", StatementType.DDL),
+                    sql("INSERT INTO auto_commit_sample VALUES (1)", StatementType.INSERT)), true).join();
+
+            assertFalse(execution.failed());
+            assertFalse(runner.isTransactionDirty());
+            assertEquals("1", runner.execute(Collections.singletonList(
+                    sql("SELECT COUNT(*) FROM auto_commit_sample", StatementType.QUERY)), true)
+                    .join().results().get(0).rows().get(0).get(0));
+        }
+    }
+
+    @Test
     void acceptsCancellationBeforeStatementCreationAndResetsForTheNextExecution() throws Exception {
         final Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
         connection.setAutoCommit(false);

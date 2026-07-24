@@ -207,6 +207,7 @@ class LocalServerSecurityTest {
         assertTrue(defaults.getBody().contains("\"result.showColumnRemarksInHeader\":\"false\""));
         assertTrue(defaults.getBody().contains("\"statusBar.showSelectedColumnRemarks\":\"true\""));
         assertTrue(defaults.getBody().contains("\"connection.maxActiveSessions\":\"10\""));
+        assertTrue(defaults.getBody().contains("\"connection.autoCommit\":\"false\""));
         assertTrue(defaults.getBody().contains("\"connection.idleTimeoutMinutes\":\"10\""));
         assertTrue(defaults.getBody().contains("\"connection.transactionDisconnectRollbackMinutes\":\"10\""));
 
@@ -261,6 +262,14 @@ class LocalServerSecurityTest {
         assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                 new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
         setting.put("value", "101");
+        assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+
+        setting.put("key", "connection.autoCommit");
+        setting.put("value", "true");
+        assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+        setting.put("value", "enabled");
         assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                 new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
 

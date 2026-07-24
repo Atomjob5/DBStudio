@@ -466,16 +466,20 @@ public final class QueryRunner implements AutoCloseable {
         return lower.contains("cancel") || lower.contains("interrupt");
     }
 
-    private TransactionEffect updateTransactionState(SqlStatement statement, boolean hasResult) {
+    private TransactionEffect updateTransactionState(SqlStatement statement, boolean hasResult) throws SQLException {
         TransactionEffect effect = dialect == null
                 ? defaultTransactionEffect(statement, hasResult)
                 : dialect.transactionEffect(statement, hasResult);
-        if (effect == TransactionEffect.DIRTY) transactionDirty.set(true);
-        else if (effect == TransactionEffect.END || effect == TransactionEffect.IMPLICIT_COMMIT) {
+        boolean autoCommit = session.jdbcConnection().getAutoCommit();
+        if (autoCommit) {
+            transactionDirty.set(false);
+        } else if (effect == TransactionEffect.DIRTY) {
+            transactionDirty.set(true);
+        } else if (effect == TransactionEffect.END || effect == TransactionEffect.IMPLICIT_COMMIT) {
             transactionDirty.set(false);
         }
-        LOG.debug("事务状态更新 statementType={} hasResult={} effect={} dirty={}", statement.type(), hasResult,
-                effect, transactionDirty.get());
+        LOG.debug("事务状态更新 statementType={} hasResult={} effect={} autoCommit={} dirty={}",
+                statement.type(), hasResult, effect, autoCommit, transactionDirty.get());
         return effect;
     }
 

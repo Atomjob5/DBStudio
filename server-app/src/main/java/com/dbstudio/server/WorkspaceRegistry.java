@@ -45,6 +45,7 @@ public final class WorkspaceRegistry implements AutoCloseable {
     private final EditorConnectionLimiter limiter;
     private volatile int idleTimeoutMinutes;
     private volatile int transactionRollbackMinutes;
+    private volatile boolean autoCommit;
 
     public WorkspaceRegistry(ObjectMapper mapper, SettingsRepository settings, WorkspaceRepository repository,
                              MachineIdentity machineIdentity, ApplicationRunLifecycle runLifecycle,
@@ -53,6 +54,7 @@ public final class WorkspaceRegistry implements AutoCloseable {
         this.machineIdentity=machineIdentity; this.runLifecycle=runLifecycle; this.limiter=limiter;
         limiter.setMaximum(configuredInt("connection.maxActiveSessions", 10, 1, 100));
         idleTimeoutMinutes = configuredInt("connection.idleTimeoutMinutes", 10, 1, 1_440);
+        autoCommit = configuredBoolean("connection.autoCommit", false);
         transactionRollbackMinutes = configuredInt(
                 "connection.transactionDisconnectRollbackMinutes", 10, 1, 1_440);
         scheduler = Executors.newScheduledThreadPool(2, new ThreadFactory() {
@@ -65,8 +67,8 @@ public final class WorkspaceRegistry implements AutoCloseable {
         scheduler.scheduleAtFixedRate(new Runnable() {
             @Override public void run() { reapIdleConnections(); }
         }, 1L, 1L, TimeUnit.MINUTES);
-        LOG.info("Workspace运行时已启动 maxSessions={} idleTimeoutMinutes={} transactionRollbackMinutes={}",
-                limiter.maximum(), idleTimeoutMinutes, transactionRollbackMinutes);
+        LOG.info("Workspace运行时已启动 maxSessions={} autoCommit={} idleTimeoutMinutes={} transactionRollbackMinutes={}",
+                limiter.maximum(), autoCommit, idleTimeoutMinutes, transactionRollbackMinutes);
     }
 
     List<WorkspaceRecord> catalog() throws SQLException { return repository.findAll(); }
@@ -196,6 +198,22 @@ public final class WorkspaceRegistry implements AutoCloseable {
         limiter.setMaximum(maximum);
         LOG.info("更新最大活动JDBC会话数 maximum={}", limiter.maximum());
     }
+    synchronized void setAutoCommit(boolean enabled) {
+        if (autoCommit == enabled) return;
+        for (Workspace workspace : runtimes.values()) {
+            if (workspace.hasTransactions()) {
+                throw new ApiException("TRANSACTION_DECISION_REQUIRED", "存在未提交事务，请先提交或回滚后再切换自动提交");
+            }
+        }
+        for (Workspace workspace : runtimes.values()) {
+            if (workspace.hasDatabaseOperations()) {
+                throw new ApiException("DATABASE_OPERATION_BUSY", "数据库操作正在进行，请完成后再切换自动提交");
+            }
+        }
+        for (Workspace workspace : runtimes.values()) workspace.setAutoCommit(enabled);
+        autoCommit = enabled;
+        LOG.info("更新编辑器自动提交模式 autoCommit={} workspaces={}", enabled, runtimes.size());
+    }
     void setIdleTimeoutMinutes(int minutes) {
         idleTimeoutMinutes=Math.max(1,Math.min(1_440,minutes));
         LOG.info("更新JDBC空闲回收时间 minutes={}", idleTimeoutMinutes);
@@ -219,7 +237,7 @@ public final class WorkspaceRegistry implements AutoCloseable {
     private Workspace runtime(final String id) {
         Workspace existing=runtimes.get(id); if(existing!=null)return existing;
         Workspace created=new Workspace(id,configuredInt("result.maxRows",QueryRunner.DEFAULT_MAX_ROWS,1,100_000),
-                configuredInt("result.streamBatchRows",QueryRunner.DEFAULT_STREAM_BATCH_ROWS,1,1_000),mapper,
+                configuredInt("result.streamBatchRows",QueryRunner.DEFAULT_STREAM_BATCH_ROWS,1,1_000),autoCommit,mapper,
                 AppDirectories.dataDirectory().resolve("tmp").resolve(id),limiter);
         created.events().onDisconnected(new WorkspaceEventChannel.DisconnectListener() {
             @Override public void disconnected(String clientId) { browserDisconnected(id,clientId); }
@@ -257,6 +275,15 @@ public final class WorkspaceRegistry implements AutoCloseable {
     private int configuredInt(String key,int fallback,int minimum,int maximum) {
         try{return Math.max(minimum,Math.min(maximum,Integer.parseInt(settings.get(key).orElse(String.valueOf(fallback)))));}
         catch(Exception ignored){return fallback;}
+    }
+
+    private boolean configuredBoolean(String key, boolean fallback) {
+        try {
+            String value = settings.get(key).orElse(String.valueOf(fallback));
+            return "true".equals(value) ? true : "false".equals(value) ? false : fallback;
+        } catch (Exception ignored) {
+            return fallback;
+        }
     }
 
     private static void validateId(String id) {

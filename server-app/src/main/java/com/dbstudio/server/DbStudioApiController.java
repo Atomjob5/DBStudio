@@ -92,7 +92,7 @@ public final class DbStudioApiController {
             "result.copyHeaderOnDoubleClick", "result.copySeparator",
             "result.headerSortingEnabled", "result.headerFilteringEnabled", "result.showColumnRemarksInHeader",
             "statusBar.showSelectedColumnRemarks",
-            "connection.maxActiveSessions", "connection.idleTimeoutMinutes",
+            "connection.maxActiveSessions", "connection.autoCommit", "connection.idleTimeoutMinutes",
             "connection.transactionDisconnectRollbackMinutes",
             "editor.completionCandidateLimit",
             "layout.leftWidth", "layout.editorHeight");
@@ -733,6 +733,12 @@ public final class DbStudioApiController {
                 throw new ApiException("INVALID_SETTING", "最大活动链接数必须在 1 到 100 之间");
             }
         }
+        if ("connection.autoCommit".equals(key)) {
+            if (!Arrays.asList("true", "false").contains(value)) {
+                throw new ApiException("INVALID_SETTING", "自动提交事务设置无效");
+            }
+            workspaces.setAutoCommit(Boolean.parseBoolean(value));
+        }
         if ("connection.idleTimeoutMinutes".equals(key)) {
             try {
                 int minutes = Integer.parseInt(value);
@@ -1077,6 +1083,7 @@ public final class DbStudioApiController {
         if (!result.containsKey("result.showColumnRemarksInHeader")) result.put("result.showColumnRemarksInHeader", "false");
         if (!result.containsKey("statusBar.showSelectedColumnRemarks")) result.put("statusBar.showSelectedColumnRemarks", "true");
         if (!result.containsKey("connection.maxActiveSessions")) result.put("connection.maxActiveSessions", "10");
+        if (!result.containsKey("connection.autoCommit")) result.put("connection.autoCommit", "false");
         if (!result.containsKey("editor.completionCandidateLimit")) result.put("editor.completionCandidateLimit", "100");
         if (!result.containsKey("connection.idleTimeoutMinutes")) result.put("connection.idleTimeoutMinutes", "10");
         if (!result.containsKey("connection.transactionDisconnectRollbackMinutes")) {

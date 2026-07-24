@@ -53,11 +53,14 @@ final class Workspace implements AutoCloseable {
     private final Map<String, ActiveLease> activeLeases = new ConcurrentHashMap<String, ActiveLease>();
     private final Map<UUID, char[]> credentials = new ConcurrentHashMap<UUID, char[]>();
     private volatile boolean disconnected;
+    private volatile boolean autoCommit;
 
-    Workspace(String id, int maxRows, int streamBatchRows, ObjectMapper mapper, Path temporaryDirectory,
+    Workspace(String id, int maxRows, int streamBatchRows, boolean autoCommit,
+              ObjectMapper mapper, Path temporaryDirectory,
               EditorConnectionLimiter limiter) {
         this.id = id;
         this.editors = new EditorSessionRegistry(maxRows, streamBatchRows);
+        this.autoCommit = autoCommit;
         this.events = new WorkspaceEventChannel(mapper, id);
         this.temporaryDirectory = temporaryDirectory;
         this.limiter = limiter;
@@ -68,7 +71,8 @@ final class Workspace implements AutoCloseable {
                 thread.setDaemon(true); return thread;
             }
         });
-        LOG.info("创建Workspace运行时 workspaceId={} maxRows={} streamBatchRows={}", id, maxRows, streamBatchRows);
+        LOG.info("创建Workspace运行时 workspaceId={} maxRows={} streamBatchRows={} autoCommit={}",
+                id, maxRows, streamBatchRows, autoCommit);
     }
 
     String id() { return id; }
@@ -101,7 +105,7 @@ final class Workspace implements AutoCloseable {
         ContextReference existing = contexts.get(key);
         if (existing != null) { created.close(); return existing.context; }
         ContextReference reference = new ContextReference(created,
-                new WorkspaceJdbcPool(id + ":" + key, created, limiter));
+                new WorkspaceJdbcPool(id + ":" + key, created, limiter, autoCommit));
         contexts.put(key, reference);
         LOG.info("注册Workspace数据库上下文 workspaceId={} bindingKey={}", id, key);
         return created;
@@ -286,6 +290,27 @@ final class Workspace implements AutoCloseable {
     synchronized boolean hasTransactions() {
         for (ActiveLease active : activeLeases.values()) if (active.runner.isTransactionDirty()) return true;
         return false;
+    }
+
+    synchronized boolean hasDatabaseOperations() {
+        if (!activeLeases.isEmpty()) return true;
+        for (EditorSession editor : editors.all()) {
+            if (editor.activeExecutionId() != null || editor.transactionOperationActive()) return true;
+        }
+        return false;
+    }
+
+    synchronized void setAutoCommit(boolean enabled) {
+        if (autoCommit == enabled) return;
+        if (hasTransactions()) {
+            throw new ApiException("TRANSACTION_DECISION_REQUIRED", "存在未提交事务，请先提交或回滚后再切换自动提交");
+        }
+        if (hasDatabaseOperations()) {
+            throw new ApiException("DATABASE_OPERATION_BUSY", "数据库操作正在进行，请完成后再切换自动提交");
+        }
+        for (ContextReference reference : contexts.values()) reference.pool.setAutoCommit(enabled);
+        autoCommit = enabled;
+        LOG.info("更新Workspace编辑器自动提交模式 workspaceId={} autoCommit={}", id, enabled);
     }
 
     synchronized int transactionCount() {

@@ -1,6 +1,7 @@
 package com.dbstudio.server;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.dbstudio.desktop.DatabaseContext;
@@ -46,7 +47,7 @@ class WorkspaceSessionLifecycleTest {
         EditorConnectionLimiter limiter = new EditorConnectionLimiter();
         limiter.setMaximum(10);
         DatabaseContext context = new DatabaseContext(provider, profile, new char[0]);
-        WorkspaceJdbcPool pool = new WorkspaceJdbcPool("workspace:profile@revision", context, limiter);
+        WorkspaceJdbcPool pool = new WorkspaceJdbcPool("workspace:profile@revision", context, limiter, false);
         try {
             WorkspaceJdbcPool.Lease first = pool.borrow();
             pool.release(first);
@@ -68,6 +69,38 @@ class WorkspaceSessionLifecycleTest {
             pool.close();
         }
         assertEquals(0, limiter.activeCount());
+    }
+
+    @Test
+    void appliesAutoCommitToNewAndReusedEditorConnections() throws Exception {
+        AtomicInteger opened = new AtomicInteger();
+        DatabaseProvider provider = provider(opened);
+        ConnectionProfile profile = new ConnectionProfile(
+                UUID.randomUUID(), "fake", "测试链接", Collections.<String, String>emptyMap(), "test-secret");
+        EditorConnectionLimiter limiter = new EditorConnectionLimiter();
+        limiter.setMaximum(10);
+        DatabaseContext context = new DatabaseContext(provider, profile, new char[0]);
+        WorkspaceJdbcPool pool = new WorkspaceJdbcPool("workspace:auto-commit", context, limiter, false);
+        try {
+            WorkspaceJdbcPool.Lease manual = pool.borrow();
+            assertTrue(!manual.session().jdbcConnection().getAutoCommit());
+            assertThrows(IllegalStateException.class, () -> pool.setAutoCommit(true));
+            pool.release(manual);
+
+            pool.setAutoCommit(true);
+            assertEquals(0, limiter.activeCount());
+            WorkspaceJdbcPool.Lease automatic = pool.borrow();
+            assertTrue(automatic.session().jdbcConnection().getAutoCommit());
+            pool.release(automatic);
+
+            WorkspaceJdbcPool.Lease reused = pool.borrow();
+            assertTrue(automatic.session() == reused.session());
+            assertTrue(reused.session().jdbcConnection().getAutoCommit());
+            pool.release(reused);
+            assertEquals(2, opened.get());
+        } finally {
+            pool.close();
+        }
     }
 
     private static DatabaseProvider provider(final AtomicInteger opened) {
@@ -103,13 +136,21 @@ class WorkspaceSessionLifecycleTest {
                     @Override public DatabaseSession connect(ConnectionProfile profile, char[] password) {
                         opened.incrementAndGet();
                         final AtomicBoolean closed = new AtomicBoolean();
+                        final AtomicBoolean autoCommit = new AtomicBoolean();
                         final Connection jdbc = (Connection) Proxy.newProxyInstance(
                                 Connection.class.getClassLoader(), new Class<?>[] { Connection.class },
                                 (proxy, method, args) -> {
                                     String name = method.getName();
                                     if ("isClosed".equals(name)) return closed.get();
                                     if ("isValid".equals(name)) return !closed.get();
-                                    if ("getAutoCommit".equals(name)) return false;
+                                    if ("getAutoCommit".equals(name)) return autoCommit.get();
+                                    if ("setAutoCommit".equals(name)) {
+                                        autoCommit.set((Boolean) args[0]);
+                                        return null;
+                                    }
+                                    if ("rollback".equals(name) && autoCommit.get()) {
+                                        throw new SQLException("rollback is not allowed while auto-commit is enabled");
+                                    }
                                     if ("close".equals(name)) { closed.set(true); return null; }
                                     if (method.getReturnType() == boolean.class) return false;
                                     if (method.getReturnType() == int.class) return 0;

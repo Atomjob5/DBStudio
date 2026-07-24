@@ -7,6 +7,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.URI;
 import java.sql.Connection;
+import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -169,6 +170,73 @@ class QueryWebSocketIntegrationTest {
         }
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void appliesAutoCommitOnTheNextExecutionAndRejectsUnsafeSwitches() throws Exception {
+        String cookie = authenticate();
+        String workspaceId = UUID.randomUUID().toString();
+        exchange(HttpMethod.PUT, "/api/v1/workspaces/" + workspaceId, new HashMap<String, Object>(), cookie);
+        openWorkspace(workspaceId, cookie);
+        updateSetting(cookie, "connection.autoCommit", "false");
+        String profileId = createProfile(workspaceId, cookie);
+        Map<String, Object> editorBody = new HashMap<String, Object>();
+        editorBody.put("profileId", profileId);
+        String editorId = String.valueOf(exchange(HttpMethod.POST,
+                "/api/v1/workspaces/" + workspaceId + "/editors", editorBody, cookie).get("id"));
+        String table = "auto_commit_" + UUID.randomUUID().toString().replace("-", "");
+
+        final BlockingQueue<Map<String, Object>> events = new LinkedBlockingQueue<Map<String, Object>>();
+        WebSocketHttpHeaders socketHeaders = new WebSocketHttpHeaders();
+        socketHeaders.setOrigin(origin());
+        socketHeaders.add(HttpHeaders.COOKIE, cookie);
+        WebSocketSession socket = new StandardWebSocketClient().doHandshake(new TextWebSocketHandler() {
+            @Override protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
+                events.add(mapper.readValue(message.getPayload(), new TypeReference<Map<String, Object>>() { }));
+            }
+        }, socketHeaders, URI.create("ws://127.0.0.1:" + port + "/api/v1/events?workspaceId=" + workspaceId
+                + "&clientId=" + clientId)).get(10, TimeUnit.SECONDS);
+        try {
+            awaitType(events, "workspace.ready", 10);
+            executeSql(editorId, workspaceId, cookie, events,
+                    "CREATE TABLE " + table + "(id BIGINT PRIMARY KEY)");
+            Map<String, Object> manualComplete = executionComplete(executeSql(
+                    editorId, workspaceId, cookie, events, "INSERT INTO " + table + " VALUES (1)"));
+            assertEquals(Boolean.TRUE, manualComplete.get("transactionDirty"));
+
+            Map<String, Object> setting = new HashMap<String, Object>();
+            setting.put("key", "connection.autoCommit");
+            setting.put("value", "true");
+            HttpHeaders headers = authenticatedJsonHeaders(cookie);
+            ResponseEntity<Map> rejected = http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                    new HttpEntity<Map<String, Object>>(setting, headers), Map.class);
+            assertEquals(org.springframework.http.HttpStatus.BAD_REQUEST, rejected.getStatusCode());
+            assertEquals("TRANSACTION_DECISION_REQUIRED", rejected.getBody().get("code"));
+
+            exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId + "/editors/" + editorId
+                    + "/transaction/rollback", Collections.<String, Object>emptyMap(), cookie);
+            updateSetting(cookie, "connection.autoCommit", "true");
+            Map<String, Object> automaticComplete = executionComplete(executeSql(
+                    editorId, workspaceId, cookie, events, "INSERT INTO " + table + " VALUES (2)"));
+            assertEquals(Boolean.FALSE, automaticComplete.get("transactionDirty"));
+
+            try (Connection connection = MYSQL.createConnection("");
+                 Statement statement = connection.createStatement();
+                 ResultSet rows = statement.executeQuery("SELECT COUNT(*) FROM " + table + " WHERE id = 2")) {
+                assertTrue(rows.next());
+                assertEquals(1, rows.getInt(1));
+            }
+        } finally {
+            try {
+                exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId + "/editors/" + editorId
+                        + "/transaction/rollback", Collections.<String, Object>emptyMap(), cookie);
+            } catch (RuntimeException ignored) { }
+            try { updateSetting(cookie, "connection.autoCommit", "false"); }
+            catch (RuntimeException ignored) { }
+            socket.close();
+            workspaces.expireNow(workspaceId);
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private void assertCompletionSnapshot(String editorId, String workspaceId, String cookie,
                                           BlockingQueue<Map<String, Object>> events) throws Exception {
@@ -301,6 +369,15 @@ class QueryWebSocketIntegrationTest {
         exchange(HttpMethod.PUT, "/api/v1/settings", body, cookie);
     }
 
+    private HttpHeaders authenticatedJsonHeaders(String cookie) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setOrigin(origin());
+        headers.add(HttpHeaders.COOKIE, cookie);
+        if (clientId != null) headers.add("X-DBStudio-Client-Id", clientId);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        return headers;
+    }
+
     private String authenticate() {
         Map<String, String> body = new HashMap<String, String>(); body.put("token", token.launchValue());
         HttpHeaders headers = new HttpHeaders(); headers.setOrigin(origin()); headers.setContentType(MediaType.APPLICATION_JSON);
@@ -352,6 +429,14 @@ class QueryWebSocketIntegrationTest {
             return (Map<String, Object>) event.get("payload");
         }
         throw new AssertionError("Missing query.resultComplete");
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> executionComplete(List<Map<String, Object>> events) {
+        for (Map<String, Object> event : events) if ("query.executionComplete".equals(event.get("type"))) {
+            return (Map<String, Object>) event.get("payload");
+        }
+        throw new AssertionError("Missing query.executionComplete");
     }
 
     private void assertOrder(List<Map<String, Object>> events) {

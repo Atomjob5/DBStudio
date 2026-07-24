@@ -8,6 +8,7 @@ import { useConnectionStore } from "./stores/connection";
 import { useEditorStore } from "./stores/editor";
 import { useMetadataStore } from "./stores/metadata";
 import { useQueryStore } from "./stores/query";
+import { useSettingsStore } from "./stores/settings";
 import type { CompletionCacheSummary, CompletionNamespaceDescriptor, SavedProfile } from "./types";
 
 const rpcMock = vi.hoisted(() => ({
@@ -412,6 +413,20 @@ describe("App result loading status toolbar", () => {
     await nextTick();
     expect(wrapper.get(".status-execution-zone").text()).toContain("已选中 3 行");
     expect(wrapper.get(".status-system-zone").text()).toContain("未选择链接");
+  });
+
+  it("shows the configured auto-commit mode in the system status", async () => {
+    const connections = useConnectionStore();
+    const editors = useEditorStore();
+    const settings = useSettingsStore();
+    const profile = completionProfile();
+    connections.initialize([], [profile], [{ id: "system-1", name: "核心系统", revision: "1" }],
+      [{ id: "environment-dev", systemId: "system-1", name: "DEV", revision: "1" }]);
+    editors.patch("bootstrap-editor", { connection: profile, connectionState: "active" });
+    settings.autoCommit = true;
+    await nextTick();
+
+    expect(wrapper.get(".status-system-zone").text()).toContain("链接正常 · 自动提交开启");
   });
 
   it("replaces execute with a yellow cancel button and keeps it until matching completion", async () => {
