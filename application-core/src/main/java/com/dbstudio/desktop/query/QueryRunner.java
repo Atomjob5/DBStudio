@@ -51,6 +51,8 @@ public final class QueryRunner implements AutoCloseable {
     private final boolean ownsSession;
     private final ExecutorService executor;
     private final AtomicReference<Statement> activeStatement = new AtomicReference<Statement>();
+    private final AtomicBoolean executionActive = new AtomicBoolean();
+    private final AtomicBoolean cancelRequested = new AtomicBoolean();
     private final AtomicBoolean transactionDirty = new AtomicBoolean();
     private final ResultColumnResolver columnResolver;
     private final SqlDialect dialect;
@@ -98,10 +100,36 @@ public final class QueryRunner implements AutoCloseable {
     public CompletableFuture<QueryExecution> execute(final List<SqlStatement> statements,
                                                      final boolean stopOnError,
                                                      final QueryResultListener listener) {
+        return execute(statements, stopOnError, listener, () -> { });
+    }
+
+    /**
+     * 在任务提交到执行线程前同步发布执行已就绪状态。这样调用方可以先登记 executionId，
+     * 同时保证此后到达的取消请求即使早于 Statement 创建也不会丢失。
+     */
+    public CompletableFuture<QueryExecution> execute(final List<SqlStatement> statements,
+                                                     final boolean stopOnError,
+                                                     final QueryResultListener listener,
+                                                     final Runnable preparedCallback) {
         final List<SqlStatement> copied = Collections.unmodifiableList(new ArrayList<SqlStatement>(statements));
         final Map<String, String> loggingContext = MDC.getCopyOfContextMap();
+        if (!executionActive.compareAndSet(false, true)) {
+            throw new QueryExecutionException("当前已有 SQL 正在执行", null);
+        }
+        cancelRequested.set(false);
+        try {
+            preparedCallback.run();
+        } catch (RuntimeException exception) {
+            executionActive.set(false);
+            throw exception;
+        }
         return CompletableFuture.supplyAsync(() -> withLoggingContext(loggingContext,
-                () -> executeBlocking(copied, stopOnError, listener)), executor);
+                () -> executeBlocking(copied, stopOnError, listener)), executor)
+                .whenComplete((ignored, failure) -> {
+                    activeStatement.set(null);
+                    executionActive.set(false);
+                    cancelRequested.set(false);
+                });
     }
 
     public CompletableFuture<Void> commit() {
@@ -147,8 +175,13 @@ public final class QueryRunner implements AutoCloseable {
     }
 
     public boolean cancel() {
+        if (!executionActive.get() && activeStatement.get() == null) return false;
+        cancelRequested.set(true);
         Statement statement = activeStatement.get();
-        if (statement == null) return false;
+        if (statement == null) {
+            LOG.info("SQL取消请求已登记，等待Statement创建");
+            return true;
+        }
         try {
             statement.cancel();
             LOG.info("取消当前SQL执行");
@@ -159,7 +192,7 @@ public final class QueryRunner implements AutoCloseable {
         }
     }
 
-    public boolean isRunning() { return activeStatement.get() != null; }
+    public boolean isRunning() { return executionActive.get() || activeStatement.get() != null; }
     public boolean isTransactionDirty() { return transactionDirty.get(); }
     public void setMaxRows(int maxRows) { this.maxRows = Math.max(1, maxRows); }
     public void setStreamBatchRows(int streamBatchRows) { this.streamBatchRows = Math.max(1, streamBatchRows); }
@@ -211,7 +244,7 @@ public final class QueryRunner implements AutoCloseable {
         List<StatementResult> results = new ArrayList<StatementResult>();
         boolean cancelled = false;
         for (SqlStatement sqlStatement : statements) {
-            if (Thread.currentThread().isInterrupted()) {
+            if (cancelRequested.get() || Thread.currentThread().isInterrupted()) {
                 cancelled = true;
                 break;
             }
@@ -222,10 +255,11 @@ public final class QueryRunner implements AutoCloseable {
                 if (result.failed()) { failure = result; break; }
             }
             if (failure != null) {
-                cancelled = isCancellation(failure.errorMessage());
+                cancelled = cancelRequested.get() || isCancellation(failure.errorMessage());
                 if (stopOnError) break;
             }
         }
+        cancelled = cancelled || cancelRequested.get();
         QueryExecution execution = new QueryExecution(results, Duration.between(started, Instant.now()), cancelled);
         LOG.info("SQL批次完成 statements={} results={} cancelled={} failed={} affectedRows={} durationMs={}",
                 statements.size(), results.size(), cancelled, execution.failed(), execution.affectedRows(),
@@ -242,10 +276,12 @@ public final class QueryRunner implements AutoCloseable {
                 SqlLogSupport.summary(sqlStatement.text()));
         String preview = SqlLogSupport.preview(sqlStatement.text());
         if (!preview.isEmpty()) LOG.debug("SQL语句预览 index={} text={}", firstResultIndex, preview);
+        if (cancelRequested.get()) return Collections.emptyList();
         try (Statement statement = session.jdbcConnection().createStatement()) {
             statement.setFetchSize(JDBC_FETCH_SIZE);
             statement.setMaxRows(statementMaxRows + 1);
             activeStatement.set(statement);
+            if (cancelRequested.get()) return Collections.emptyList();
             boolean hasResult = statement.execute(sqlStatement.text());
             TransactionEffect effect = updateTransactionState(sqlStatement, hasResult);
             if (effect == TransactionEffect.IMPLICIT_COMMIT) {
@@ -271,6 +307,7 @@ public final class QueryRunner implements AutoCloseable {
                 }
                 outputs.add(output);
                 listener.resultCompleted(resultIndex, output);
+                if (cancelRequested.get()) break;
                 hasResult = statement.getMoreResults(Statement.CLOSE_CURRENT_RESULT);
             }
             if (outputs.isEmpty()) {
@@ -324,7 +361,7 @@ public final class QueryRunner implements AutoCloseable {
         List<List<String>> rows = new ArrayList<List<String>>(Math.min(resultMaxRows, JDBC_FETCH_SIZE));
         List<List<String>> batch = new ArrayList<List<String>>(Math.min(resultBatchRows, resultMaxRows));
         boolean truncated = false;
-        while (resultSet.next()) {
+        while (!cancelRequested.get() && resultSet.next()) {
             if (rows.size() >= resultMaxRows) { truncated = true; break; }
             List<String> row = new ArrayList<String>(columnCount);
             for (int index = 1; index <= columnCount; index++) row.add(displayValue(resultSet.getObject(index)));

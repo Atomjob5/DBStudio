@@ -244,6 +244,9 @@ export interface EditorTab {
   transactionDirty: boolean;
   transactionState?: TransactionState;
   busy: boolean;
+  activeExecutionId?: string;
+  executionPhase: "idle" | "starting" | "running" | "cancelling";
+  transactionOperation: "idle" | "committing" | "rolling-back";
   connection?: EditorConnectionBinding;
   connectionState: EditorConnectionState;
 }

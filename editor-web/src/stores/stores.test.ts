@@ -43,7 +43,9 @@ describe("application stores", () => {
 
   it("keeps editor selection valid when a tab closes", () => {
     const editors = useEditorStore();
-    const tab = (id: string) => ({ id, title: id, content: "", dirty: false, transactionDirty: false, busy: false, connectionState: "unbound" as const });
+    const tab = (id: string) => ({ id, title: id, content: "", dirty: false, transactionDirty: false, busy: false,
+      executionPhase: "idle" as const, transactionOperation: "idle" as const,
+      connectionState: "unbound" as const });
     editors.add(tab("one"));
     editors.add(tab("two"));
     editors.remove("two");

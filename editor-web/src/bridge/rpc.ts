@@ -30,7 +30,6 @@ export class RpcClient {
   private currentState: TransportState;
   private readonly readyWaiters = new Set<{ resolve: () => void; reject: (error: Error) => void; timer: number }>();
   private closing = false;
-  private readonly executions = new Map<string, string>();
 
   constructor(private readonly mock?: MockRequestHandler) {
     this.workspaceId = mock ? "mock-workspace" : "";
@@ -138,10 +137,6 @@ export class RpcClient {
     const route = this.route(type, body);
     try {
       const result = await this.fetchJson<T>(route.path, route.method, route.body, timeoutMs);
-      if (type === "query.execute") {
-        const executionId = (result as { executionId?: string }).executionId;
-        if (executionId && typeof body.editorId === "string") this.executions.set(body.editorId, executionId);
-      }
       return result;
     } catch (error) {
       const code = (error as RpcError).code;
@@ -332,7 +327,11 @@ export class RpcClient {
       case "editor.draft": return { path: `${ws}/editors/${editorId}/draft`, method: "PUT", body };
       case "query.execute": return { path: `${ws}/editors/${editorId}/executions`, method: "POST", body };
       case "query.fetchRows": return { path: `${ws}/editors/${editorId}/results/${encodeURIComponent(String(body.resultIndex ?? 0))}/page`, method: "POST", body };
-      case "query.cancel": return { path: `${ws}/executions/${encodeURIComponent(this.executions.get(String(body.editorId ?? "")) ?? "none")}`, method: "DELETE" };
+      case "query.cancel": {
+        const executionId = String(body.executionId ?? "");
+        if (!executionId) throw new Error("尚未取得当前执行编号");
+        return { path: `${ws}/executions/${encodeURIComponent(executionId)}`, method: "DELETE" };
+      }
       case "transaction.commit": return { path: `${ws}/editors/${editorId}/transaction/commit`, method: "POST", body: {} };
       case "transaction.rollback": return { path: `${ws}/editors/${editorId}/transaction/rollback`, method: "POST", body: {} };
       case "sql.format": return { path: `${ws}/sql/format`, method: "POST", body };

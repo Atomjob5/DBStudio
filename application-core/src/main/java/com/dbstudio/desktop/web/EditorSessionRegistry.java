@@ -17,6 +17,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 /**
@@ -88,12 +89,20 @@ public final class EditorSessionRegistry implements AutoCloseable {
             throw new RpcException("QUERY_BUSY", "当前标签已有查询正在执行");
         }
         final UUID executionId = UUID.randomUUID();
-        session.activeExecutionId = executionId;
         session.lastSql = statements.isEmpty() ? null : statements.get(statements.size() - 1).text();
         session.touch();
-        startedCallback.accept(executionId);
-        runner.execute(statements, stopOnError, resultListener).whenComplete((execution, failure) -> {
-            session.activeExecutionId = null;
+        runner.execute(statements, stopOnError, resultListener, () -> {
+            if (!session.beginExecution(executionId)) {
+                throw new RpcException("TRANSACTION_BUSY", "当前标签正在提交或回滚事务");
+            }
+            try {
+                startedCallback.accept(executionId);
+            } catch (RuntimeException exception) {
+                session.endExecution(executionId);
+                throw exception;
+            }
+        }).whenComplete((execution, failure) -> {
+            session.endExecution(executionId);
             session.lastExecutionId = executionId;
             if (execution != null) session.lastExecution = execution;
             session.touch();
@@ -148,6 +157,7 @@ public final class EditorSessionRegistry implements AutoCloseable {
         private volatile UUID lastExecutionId;
         private volatile QueryExecution lastExecution;
         private volatile String lastSql;
+        private final AtomicBoolean transactionOperation = new AtomicBoolean();
 
         private EditorSession(UUID id, String title) { this.id = id; this.title = title; }
         public UUID id() { return id; }
@@ -170,6 +180,21 @@ public final class EditorSessionRegistry implements AutoCloseable {
         public QueryExecution lastExecution() { return lastExecution; }
         public String lastSql() { return lastSql; }
         public long lastTouched() { return lastTouched; }
+        public boolean transactionOperationActive() { return transactionOperation.get(); }
+        public synchronized boolean beginTransactionOperation() {
+            if (activeExecutionId != null || transactionOperation.get()) return false;
+            transactionOperation.set(true);
+            return true;
+        }
+        public void endTransactionOperation() { transactionOperation.set(false); }
+        private synchronized boolean beginExecution(UUID executionId) {
+            if (activeExecutionId != null || transactionOperation.get()) return false;
+            activeExecutionId = executionId;
+            return true;
+        }
+        private synchronized void endExecution(UUID executionId) {
+            if (executionId.equals(activeExecutionId)) activeExecutionId = null;
+        }
         public void touch() { lastTouched = System.currentTimeMillis(); }
 
         /** 挂载由 Workspace JDBC 租约支持的执行器。 */

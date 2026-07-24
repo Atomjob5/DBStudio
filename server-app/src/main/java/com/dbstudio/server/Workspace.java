@@ -83,6 +83,8 @@ final class Workspace implements AutoCloseable {
             boolean transaction = editor.transactionDirty();
             result.add(ApiPayloads.map("editorId", editor.id().toString(),
                     "busy", editor.activeExecutionId() != null,
+                    "activeExecutionId", editor.activeExecutionId() == null
+                            ? null : editor.activeExecutionId().toString(),
                     "transactionDirty", transaction,
                     "transactionState", transaction ? (disconnected ? "disconnected-protected" : "active") : "none",
                     "connectionState", !editor.bound() ? "unbound" : editor.hasContext() ? "ready" : "credentials-required"));
@@ -173,6 +175,7 @@ final class Workspace implements AutoCloseable {
                  final EditorSessionRegistry.ExecutionCallback callback) {
         ensureBound(editor);
         if (editor.activeExecutionId() != null) throw new ApiException("QUERY_BUSY", "当前标签已有查询正在执行");
+        if (editor.transactionOperationActive()) throw new ApiException("TRANSACTION_BUSY", "当前标签正在提交或回滚事务");
         LOG.info("Workspace开始执行SQL workspaceId={} editorId={} statements={} stopOnError={}", id,
                 editor.id(), statements.size(), stopOnError);
         final ActiveLease active = acquireRunner(editor);
@@ -206,6 +209,7 @@ final class Workspace implements AutoCloseable {
     CompletableFuture<PageResult> fetchPage(final EditorSession editor, String sql, int offset, int limit) {
         ensureBound(editor);
         if (editor.activeExecutionId() != null) throw new ApiException("QUERY_BUSY", "当前标签已有查询正在执行");
+        if (editor.transactionOperationActive()) throw new ApiException("TRANSACTION_BUSY", "当前标签正在提交或回滚事务");
         LOG.info("Workspace开始分页 workspaceId={} editorId={} offset={} limit={}", id, editor.id(), offset, limit);
         final ActiveLease active = acquireRunner(editor);
         return active.runner.fetchPage(sql, offset, limit).whenComplete((result, failure) -> {
@@ -214,31 +218,51 @@ final class Workspace implements AutoCloseable {
     }
 
     CompletableFuture<Void> commit(final EditorSession editor) {
-        ActiveLease active = activeLeases.get(editor.id().toString());
-        if (active == null || !active.runner.isTransactionDirty()) return CompletableFuture.completedFuture(null);
-        return active.runner.commit().whenComplete((ignored, failure) -> {
-            if (failure == null) releasePinned(editor, active);
-            if (failure != null) LOG.warn("Workspace事务提交失败 workspaceId={} editorId={}", id, editor.id(), failure);
-            else LOG.info("Workspace事务提交完成 workspaceId={} editorId={}", id, editor.id());
-        });
+        final ActiveLease active = beginTransactionOperation(editor);
+        if (active == null) return CompletableFuture.completedFuture(null);
+        try {
+            return active.runner.commit().whenComplete((ignored, failure) -> {
+                editor.endTransactionOperation();
+                if (failure == null) releasePinned(editor, active);
+                if (failure != null) LOG.warn("Workspace事务提交失败 workspaceId={} editorId={}", id, editor.id(), failure);
+                else LOG.info("Workspace事务提交完成 workspaceId={} editorId={}", id, editor.id());
+            });
+        } catch (RuntimeException exception) {
+            editor.endTransactionOperation();
+            throw exception;
+        }
     }
 
     CompletableFuture<Void> rollback(final EditorSession editor) {
-        ActiveLease active = activeLeases.get(editor.id().toString());
+        final ActiveLease active = beginTransactionOperation(editor);
         if (active == null) return CompletableFuture.completedFuture(null);
-        return active.runner.rollback().whenComplete((ignored, failure) -> {
-            if (failure == null) {
-                releasePinned(editor, active);
-                LOG.info("Workspace事务回滚完成 workspaceId={} editorId={}", id, editor.id());
-            } else {
-                LOG.warn("Workspace事务回滚失败 workspaceId={} editorId={}", id, editor.id(), failure);
-                synchronized (Workspace.this) {
-                    String editorId = editor.id().toString();
-                    activeLeases.remove(editorId, active);
-                    editor.detachRunner(); active.runner.close(); active.pool.closePinned(editorId);
+        try {
+            return active.runner.rollback().whenComplete((ignored, failure) -> {
+                editor.endTransactionOperation();
+                if (failure == null) {
+                    releasePinned(editor, active);
+                    LOG.info("Workspace事务回滚完成 workspaceId={} editorId={}", id, editor.id());
+                } else {
+                    LOG.warn("Workspace事务回滚失败 workspaceId={} editorId={}", id, editor.id(), failure);
                 }
-            }
-        });
+            });
+        } catch (RuntimeException exception) {
+            editor.endTransactionOperation();
+            throw exception;
+        }
+    }
+
+    private synchronized ActiveLease beginTransactionOperation(EditorSession editor) {
+        ActiveLease active = activeLeases.get(editor.id().toString());
+        if (active == null || !active.runner.isTransactionDirty()) return null;
+        if (active.runner.isRunning()) {
+            throw new ApiException("QUERY_BUSY", "SQL执行期间不能提交或回滚事务");
+        }
+        if (!editor.beginTransactionOperation()) {
+            throw new ApiException(editor.activeExecutionId() == null ? "TRANSACTION_BUSY" : "QUERY_BUSY",
+                    editor.activeExecutionId() == null ? "当前标签正在提交或回滚事务" : "SQL执行期间不能提交或回滚事务");
+        }
+        return active;
     }
 
     synchronized void browserDisconnected() {

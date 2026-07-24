@@ -39,7 +39,14 @@
         </el-tooltip>
       </div>
 
-      <el-dropdown class="execute-control" split-button type="primary" :icon="VideoPlay" :disabled="!canExecute"
+      <el-tooltip v-if="activeExecutionRunning" :content="cancelExecutionTooltip" placement="bottom">
+        <el-button class="execute-control cancel-execution-control" type="warning" :icon="Close"
+                   aria-label="取消执行" :loading="editors.active?.executionPhase === 'cancelling'"
+                   :disabled="!canCancelExecution" @click="cancelActive">
+          {{ editors.active?.executionPhase === "cancelling" ? "正在取消…" : "取消执行" }}
+        </el-button>
+      </el-tooltip>
+      <el-dropdown v-else class="execute-control" split-button type="primary" :icon="VideoPlay" :disabled="!canExecute"
                    @click="executeActive('current')" @command="executeCommand">
         执行
         <template #dropdown>
@@ -50,17 +57,20 @@
         </template>
       </el-dropdown>
 
-      <div class="toolbar-cluster query-actions" aria-label="查询控制">
-        <el-tooltip content="取消执行 · Esc" placement="bottom">
-          <el-button text :icon="Close" aria-label="取消执行" :disabled="!editors.active?.busy || app.transportState !== 'ready'" @click="cancelActive" />
-        </el-tooltip>
-        <el-tooltip content="提交事务 · ⌘/Ctrl Alt C" placement="bottom">
-          <el-button text :icon="Select" aria-label="提交事务" :disabled="!editors.active?.connection || app.transportState !== 'ready'" @click="commitActive" />
-        </el-tooltip>
-        <el-tooltip content="回滚事务 · ⌘/Ctrl Alt R" placement="bottom">
-          <el-button text :icon="RefreshLeft" aria-label="回滚事务" :disabled="!editors.active?.connection || app.transportState !== 'ready'" @click="rollbackActive" />
-        </el-tooltip>
-      </div>
+      <Transition name="transaction-actions">
+        <el-button-group v-if="hasActiveTransaction" class="query-actions" aria-label="事务操作">
+          <el-tooltip content="提交事务 · ⌘/Ctrl Alt C" placement="bottom">
+            <el-button type="success" :icon="Select" aria-label="提交事务"
+                       :loading="editors.active?.transactionOperation === 'committing'"
+                       :disabled="!canOperateTransaction" @click="commitActive" />
+          </el-tooltip>
+          <el-tooltip content="回滚事务 · ⌘/Ctrl Alt R" placement="bottom">
+            <el-button type="danger" :icon="RefreshLeft" aria-label="回滚事务"
+                       :loading="editors.active?.transactionOperation === 'rolling-back'"
+                       :disabled="!canOperateTransaction" @click="rollbackActive" />
+          </el-tooltip>
+        </el-button-group>
+      </Transition>
 
       <span class="toolbar-spacer" />
       <el-dropdown @command="dataCommand">
@@ -298,6 +308,19 @@ const activeConnectionTooltip = computed(() => `${activeConnectionPath.value}${e
   ? " · 配置已更新，重新选择后生效" : editors.active?.connection?.unavailable ? " · 配置已删除，当前会话仍可继续使用" : ""}`);
 const connectionCascaderProps: CascaderProps = { emitPath: false };
 const canExecute = computed(() => Boolean(activeConnected.value && !editors.active?.busy && app.transportState === "ready"));
+const activeExecutionRunning = computed(() => Boolean(editors.active?.busy
+  || (editors.active?.executionPhase && editors.active.executionPhase !== "idle")));
+const canCancelExecution = computed(() => Boolean(editors.active?.busy && editors.active.activeExecutionId
+  && editors.active.executionPhase === "running" && app.transportState === "ready"));
+const cancelExecutionTooltip = computed(() => editors.active?.executionPhase === "starting"
+  ? "正在启动执行，获取执行编号后即可取消"
+  : editors.active?.executionPhase === "cancelling" ? "已发送取消请求，正在等待数据库响应"
+    : app.transportState !== "ready" ? "事件通道恢复后可取消执行" : "取消执行 · Esc");
+const hasActiveTransaction = computed(() => Boolean(editors.active?.transactionDirty
+  && editors.active.transactionState === "active"));
+const canOperateTransaction = computed(() => Boolean(hasActiveTransaction.value && !editors.active?.busy
+  && editors.active?.executionPhase === "idle" && editors.active.transactionOperation === "idle"
+  && activeConnected.value && app.transportState === "ready"));
 const transportStatusText = computed(() => app.transportState === "recovering" ? "正在恢复浏览器工作区…"
   : app.transportState === "connecting" ? "正在建立事件通道…"
     : app.transportState === "offline" ? "事件通道不可用" : "事件通道重连中…");
@@ -307,6 +330,7 @@ const connectionSessionText = computed(() => editors.active?.connectionState ===
       : editors.active?.connectionState === "suspended" ? "链接已暂停" : "链接正常 · 自动提交关闭");
 const activeExecutionText = computed(() => {
   const execution = activeExecution.value;
+  if (editors.active?.executionPhase === "cancelling") return "正在取消…";
   if (editors.active?.busy || execution?.busy) return "正在执行…";
   if (!execution) return "尚未执行 SQL";
   return `${execution.cancelled ? "执行已取消" : execution.failed ? "执行失败" : "执行完成"} · ${execution.durationMs} ms`;
@@ -465,17 +489,25 @@ function installEventHandlers(): void {
   }));
   disposers.push(rpc.on("workspace.ready", (raw) => {
     const data = raw as { editors?: Array<{ editorId: string; busy: boolean; transactionDirty: boolean;
-      transactionState: EditorTab["transactionState"]; connectionState: EditorConnectionState }> };
+      transactionState: EditorTab["transactionState"]; connectionState: EditorConnectionState;
+      activeExecutionId?: string | null }> };
     for (const state of data.editors ?? []) {
       const tab = editors.tabs.find((item) => item.id === state.editorId); if (!tab) continue;
       if (tab.busy && !state.busy) queries.markHistorical(tab.id);
       editors.patch(tab.id, { busy: state.busy, transactionDirty: state.transactionDirty,
-        transactionState: state.transactionState, connectionState: state.connectionState });
+        transactionState: state.transactionState, connectionState: state.connectionState,
+        activeExecutionId: state.activeExecutionId ?? undefined,
+        executionPhase: state.busy && state.activeExecutionId ? "running" : state.busy ? "starting" : "idle",
+        transactionOperation: "idle" });
     }
   }));
   disposers.push(rpc.on("query.started", (raw) => {
     const data = raw as { editorId: string; executionId: string };
     queries.start(data.editorId, data.executionId);
+    const tab = editors.tabs.find((item) => item.id === data.editorId);
+    if (tab?.busy && tab.executionPhase !== "cancelling") {
+      editors.patch(data.editorId, { activeExecutionId: data.executionId, executionPhase: "running" });
+    }
   }));
   disposers.push(rpc.on("query.resultMeta", (raw) => {
     const data = raw as QueryResult & { editorId: string };
@@ -492,9 +524,12 @@ function installEventHandlers(): void {
   }));
   disposers.push(rpc.on("query.executionComplete", (raw) => {
     const data = raw as { editorId: string; executionId: string; cancelled: boolean; failed: boolean; durationMs: number; transactionDirty: boolean };
+    const tab = editors.tabs.find((item) => item.id === data.editorId);
+    if (!tab || tab.activeExecutionId !== data.executionId) return;
     queries.complete(data.editorId, data); editors.patch(data.editorId, {
       busy: false, transactionDirty: data.transactionDirty,
-      transactionState: data.transactionDirty ? "active" : "none"
+      transactionState: data.transactionDirty ? "active" : "none",
+      activeExecutionId: undefined, executionPhase: "idle"
     });
     scheduleDraft(data.editorId);
     app.status = `${data.cancelled ? "执行已取消" : data.failed ? "执行失败" : "执行完成"} · ${data.durationMs} ms`;
@@ -622,7 +657,8 @@ async function bootstrapWorkspace(recovered: RecoveredEditor[]): Promise<void> {
     for (const value of [...recovered].sort((left, right) => left.sortOrder - right.sortOrder)) {
       editors.add({ id: value.id, title: value.title, content: value.content, filePath: value.filePath,
         dirty: value.dirty, transactionDirty: value.transactionState === "active" || value.transactionState === "disconnected-protected",
-        transactionState: value.transactionState, busy: false, connection: value.connection,
+        transactionState: value.transactionState, busy: false, executionPhase: "idle",
+        transactionOperation: "idle", connection: value.connection,
         connectionState: value.connectionState });
     }
     const active = recovered.find((item) => item.active);
@@ -685,6 +721,7 @@ async function newEditor(content = "", filePath?: string, title?: string, fileHa
   const created = await rpc.request<{ id: string; title: string; connection?: EditorConnectionBinding; connectionState: EditorConnectionState }>("editor.create", inherited ? { profileId: inherited } : {});
   const tab: EditorTab = { id: created.id, title: title ?? created.title, content, filePath, fileHandle,
     dirty: Boolean(content && !filePath), transactionDirty: false, busy: false,
+    executionPhase: "idle", transactionOperation: "idle",
     connection: created.connection, connectionState: created.connectionState ?? "unbound" };
   editors.add(tab);
   scheduleDraft(tab.id);
@@ -718,11 +755,18 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
   try {
     await rpc.ensureOperational();
     if (!await ensureEditorCredentials(tab)) return;
-    editors.patch(tab.id, { busy: true }); app.status = "正在执行…";
+    editors.patch(tab.id, { busy: true, activeExecutionId: undefined, executionPhase: "starting" }); app.status = "正在执行…";
     const response = await rpc.request<{ executionId: string }>("query.execute", { editorId: tab.id, text: monacoEditor.value?.getValue(tab.id) ?? tab.content, selectedText, cursorOffset, scope, stopOnError: true });
     queries.start(tab.id, response.executionId);
+    const current = editors.tabs.find((item) => item.id === tab.id);
+    if (current?.busy && current.executionPhase !== "cancelling") {
+      editors.patch(tab.id, { activeExecutionId: response.executionId, executionPhase: "running" });
+    }
   } catch (error) {
-    editors.patch(tab.id, { busy: false });
+    const current = editors.tabs.find((item) => item.id === tab.id);
+    if (!current?.activeExecutionId) {
+      editors.patch(tab.id, { busy: false, activeExecutionId: undefined, executionPhase: "idle" });
+    }
     if ((error as { code?: string }).code === "WORKSPACE_RECOVERED_RETRY_REQUIRED" && !recoveryRetried) {
       if (editors.activeId !== tab.id) return;
       await executeActive(scope, selectedText, cursorOffset, true);
@@ -744,21 +788,52 @@ async function ensureEditorCredentials(tab: EditorTab): Promise<boolean> {
 }
 async function cancelActive(): Promise<void> {
   const tab = editors.active;
-  if (!tab) return;
-  await rpc.ensureOperational();
-  await rpc.request("query.cancel", { editorId: tab.id });
+  if (!tab?.busy || !tab.activeExecutionId || tab.executionPhase !== "running") return;
+  const executionId = tab.activeExecutionId;
+  editors.patch(tab.id, { executionPhase: "cancelling" });
+  try {
+    await rpc.ensureOperational();
+    const response = await rpc.request<{ cancelled: boolean }>("query.cancel", {
+      editorId: tab.id, executionId
+    });
+    if (!response.cancelled) throw new Error("当前执行已经结束或无法取消");
+  } catch (error) {
+    const current = editors.tabs.find((item) => item.id === tab.id);
+    if (current?.busy && current.activeExecutionId === executionId) {
+      editors.patch(tab.id, { executionPhase: "running" });
+    }
+    ElMessage.error(message(error));
+  }
 }
 async function commitActive(): Promise<void> {
   const tab = editors.active;
-  if (!tab?.connection) return;
-  await rpc.ensureOperational();
-  await rpc.request("transaction.commit", { editorId: tab.id });
+  if (!tab?.connection || !canOperateTransaction.value) return;
+  editors.patch(tab.id, { transactionOperation: "committing" });
+  try {
+    await rpc.ensureOperational();
+    const response = await rpc.request<{ dirty: boolean; message: string }>("transaction.commit", { editorId: tab.id });
+    editors.patch(tab.id, { transactionDirty: response.dirty, transactionState: response.dirty ? "active" : "none" });
+    app.status = response.message;
+  } catch (error) {
+    ElMessage.error(message(error));
+  } finally {
+    editors.patch(tab.id, { transactionOperation: "idle" });
+  }
 }
 async function rollbackActive(): Promise<void> {
   const tab = editors.active;
-  if (!tab?.connection) return;
-  await rpc.ensureOperational();
-  await rpc.request("transaction.rollback", { editorId: tab.id });
+  if (!tab?.connection || !canOperateTransaction.value) return;
+  editors.patch(tab.id, { transactionOperation: "rolling-back" });
+  try {
+    await rpc.ensureOperational();
+    const response = await rpc.request<{ dirty: boolean; message: string }>("transaction.rollback", { editorId: tab.id });
+    editors.patch(tab.id, { transactionDirty: response.dirty, transactionState: response.dirty ? "active" : "none" });
+    app.status = response.message;
+  } catch (error) {
+    ElMessage.error(message(error));
+  } finally {
+    editors.patch(tab.id, { transactionOperation: "idle" });
+  }
 }
 
 interface ResultPageResponse {
@@ -1052,6 +1127,13 @@ async function requestConnectionPassword(): Promise<{ password: string; remember
 }
 
 function handleShortcut(event: KeyboardEvent): void {
+  if (event.key.toLowerCase() === "escape") {
+    if (!editors.active?.busy) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void cancelActive();
+    return;
+  }
   const shortcut = event.metaKey || event.ctrlKey;
   if (!shortcut) return;
   const key = event.key.toLowerCase();
@@ -1063,7 +1145,6 @@ function handleShortcut(event: KeyboardEvent): void {
   else if (key === "o") action = () => { void openFile().catch(reportError); };
   else if (key === "s") action = () => { void saveActive(event.shiftKey).catch(reportError); };
   else if (key === "r") action = () => { objectExplorer.value?.refresh(); };
-  else if (key === "escape") action = () => { void cancelActive().catch(reportError); };
   if (!action) return;
   event.preventDefault();
   event.stopPropagation();
@@ -1440,6 +1521,78 @@ function message(error: unknown): string { return error instanceof Error ? error
 .execute-control { flex: none; }
 .execute-control :deep(.el-button-group > .el-button:first-child) { min-width: 82px; border-radius: 10px 0 0 10px; }
 .execute-control :deep(.el-button-group > .el-button:last-child) { border-radius: 0 10px 10px 0; }
+.cancel-execution-control {
+  width: 116px;
+  min-height: 32px;
+  color: #fff;
+  border-color: var(--db-warning);
+  background: var(--db-warning);
+}
+.cancel-execution-control:hover,
+.cancel-execution-control:focus-visible {
+  color: #fff;
+  border-color: color-mix(in srgb, var(--db-warning) 84%, #fff);
+  background: color-mix(in srgb, var(--db-warning) 84%, #fff);
+}
+.cancel-execution-control.is-disabled,
+.cancel-execution-control.is-disabled:hover,
+.cancel-execution-control.is-loading {
+  color: #fff;
+  border-color: var(--db-warning);
+  background: var(--db-warning);
+  opacity: 0.58;
+}
+.query-actions {
+  display: inline-flex;
+  flex: none;
+  width: 64px;
+  max-width: 64px;
+  height: 34px;
+  overflow: hidden;
+  border-radius: 10px;
+  transform-origin: left center;
+  will-change: max-width, opacity, transform;
+}
+.query-actions :deep(.el-button) {
+  width: 32px;
+  height: 34px;
+  min-height: 34px;
+  margin: 0;
+  padding: 0;
+  color: #fff;
+}
+.query-actions :deep(.el-button--success),
+.query-actions :deep(.el-button--success:hover),
+.query-actions :deep(.el-button--success:focus-visible),
+.query-actions :deep(.el-button--success.is-disabled) {
+  color: #fff;
+  border-color: var(--db-success);
+  background: var(--db-success);
+}
+.query-actions :deep(.el-button--danger),
+.query-actions :deep(.el-button--danger:hover),
+.query-actions :deep(.el-button--danger:focus-visible),
+.query-actions :deep(.el-button--danger.is-disabled) {
+  color: #fff;
+  border-color: var(--db-danger);
+  background: var(--db-danger);
+}
+.query-actions :deep(.el-button.is-disabled) { opacity: 0.58; }
+.transaction-actions-enter-active { animation: transaction-actions-in 360ms cubic-bezier(.22, 1.35, .36, 1); }
+.transaction-actions-leave-active {
+  transition: max-width 180ms ease-in, opacity 140ms ease-in, transform 180ms ease-in;
+}
+.transaction-actions-leave-to {
+  max-width: 0;
+  opacity: 0;
+  transform: translateX(-10px) scale(.94);
+}
+@keyframes transaction-actions-in {
+  0% { max-width: 0; opacity: 0; transform: translateX(-12px) scale(.9); }
+  68% { max-width: 68px; opacity: 1; transform: translateX(3px) scale(1.04); }
+  84% { max-width: 62px; transform: translateX(-1px) scale(.99); }
+  100% { max-width: 64px; opacity: 1; transform: translateX(0) scale(1); }
+}
 .app-toolbar :deep(.el-divider--vertical) { margin: 0 2px; border-color: var(--db-border); }
 .app-toolbar :deep(kbd),
 :global(.el-dropdown-menu kbd) {
@@ -1527,5 +1680,9 @@ function message(error: unknown): string { return error instanceof Error ? error
     animation: none !important;
     background-position: 50% 50%;
   }
+  .transaction-actions-enter-active,
+  .transaction-actions-leave-active { animation: none; transition: opacity 100ms linear; }
+  .transaction-actions-enter-from,
+  .transaction-actions-leave-to { opacity: 0; transform: none; }
 }
 </style>

@@ -108,6 +108,25 @@ describe("RpcClient websocket recovery", () => {
     client.dispose();
   });
 
+  it("uses the exact execution id for cancellation and rejects a missing id locally", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).includes("/open")
+      ? jsonResponse({ workspaceId: "workspace", recoveryDecisionRequired: false, editors: [] })
+      : jsonResponse({ cancelled: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new RpcClient();
+    await open(client);
+
+    await expect(client.request("query.cancel", {
+      editorId: "editor-1", executionId: "execution-42"
+    })).resolves.toEqual({ cancelled: true });
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/executions/execution-42"),
+      expect.objectContaining({ method: "DELETE" }));
+    await expect(client.request("query.cancel", { editorId: "editor-1" }))
+      .rejects.toThrow("尚未取得当前执行编号");
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/executions/none"))).toBe(false);
+    client.dispose();
+  });
+
   it("rejects a socket closed before opening and reconnects with exponential backoff", async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).includes("/workspaces/")

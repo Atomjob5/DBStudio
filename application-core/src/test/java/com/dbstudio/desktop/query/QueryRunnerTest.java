@@ -139,6 +139,31 @@ class QueryRunnerTest {
         }
     }
 
+    @Test
+    void acceptsCancellationBeforeStatementCreationAndResetsForTheNextExecution() throws Exception {
+        final Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
+        connection.setAutoCommit(false);
+        try (final QueryRunner runner = new QueryRunner(session(connection), 10, 10)) {
+            QueryExecution cancelled = runner.execute(Collections.singletonList(
+                    sql("SELECT 1", StatementType.QUERY)), true, QueryResultListener.NONE,
+                    new Runnable() {
+                        @Override public void run() {
+                            assertTrue(runner.cancel());
+                        }
+                    }).join();
+
+            assertTrue(cancelled.cancelled());
+            assertTrue(cancelled.results().isEmpty());
+            assertFalse(runner.isRunning());
+
+            QueryExecution next = runner.execute(Collections.singletonList(
+                    sql("SELECT 2", StatementType.QUERY)), true).join();
+            assertFalse(next.cancelled());
+            assertFalse(next.failed());
+            assertEquals("2", next.results().get(0).rows().get(0).get(0));
+        }
+    }
+
     private StatementResult query(QueryRunner runner, int rows, final List<Integer> batches,
                                   final Runnable started) {
         String text = "WITH RECURSIVE numbers(id) AS (SELECT 1 UNION ALL SELECT id + 1 FROM numbers WHERE id < "

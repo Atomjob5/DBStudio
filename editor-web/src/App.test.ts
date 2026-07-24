@@ -105,7 +105,8 @@ describe("App result loading status toolbar", () => {
 
     const editors = useEditorStore();
     const queries = useQueryStore();
-    editors.add({ id: "editor-1", title: "查询 1", content: "", dirty: false, transactionDirty: false, busy: false, connectionState: "unbound" });
+    editors.add({ id: "editor-1", title: "查询 1", content: "", dirty: false, transactionDirty: false, busy: false,
+      executionPhase: "idle", transactionOperation: "idle", connectionState: "unbound" });
     queries.start("editor-1", "execution-1");
     queries.addResult("editor-1", { resultIndex: 0, sql: "select 1", type: "QUERY", columns: ["id"], rows: [["1"], ["2"]],
       updateCount: -1, truncated: true, durationMs: 3, complete: true });
@@ -162,7 +163,8 @@ describe("App result loading status toolbar", () => {
 
     const editors = useEditorStore();
     const queries = useQueryStore();
-    editors.add({ id: "editor-1", title: "查询 1", content: "", dirty: false, transactionDirty: false, busy: false, connectionState: "unbound" });
+    editors.add({ id: "editor-1", title: "查询 1", content: "", dirty: false, transactionDirty: false, busy: false,
+      executionPhase: "idle", transactionOperation: "idle", connectionState: "unbound" });
     queries.start("editor-1", "execution-1");
     queries.addResult("editor-1", { resultIndex: 0, sql: "select 1", type: "QUERY", columns: ["id"], rows: [["1"]],
       updateCount: -1, truncated: true, durationMs: 3, complete: true });
@@ -217,7 +219,7 @@ describe("App result loading status toolbar", () => {
     connections.initialize([], [profile], [{ id: "system-1", name: "核心系统", revision: "1" }],
       [{ id: "environment-dev", systemId: "system-1", name: "DEV", revision: "1" }]);
     editors.add({ id: "connected-editor", title: "查询", content: "", dirty: false, transactionDirty: false, busy: false,
-      connection: profile, connectionState: "active" });
+      executionPhase: "idle", transactionOperation: "idle", connection: profile, connectionState: "active" });
     await nextTick();
 
     const selector = wrapper.find(".connection-pill-wrap");
@@ -269,7 +271,8 @@ describe("App result loading status toolbar", () => {
     expect(completionMock.refresh).toHaveBeenCalledTimes(1);
 
     editors.add({ id: "editor-same-environment", title: "查询 2", content: "", dirty: false,
-      transactionDirty: false, busy: false, connectionState: "unbound" });
+      transactionDirty: false, busy: false, executionPhase: "idle", transactionOperation: "idle",
+      connectionState: "unbound" });
     await vm.connectionSelectionChanged(`${profile.id}@${profile.revision}`);
     await flushPromises();
     expect(completionMock.refresh).toHaveBeenCalledTimes(1);
@@ -393,9 +396,9 @@ describe("App result loading status toolbar", () => {
     const editors = useEditorStore();
     const queries = useQueryStore();
     editors.add({ id: "active-editor", title: "当前", content: "", dirty: false, transactionDirty: false,
-      busy: false, connectionState: "unbound" });
+      busy: false, executionPhase: "idle", transactionOperation: "idle", connectionState: "unbound" });
     editors.add({ id: "background-editor", title: "后台", content: "", dirty: false, transactionDirty: false,
-      busy: false, connectionState: "unbound" });
+      busy: false, executionPhase: "idle", transactionOperation: "idle", connectionState: "unbound" });
     editors.activeId = "active-editor";
     queries.start("active-editor", "active-execution");
     queries.complete("active-editor", { durationMs: 12, failed: false, cancelled: false });
@@ -409,6 +412,97 @@ describe("App result loading status toolbar", () => {
     await nextTick();
     expect(wrapper.get(".status-execution-zone").text()).toContain("已选中 3 行");
     expect(wrapper.get(".status-system-zone").text()).toContain("未选择链接");
+  });
+
+  it("replaces execute with a yellow cancel button and keeps it until matching completion", async () => {
+    const editors = useEditorStore();
+    const profile = completionProfile();
+    editors.patch("bootstrap-editor", { connection: profile, connectionState: "active" });
+    Object.assign(wrapper.findComponent({ name: "MonacoEditor" }).vm, { getValue: () => "" });
+    let finishExecute: ((value: { executionId: string }) => void) | undefined;
+    rpcRequest.mockImplementation(async (type: string) => {
+      if (type === "query.execute") {
+        return await new Promise<{ executionId: string }>((resolve) => { finishExecute = resolve; });
+      }
+      if (type === "query.cancel") return { cancelled: true };
+      return {};
+    });
+
+    const vm = wrapper.vm as unknown as { executeActive: (scope: "current") => Promise<void> };
+    expect(editors.active).toMatchObject({ connectionState: "active", busy: false, executionPhase: "idle" });
+    const executing = vm.executeActive("current");
+    await flushPromises();
+    expect(editors.active).toMatchObject({ busy: true, executionPhase: "starting" });
+
+    let cancel = wrapper.get('button[aria-label="取消执行"]');
+    expect(cancel.classes()).toContain("el-button--warning");
+    expect(cancel.attributes("disabled")).toBeDefined();
+    expect(wrapper.find(".execute-control.el-dropdown").exists()).toBe(false);
+
+    rpcMock.listeners.get("query.started")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-current"
+    }));
+    await nextTick();
+    cancel = wrapper.get('button[aria-label="取消执行"]');
+    expect(cancel.attributes("disabled")).toBeUndefined();
+    await cancel.trigger("click");
+    await flushPromises();
+    expect(rpcRequest).toHaveBeenCalledWith("query.cancel", {
+      editorId: "bootstrap-editor", executionId: "execution-current"
+    });
+    expect(editors.active?.executionPhase).toBe("cancelling");
+    expect(wrapper.get('button[aria-label="取消执行"]').classes()).toContain("el-button--warning");
+
+    rpcMock.listeners.get("query.executionComplete")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "stale-execution", cancelled: true,
+      failed: false, durationMs: 1, transactionDirty: false
+    }));
+    await nextTick();
+    expect(editors.active?.busy).toBe(true);
+
+    rpcMock.listeners.get("query.executionComplete")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-current", cancelled: true,
+      failed: false, durationMs: 2, transactionDirty: false
+    }));
+    finishExecute?.({ executionId: "execution-current" });
+    await executing;
+    await nextTick();
+    expect(editors.active).toMatchObject({ busy: false, executionPhase: "idle" });
+    expect(wrapper.find('button[aria-label="取消执行"]').exists()).toBe(false);
+    expect(wrapper.find(".execute-control.el-dropdown").exists()).toBe(true);
+  });
+
+  it("shows a compact success-danger transaction group only for an active transaction", async () => {
+    const editors = useEditorStore();
+    const profile = completionProfile();
+    editors.patch("bootstrap-editor", {
+      connection: profile, connectionState: "active", transactionDirty: false, transactionState: "none"
+    });
+    await nextTick();
+    expect(wrapper.find(".query-actions").exists()).toBe(false);
+
+    editors.patch("bootstrap-editor", { transactionDirty: true, transactionState: "active" });
+    await nextTick();
+    const group = wrapper.get(".query-actions");
+    const commit = group.get('button[aria-label="提交事务"]');
+    const rollback = group.get('button[aria-label="回滚事务"]');
+    expect(commit.classes()).toContain("el-button--success");
+    expect(rollback.classes()).toContain("el-button--danger");
+    expect(commit.attributes("disabled")).toBeUndefined();
+    expect(rollback.attributes("disabled")).toBeUndefined();
+
+    editors.patch("bootstrap-editor", { busy: true, executionPhase: "running", activeExecutionId: "execution-dml" });
+    await nextTick();
+    expect(wrapper.find(".query-actions").exists()).toBe(true);
+    expect(group.get('button[aria-label="提交事务"]').attributes("disabled")).toBeDefined();
+    expect(group.get('button[aria-label="回滚事务"]').attributes("disabled")).toBeDefined();
+
+    editors.patch("bootstrap-editor", {
+      busy: false, executionPhase: "idle", activeExecutionId: undefined,
+      transactionDirty: false, transactionState: "none"
+    });
+    await nextTick();
+    expect(wrapper.find(".query-actions").exists()).toBe(false);
   });
 
   it("确认后只清理补全缓存并使迟到快照失效", async () => {
