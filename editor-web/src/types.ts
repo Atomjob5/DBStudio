@@ -174,6 +174,20 @@ export interface CompletionCacheSummary {
   objectCount: number;
   columnCount: number;
   estimatedBytes: number;
+  warning?: string;
+}
+
+export interface CompletionManifest extends CompletionCacheSummary {
+  formatVersion: 2;
+  cacheKey: string;
+  activeGeneration: string;
+  defaultNamespaceKey: string;
+  namespaces: Array<{
+    key: string;
+    catalog: string;
+    schema: string;
+    label: string;
+  }>;
 }
 
 export interface CompletionCandidate {

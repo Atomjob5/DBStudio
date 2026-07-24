@@ -80,6 +80,22 @@ public interface MetadataAdapter {
         void compatibilityFallback(String message);
     }
 
+    /** Whether this provider can stream a comments-first completion snapshot. */
+    default boolean supportsStreamingCompletionMetadata() {
+        return false;
+    }
+
+    /**
+     * Streams objects and column comments for a completion cache without materializing one
+     * provider-side snapshot. Implementations must keep every query scoped to {@code namespaces}.
+     */
+    default void streamCompletionMetadata(DatabaseSession session,
+                                            List<DatabaseNamespace> namespaces,
+                                            Set<DatabaseObjectType> types,
+                                            CompletionMetadataListener listener) throws SQLException {
+        throw new SQLException("当前数据库类型不支持流式补全元数据");
+    }
+
     List<ColumnInfo> listColumns(
             DatabaseSession session,
             String catalog,

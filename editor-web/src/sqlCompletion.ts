@@ -8,6 +8,7 @@ import type {
   CompletionObjectSnapshot,
   CompletionResult,
   CompletionSnapshot,
+  QueryColumn,
   ResolvedResultColumnRemark,
   ResultColumnRemarkLookup
 } from "./types";
@@ -50,10 +51,23 @@ interface CandidateRank extends CompletionCandidate {
 }
 
 export interface CompletionIndex {
-  snapshot: CompletionSnapshot;
   namespaces: Map<string, IndexedNamespace>;
   namespaceValues: IndexedNamespace[];
   defaultNamespace?: IndexedNamespace;
+}
+
+export interface CompletionObjectDelta {
+  namespaceKey: string;
+  catalog: string;
+  schema: string;
+  name: string;
+  kind: "table" | "view";
+  remarks: string;
+}
+
+export interface CompletionPhysicalTable {
+  schema: string;
+  table: string;
 }
 
 export interface CompletionRequest {
@@ -79,27 +93,227 @@ const COLUMN_CLAUSES = new Set(["select", "where", "on", "group", "order", "havi
 const SET_OPERATORS = new Set(["union", "minus", "except", "intersect"]);
 
 export function buildCompletionIndex(snapshot: CompletionSnapshot): CompletionIndex {
+  const index = createCompletionIndex(snapshot.defaultNamespaceKey, snapshot.namespaces.map((value) => ({
+    key: value.key, catalog: value.catalog, schema: value.schema, label: value.label
+  })));
+  const values: CompletionObjectDelta[] = [];
+  for (const namespace of snapshot.namespaces) {
+    for (const object of namespace.objects) {
+      values.push({ namespaceKey: namespace.key, catalog: namespace.catalog, schema: namespace.schema,
+        name: object.name, kind: object.kind, remarks: object.remarks });
+    }
+  }
+  upsertCompletionObjects(index, values);
+  for (const namespace of snapshot.namespaces) {
+    for (const object of namespace.objects) {
+      mergeCompletionColumns(index, namespace.key, object.name, object.columns);
+    }
+  }
+  return index;
+}
+
+export function createCompletionIndex(defaultNamespaceKey: string,
+                                      namespaceDescriptors: Array<{
+                                        key: string;
+                                        catalog: string;
+                                        schema: string;
+                                        label: string;
+                                      }>): CompletionIndex {
   const namespaces = new Map<string, IndexedNamespace>();
   const namespaceValues: IndexedNamespace[] = [];
   let defaultNamespace: IndexedNamespace | undefined;
-  for (const value of snapshot.namespaces) {
-    const sortedObjects = value.objects.map((object) => ({
-      snapshot: object,
-      columns: [...object.columns].sort((left, right) => compareName(left.name, right.name))
-    })).sort((left, right) => compareName(left.snapshot.name, right.snapshot.name));
+  for (const value of namespaceDescriptors) {
+    const snapshot: CompletionNamespaceSnapshot = { ...value, objects: [] };
     const indexed: IndexedNamespace = {
-      snapshot: value,
-      objects: new Map(sortedObjects.map((object) => [normalize(object.snapshot.name), object])),
-      sortedObjects
+      snapshot,
+      objects: new Map(),
+      sortedObjects: []
     };
     namespaceValues.push(indexed);
     for (const name of [value.key, value.label, value.catalog, value.schema]) {
       if (name) namespaces.set(normalize(name), indexed);
     }
-    if (value.key === snapshot.defaultNamespaceKey) defaultNamespace = indexed;
+    if (value.key === defaultNamespaceKey) defaultNamespace = indexed;
   }
   namespaceValues.sort((left, right) => compareName(left.snapshot.label, right.snapshot.label));
-  return { snapshot, namespaces, namespaceValues, defaultNamespace };
+  return { namespaces, namespaceValues, defaultNamespace };
+}
+
+export function upsertCompletionObjects(index: CompletionIndex, values: CompletionObjectDelta[]): void {
+  for (const value of values) {
+    const namespace = index.namespaces.get(normalize(value.namespaceKey));
+    if (!namespace) continue;
+    const key = normalize(value.name);
+    const existing = namespace.objects.get(key);
+    if (existing) {
+      existing.snapshot.kind = value.kind;
+      existing.snapshot.remarks = value.remarks;
+      continue;
+    }
+    const snapshot: CompletionObjectSnapshot = {
+      name: value.name, kind: value.kind, remarks: value.remarks, columns: []
+    };
+    const object: IndexedObject = { snapshot, columns: [] };
+    namespace.objects.set(key, object);
+    insertSortedObject(namespace.sortedObjects, object);
+  }
+}
+
+export function mergeCompletionColumns(index: CompletionIndex, namespaceKey: string, objectName: string,
+                                       columns: CompletionObjectSnapshot["columns"]): void {
+  const object = index.namespaces.get(normalize(namespaceKey))?.objects.get(normalize(objectName));
+  if (!object) return;
+  const byName = new Map(object.columns.map((column) => [normalize(column.name), column]));
+  for (const column of columns) {
+    const existing = byName.get(normalize(column.name));
+    if (existing) {
+      existing.remarks = column.remarks;
+      if (column.typeName) existing.typeName = column.typeName;
+    } else {
+      byName.set(normalize(column.name), { ...column });
+    }
+  }
+  object.columns = [...byName.values()].sort((left, right) => compareName(left.name, right.name));
+  object.snapshot.columns = object.columns;
+}
+
+export function applyCompletionStructure(index: CompletionIndex, schema: string, table: string,
+                                         columns: Array<{ name: string; typeName: string; ordinal: number }>): boolean {
+  const namespace = resultNamespace(index, "", schema);
+  const object = namespace?.objects.get(normalize(table));
+  if (!namespace || !object) return false;
+  const remarks = new Map(object.columns.map((column) => [normalize(column.name), column.remarks]));
+  object.columns = [...columns].sort((left, right) => left.ordinal - right.ordinal)
+    .map((column) => ({ name: column.name, typeName: column.typeName,
+      remarks: remarks.get(normalize(column.name)) ?? "" }))
+    .sort((left, right) => compareName(left.name, right.name));
+  object.snapshot.columns = object.columns;
+  return true;
+}
+
+export function resetCompletionStructure(index: CompletionIndex, schema: string, table: string,
+                                         columns: Array<{ name: string; remarks: string }>): boolean {
+  const namespace = resultNamespace(index, "", schema);
+  const object = namespace?.objects.get(normalize(table));
+  if (!namespace || !object) return false;
+  object.columns = columns.map((column) => ({
+    name: column.name,
+    typeName: "",
+    remarks: column.remarks
+  })).sort((left, right) => compareName(left.name, right.name));
+  object.snapshot.columns = object.columns;
+  return true;
+}
+
+export function resolveSinglePhysicalTable(index: CompletionIndex, providerId: string, sql: string,
+                                           resultColumns: QueryColumn[]): CompletionPhysicalTable | undefined {
+  const dialect = completionDialect(providerId);
+  const statement = lexStatementAt(sql, sql.length, dialect);
+  const ctes = collectCteNames(statement.tokens);
+  const resolved = new Map<string, CompletionPhysicalTable>();
+  let unresolved = false;
+
+  for (const column of resultColumns) {
+    if (!column.table) continue;
+    const namespace = resultNamespace(index, column.catalog, column.schema);
+    const object = namespace?.objects.get(normalize(column.table));
+    if (!namespace || !object) continue;
+    rememberPhysicalTable(resolved, namespace, object);
+  }
+
+  const cteSources = new Map<string, CompletionSource>();
+  for (const name of ctes) cteSources.set(name, { kind: "cte", name, alias: name, columns: [] });
+  const queryDepths = new Set(statement.tokens
+    .filter((token) => token.kind === "word" && !token.quoted && token.lower === "select")
+    .map((token) => token.depth));
+  for (const depth of queryDepths) {
+    for (const source of parseSources(index, statement.tokens, 0, statement.tokens.length, depth, cteSources)) {
+      if (source.kind !== "physical") continue;
+      if (!source.namespace || !source.object) {
+        unresolved = true;
+        continue;
+      }
+      rememberPhysicalTable(resolved, source.namespace, source.object);
+    }
+  }
+  if (unresolved || resolved.size !== 1) return undefined;
+  return resolved.values().next().value;
+}
+
+export function resolveChangedPhysicalTable(index: CompletionIndex, providerId: string,
+                                            sql: string): CompletionPhysicalTable | undefined {
+  const tokens = lexStatementAt(sql, sql.length, completionDialect(providerId)).tokens;
+  const root = tokens.filter((token) => token.depth === 0);
+  if (!root.length) return undefined;
+  let tableKeyword = -1;
+  const operation = root[0].quoted ? "" : root[0].lower;
+  if (operation === "alter" || operation === "drop" || operation === "truncate" || operation === "create") {
+    tableKeyword = root.findIndex((token, index) => index > 0 && !token.quoted && token.lower === "table");
+  }
+  if (tableKeyword < 0) return undefined;
+  const source = root[tableKeyword + 1];
+  if (source?.kind !== "word") return undefined;
+  const names = [source.value];
+  let cursor = tableKeyword + 2;
+  while (root[cursor]?.value === "." && root[cursor + 1]?.kind === "word") {
+    names.push(root[cursor + 1].value);
+    cursor += 2;
+  }
+  const name = names.at(-1) ?? "";
+  const namespace = names.length > 1
+    ? index.namespaces.get(normalize(names.at(-2) ?? ""))
+    : index.defaultNamespace;
+  const object = namespace?.objects.get(normalize(name));
+  if (!namespace || !object) return undefined;
+  const resolved = new Map<string, CompletionPhysicalTable>();
+  rememberPhysicalTable(resolved, namespace, object);
+  return resolved.values().next().value;
+}
+
+function insertSortedObject(values: IndexedObject[], object: IndexedObject): void {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (compareName(values[middle].snapshot.name, object.snapshot.name) <= 0) low = middle + 1;
+    else high = middle;
+  }
+  values.splice(low, 0, object);
+}
+
+function collectCteNames(tokens: SqlToken[]): Set<string> {
+  const names = new Set<string>();
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index].lower !== "with" || tokens[index].quoted) continue;
+    const depth = tokens[index].depth;
+    let cursor = nextSignificant(tokens, index + 1, depth);
+    if (tokens[cursor]?.lower === "recursive") cursor = nextSignificant(tokens, cursor + 1, depth);
+    while (cursor >= 0 && tokens[cursor]?.kind === "word" && tokens[cursor]?.depth === depth) {
+      names.add(normalize(tokens[cursor].value));
+      cursor = nextSignificant(tokens, cursor + 1, depth);
+      if (tokens[cursor]?.value === "(") {
+        const close = matchingClose(tokens, cursor);
+        if (close < 0) break;
+        cursor = nextSignificant(tokens, close + 1, depth);
+      }
+      if (tokens[cursor]?.lower !== "as") break;
+      const open = nextSignificant(tokens, cursor + 1, depth);
+      if (tokens[open]?.value !== "(") break;
+      const close = matchingClose(tokens, open);
+      if (close < 0) break;
+      cursor = nextSignificant(tokens, close + 1, depth);
+      if (tokens[cursor]?.value !== ",") break;
+      cursor = nextSignificant(tokens, cursor + 1, depth);
+    }
+  }
+  return names;
+}
+
+function rememberPhysicalTable(values: Map<string, CompletionPhysicalTable>, namespace: IndexedNamespace,
+                               object: IndexedObject): void {
+  const schema = namespace.snapshot.schema || namespace.snapshot.catalog;
+  const key = `${normalize(schema)}\u0000${normalize(object.snapshot.name)}`;
+  values.set(key, { schema, table: object.snapshot.name });
 }
 
 export function resolveResultColumnRemarks(index: CompletionIndex | undefined,

@@ -1,5 +1,5 @@
 import type { CompletionCacheStats, CompletionCacheSummary, CompletionResult, ResolvedResultColumnRemark,
-  ResultColumnRemarkLookup } from "../types";
+  QueryColumn, ResultColumnRemarkLookup } from "../types";
 import type { CompletionWorkerRequest, CompletionWorkerResponse, CompletionWorkerValue } from "./workerProtocol";
 import type { CompletionTextChange } from "./documentMirror";
 
@@ -14,7 +14,9 @@ export class CompletionClient {
   }
 
   refresh(options: { cacheKey: string; providerId: string; workspaceId: string; clientId: string; body: Record<string, unknown> }): Promise<CompletionCacheSummary> {
-    const url = `/api/v1/workspaces/${encodeURIComponent(options.workspaceId)}/metadata/completion-snapshot`;
+    const streaming = options.providerId === "oracle" || options.providerId === "oceanbase-oracle";
+    const endpoint = streaming ? "completion-snapshot-stream" : "completion-snapshot";
+    const url = `/api/v1/workspaces/${encodeURIComponent(options.workspaceId)}/metadata/${endpoint}`;
     return this.send({ id: crypto.randomUUID(), type: "refresh", cacheKey: options.cacheKey,
       providerId: options.providerId, url, clientId: options.clientId, body: options.body }) as Promise<CompletionCacheSummary>;
   }
@@ -43,6 +45,19 @@ export class CompletionClient {
                              columns: ResultColumnRemarkLookup[]): Promise<ResolvedResultColumnRemark[]> {
     return this.send({ id: crypto.randomUUID(), type: "result-columns.resolve", cacheKey, providerId,
       columns }) as Promise<ResolvedResultColumnRemark[]>;
+  }
+
+  enrichQuery(options: { cacheKey: string; providerId: string; workspaceId: string; clientId: string;
+                         editorId: string; sql: string; columns: QueryColumn[] }): Promise<void> {
+    const url = `/api/v1/workspaces/${encodeURIComponent(options.workspaceId)}/metadata/completion-table-structure`;
+    return this.send({ id: crypto.randomUUID(), type: "query.enrich", cacheKey: options.cacheKey,
+      providerId: options.providerId, url, clientId: options.clientId, editorId: options.editorId,
+      sql: options.sql, columns: options.columns }) as Promise<void>;
+  }
+
+  invalidateStructure(cacheKey: string, providerId: string, sql: string): Promise<void> {
+    return this.send({ id: crypto.randomUUID(), type: "structure.invalidate",
+      cacheKey, providerId, sql }) as Promise<void>;
   }
 
   stats(): Promise<Omit<CompletionCacheStats, "loadingCount">> {

@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { buildCompletionIndex, resolveCompletion, resolveResultColumnRemarks } from "./sqlCompletion";
+import {
+  applyCompletionStructure,
+  buildCompletionIndex,
+  resetCompletionStructure,
+  resolveChangedPhysicalTable,
+  resolveCompletion,
+  resolveResultColumnRemarks,
+  resolveSinglePhysicalTable
+} from "./sqlCompletion";
 import type { CompletionSnapshot } from "./types";
 
 const snapshot: CompletionSnapshot = {
@@ -32,6 +40,28 @@ const snapshot: CompletionSnapshot = {
   ]
 };
 const index = buildCompletionIndex(snapshot);
+const oracleSnapshot: CompletionSnapshot = {
+  ...snapshot,
+  providerId: "oracle",
+  defaultNamespaceKey: "schema:CBSAC",
+  selectedNamespaceKeys: ["schema:CBSAC"],
+  namespaces: [{
+    key: "schema:CBSAC",
+    catalog: "",
+    schema: "CBSAC",
+    label: "CBSAC",
+    objects: [
+      { name: "CUSTOMERS", kind: "table", remarks: "客户", columns: [
+        { name: "ID", typeName: "", remarks: "客户编号" },
+        { name: "CUSTOMER_NAME", typeName: "", remarks: "客户名称" },
+        { name: "REMOVED_COLUMN", typeName: "", remarks: "旧字段" }
+      ] },
+      { name: "ORDERS", kind: "table", remarks: "订单", columns: [
+        { name: "ID", typeName: "", remarks: "订单编号" }
+      ] }
+    ]
+  }]
+};
 
 describe("handwritten context-aware SQL completion", () => {
   it("resolves result remarks only from an exact cached source", () => {
@@ -44,6 +74,84 @@ describe("handwritten context-aware SQL completion", () => {
       { index: 0, remarks: "订单编号" },
       { index: 1, remarks: "客户编号" }
     ]);
+  });
+
+  it("resolves exactly one physical Oracle table for deferred structure enrichment", () => {
+    const oracleIndex = buildCompletionIndex(oracleSnapshot);
+    expect(resolveSinglePhysicalTable(
+      oracleIndex, "oracle", "select count(*) from CBSAC.CUSTOMERS a", []
+    )).toEqual({ schema: "CBSAC", table: "CUSTOMERS" });
+    expect(resolveSinglePhysicalTable(
+      oracleIndex, "oracle",
+      "select a.ID from CBSAC.CUSTOMERS a join CBSAC.CUSTOMERS b on a.ID=b.ID", []
+    )).toEqual({ schema: "CBSAC", table: "CUSTOMERS" });
+  });
+
+  it("does not enrich a multi-table or unresolved Oracle query", () => {
+    const oracleIndex = buildCompletionIndex(oracleSnapshot);
+    expect(resolveSinglePhysicalTable(
+      oracleIndex, "oracle",
+      "select * from CBSAC.CUSTOMERS c join CBSAC.ORDERS o on c.ID=o.ID", []
+    )).toBeUndefined();
+    expect(resolveSinglePhysicalTable(
+      oracleIndex, "oracle", "select * from CBSAC.UNKNOWN_TABLE", []
+    )).toBeUndefined();
+    expect(resolveSinglePhysicalTable(
+      oracleIndex, "oracle",
+      "select count(*) from CBSAC.CUSTOMERS c, CBSAC.ORDERS o where c.ID=o.ID", []
+    )).toBeUndefined();
+  });
+
+  it("traces a single-table CTE and derived query to its physical source", () => {
+    const oracleIndex = buildCompletionIndex(oracleSnapshot);
+    expect(resolveSinglePhysicalTable(
+      oracleIndex, "oracle",
+      "with c as (select ID from CBSAC.CUSTOMERS) select count(*) from c", []
+    )).toEqual({ schema: "CBSAC", table: "CUSTOMERS" });
+    expect(resolveSinglePhysicalTable(
+      oracleIndex, "oracle",
+      "select count(*) from (select ID from CBSAC.CUSTOMERS) c", []
+    )).toEqual({ schema: "CBSAC", table: "CUSTOMERS" });
+  });
+
+  it("applies an exact Oracle structure while retaining comments and dropping stale fields", () => {
+    const oracleIndex = buildCompletionIndex(oracleSnapshot);
+    expect(applyCompletionStructure(oracleIndex, "CBSAC", "CUSTOMERS", [
+      { name: "ID", typeName: "NUMBER(18)", ordinal: 1 },
+      { name: "CUSTOMER_NAME", typeName: "VARCHAR2(100 CHAR)", ordinal: 2 },
+      { name: "CREATED_AT", typeName: "TIMESTAMP", ordinal: 3 }
+    ])).toBe(true);
+    const values = resolveCompletion(oracleIndex, {
+      providerId: "oracle",
+      sql: "select * from CBSAC.CUSTOMERS c where c.",
+      prefix: "",
+      limit: 100
+    }).items.filter((item) => item.kind === "column");
+    expect(values.map((item) => [item.displayLabel, item.remarks, item.typeName])).toEqual([
+      ["CREATED_AT", "", "TIMESTAMP"],
+      ["CUSTOMER_NAME", "客户名称", "VARCHAR2(100 CHAR)"],
+      ["ID", "客户编号", "NUMBER(18)"]
+    ]);
+    expect(resetCompletionStructure(oracleIndex, "CBSAC", "CUSTOMERS", [
+      { name: "ID", remarks: "客户编号" },
+      { name: "CUSTOMER_NAME", remarks: "客户名称" }
+    ])).toBe(true);
+    expect(resolveCompletion(oracleIndex, {
+      providerId: "oracle", sql: "select * from CBSAC.CUSTOMERS c where c.", prefix: "", limit: 100
+    }).items.filter((item) => item.kind === "column").map((item) => item.typeName)).toEqual(["", ""]);
+  });
+
+  it("recognizes only cached table-changing DDL targets", () => {
+    const oracleIndex = buildCompletionIndex(oracleSnapshot);
+    expect(resolveChangedPhysicalTable(
+      oracleIndex, "oracle", "alter table CBSAC.CUSTOMERS add CREATED_AT timestamp"
+    )).toEqual({ schema: "CBSAC", table: "CUSTOMERS" });
+    expect(resolveChangedPhysicalTable(
+      oracleIndex, "oracle", "truncate table CUSTOMERS"
+    )).toEqual({ schema: "CBSAC", table: "CUSTOMERS" });
+    expect(resolveChangedPhysicalTable(
+      oracleIndex, "oracle", "create index I_CUSTOMERS on CBSAC.CUSTOMERS(ID)"
+    )).toBeUndefined();
   });
 
   it("completes tables and views after a namespace qualifier", () => {

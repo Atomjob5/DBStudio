@@ -46,4 +46,72 @@ describe("CompletionClient worker protocol", () => {
     expect(MockWorker.latest?.messages.map((request) => request.type))
       .toEqual(["model.sync", "model.change", "model.release"]);
   });
+
+  it("uses streaming snapshots only for Oracle-compatible providers", async () => {
+    vi.stubGlobal("Worker", MockWorker);
+    const client = new CompletionClient();
+    await client.refresh({
+      cacheKey: "oracle-cache",
+      providerId: "oracle",
+      workspaceId: "workspace / 1",
+      clientId: "client-1",
+      body: { editorId: "editor-1" }
+    });
+    await client.refresh({
+      cacheKey: "mysql-cache",
+      providerId: "mysql",
+      workspaceId: "workspace / 1",
+      clientId: "client-1",
+      body: { editorId: "editor-1" }
+    });
+    expect(MockWorker.latest?.messages[0]).toMatchObject({
+      type: "refresh",
+      providerId: "oracle",
+      url: "/api/v1/workspaces/workspace%20%2F%201/metadata/completion-snapshot-stream"
+    });
+    expect(MockWorker.latest?.messages[1]).toMatchObject({
+      type: "refresh",
+      providerId: "mysql",
+      url: "/api/v1/workspaces/workspace%20%2F%201/metadata/completion-snapshot"
+    });
+  });
+
+  it("sends successful query context to the exact table structure worker flow", async () => {
+    vi.stubGlobal("Worker", MockWorker);
+    const client = new CompletionClient();
+    await client.enrichQuery({
+      cacheKey: "oracle-cache",
+      providerId: "oracle",
+      workspaceId: "workspace-1",
+      clientId: "client-1",
+      editorId: "editor-1",
+      sql: "select count(*) from CBSAC.CUSTOMERS",
+      columns: []
+    });
+    expect(MockWorker.latest?.messages[0]).toMatchObject({
+      type: "query.enrich",
+      cacheKey: "oracle-cache",
+      providerId: "oracle",
+      url: "/api/v1/workspaces/workspace-1/metadata/completion-table-structure",
+      editorId: "editor-1",
+      sql: "select count(*) from CBSAC.CUSTOMERS",
+      columns: []
+    });
+  });
+
+  it("routes successful Oracle DDL to targeted structure invalidation", async () => {
+    vi.stubGlobal("Worker", MockWorker);
+    const client = new CompletionClient();
+    await client.invalidateStructure(
+      "oracle-cache",
+      "oceanbase-oracle",
+      "alter table CBSAC.CUSTOMERS add CREATED_AT timestamp"
+    );
+    expect(MockWorker.latest?.messages[0]).toMatchObject({
+      type: "structure.invalidate",
+      cacheKey: "oracle-cache",
+      providerId: "oceanbase-oracle",
+      sql: "alter table CBSAC.CUSTOMERS add CREATED_AT timestamp"
+    });
+  });
 });

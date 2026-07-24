@@ -24,7 +24,7 @@ const rpcMock = vi.hoisted(() => ({
 const rpcRequest = rpcMock.request;
 const completionMock = vi.hoisted(() => ({
   inspect: vi.fn(), refresh: vi.fn(), stats: vi.fn(), clear: vi.fn(), complete: vi.fn(),
-  resolveResultColumnRemarks: vi.fn()
+  resolveResultColumnRemarks: vi.fn(), enrichQuery: vi.fn(), invalidateStructure: vi.fn()
 }));
 vi.mock("./bridge/rpc", () => ({
   rpc: {
@@ -63,6 +63,8 @@ describe("App result loading status toolbar", () => {
     completionMock.clear.mockReset().mockResolvedValue(undefined);
     completionMock.complete.mockReset().mockResolvedValue({ items: [], incomplete: false });
     completionMock.resolveResultColumnRemarks.mockReset().mockResolvedValue([]);
+    completionMock.enrichQuery.mockReset().mockResolvedValue(undefined);
+    completionMock.invalidateStructure.mockReset().mockResolvedValue(undefined);
     rpcMock.ensureOperational.mockClear();
     rpcMock.listeners.clear();
     rpcRequest.mockImplementation(async (type: string, payload: Record<string, unknown>) => {
@@ -391,6 +393,134 @@ describe("App result loading status toolbar", () => {
     }]);
     expect(queries.executions["bootstrap-editor"].results[0].columnDetails?.[0].remarks).toBe("订单编号");
     expect(rpcRequest).not.toHaveBeenCalledWith("metadata.completionNamespaces", expect.anything(), expect.anything());
+  });
+
+  it("requests deferred Oracle column types only after a query result succeeds", async () => {
+    const connections = useConnectionStore();
+    const editors = useEditorStore();
+    const profile: SavedProfile = {
+      ...completionProfile(),
+      providerId: "oracle",
+      name: "Oracle业务库"
+    };
+    connections.initialize([], [profile], [{ id: "system-1", name: "核心系统", revision: "1" }],
+      [{ id: "environment-dev", systemId: "system-1", name: "DEV", revision: "1" }]);
+    editors.patch("bootstrap-editor", {
+      connection: profile, connectionState: "active", busy: true, executionPhase: "starting"
+    });
+
+    rpcMock.listeners.get("query.started")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor",
+      executionId: "execution-structure"
+    }));
+    rpcMock.listeners.get("query.resultMeta")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor",
+      resultIndex: 0,
+      sql: "select count(*) from CBSAC.CUSTOMERS",
+      type: "QUERY",
+      columns: ["COUNT(*)"],
+      columnDetails: [{
+        label: "COUNT(*)", name: "COUNT(*)", remarks: "", catalog: "", schema: "",
+        table: "", typeName: "NUMBER"
+      }],
+      rows: [],
+      updateCount: -1,
+      truncated: false,
+      durationMs: 0,
+      complete: false
+    }));
+    rpcMock.listeners.get("query.resultComplete")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor",
+      resultIndex: 0,
+      durationMs: 12
+    }));
+    rpcMock.listeners.get("query.executionComplete")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-structure",
+      cancelled: false, failed: false, durationMs: 12, transactionDirty: false
+    }));
+    await flushPromises();
+
+    expect(completionMock.enrichQuery).toHaveBeenCalledWith({
+      cacheKey: "system-1:environment-dev:oracle",
+      providerId: "oracle",
+      workspaceId: "workspace-1",
+      clientId: "client-1",
+      editorId: "bootstrap-editor",
+      sql: "select count(*) from CBSAC.CUSTOMERS",
+      columns: [{
+        label: "COUNT(*)", name: "COUNT(*)", remarks: "", catalog: "", schema: "",
+        table: "", typeName: "NUMBER"
+      }]
+    });
+  });
+
+  it("does not request deferred Oracle types for failed results or DML", async () => {
+    const connections = useConnectionStore();
+    const editors = useEditorStore();
+    const profile: SavedProfile = { ...completionProfile(), providerId: "oracle" };
+    connections.initialize([], [profile], [{ id: "system-1", name: "核心系统", revision: "1" }],
+      [{ id: "environment-dev", systemId: "system-1", name: "DEV", revision: "1" }]);
+    editors.patch("bootstrap-editor", {
+      connection: profile, connectionState: "active", busy: true, executionPhase: "starting"
+    });
+    rpcMock.listeners.get("query.started")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-no-structure"
+    }));
+    for (const result of [
+      { resultIndex: 0, sql: "select * from CBSAC.CUSTOMERS", type: "QUERY", errorMessage: "ORA-00942" },
+      { resultIndex: 1, sql: "update CBSAC.CUSTOMERS set NAME='x'", type: "UPDATE" }
+    ]) {
+      rpcMock.listeners.get("query.resultMeta")?.forEach((listener) => listener({
+        editorId: "bootstrap-editor", columns: [], columnDetails: [], rows: [],
+        updateCount: result.type === "UPDATE" ? 1 : -1, truncated: false, durationMs: 0,
+        complete: false, ...result
+      }));
+      rpcMock.listeners.get("query.resultComplete")?.forEach((listener) => listener({
+        editorId: "bootstrap-editor", resultIndex: result.resultIndex,
+        errorMessage: result.errorMessage
+      }));
+    }
+    rpcMock.listeners.get("query.executionComplete")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-no-structure",
+      cancelled: false, failed: true, durationMs: 9, transactionDirty: false
+    }));
+    await flushPromises();
+    expect(completionMock.enrichQuery).not.toHaveBeenCalled();
+  });
+
+  it("invalidates only the affected Oracle structure after successful DDL", async () => {
+    const connections = useConnectionStore();
+    const editors = useEditorStore();
+    const profile: SavedProfile = { ...completionProfile(), providerId: "oracle" };
+    connections.initialize([], [profile], [{ id: "system-1", name: "核心系统", revision: "1" }],
+      [{ id: "environment-dev", systemId: "system-1", name: "DEV", revision: "1" }]);
+    editors.patch("bootstrap-editor", {
+      connection: profile, connectionState: "active", busy: true, executionPhase: "starting"
+    });
+    rpcMock.listeners.get("query.started")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-ddl"
+    }));
+    rpcMock.listeners.get("query.resultMeta")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", resultIndex: 0,
+      sql: "alter table CBSAC.CUSTOMERS add CREATED_AT timestamp",
+      type: "DDL", columns: [], columnDetails: [], rows: [], updateCount: 0,
+      truncated: false, durationMs: 0, complete: false
+    }));
+    rpcMock.listeners.get("query.resultComplete")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", resultIndex: 0, durationMs: 9
+    }));
+    rpcMock.listeners.get("query.executionComplete")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-ddl",
+      cancelled: false, failed: false, durationMs: 9, transactionDirty: false
+    }));
+    await flushPromises();
+
+    expect(completionMock.invalidateStructure).toHaveBeenCalledWith(
+      "system-1:environment-dev:oracle",
+      "oracle",
+      "alter table CBSAC.CUSTOMERS add CREATED_AT timestamp"
+    );
+    expect(completionMock.enrichQuery).not.toHaveBeenCalled();
   });
 
   it("keeps the left execution status scoped to the active editor", async () => {

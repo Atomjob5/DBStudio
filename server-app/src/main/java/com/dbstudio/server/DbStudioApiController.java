@@ -27,6 +27,8 @@ import com.dbstudio.desktop.query.StatementResult;
 import com.dbstudio.desktop.security.SecretStore;
 import com.dbstudio.desktop.web.EditorSessionRegistry.EditorSession;
 import com.dbstudio.spi.ColumnInfo;
+import com.dbstudio.spi.CompletionColumnComments;
+import com.dbstudio.spi.CompletionMetadataListener;
 import com.dbstudio.spi.ConnectionField;
 import com.dbstudio.spi.ConnectionFieldOption;
 import com.dbstudio.spi.ConnectionProfile;
@@ -58,6 +60,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -108,6 +111,7 @@ public final class DbStudioApiController {
     private final ConfigurableApplicationContext application;
     private final WorkspaceRepository workspaceRepository;
     private final ApplicationRunLifecycle runLifecycle;
+    private final ObjectMapper objectMapper;
     private final CompletionSnapshotService completionSnapshots = new CompletionSnapshotService();
 
     public DbStudioApiController(ProviderRegistry providers, ConnectionProfileRepository profiles,
@@ -115,11 +119,13 @@ public final class DbStudioApiController {
                                  QueryHistoryRepository history, SettingsRepository settings,
                                  SecretStore secrets, CsvService csv, WorkspaceRegistry workspaces,
                                  ConfigurableApplicationContext application,
-                                 WorkspaceRepository workspaceRepository, ApplicationRunLifecycle runLifecycle) {
+                                 WorkspaceRepository workspaceRepository, ApplicationRunLifecycle runLifecycle,
+                                 ObjectMapper objectMapper) {
         this.providers = providers; this.profiles = profiles; this.catalog = catalog; this.history = history;
         this.settings = settings; this.secrets = secrets; this.csv = csv;
         this.workspaces = workspaces; this.application = application;
         this.workspaceRepository = workspaceRepository; this.runLifecycle = runLifecycle;
+        this.objectMapper = objectMapper;
     }
 
     @PutMapping("/workspaces/{workspaceId}")
@@ -425,6 +431,151 @@ public final class DbStudioApiController {
         } finally {
             Arrays.fill(password, '\0');
         }
+    }
+
+    @PostMapping(value = "/workspaces/{workspaceId}/metadata/completion-snapshot-stream",
+            produces = "application/x-ndjson")
+    public ResponseEntity<StreamingResponseBody> completionSnapshotStream(
+            @PathVariable String workspaceId, @RequestBody final Map<String, Object> body) throws Exception {
+        final Workspace workspace = workspaces.require(workspaceId);
+        final String loadId = ApiPayloads.required(body, "loadId");
+        final SavedProfile saved = completionProfile(workspace, body);
+        final DatabaseProvider provider = providers.require(saved.profile().providerId());
+        if (!provider.metadata().supportsStreamingCompletionMetadata()) {
+            throw new ApiException("UNSUPPORTED_OPERATION", "当前数据库类型不支持流式补全元数据");
+        }
+        final char[] password = completionPassword(workspace, saved);
+        StreamingResponseBody stream = output -> {
+            NdjsonWriter writer = new NdjsonWriter(new OutputStreamWriter(output, StandardCharsets.UTF_8),
+                    objectMapper);
+            boolean began = false;
+            try (DatabaseContext temporary = new DatabaseContext(provider, saved.profile(), password)) {
+                DatabaseSession session = temporary.metadataSession();
+                List<DatabaseNamespace> available = provider.metadata().listCompletionNamespaces(session);
+                final List<DatabaseNamespace> selected = selectedCompletionNamespaces(body, available);
+                final String generation = UUID.randomUUID().toString();
+                final String sourceProfileId = saved.profile().id().toString();
+                final String generatedAt = Instant.now().toString();
+                final CompletionProgressEmitter progress = new CompletionProgressEmitter(
+                        workspace, loadId, sourceProfileId, saved.environmentId());
+                final List<String> selectedKeys = new ArrayList<String>(selected.size());
+                final List<Object> namespaceValues = new ArrayList<Object>(selected.size());
+                String defaultNamespaceKey = "";
+                for (DatabaseNamespace namespace : selected) {
+                    String key = CompletionSnapshotService.namespaceKey(namespace.catalog(), namespace.schema());
+                    selectedKeys.add(key);
+                    namespaceValues.add(ApiPayloads.map("key", key, "catalog", namespace.catalog(),
+                            "schema", namespace.schema(), "label", namespace.label()));
+                    if (defaultNamespaceKey.isEmpty() && namespace.current()) defaultNamespaceKey = key;
+                }
+                final String resolvedDefaultNamespaceKey = defaultNamespaceKey;
+                writer.line(ApiPayloads.map("type", "begin", "generation", generation,
+                        "metadata", ApiPayloads.map("formatVersion", 2, "providerId", provider.id(),
+                                "sourceProfileId", sourceProfileId, "generatedAt", generatedAt,
+                                "defaultNamespaceKey", resolvedDefaultNamespaceKey,
+                                "selectedNamespaceKeys", selectedKeys, "namespaces", namespaceValues)));
+                began = true;
+                progress.emit("objects", 0, "正在读取表、视图和备注…");
+                final long[] counts = new long[] { 0L, 0L };
+                final String[] warning = new String[] { "" };
+                synchronized (session) {
+                    provider.metadata().streamCompletionMetadata(session, selected,
+                            new LinkedHashSet<DatabaseObjectType>(Arrays.asList(
+                                    DatabaseObjectType.TABLE, DatabaseObjectType.VIEW)),
+                            new CompletionMetadataListener() {
+                                @Override public void objects(List<DatabaseObject> objects) throws SQLException {
+                                    writerLine(writer, objectStreamRecord("objects", objects));
+                                    counts[0] += objects.size();
+                                    progress.emit("objects", counts[0], "表、视图已可用于补全");
+                                }
+
+                                @Override public void supplementalTables(List<DatabaseObject> objects)
+                                        throws SQLException {
+                                    writerLine(writer, objectStreamRecord("tables", objects));
+                                    counts[0] += objects.size();
+                                    progress.emit("tables", counts[0], "已补充遗漏表");
+                                }
+
+                                @Override public void columns(List<CompletionColumnComments> groups)
+                                        throws SQLException {
+                                    List<Object> values = new ArrayList<Object>(groups.size());
+                                    long added = 0;
+                                    for (CompletionColumnComments group : groups) {
+                                        List<Object> columns = new ArrayList<Object>(group.columns().size());
+                                        for (ColumnInfo column : group.columns()) {
+                                            columns.add(Arrays.<Object>asList(column.name(), column.remarks()));
+                                        }
+                                        added += columns.size();
+                                        values.add(ApiPayloads.map("namespaceKey",
+                                                CompletionSnapshotService.namespaceKey(group.catalog(), group.schema()),
+                                                "objectName", group.objectName(), "columns", columns));
+                                    }
+                                    writerLine(writer, ApiPayloads.map("type", "columns", "values", values));
+                                    counts[1] += added;
+                                    progress.emit("columns", counts[1], "正在同步字段备注…");
+                                }
+
+                                @Override public void warning(String phase, String message) throws SQLException {
+                                    warning[0] = message;
+                                    writerLine(writer, ApiPayloads.map("type", "warning",
+                                            "phase", phase, "message", message));
+                                }
+                            });
+                }
+                Map<String, Object> summary = ApiPayloads.map("providerId", provider.id(),
+                        "sourceProfileId", sourceProfileId, "generatedAt", generatedAt,
+                        "selectedNamespaceKeys", selectedKeys, "objectCount", counts[0],
+                        "columnCount", counts[1], "estimatedBytes", writer.bytes());
+                if (!warning[0].isEmpty()) summary.put("warning", warning[0]);
+                writer.line(ApiPayloads.map("type", "complete", "summary", summary));
+                workspace.events().emit("metadata.completionProgress", ApiPayloads.map(
+                        "loadId", loadId, "phase", "completed", "completed", counts[1],
+                        "total", counts[1], "message", warning[0].isEmpty() ? "补全缓存已生成" : warning[0],
+                        "sourceProfileId", sourceProfileId, "environmentId", saved.environmentId()));
+            } catch (Exception exception) {
+                LOG.warn("流式补全快照失败 workspace={} loadId={} reason={}",
+                        workspaceId, loadId, safeMessage(exception), exception);
+                if (began) {
+                    try {
+                        writer.line(ApiPayloads.map("type", "error", "phase", "stream",
+                                "message", "获取数据库补全信息失败：" + safeMessage(exception)));
+                    } catch (IOException ignored) { /* 客户端已断开。 */ }
+                } else if (exception instanceof IOException) {
+                    throw (IOException) exception;
+                } else {
+                    throw new IOException("获取数据库补全信息失败：" + safeMessage(exception), exception);
+                }
+            } finally {
+                Arrays.fill(password, '\0');
+            }
+        };
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("application/x-ndjson"))
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .header("X-Accel-Buffering", "no")
+                .body(stream);
+    }
+
+    @PostMapping("/workspaces/{workspaceId}/metadata/completion-table-structure")
+    public Map<String, Object> completionTableStructure(@PathVariable String workspaceId,
+                                                        @RequestBody Map<String, Object> body) throws SQLException {
+        DatabaseContext context = databaseFor(workspaces.require(workspaceId), body);
+        String providerId = context.provider().id();
+        if (!"oracle".equals(providerId) && !"oceanbase-oracle".equals(providerId)) {
+            throw new ApiException("UNSUPPORTED_OPERATION", "当前数据库类型不需要延迟加载字段结构");
+        }
+        String schema = ApiPayloads.required(body, "schema");
+        String table = ApiPayloads.required(body, "table");
+        List<Object> columns = new ArrayList<Object>();
+        DatabaseSession session = context.metadataSession();
+        synchronized (session) {
+            for (ColumnInfo column : context.provider().metadata().listCompletionColumns(
+                    session, "", schema, table)) {
+                columns.add(ApiPayloads.map("name", column.name(), "typeName", column.typeName(),
+                        "ordinal", column.ordinal()));
+            }
+        }
+        return ApiPayloads.map("schema", schema, "table", table, "columns", columns);
     }
 
     @PostMapping("/workspaces/{workspaceId}/metadata/query")
@@ -1196,6 +1347,26 @@ public final class DbStudioApiController {
                 "selectedNamespaceKeys", snapshot.selectedNamespaceKeys(), "namespaces", namespaces);
     }
 
+    private static Map<String, Object> objectStreamRecord(String type, List<DatabaseObject> objects) {
+        List<Object> values = new ArrayList<Object>(objects.size());
+        for (DatabaseObject object : objects) {
+            values.add(ApiPayloads.map("namespaceKey",
+                    CompletionSnapshotService.namespaceKey(object.catalog(), object.schema()),
+                    "catalog", object.catalog(), "schema", object.schema(), "name", object.name(),
+                    "kind", object.type() == DatabaseObjectType.VIEW ? "view" : "table",
+                    "remarks", object.remarks()));
+        }
+        return ApiPayloads.map("type", type, "values", values);
+    }
+
+    private static void writerLine(NdjsonWriter writer, Map<String, Object> value) throws SQLException {
+        try {
+            writer.line(value);
+        } catch (IOException exception) {
+            throw new SQLException("补全元数据流已断开", exception);
+        }
+    }
+
     private static Map<String, Object> systemMap(SystemEntry value) {
         return ApiPayloads.map("id", value.id(), "name", value.name(), "revision", value.revision());
     }
@@ -1219,6 +1390,56 @@ public final class DbStudioApiController {
         addGroup(result, provider, catalog, schema, DatabaseObjectType.FUNCTION, DatabaseCapability.FUNCTIONS);
         addGroup(result, provider, catalog, schema, DatabaseObjectType.PACKAGE, DatabaseCapability.PACKAGES);
         return result;
+    }
+
+    private static final class NdjsonWriter {
+        private final OutputStreamWriter writer;
+        private final ObjectMapper mapper;
+        private long bytes;
+
+        private NdjsonWriter(OutputStreamWriter writer, ObjectMapper mapper) {
+            this.writer = writer;
+            this.mapper = mapper;
+        }
+
+        private void line(Map<String, Object> value) throws IOException {
+            String json = mapper.writeValueAsString(value);
+            writer.write(json);
+            writer.write('\n');
+            writer.flush();
+            bytes += json.getBytes(StandardCharsets.UTF_8).length + 1L;
+        }
+
+        private long bytes() { return bytes; }
+    }
+
+    private static final class CompletionProgressEmitter {
+        private static final long INTERVAL_NANOS = 250_000_000L;
+        private final Workspace workspace;
+        private final String loadId;
+        private final String sourceProfileId;
+        private final String environmentId;
+        private String phase = "";
+        private long lastEmission;
+
+        private CompletionProgressEmitter(Workspace workspace, String loadId,
+                                          String sourceProfileId, String environmentId) {
+            this.workspace = workspace;
+            this.loadId = loadId;
+            this.sourceProfileId = sourceProfileId;
+            this.environmentId = environmentId;
+        }
+
+        private void emit(String nextPhase, long completed, String message) {
+            long now = System.nanoTime();
+            if (nextPhase.equals(phase) && completed > 0 && now - lastEmission < INTERVAL_NANOS) return;
+            phase = nextPhase;
+            lastEmission = now;
+            workspace.events().emit("metadata.completionProgress", ApiPayloads.map(
+                    "loadId", loadId, "phase", nextPhase, "completed", completed, "total", 0,
+                    "message", message, "sourceProfileId", sourceProfileId,
+                    "environmentId", environmentId));
+        }
     }
 
     private static void addGroup(List<Map<String, Object>> result, DatabaseProvider provider, String catalog, String schema,

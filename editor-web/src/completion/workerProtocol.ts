@@ -1,5 +1,5 @@
 import type { CompletionCacheStats, CompletionCacheSummary, CompletionResult, ResolvedResultColumnRemark,
-  ResultColumnRemarkLookup } from "../types";
+  QueryColumn, ResultColumnRemarkLookup } from "../types";
 import type { CompletionTextChange } from "./documentMirror";
 
 export type CompletionWorkerRequest =
@@ -12,6 +12,9 @@ export type CompletionWorkerRequest =
       modelVersion: number; cursorOffset: number; prefix: string; limit: number }
   | { id: string; type: "result-columns.resolve"; cacheKey: string; providerId: string;
       columns: ResultColumnRemarkLookup[] }
+  | { id: string; type: "query.enrich"; cacheKey: string; providerId: string; url: string;
+      clientId: string; editorId: string; sql: string; columns: QueryColumn[] }
+  | { id: string; type: "structure.invalidate"; cacheKey: string; providerId: string; sql: string }
   | { id: string; type: "stats" }
   | { id: string; type: "clear" };
 

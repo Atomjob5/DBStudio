@@ -372,6 +372,23 @@ class LocalServerSecurityTest {
                 new HttpEntity<Map<String, Object>>(body, headers), String.class);
         assertEquals(HttpStatus.BAD_REQUEST, duplicate.getStatusCode());
         assertTrue(duplicate.getBody().contains("INVALID_COMPLETION_SOURCE"));
+
+        body.remove("editorId");
+        body.remove("profileId");
+        ResponseEntity<String> missingStream = http.exchange(url("/api/v1/workspaces/" + workspaceId
+                        + "/metadata/completion-snapshot-stream"), HttpMethod.POST,
+                new HttpEntity<Map<String, Object>>(body, headers), String.class);
+        assertEquals(HttpStatus.BAD_REQUEST, missingStream.getStatusCode());
+        assertTrue(missingStream.getBody().contains("INVALID_COMPLETION_SOURCE"));
+
+        Map<String, Object> structureBody = new HashMap<String, Object>();
+        structureBody.put("schema", "CBSAC");
+        structureBody.put("table", "CUSTOMERS");
+        ResponseEntity<String> missingEditor = http.exchange(url("/api/v1/workspaces/" + workspaceId
+                        + "/metadata/completion-table-structure"), HttpMethod.POST,
+                new HttpEntity<Map<String, Object>>(structureBody, headers), String.class);
+        assertEquals(HttpStatus.BAD_REQUEST, missingEditor.getStatusCode());
+        assertTrue(missingEditor.getBody().contains("EDITOR_REQUIRED"));
     }
 
     private HttpHeaders authenticatedHeaders() {

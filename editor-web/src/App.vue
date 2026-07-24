@@ -529,11 +529,16 @@ function installEventHandlers(): void {
     const data = raw as { editorId: string; executionId: string; cancelled: boolean; failed: boolean; durationMs: number; transactionDirty: boolean };
     const tab = editors.tabs.find((item) => item.id === data.editorId);
     if (!tab || tab.activeExecutionId !== data.executionId) return;
+    const completedResults = queries.executions[data.editorId]?.results
+      .filter((result) => result.complete && !result.errorMessage) ?? [];
     queries.complete(data.editorId, data); editors.patch(data.editorId, {
       busy: false, transactionDirty: data.transactionDirty,
       transactionState: data.transactionDirty ? "active" : "none",
       activeExecutionId: undefined, executionPhase: "idle"
     });
+    if (!data.cancelled && !data.failed) {
+      for (const result of completedResults) void enrichCompletionStructure(data.editorId, result.resultIndex);
+    }
     scheduleDraft(data.editorId);
     app.status = `${data.cancelled ? "执行已取消" : data.failed ? "执行失败" : "执行完成"} · ${data.durationMs} ms`;
   }));
@@ -688,6 +693,32 @@ async function resolveResultColumnRemarks(editorId: string, resultIndex: number,
     queries.applyColumnRemarks(editorId, executionId, resultIndex, resolved);
   } catch {
     // 字段备注是可选展示信息；缓存不可用或损坏不能影响查询结果。
+  }
+}
+
+async function enrichCompletionStructure(editorId: string, resultIndex: number): Promise<void> {
+  const tab = editors.tabs.find((item) => item.id === editorId);
+  const result = queries.executions[editorId]?.results.find((item) => item.resultIndex === resultIndex);
+  const context = connections.completionContext(tab?.connection);
+  if (!tab?.connection || !context || !result?.complete || result.errorMessage) return;
+  if (tab.connection.providerId !== "oracle" && tab.connection.providerId !== "oceanbase-oracle") return;
+  try {
+    if (result.type.toUpperCase() === "DDL") {
+      await completionClient.invalidateStructure(context.key, tab.connection.providerId, result.sql);
+      return;
+    }
+    if (result.type.toUpperCase() !== "QUERY") return;
+    await completionClient.enrichQuery({
+      cacheKey: context.key,
+      providerId: tab.connection.providerId,
+      workspaceId: rpc.activeWorkspaceId,
+      clientId: rpc.activeClientId,
+      editorId,
+      sql: result.sql,
+      columns: result.columnDetails ?? []
+    });
+  } catch {
+    // 字段类型是可延迟补充信息；失败不能影响查询结果或已有字段备注。
   }
 }
 
@@ -981,6 +1012,7 @@ async function performCompletionLoad(profile: SavedProfile, source: { profileId?
       body: { loadId, ...source, selectedNamespaces: selected.map((item) => ({ catalog: item.catalog, schema: item.schema })) }
     });
     if (!metadata.completeCompletion(context.key, loadId, summary)) return;
+    if (summary.warning) ElMessage.warning(summary.warning);
     await refreshCompletionStats();
     const existing = completionNoticeTimers.get(context.key);
     if (existing !== undefined) window.clearTimeout(existing);
