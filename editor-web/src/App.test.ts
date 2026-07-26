@@ -124,9 +124,10 @@ describe("App result loading status toolbar", () => {
     await nextButton.trigger("click");
     await flushPromises();
 
-    expect(rpcRequest).toHaveBeenCalledWith("query.fetchRows", {
-      editorId: "editor-1", resultIndex: 1, offset: 1, limit: 1000
-    }, 120_000);
+    expect(rpcRequest).toHaveBeenCalledWith("query.fetchRows", expect.objectContaining({
+      editorId: "editor-1", resultIndex: 1, offset: 1, limit: 1000,
+      executionId: expect.any(String)
+    }), 120_000);
     expect(wrapper.find(".result-data-toolbar").exists()).toBe(false);
   });
 
@@ -184,6 +185,109 @@ describe("App result loading status toolbar", () => {
 
     finishRequest?.({ resultIndex: 0, offset: 1, rows: [], hasMore: false, nextOffset: 1 });
     await flushPromises();
+  });
+
+  it("replaces execute with cancel while loading a page and interrupts the registered operation", async () => {
+    let finishRequest: ((value: unknown) => void) | undefined;
+    rpcRequest.mockImplementation(async (type: string) => {
+      if (type === "query.cancel") return { cancelled: true };
+      if (type !== "query.fetchRows") return {};
+      return await new Promise((resolve) => { finishRequest = resolve; });
+    });
+    const editors = useEditorStore();
+    const queries = useQueryStore();
+    editors.add({ id: "editor-1", title: "查询 1", content: "", dirty: false, transactionDirty: false, busy: false,
+      executionPhase: "idle", transactionOperation: "idle", connectionState: "unbound" });
+    queries.start("editor-1", "execution-1");
+    queries.addResult("editor-1", { resultIndex: 0, sql: "select 1", type: "QUERY", columns: ["id"], rows: [["1"]],
+      updateCount: -1, truncated: true, durationMs: 3, complete: true });
+    queries.complete("editor-1", { durationMs: 3 });
+    await nextTick();
+
+    await wrapper.get('button[aria-label="下一页数据"]').trigger("click");
+    await flushPromises();
+    const pageCall = rpcRequest.mock.calls.find(([type]) => type === "query.fetchRows");
+    const executionId = String(pageCall?.[1]?.executionId);
+    let cancel = wrapper.get('button[aria-label="取消执行"]');
+    expect(cancel.classes()).toContain("el-button--warning");
+    expect(cancel.attributes("disabled")).toBeDefined();
+
+    rpcMock.listeners.get("query.pageStarted")?.forEach((listener) => listener({
+      editorId: "editor-1", executionId, resultIndex: 0
+    }));
+    await nextTick();
+    cancel = wrapper.get('button[aria-label="取消执行"]');
+    expect(cancel.attributes("disabled")).toBeUndefined();
+    await cancel.trigger("click");
+    await flushPromises();
+    expect(rpcRequest).toHaveBeenCalledWith("query.cancel", { editorId: "editor-1", executionId });
+    expect(wrapper.get('button[aria-label="取消执行"]').classes()).toContain("is-loading");
+
+    finishRequest?.({ executionId, resultIndex: 0, offset: 1, rows: [["partial"]],
+      hasMore: true, nextOffset: 2, cancelled: true });
+    await flushPromises();
+    expect(queries.executions["editor-1"].results[0].rows).toEqual([["1"]]);
+    expect(wrapper.find('button[aria-label="取消执行"]').exists()).toBe(false);
+    expect(wrapper.find(".execute-control.el-dropdown").exists()).toBe(true);
+
+    await wrapper.get('button[aria-label="下一页数据"]').trigger("click");
+    await flushPromises();
+    const latestPageCall = rpcRequest.mock.calls.filter(([type]) => type === "query.fetchRows").at(-1);
+    const keyboardExecutionId = String(latestPageCall?.[1]?.executionId);
+    rpcMock.listeners.get("query.pageStarted")?.forEach((listener) => listener({
+      editorId: "editor-1", executionId: keyboardExecutionId, resultIndex: 0
+    }));
+    await nextTick();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await flushPromises();
+    expect(rpcRequest).toHaveBeenCalledWith("query.cancel", {
+      editorId: "editor-1", executionId: keyboardExecutionId
+    });
+    finishRequest?.({ executionId: keyboardExecutionId, resultIndex: 0, offset: 1, rows: [],
+      hasMore: true, nextOffset: 1, cancelled: true });
+    await flushPromises();
+  });
+
+  it("stops fetching all after cancellation and retains every completed batch", async () => {
+    let pageRequestCount = 0;
+    let finishSecondPage: ((value: unknown) => void) | undefined;
+    rpcRequest.mockImplementation(async (type: string, payload: Record<string, unknown>) => {
+      if (type === "query.cancel") return { cancelled: false };
+      if (type !== "query.fetchRows") return {};
+      pageRequestCount++;
+      if (pageRequestCount === 1) {
+        return { executionId: payload.executionId, resultIndex: 0, offset: 1, rows: [["2"]],
+          hasMore: true, nextOffset: 2, cancelled: false };
+      }
+      return await new Promise((resolve) => { finishSecondPage = resolve; });
+    });
+    const editors = useEditorStore();
+    const queries = useQueryStore();
+    editors.add({ id: "editor-1", title: "查询 1", content: "", dirty: false, transactionDirty: false, busy: false,
+      executionPhase: "idle", transactionOperation: "idle", connectionState: "unbound" });
+    queries.start("editor-1", "execution-1");
+    queries.addResult("editor-1", { resultIndex: 0, sql: "select 1", type: "QUERY", columns: ["id"], rows: [["1"]],
+      updateCount: -1, truncated: true, durationMs: 3, complete: true });
+    queries.complete("editor-1", { durationMs: 3 });
+    await nextTick();
+
+    await wrapper.get('button[aria-label="获取全部数据"]').trigger("click");
+    await flushPromises();
+    const pageCall = rpcRequest.mock.calls.find(([type]) => type === "query.fetchRows");
+    const executionId = String(pageCall?.[1]?.executionId);
+    rpcMock.listeners.get("query.pageStarted")?.forEach((listener) => listener({
+      editorId: "editor-1", executionId, resultIndex: 0
+    }));
+    await nextTick();
+    await wrapper.get('button[aria-label="取消执行"]').trigger("click");
+    await flushPromises();
+    finishSecondPage?.({ executionId, resultIndex: 0, offset: 2, rows: [["3"]],
+      hasMore: true, nextOffset: 3, cancelled: false });
+    await flushPromises();
+
+    expect(pageRequestCount).toBe(2);
+    expect(queries.executions["editor-1"].results[0].rows).toEqual([["1"], ["2"], ["3"]]);
+    expect(wrapper.find('button[aria-label="取消执行"]').exists()).toBe(false);
   });
 
   it("手动折叠左侧面板后可通过 Activity Bar 单击恢复", async () => {

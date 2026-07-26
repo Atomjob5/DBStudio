@@ -129,12 +129,19 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
     return { executionId };
   }
   if (type === "query.fetchRows") {
+    const editorId = String(payload.editorId ?? "");
+    const executionId = String(payload.executionId ?? crypto.randomUUID());
+    emit("query.pageStarted", {
+      editorId, executionId, resultIndex: Number(payload.resultIndex ?? 0)
+    });
     const offset = Number(payload.offset ?? 0); const limit = Number(payload.limit ?? 100);
     const total = 350; const end = Math.min(total, offset + limit);
     const rows = Array.from({ length: Math.max(0, end - offset) }, (_, index) => {
       const id = offset + index + 1; return [String(id), `Apple Studio ${id} ✨`];
     });
-    return { resultIndex: Number(payload.resultIndex ?? 0), offset, rows, hasMore: end < total, nextOffset: end };
+    return { executionId, resultIndex: Number(payload.resultIndex ?? 0), offset, rows,
+      hasMore: end < total, nextOffset: end, cancelled: false };
   }
+  if (type === "query.cancel") return { cancelled: true };
   return {};
 };

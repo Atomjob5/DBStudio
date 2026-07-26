@@ -187,12 +187,12 @@ public final class EditorSessionRegistry implements AutoCloseable {
             return true;
         }
         public void endTransactionOperation() { transactionOperation.set(false); }
-        private synchronized boolean beginExecution(UUID executionId) {
+        public synchronized boolean beginExecution(UUID executionId) {
             if (activeExecutionId != null || transactionOperation.get()) return false;
             activeExecutionId = executionId;
             return true;
         }
-        private synchronized void endExecution(UUID executionId) {
+        public synchronized void endExecution(UUID executionId) {
             if (executionId.equals(activeExecutionId)) activeExecutionId = null;
         }
         public void touch() { lastTouched = System.currentTimeMillis(); }

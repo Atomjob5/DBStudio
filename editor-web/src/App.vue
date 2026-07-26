@@ -8,7 +8,7 @@
         <div class="connection-pill-wrap" :class="{ connected: ['ready','active'].includes(editors.active?.connectionState ?? ''), suspended: editors.active?.connectionState === 'suspended', stale: editors.active?.connection?.stale || editors.active?.connection?.unavailable }">
           <el-cascader ref="connectionCascader" class="connection-pill" :model-value="activeConnectionValue"
                        :options="connections.cascaderOptions" :props="connectionCascaderProps"
-                       :show-all-levels="false" filterable clearable :disabled="!editors.active || editors.active.busy || app.transportState !== 'ready'"
+                       :show-all-levels="false" filterable clearable :disabled="!editors.active || activeDatabaseBusy || app.transportState !== 'ready'"
                        :placeholder="activeConnectionDisplay" aria-label="当前编辑标签的数据库链接"
                        @change="connectionSelectionChanged" @visible-change="connectionCascaderOpen = $event">
             <template #default="{ data }">
@@ -41,9 +41,9 @@
 
       <el-tooltip v-if="activeExecutionRunning" :content="cancelExecutionTooltip" placement="bottom">
         <el-button class="execute-control cancel-execution-control" type="warning" :icon="Close"
-                   aria-label="取消执行" :loading="editors.active?.executionPhase === 'cancelling'"
+                   aria-label="取消执行" :loading="activeCancellationPhase === 'cancelling'"
                    :disabled="!canCancelExecution" @click="cancelActive">
-          {{ editors.active?.executionPhase === "cancelling" ? "正在取消…" : "取消执行" }}
+          {{ activeCancellationPhase === "cancelling" ? "正在取消…" : "取消执行" }}
         </el-button>
       </el-tooltip>
       <el-dropdown v-else class="execute-control" split-button type="primary" :icon="VideoPlay" :disabled="!canExecute"
@@ -147,7 +147,7 @@
       </el-splitter>
     </el-main>
 
-    <AppStatusBar :execution-text="activeExecutionText" :busy="Boolean(editors.active?.busy)"
+    <AppStatusBar :execution-text="activeExecutionText" :busy="activeDatabaseBusy"
                   :selected-row-count="selectedResultRowCount" :result-content-offset="resultContentOffset"
                   :selected-column="selectedResultColumn"
                   :show-selected-column-remarks="settings.showSelectedColumnRemarks" :system-items="systemStatusItems"
@@ -278,14 +278,20 @@ const activeExecution = computed(() => editors.activeId ? queries.executions[edi
 const activeResultIndex = ref(0);
 const activeResult = computed(() => activeExecution.value?.results.find((result) => result.resultIndex === activeResultIndex.value)
   ?? activeExecution.value?.results[0]);
-const resultLoading = ref<{ editorId: string; resultIndex: number; mode: "next" | "all" }>();
+interface ResultLoadingState {
+  editorId: string;
+  resultIndex: number;
+  mode: "next" | "all";
+  executionId: string;
+  phase: "starting" | "running" | "cancelling";
+  cancelRequested: boolean;
+}
+const resultLoading = ref<ResultLoadingState>();
 const selectedResultColumn = ref<SelectedResultColumn>();
 const selectedResultRowCount = ref(0);
 const activeResultLoading = computed(() => {
   const loading = resultLoading.value;
-  return loading && loading.editorId === editors.activeId
-    ? { resultIndex: loading.resultIndex, mode: loading.mode }
-    : undefined;
+  return loading && loading.editorId === editors.activeId ? loading : undefined;
 });
 const canLoadMore = computed(() => Boolean(activeResult.value?.columns.length && activeResult.value.complete
   && activeResult.value.truncated && !activeExecution.value?.busy && !activeExecution.value?.historical
@@ -309,18 +315,25 @@ const activeConnectionDisplay = computed(() => {
 const activeConnectionTooltip = computed(() => `${activeConnectionPath.value}${editors.active?.connection?.stale
   ? " · 配置已更新，重新选择后生效" : editors.active?.connection?.unavailable ? " · 配置已删除，当前会话仍可继续使用" : ""}`);
 const connectionCascaderProps: CascaderProps = { emitPath: false };
-const canExecute = computed(() => Boolean(activeConnected.value && !editors.active?.busy && app.transportState === "ready"));
-const activeExecutionRunning = computed(() => Boolean(editors.active?.busy
+const activeDatabaseBusy = computed(() => Boolean(editors.active?.busy || activeResultLoading.value));
+const canExecute = computed(() => Boolean(activeConnected.value && !activeDatabaseBusy.value
+  && app.transportState === "ready"));
+const activeExecutionRunning = computed(() => Boolean(activeDatabaseBusy.value
   || (editors.active?.executionPhase && editors.active.executionPhase !== "idle")));
-const canCancelExecution = computed(() => Boolean(editors.active?.busy && editors.active.activeExecutionId
-  && editors.active.executionPhase === "running" && app.transportState === "ready"));
-const cancelExecutionTooltip = computed(() => editors.active?.executionPhase === "starting"
+const activeCancellationPhase = computed(() => activeResultLoading.value?.phase
+  ?? editors.active?.executionPhase ?? "idle");
+const canCancelExecution = computed(() => app.transportState === "ready"
+  && (activeResultLoading.value
+    ? activeResultLoading.value.phase === "running"
+    : Boolean(editors.active?.busy && editors.active.activeExecutionId
+      && editors.active.executionPhase === "running")));
+const cancelExecutionTooltip = computed(() => activeCancellationPhase.value === "starting"
   ? "正在启动执行，获取执行编号后即可取消"
-  : editors.active?.executionPhase === "cancelling" ? "已发送取消请求，正在等待数据库响应"
+  : activeCancellationPhase.value === "cancelling" ? "已发送取消请求，正在等待数据库响应"
     : app.transportState !== "ready" ? "事件通道恢复后可取消执行" : "取消执行 · Esc");
 const hasActiveTransaction = computed(() => Boolean(editors.active?.transactionDirty
   && editors.active.transactionState === "active"));
-const canOperateTransaction = computed(() => Boolean(hasActiveTransaction.value && !editors.active?.busy
+const canOperateTransaction = computed(() => Boolean(hasActiveTransaction.value && !activeDatabaseBusy.value
   && editors.active?.executionPhase === "idle" && editors.active.transactionOperation === "idle"
   && activeConnected.value && app.transportState === "ready"));
 const transportStatusText = computed(() => app.transportState === "recovering" ? "正在恢复浏览器工作区…"
@@ -333,6 +346,9 @@ const connectionSessionText = computed(() => editors.active?.connectionState ===
         : `链接正常 · 自动提交${settings.autoCommit ? "开启" : "关闭"}`);
 const activeExecutionText = computed(() => {
   const execution = activeExecution.value;
+  if (activeResultLoading.value?.phase === "cancelling") return "正在取消…";
+  if (activeResultLoading.value) return activeResultLoading.value.mode === "next"
+    ? "正在加载下一页数据…" : "正在获取全部数据…";
   if (editors.active?.executionPhase === "cancelling") return "正在取消…";
   if (editors.active?.busy || execution?.busy) return "正在执行…";
   if (!execution) return "尚未执行 SQL";
@@ -511,6 +527,13 @@ function installEventHandlers(): void {
     if (tab?.busy && tab.executionPhase !== "cancelling") {
       editors.patch(data.editorId, { activeExecutionId: data.executionId, executionPhase: "running" });
     }
+  }));
+  disposers.push(rpc.on("query.pageStarted", (raw) => {
+    const data = raw as { editorId: string; executionId: string; resultIndex: number };
+    const loading = resultLoading.value;
+    if (!loading || loading.editorId !== data.editorId || loading.executionId !== data.executionId
+      || loading.resultIndex !== data.resultIndex || loading.phase === "cancelling") return;
+    resultLoading.value = { ...loading, phase: "running" };
   }));
   disposers.push(rpc.on("query.resultMeta", (raw) => {
     const data = raw as QueryResult & { editorId: string };
@@ -781,7 +804,8 @@ function executeCommand(command: string): void {
 }
 async function executeActive(scope: "current" | "script", selectedText = "", cursorOffset = 0,
                              recoveryRetried = false): Promise<void> {
-  const tab = editors.active; if (!tab || tab.busy) return;
+  const tab = editors.active;
+  if (!tab || tab.busy || resultLoading.value?.editorId === tab.id) return;
   if (!tab.connection || tab.connectionState === "unbound") {
     ElMessage.warning(tab.connection ? "原数据库链接已不可用，请重新选择链接" : "请先为当前编辑标签选择数据库链接");
     return;
@@ -821,6 +845,20 @@ async function ensureEditorCredentials(tab: EditorTab): Promise<boolean> {
   return true;
 }
 async function cancelActive(): Promise<void> {
+  const loading = activeResultLoading.value;
+  if (loading) {
+    if (loading.phase !== "running") return;
+    resultLoading.value = { ...loading, phase: "cancelling", cancelRequested: true };
+    try {
+      await rpc.ensureOperational();
+      await rpc.request<{ cancelled: boolean }>("query.cancel", {
+        editorId: loading.editorId, executionId: loading.executionId
+      });
+    } catch (error) {
+      ElMessage.error(message(error));
+    }
+    return;
+  }
   const tab = editors.active;
   if (!tab?.busy || !tab.activeExecutionId || tab.executionPhase !== "running") return;
   const executionId = tab.activeExecutionId;
@@ -871,11 +909,13 @@ async function rollbackActive(): Promise<void> {
 }
 
 interface ResultPageResponse {
+  executionId?: string;
   resultIndex: number;
   offset: number;
   rows: Array<Array<string | null>>;
   hasMore: boolean;
   nextOffset: number;
+  cancelled?: boolean;
 }
 
 async function loadNextResultPage(): Promise<void> {
@@ -904,26 +944,41 @@ async function loadResultRows(resultIndex: number, initialOffset: number, all: b
   const tab = editors.active;
   if (!tab || resultLoading.value || activeExecution.value?.historical) return;
   const mode = all ? "all" : "next";
-  resultLoading.value = { editorId: tab.id, resultIndex, mode };
+  const executionId = crypto.randomUUID();
+  const loading: ResultLoadingState = {
+    editorId: tab.id, resultIndex, mode, executionId, phase: "starting", cancelRequested: false
+  };
+  resultLoading.value = loading;
   let offset = initialOffset;
   const limit = all ? 5_000 : settings.maxResultRows;
   try {
     await rpc.ensureOperational();
     do {
       const page = await rpc.request<ResultPageResponse>("query.fetchRows", {
-        editorId: tab.id, resultIndex, offset, limit
+        editorId: tab.id, resultIndex, offset, limit, executionId
       }, 120_000);
+      const current = resultLoading.value;
+      if (!current || current.executionId !== executionId) break;
+      if (page.cancelled) {
+        resultLoading.value = { ...current, phase: "cancelling", cancelRequested: true };
+        app.status = `数据加载已取消 · 已保留 ${offset} 行`;
+        break;
+      }
       if (page.rows.length) queries.appendRows(tab.id, resultIndex, page.rows);
       queries.completeResult(tab.id, resultIndex, { truncated: page.hasMore });
       offset = page.nextOffset;
       app.status = page.hasMore ? `已加载 ${offset} 行` : `已获取全部 ${offset} 行`;
+      if (current.cancelRequested) {
+        app.status = `数据加载已取消 · 已保留 ${offset} 行`;
+        break;
+      }
       if (!all || !page.hasMore || page.rows.length === 0) break;
       await nextTick();
-    } while (true);
+    } while (!resultLoading.value?.cancelRequested);
   } catch (error) {
-    reportError(error);
+    if (!resultLoading.value?.cancelRequested) reportError(error);
   } finally {
-    resultLoading.value = undefined;
+    if (resultLoading.value?.executionId === executionId) resultLoading.value = undefined;
   }
 }
 
@@ -1163,7 +1218,7 @@ async function requestConnectionPassword(): Promise<{ password: string; remember
 
 function handleShortcut(event: KeyboardEvent): void {
   if (event.key.toLowerCase() === "escape") {
-    if (!editors.active?.busy) return;
+    if (!activeDatabaseBusy.value) return;
     event.preventDefault();
     event.stopPropagation();
     void cancelActive();

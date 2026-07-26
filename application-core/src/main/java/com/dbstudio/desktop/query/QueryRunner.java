@@ -167,11 +167,35 @@ public final class QueryRunner implements AutoCloseable {
      * 任务仍提交到编辑器专属执行器，以保持连接顺序和事务隔离级别。
      */
     public CompletableFuture<PageResult> fetchPage(final String sql, final int offset, final int limit) {
+        return fetchPage(sql, offset, limit, () -> { });
+    }
+
+    /**
+     * 在分页任务进入执行器前同步登记运行状态，确保调用方可以发布任务编号，并接受早于
+     * JDBC Statement 创建的取消请求。
+     */
+    public CompletableFuture<PageResult> fetchPage(final String sql, final int offset, final int limit,
+                                                   final Runnable preparedCallback) {
         if (offset < 0) throw new IllegalArgumentException("offset must not be negative");
         if (limit < 1) throw new IllegalArgumentException("limit must be positive");
+        if (!executionActive.compareAndSet(false, true)) {
+            throw new QueryExecutionException("当前已有 SQL 正在执行", null);
+        }
+        cancelRequested.set(false);
+        try {
+            preparedCallback.run();
+        } catch (RuntimeException exception) {
+            executionActive.set(false);
+            throw exception;
+        }
         final Map<String, String> loggingContext = MDC.getCopyOfContextMap();
         return CompletableFuture.supplyAsync(() -> withLoggingContext(loggingContext,
-                () -> fetchPageBlocking(sql, offset, limit)), executor);
+                () -> fetchPageBlocking(sql, offset, limit)), executor)
+                .whenComplete((ignored, failure) -> {
+                    activeStatement.set(null);
+                    executionActive.set(false);
+                    cancelRequested.set(false);
+                });
     }
 
     public boolean cancel() {
@@ -200,34 +224,43 @@ public final class QueryRunner implements AutoCloseable {
     private PageResult fetchPageBlocking(String sql, int offset, int limit) {
         Instant started = Instant.now();
         LOG.info("分页查询开始 offset={} limit={} {}", offset, limit, SqlLogSupport.summary(sql));
+        if (cancelRequested.get()) return PageResult.cancelledResult();
         try (Statement statement = session.jdbcConnection().createStatement()) {
             statement.setFetchSize(JDBC_FETCH_SIZE);
             activeStatement.set(statement);
+            if (cancelRequested.get()) return PageResult.cancelledResult();
             if (!statement.execute(sql)) {
                 throw new QueryExecutionException("该结果不是可分页的查询结果", null);
             }
             try (ResultSet resultSet = statement.getResultSet()) {
                 int skipped = 0;
-                while (skipped < offset && resultSet.next()) skipped++;
+                while (skipped < offset && !cancelRequested.get() && resultSet.next()) skipped++;
+                if (cancelRequested.get()) return PageResult.cancelledResult();
                 if (skipped < offset) return new PageResult(Collections.<List<String>>emptyList(), false);
 
                 ResultSetMetaData metadata = resultSet.getMetaData();
                 int columnCount = metadata.getColumnCount();
                 List<List<String>> rows = new ArrayList<List<String>>(limit);
-                while (rows.size() < limit && resultSet.next()) {
+                while (rows.size() < limit && !cancelRequested.get() && resultSet.next()) {
                     List<String> row = new ArrayList<String>(columnCount);
                     for (int index = 1; index <= columnCount; index++) {
                         row.add(displayValue(resultSet.getObject(index)));
                     }
                     rows.add(Collections.unmodifiableList(row));
                 }
+                if (cancelRequested.get()) return PageResult.cancelledResult();
                 boolean hasMore = resultSet.next();
+                if (cancelRequested.get()) return PageResult.cancelledResult();
                 PageResult result = new PageResult(rows, hasMore);
                 LOG.info("分页查询完成 rows={} hasMore={} durationMs={}", rows.size(), hasMore,
                         Duration.between(started, Instant.now()).toMillis());
                 return result;
             }
         } catch (SQLException exception) {
+            if (cancelRequested.get()) {
+                LOG.info("分页查询已取消 durationMs={}", Duration.between(started, Instant.now()).toMillis());
+                return PageResult.cancelledResult();
+            }
             LOG.warn("分页查询失败 sqlState={} errorCode={} durationMs={}", exception.getSQLState(),
                     exception.getErrorCode(), Duration.between(started, Instant.now()).toMillis(), exception);
             throw new QueryExecutionException("加载更多结果失败：" + sanitize(exception), exception);
@@ -386,14 +419,25 @@ public final class QueryRunner implements AutoCloseable {
     public static final class PageResult {
         private final List<List<String>> rows;
         private final boolean hasMore;
+        private final boolean cancelled;
 
         private PageResult(List<List<String>> rows, boolean hasMore) {
+            this(rows, hasMore, false);
+        }
+
+        private PageResult(List<List<String>> rows, boolean hasMore, boolean cancelled) {
             this.rows = immutableRows(rows);
             this.hasMore = hasMore;
+            this.cancelled = cancelled;
+        }
+
+        private static PageResult cancelledResult() {
+            return new PageResult(Collections.<List<String>>emptyList(), true, true);
         }
 
         public List<List<String>> rows() { return rows; }
         public boolean hasMore() { return hasMore; }
+        public boolean cancelled() { return cancelled; }
     }
 
     public static String displayValue(Object value) throws SQLException {

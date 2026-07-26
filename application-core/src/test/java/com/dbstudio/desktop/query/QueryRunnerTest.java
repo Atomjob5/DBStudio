@@ -181,6 +181,29 @@ class QueryRunnerTest {
         }
     }
 
+    @Test
+    void acceptsPaginationCancellationBeforeStatementCreationAndResetsForTheNextPage() throws Exception {
+        final Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
+        connection.setAutoCommit(false);
+        try (final QueryRunner runner = new QueryRunner(session(connection), 10, 10)) {
+            QueryRunner.PageResult cancelled = runner.fetchPage("SELECT 1", 0, 10, new Runnable() {
+                @Override public void run() {
+                    assertTrue(runner.cancel());
+                }
+            }).join();
+
+            assertTrue(cancelled.cancelled());
+            assertTrue(cancelled.rows().isEmpty());
+            assertTrue(cancelled.hasMore());
+            assertFalse(runner.isRunning());
+
+            QueryRunner.PageResult next = runner.fetchPage("SELECT 2", 0, 10).join();
+            assertFalse(next.cancelled());
+            assertFalse(next.hasMore());
+            assertEquals("2", next.rows().get(0).get(0));
+        }
+    }
+
     private StatementResult query(QueryRunner runner, int rows, final List<Integer> batches,
                                   final Runnable started) {
         String text = "WITH RECURSIVE numbers(id) AS (SELECT 1 UNION ALL SELECT id + 1 FROM numbers WHERE id < "

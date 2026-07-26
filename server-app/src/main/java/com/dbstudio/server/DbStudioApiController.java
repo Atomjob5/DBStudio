@@ -756,6 +756,8 @@ public final class DbStudioApiController {
                                                @RequestBody Map<String, Object> body) throws Exception {
         Workspace workspace = workspaces.require(workspaceId);
         EditorSession editor = workspace.editors().require(editorId);
+        if (!workspace.events().connected()) throw new ApiException(
+                "EVENT_CHANNEL_REQUIRED", "事件通道尚未连接，请等待重连后再加载结果");
         ensureEditorContext(workspace, editor);
         StatementResult source = result(editor, resultIndex);
         if (!source.hasRows() || source.type() != StatementType.QUERY) {
@@ -770,12 +772,24 @@ public final class DbStudioApiController {
         if (limit < 1 || limit > 100_000) {
             throw new ApiException("INVALID_RESULT_LIMIT", "单次加载行数必须在 1 到 100000 之间");
         }
-        PageResult page = workspace.fetchPage(editor, source.sql(), offset, limit).get(120, TimeUnit.SECONDS);
-        editor.appendResultRows(resultIndex, page.rows(), page.hasMore());
-        LOG.info("结果分页完成 workspace={} editor={} resultIndex={} offset={} rows={} hasMore={}",
-                workspaceId, editorId, resultIndex, offset, page.rows().size(), page.hasMore());
-        return ApiPayloads.map("resultIndex", resultIndex, "offset", offset, "rows", page.rows(),
-                "hasMore", page.hasMore(), "nextOffset", offset + page.rows().size());
+        String rawExecutionId = ApiPayloads.text(body, "executionId").trim();
+        final UUID executionId;
+        try {
+            executionId = rawExecutionId.isEmpty() ? UUID.randomUUID() : UUID.fromString(rawExecutionId);
+        } catch (IllegalArgumentException exception) {
+            throw new ApiException("INVALID_EXECUTION_ID", "分页执行编号无效");
+        }
+        PageResult page = workspace.fetchPage(editor, executionId, source.sql(), offset, limit,
+                () -> workspace.events().emit("query.pageStarted", ApiPayloads.map(
+                        "editorId", editorId, "executionId", executionId.toString(),
+                        "resultIndex", resultIndex))).get(120, TimeUnit.SECONDS);
+        if (!page.cancelled()) editor.appendResultRows(resultIndex, page.rows(), page.hasMore());
+        LOG.info("结果分页完成 workspace={} editor={} execution={} resultIndex={} offset={} rows={} hasMore={} cancelled={}",
+                workspaceId, editorId, executionId, resultIndex, offset, page.rows().size(),
+                page.hasMore(), page.cancelled());
+        return ApiPayloads.map("executionId", executionId.toString(), "resultIndex", resultIndex,
+                "offset", offset, "rows", page.rows(), "hasMore", page.hasMore(),
+                "nextOffset", offset + page.rows().size(), "cancelled", page.cancelled());
     }
 
     @PostMapping("/workspaces/{workspaceId}/editors/{editorId}/transaction/{action}")

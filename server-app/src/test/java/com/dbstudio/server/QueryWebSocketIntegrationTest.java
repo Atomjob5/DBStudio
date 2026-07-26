@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
@@ -98,12 +99,43 @@ class QueryWebSocketIntegrationTest {
             assertEquals(Arrays.asList(50, 50, 20), rowBatchSizes(first));
             assertTrue(resultComplete(first).get("truncated").equals(Boolean.TRUE));
             assertOrder(first);
+
+            events.clear();
+            Map<String, Object> cancelledPageBody = new HashMap<String, Object>();
+            String cancelledPageExecutionId = UUID.randomUUID().toString();
+            cancelledPageBody.put("offset", 120); cancelledPageBody.put("limit", 100);
+            cancelledPageBody.put("executionId", cancelledPageExecutionId);
+            CompletableFuture<Map<String, Object>> cancelledPageFuture = CompletableFuture.supplyAsync(() ->
+                    exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId + "/editors/" + editorId
+                            + "/results/0/page", cancelledPageBody, cookie));
+            Map<String, Object> cancelledPageStarted = awaitType(events, "query.pageStarted", 10);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> cancelledPageStartedPayload =
+                    (Map<String, Object>) cancelledPageStarted.get("payload");
+            assertEquals(cancelledPageExecutionId, cancelledPageStartedPayload.get("executionId"));
+            Map<String, Object> cancelResponse = exchange(HttpMethod.DELETE, "/api/v1/workspaces/" + workspaceId
+                    + "/executions/" + cancelledPageExecutionId, null, cookie);
+            assertEquals(Boolean.TRUE, cancelResponse.get("cancelled"));
+            Map<String, Object> cancelledPage = cancelledPageFuture.get(10, TimeUnit.SECONDS);
+            assertEquals(Boolean.TRUE, cancelledPage.get("cancelled"));
+            assertTrue(((List<?>) cancelledPage.get("rows")).isEmpty());
+            assertEquals(120, ((Number) cancelledPage.get("nextOffset")).intValue());
+
+            events.clear();
             Map<String, Object> pageBody = new HashMap<String, Object>();
+            String pageExecutionId = UUID.randomUUID().toString();
             pageBody.put("offset", 120); pageBody.put("limit", 100);
+            pageBody.put("executionId", pageExecutionId);
             Map<String, Object> page = exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId
                     + "/editors/" + editorId + "/results/0/page", pageBody, cookie);
+            Map<String, Object> pageStarted = awaitType(events, "query.pageStarted", 10);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> pageStartedPayload = (Map<String, Object>) pageStarted.get("payload");
+            assertEquals(pageExecutionId, pageStartedPayload.get("executionId"));
+            assertEquals(editorId, pageStartedPayload.get("editorId"));
             assertEquals(100, ((List<?>) page.get("rows")).size());
             assertEquals(Boolean.TRUE, page.get("hasMore"));
+            assertEquals(Boolean.FALSE, page.get("cancelled"));
             assertEquals(220, ((Number) page.get("nextOffset")).intValue());
 
             updateSetting(cookie, "result.maxRows", "250");
@@ -290,7 +322,7 @@ class QueryWebSocketIntegrationTest {
                                                BlockingQueue<Map<String, Object>> events, int rows) throws Exception {
         return executeSql(editorId, workspaceId, cookie, events,
                 "WITH RECURSIVE numbers(id) AS (SELECT 1 UNION ALL SELECT id + 1 FROM numbers WHERE id < "
-                        + rows + ") SELECT id FROM numbers");
+                        + rows + ") SELECT id, IF(id > 120, SLEEP(0.02), 0) AS page_delay FROM numbers");
     }
 
     private List<Map<String, Object>> executeSql(String editorId, String workspaceId, String cookie,
@@ -404,11 +436,12 @@ class QueryWebSocketIntegrationTest {
         return exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId + "/open", body, cookie);
     }
 
-    private void awaitType(BlockingQueue<Map<String, Object>> events, String type, int seconds) throws Exception {
+    private Map<String, Object> awaitType(BlockingQueue<Map<String, Object>> events,
+                                          String type, int seconds) throws Exception {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds);
         while (System.nanoTime() < deadline) {
             Map<String, Object> event = events.poll(1, TimeUnit.SECONDS);
-            if (event != null && type.equals(event.get("type"))) return;
+            if (event != null && type.equals(event.get("type"))) return event;
         }
         throw new AssertionError("Timed out waiting for " + type);
     }

@@ -210,15 +210,36 @@ final class Workspace implements AutoCloseable {
         }
     }
 
-    CompletableFuture<PageResult> fetchPage(final EditorSession editor, String sql, int offset, int limit) {
+    CompletableFuture<PageResult> fetchPage(final EditorSession editor, final UUID executionId, String sql,
+                                            int offset, int limit, final Runnable started) {
         ensureBound(editor);
         if (editor.activeExecutionId() != null) throw new ApiException("QUERY_BUSY", "当前标签已有查询正在执行");
         if (editor.transactionOperationActive()) throw new ApiException("TRANSACTION_BUSY", "当前标签正在提交或回滚事务");
-        LOG.info("Workspace开始分页 workspaceId={} editorId={} offset={} limit={}", id, editor.id(), offset, limit);
+        LOG.info("Workspace开始分页 workspaceId={} editorId={} executionId={} offset={} limit={}",
+                id, editor.id(), executionId, offset, limit);
         final ActiveLease active = acquireRunner(editor);
-        return active.runner.fetchPage(sql, offset, limit).whenComplete((result, failure) -> {
-            if (!active.runner.isTransactionDirty()) finishExecutionLease(editor, active);
-        });
+        try {
+            return active.runner.fetchPage(sql, offset, limit, () -> {
+                if (!editor.beginExecution(executionId)) {
+                    throw new ApiException(editor.transactionOperationActive() ? "TRANSACTION_BUSY" : "QUERY_BUSY",
+                            editor.transactionOperationActive()
+                                    ? "当前标签正在提交或回滚事务" : "当前标签已有查询正在执行");
+                }
+                try {
+                    started.run();
+                } catch (RuntimeException exception) {
+                    editor.endExecution(executionId);
+                    throw exception;
+                }
+            }).whenComplete((result, failure) -> {
+                editor.endExecution(executionId);
+                if (!active.runner.isTransactionDirty()) finishExecutionLease(editor, active);
+            });
+        } catch (RuntimeException exception) {
+            editor.endExecution(executionId);
+            finishExecutionLease(editor, active);
+            throw exception;
+        }
     }
 
     CompletableFuture<Void> commit(final EditorSession editor) {
