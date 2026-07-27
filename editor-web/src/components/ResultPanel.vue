@@ -693,9 +693,7 @@ function emitSelectedColumn(): void {
 }
 
 function openDataMenu(event: MouseEvent, mode: "cells" | "rows"): void {
-  dataMenu.value = { visible: true, mode,
-    x: Math.max(8, Math.min(event.clientX, window.innerWidth - 198)),
-    y: Math.max(8, Math.min(event.clientY, window.innerHeight - 270)) };
+  dataMenu.value = { visible: true, mode, x: event.clientX, y: event.clientY };
 }
 
 function closeDataMenu(): void { dataMenu.value = { ...dataMenu.value, visible: false }; }

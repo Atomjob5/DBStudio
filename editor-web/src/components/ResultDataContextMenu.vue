@@ -1,6 +1,8 @@
 <template>
   <teleport to="body">
-    <div v-if="visible" ref="menuHost" class="result-data-context-menu" :style="{ left: `${x}px`, top: `${y}px` }">
+    <div v-if="visible" ref="menuHost" class="result-data-context-menu"
+         :style="{ left: `${position.x}px`, top: `${position.y}px`,
+                   visibility: position.ready ? 'visible' : 'hidden' }">
       <el-menu :collapse="true" :collapse-transition="false" @select="selectCommand">
         <el-sub-menu index="copy" popper-class="result-data-context-submenu" :teleported="true"
                      :show-timeout="100" :hide-timeout="220">
@@ -24,17 +26,40 @@
 
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { fitContextMenuPosition } from "../contextMenuPosition";
 
 export type DataMenuCommand = "copy-data" | "copy-in" | "copy-all" | "copy-insert" | "copy-update" | "copy-delete";
 const props = defineProps<{ visible: boolean; x: number; y: number; mode: "cells" | "rows";
   canIn: boolean; canInsert: boolean; canUpdate: boolean; canDelete: boolean }>();
 const emit = defineEmits<{ close: []; command: [command: DataMenuCommand] }>();
 const menuHost = ref<HTMLElement>();
+const position = ref({ x: 0, y: 0, ready: false });
+let positioningVersion = 0;
 
-watch(() => props.visible, async (visible) => {
-  if (!visible) { removeListeners(); return; }
-  addListeners(); await nextTick();
-  (menuHost.value?.querySelector(".el-sub-menu__title") as HTMLElement | null)?.focus();
+watch([() => props.visible, () => props.x, () => props.y], async ([visible], previous) => {
+  const version = ++positioningVersion;
+  if (!visible) {
+    position.value = { ...position.value, ready: false };
+    removeListeners();
+    return;
+  }
+  if (!previous?.[0]) addListeners();
+  position.value = { x: props.x, y: props.y, ready: false };
+  await nextTick();
+  if (version !== positioningVersion || !props.visible) return;
+  const host = menuHost.value;
+  const bounds = host?.getBoundingClientRect();
+  position.value = {
+    ...fitContextMenuPosition(
+      { x: props.x, y: props.y },
+      { width: bounds?.width || 190, height: bounds?.height || 44 },
+      { width: window.innerWidth, height: window.innerHeight }
+    ),
+    ready: true
+  };
+  if (!previous?.[0]) {
+    (host?.querySelector(".el-sub-menu__title") as HTMLElement | null)?.focus();
+  }
 });
 function selectCommand(index: string): void {
   if (["copy-data", "copy-in", "copy-all", "copy-insert", "copy-update", "copy-delete"].includes(index)) {

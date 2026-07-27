@@ -277,6 +277,23 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
   expect(alignment.gutterLeft).toBe(alignment.viewportLeft);
   expect(alignment.cellLeft - alignment.headerCellLeft).toBe(3);
 
+  const optimizedMenuPoint = await grid.evaluate((element) => {
+    const viewport = element.getBoundingClientRect();
+    const cell = [...element.querySelectorAll(".result-virtual-grid__cell")]
+      .map((item) => item.getBoundingClientRect())
+      .find((bounds) => bounds.left >= viewport.left + 34 && bounds.right <= viewport.right
+        && bounds.top >= viewport.top + 32 && bounds.bottom <= viewport.bottom);
+    if (!cell) throw new Error("No optimized result cell is fully visible");
+    return { x: cell.left + cell.width / 2, y: cell.top + cell.height / 2 };
+  });
+  await page.mouse.click(optimizedMenuPoint.x, optimizedMenuPoint.y, { button: "right" });
+  const optimizedMenuBounds = await page.locator(".result-data-context-menu").boundingBox();
+  if (!optimizedMenuBounds) throw new Error("Optimized result context menu is not measurable");
+  expect(Math.abs(optimizedMenuBounds.x - optimizedMenuPoint.x)).toBeLessThanOrEqual(2);
+  expect(Math.abs(optimizedMenuBounds.y - optimizedMenuPoint.y)).toBeLessThanOrEqual(2);
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".result-data-context-menu")).toBeHidden();
+
   const fieldSelector = page.locator(".result-actions .el-select");
   await fieldSelector.click();
   await page.getByRole("option", { name: /column_1/ }).first().click();
@@ -492,6 +509,7 @@ test("copies result headers and loaded rows from the header context menu", async
 test("sorts, filters, selects cells and copies safe row SQL", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:4173" });
   await connectMock(page);
+  await dismissCompletionSchemaDialog(page);
   await page.getByRole("button", { name: "执行", exact: true }).click();
   await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
 
@@ -522,7 +540,12 @@ test("sorts, filters, selects cells and copies safe row SQL", async ({ page, con
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()))
     .toBe("1,Apple Studio 1 ✨\n2,Apple Studio 2 ✨");
 
-  await secondName.click({ button: "right" });
+  const dataMenuPoint = { x: end.x + end.width / 2, y: end.y + end.height / 2 };
+  await page.mouse.click(dataMenuPoint.x, dataMenuPoint.y, { button: "right" });
+  const dataMenuBounds = await page.locator(".result-data-context-menu").boundingBox();
+  if (!dataMenuBounds) throw new Error("Result context menu is not measurable");
+  expect(Math.abs(dataMenuBounds.x - dataMenuPoint.x)).toBeLessThanOrEqual(2);
+  expect(Math.abs(dataMenuBounds.y - dataMenuPoint.y)).toBeLessThanOrEqual(2);
   await page.getByRole("menuitem", { name: "复制", exact: true }).hover();
   await page.getByRole("menuitem", { name: "复制为 IN 语句", exact: true }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()))
