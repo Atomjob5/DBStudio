@@ -540,7 +540,7 @@ function installEventHandlers(): void {
   disposers.push(rpc.on("query.resultMeta", (raw) => {
     const data = raw as QueryResult & { editorId: string };
     queries.addResult(data.editorId, { ...data, rows: [], complete: false });
-    void resolveResultColumnRemarks(data.editorId, data.resultIndex, data.columnDetails);
+    void resolveResultColumnRemarks(data.editorId, data.resultIndex, data.sql, data.columnDetails);
   }));
   disposers.push(rpc.on("query.rows", (raw) => {
     const data = raw as { editorId: string; resultIndex: number; rows: Array<Array<string | null>> };
@@ -703,16 +703,16 @@ async function bootstrapWorkspace(recovered: RecoveredEditor[]): Promise<void> {
   } finally { app.loading = false; }
 }
 
-async function resolveResultColumnRemarks(editorId: string, resultIndex: number,
+async function resolveResultColumnRemarks(editorId: string, resultIndex: number, sql: string,
                                           columnDetails: QueryResult["columnDetails"]): Promise<void> {
   const executionId = queries.executions[editorId]?.executionId;
   const tab = editors.tabs.find((item) => item.id === editorId);
   const context = connections.completionContext(tab?.connection);
   if (!executionId || !tab?.connection || !context
-      || !columnDetails?.some((column) => !column.remarks && column.table && column.name)) return;
+      || !columnDetails?.some((column) => !column.remarks && column.name)) return;
   try {
     const resolved = await completionClient.resolveResultColumnRemarks(context.key, tab.connection.providerId,
-      columnDetails.flatMap((column, index) => column.remarks ? [] : [{
+      sql, columnDetails.flatMap((column, index) => column.remarks || !column.name ? [] : [{
         index, catalog: column.catalog, schema: column.schema, table: column.table, name: column.name
       }]));
     queries.applyColumnRemarks(editorId, executionId, resultIndex, resolved);

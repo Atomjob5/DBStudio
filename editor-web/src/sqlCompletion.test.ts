@@ -65,7 +65,7 @@ const oracleSnapshot: CompletionSnapshot = {
 
 describe("handwritten context-aware SQL completion", () => {
   it("resolves result remarks only from an exact cached source", () => {
-    expect(resolveResultColumnRemarks(index, [
+    expect(resolveResultColumnRemarks(index, "mysql", "select id, customer_id from sales.orders", [
       { index: 0, catalog: "SALES", schema: "", table: "ORDERS", name: "ID" },
       { index: 1, catalog: "", schema: "", table: "orders", name: "customer_id" },
       { index: 2, catalog: "missing", schema: "", table: "orders", name: "id" },
@@ -74,6 +74,55 @@ describe("handwritten context-aware SQL completion", () => {
       { index: 0, remarks: "订单编号" },
       { index: 1, remarks: "客户编号" }
     ]);
+  });
+
+  it.each(["oracle", "oceanbase-oracle"])(
+    "resolves empty JDBC table metadata from a safe %s single-table query",
+    (providerId) => {
+      const oracleIndex = buildCompletionIndex(oracleSnapshot);
+      expect(resolveResultColumnRemarks(oracleIndex, providerId,
+        "select a.ID as CUSTOMER_ID, a.CUSTOMER_NAME from CBSAC.CUSTOMERS a", [
+          { index: 0, catalog: "", schema: "", table: "", name: "ID" },
+          { index: 1, catalog: "", schema: "", table: "", name: "CUSTOMER_NAME" }
+        ])).toEqual([
+        { index: 0, remarks: "客户编号" },
+        { index: 1, remarks: "客户名称" }
+      ]);
+      expect(resolveResultColumnRemarks(oracleIndex, providerId,
+        "select * from CBSAC.CUSTOMERS a", [
+          { index: 0, catalog: "", schema: "", table: "", name: "ID" },
+          { index: 1, catalog: "", schema: "", table: "", name: "CUSTOMER_NAME" }
+        ])).toEqual([
+        { index: 0, remarks: "客户编号" },
+        { index: 1, remarks: "客户名称" }
+      ]);
+    }
+  );
+
+  it("traces direct CTE and derived-table projections for Oracle result remarks", () => {
+    const oracleIndex = buildCompletionIndex(oracleSnapshot);
+    const column = [{ index: 0, catalog: "", schema: "", table: "", name: "ID" }];
+    expect(resolveResultColumnRemarks(oracleIndex, "oracle",
+      "with c as (select ID from CBSAC.CUSTOMERS) select * from c", column))
+      .toEqual([{ index: 0, remarks: "客户编号" }]);
+    expect(resolveResultColumnRemarks(oracleIndex, "oracle",
+      "select d.ID from (select ID from CBSAC.CUSTOMERS) d", column))
+      .toEqual([{ index: 0, remarks: "客户编号" }]);
+  });
+
+  it("does not guess Oracle remarks for expressions, sets, unknown objects or multiple physical tables", () => {
+    const oracleIndex = buildCompletionIndex(oracleSnapshot);
+    const column = [{ index: 0, catalog: "", schema: "", table: "", name: "ID" }];
+    expect(resolveResultColumnRemarks(oracleIndex, "oracle",
+      "select nvl(a.ID, 0) as ID from CBSAC.CUSTOMERS a", column)).toEqual([]);
+    expect(resolveResultColumnRemarks(oracleIndex, "oracle",
+      "select sysdate as ID from CBSAC.CUSTOMERS a", column)).toEqual([]);
+    expect(resolveResultColumnRemarks(oracleIndex, "oracle",
+      "select ID from CBSAC.CUSTOMERS union select ID from CBSAC.ORDERS", column)).toEqual([]);
+    expect(resolveResultColumnRemarks(oracleIndex, "oracle",
+      "select c.ID from CBSAC.CUSTOMERS c join CBSAC.ORDERS o on o.ID=c.ID", column)).toEqual([]);
+    expect(resolveResultColumnRemarks(oracleIndex, "oracle",
+      "select ID from CBSAC.UNKNOWN_TABLE", column)).toEqual([]);
   });
 
   it("resolves exactly one physical Oracle table for deferred structure enrichment", () => {

@@ -509,11 +509,41 @@ describe("App result loading status toolbar", () => {
       ], rows: [], updateCount: -1, truncated: false, durationMs: 0, complete: false }));
     await flushPromises();
 
-    expect(completionMock.resolveResultColumnRemarks).toHaveBeenCalledWith("system-1:environment-dev:mysql", "mysql", [{
-      index: 0, catalog: "sales", schema: "", table: "orders", name: "id"
-    }]);
+    expect(completionMock.resolveResultColumnRemarks).toHaveBeenCalledWith(
+      "system-1:environment-dev:mysql", "mysql", "select id from orders", [{
+        index: 0, catalog: "sales", schema: "", table: "orders", name: "id"
+      }]);
     expect(queries.executions["bootstrap-editor"].results[0].columnDetails?.[0].remarks).toBe("订单编号");
     expect(rpcRequest).not.toHaveBeenCalledWith("metadata.completionNamespaces", expect.anything(), expect.anything());
+  });
+
+  it("resolves Oracle result remarks when JDBC omits table and schema metadata", async () => {
+    const connections = useConnectionStore();
+    const editors = useEditorStore();
+    const queries = useQueryStore();
+    const profile: SavedProfile = { ...completionProfile(), providerId: "oceanbase-oracle" };
+    connections.initialize([], [profile], [{ id: "system-1", name: "核心系统", revision: "1" }],
+      [{ id: "environment-dev", systemId: "system-1", name: "DEV", revision: "1" }]);
+    editors.patch("bootstrap-editor", { connection: profile, connectionState: "active" });
+    completionMock.resolveResultColumnRemarks.mockResolvedValueOnce([{ index: 0, remarks: "客户编号" }]);
+
+    rpcMock.listeners.get("query.started")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-oracle-remarks"
+    }));
+    rpcMock.listeners.get("query.resultMeta")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", resultIndex: 0,
+      sql: "select * from CBSAC.CUSTOMERS a", type: "QUERY", columns: ["ID"], columnDetails: [
+        { label: "ID", name: "ID", remarks: "", catalog: "", schema: "", table: "", typeName: "NUMBER" }
+      ], rows: [], updateCount: -1, truncated: false, durationMs: 0, complete: false
+    }));
+    await flushPromises();
+
+    expect(completionMock.resolveResultColumnRemarks).toHaveBeenCalledWith(
+      "system-1:environment-dev:oceanbase-oracle", "oceanbase-oracle",
+      "select * from CBSAC.CUSTOMERS a", [
+        { index: 0, catalog: "", schema: "", table: "", name: "ID" }
+      ]);
+    expect(queries.executions["bootstrap-editor"].results[0].columnDetails?.[0].remarks).toBe("客户编号");
   });
 
   it("requests deferred Oracle column types only after a query result succeeds", async () => {

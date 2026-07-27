@@ -167,6 +167,44 @@ describe("ResultPanel streaming rendering", () => {
     });
   });
 
+  it("refreshes the header and selected column when remarks arrive asynchronously", async () => {
+    const settings = useSettingsStore();
+    settings.showColumnRemarksInHeader = true;
+    const result = {
+      resultIndex: 0, sql: "select * from CBSAC.CUSTOMERS", type: "QUERY", columns: ["ID"],
+      columnDetails: [{
+        label: "ID", name: "ID", remarks: "", catalog: "", schema: "", table: "", typeName: "NUMBER"
+      }],
+      rows: [["1"]], updateCount: -1, truncated: false, durationMs: 3, complete: true
+    };
+    const execution = {
+      executionId: "execution-async-remarks", editorId: "editor-1", busy: false, cancelled: false,
+      failed: false, durationMs: 4, results: [result]
+    };
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: 0, execution }, global: { plugins: [ElementPlus] }
+    });
+    let table = wrapper.findComponent({ name: "ElTableV2" });
+    let column = (table.props("columns") as Column[])[1];
+    const row = (table.props("data") as Array<{ sourceIndex: number; cells: string[] }>)[0];
+    const cell = column.cellRenderer?.({ rowData: row, rowIndex: 0 } as never) as VNode;
+    cell.props?.onPointerdown({ button: 0, preventDefault: vi.fn() });
+    expect(wrapper.emitted("selected-column")?.at(-1)?.[0]).toMatchObject({ remarks: "" });
+
+    await wrapper.setProps({ execution: {
+      ...execution,
+      results: [{ ...result, columnDetails: [{ ...result.columnDetails[0], remarks: "客户编号" }] }]
+    } });
+    await nextTick();
+
+    table = wrapper.findComponent({ name: "ElTableV2" });
+    column = (table.props("columns") as Column[])[1];
+    const header = column.headerCellRenderer?.({} as never) as VNode;
+    const labels = (header.children as VNode[])[0];
+    expect((labels.children as VNode[])[1].children).toBe("客户编号");
+    expect(wrapper.emitted("selected-column")?.at(-1)?.[0]).toMatchObject({ remarks: "客户编号" });
+  });
+
   it("keeps selections per result, supports duplicate labels and resets for a new execution", async () => {
     const result = (resultIndex: number, rows: string[][]) => ({
       resultIndex, sql: "select a.id, b.id", type: "QUERY", columns: ["id", "id"],

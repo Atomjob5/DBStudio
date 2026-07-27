@@ -69,6 +69,22 @@ describe("AppStatusBar", () => {
     wrapper.unmount();
   });
 
+  it("shows a selected field remark that is filled after the result is rendered", async () => {
+    const selectedColumn = {
+      label: "ID", name: "ID", remarks: "", typeName: "NUMBER",
+      catalog: "", schema: "", table: ""
+    };
+    const wrapper = mount(AppStatusBar, {
+      props: { ...baseProps, selectedColumn },
+      global: { plugins: [ElementPlus], stubs: { teleport: true } }
+    });
+    expect(wrapper.find(".selected-column-remarks").exists()).toBe(false);
+
+    await wrapper.setProps({ selectedColumn: { ...selectedColumn, remarks: "客户编号" } });
+    expect(wrapper.get(".selected-column-remarks").text()).toBe("客户编号");
+    wrapper.unmount();
+  });
+
   it("rotates multiple system items every three seconds and pauses while the popover is shown", async () => {
     vi.useFakeTimers();
     const systemItems: StatusBarSystemItem[] = [

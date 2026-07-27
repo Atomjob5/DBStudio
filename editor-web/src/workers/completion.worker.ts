@@ -135,7 +135,7 @@ async function handle(request: CompletionWorkerRequest) {
   }
   if (request.type === "result-columns.resolve") {
     const entry = await completionIndex(request.cacheKey, request.providerId);
-    return resolveResultColumnRemarks(entry?.index, request.columns);
+    return resolveResultColumnRemarks(entry?.index, request.providerId, request.sql, request.columns);
   }
   if (request.type === "query.enrich") {
     if (!isOracleCompatible(request.providerId)) return undefined;

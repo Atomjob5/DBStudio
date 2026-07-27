@@ -11,7 +11,7 @@ export type CompletionWorkerRequest =
   | { id: string; type: "complete"; cacheKey: string; providerId: string; modelKey: string;
       modelVersion: number; cursorOffset: number; prefix: string; limit: number }
   | { id: string; type: "result-columns.resolve"; cacheKey: string; providerId: string;
-      columns: ResultColumnRemarkLookup[] }
+      sql: string; columns: ResultColumnRemarkLookup[] }
   | { id: string; type: "query.enrich"; cacheKey: string; providerId: string; url: string;
       clientId: string; editorId: string; sql: string; columns: QueryColumn[] }
   | { id: string; type: "structure.invalidate"; cacheKey: string; providerId: string; sql: string }

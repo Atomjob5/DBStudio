@@ -91,6 +91,26 @@ describe("application stores", () => {
     expect(queries.executions["editor-1"]).not.toBe(resultComplete);
   });
 
+  it("applies asynchronous remarks only to the matching execution", () => {
+    const queries = useQueryStore();
+    const result = {
+      resultIndex: 0, sql: "select * from CBSAC.CUSTOMERS", type: "QUERY", columns: ["ID"],
+      columnDetails: [{
+        label: "ID", name: "ID", remarks: "", catalog: "", schema: "", table: "", typeName: "NUMBER"
+      }],
+      rows: [] as string[][], updateCount: -1, truncated: false, durationMs: 0, complete: false
+    };
+    queries.start("editor-1", "execution-1");
+    queries.addResult("editor-1", result);
+    queries.start("editor-1", "execution-2");
+    queries.addResult("editor-1", result);
+
+    queries.applyColumnRemarks("editor-1", "execution-1", 0, [{ index: 0, remarks: "旧备注" }]);
+    expect(queries.executions["editor-1"].results[0].columnDetails?.[0].remarks).toBe("");
+    queries.applyColumnRemarks("editor-1", "execution-2", 0, [{ index: 0, remarks: "客户编号" }]);
+    expect(queries.executions["editor-1"].results[0].columnDetails?.[0].remarks).toBe("客户编号");
+  });
+
   it("marks disconnected results as historical snapshots without dropping loaded rows", () => {
     const queries = useQueryStore();
     queries.start("editor-1", "execution-1");

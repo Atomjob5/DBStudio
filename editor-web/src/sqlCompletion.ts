@@ -316,18 +316,87 @@ function rememberPhysicalTable(values: Map<string, CompletionPhysicalTable>, nam
   values.set(key, { schema, table: object.snapshot.name });
 }
 
-export function resolveResultColumnRemarks(index: CompletionIndex | undefined,
+export function resolveResultColumnRemarks(index: CompletionIndex | undefined, providerId: string, sql: string,
                                            columns: ResultColumnRemarkLookup[]): ResolvedResultColumnRemark[] {
   if (!index) return [];
   const resolved: ResolvedResultColumnRemark[] = [];
+  const fallback = oracleCompatible(providerId) && safelyProjectsPhysicalColumns(sql, providerId)
+    ? resolveSinglePhysicalTable(index, providerId, sql, [])
+    : undefined;
+  const fallbackNamespace = fallback ? resultNamespace(index, "", fallback.schema) : undefined;
+  const fallbackObject = fallbackNamespace?.objects.get(normalize(fallback?.table ?? ""));
   for (const source of columns) {
-    if (!source.table || !source.name) continue;
-    const namespace = resultNamespace(index, source.catalog, source.schema);
-    const object = namespace?.objects.get(normalize(source.table));
+    if (!source.name) continue;
+    const namespace = source.table ? resultNamespace(index, source.catalog, source.schema) : undefined;
+    const object = source.table ? namespace?.objects.get(normalize(source.table)) : fallbackObject;
     const column = object?.columns.find((value) => normalize(value.name) === normalize(source.name));
     if (column?.remarks) resolved.push({ index: source.index, remarks: column.remarks });
   }
   return resolved;
+}
+
+function safelyProjectsPhysicalColumns(sql: string, providerId: string): boolean {
+  const dialect = completionDialect(providerId);
+  const tokens = lexStatementAt(sql, sql.length, dialect).tokens;
+  if (!tokens.length || tokens.some((token) => token.kind === "word" && !token.quoted
+    && SET_OPERATORS.has(token.lower))) return false;
+  const selects = tokens.map((token, index) => ({ token, index }))
+    .filter(({ token }) => token.kind === "word" && !token.quoted && token.lower === "select");
+  if (!selects.length) return false;
+  return selects.every(({ token, index }) => directProjectionList(tokens, index, token.depth, dialect));
+}
+
+function directProjectionList(tokens: SqlToken[], select: number, depth: number,
+                              dialect: SqlCompletionDialect): boolean {
+  const from = firstTokenIndex(tokens, select + 1, tokens.length, depth, "from");
+  if (from < 0) return false;
+  const segments: SqlToken[][] = [];
+  let segment: SqlToken[] = [];
+  for (let cursor = select + 1; cursor < from; cursor += 1) {
+    const token = tokens[cursor];
+    if (token.depth !== depth) continue;
+    if (token.value === ",") {
+      if (!segment.length) return false;
+      segments.push(segment);
+      segment = [];
+    } else {
+      segment.push(token);
+    }
+  }
+  if (segment.length) segments.push(segment);
+  return segments.length > 0 && segments.every((value) => directProjection(value, dialect));
+}
+
+function directProjection(tokens: SqlToken[], dialect: SqlCompletionDialect): boolean {
+  let expression = [...tokens];
+  while (expression[0]?.kind === "word" && !expression[0].quoted
+    && ["distinct", "all", "unique"].includes(expression[0].lower)) expression = expression.slice(1);
+  const as = expression.findIndex((token) => token.kind === "word" && !token.quoted && token.lower === "as");
+  if (as >= 0) {
+    if (as !== expression.length - 2 || expression[as + 1]?.kind !== "word") return false;
+    expression = expression.slice(0, as);
+  } else if (expression.length > 1 && expression.at(-1)?.kind === "word"
+    && directColumnExpression(expression.slice(0, -1), dialect)) {
+    expression = expression.slice(0, -1);
+  }
+  return directColumnExpression(expression, dialect);
+}
+
+function directColumnExpression(tokens: SqlToken[], dialect: SqlCompletionDialect): boolean {
+  if (tokens.length === 1) return physicalIdentifier(tokens[0], dialect) || tokens[0].value === "*";
+  if (tokens.length < 3 || tokens.length % 2 === 0) return false;
+  return tokens.every((token, index) => index % 2 === 0
+    ? physicalIdentifier(token, dialect) || index === tokens.length - 1 && token.value === "*"
+    : token.value === ".");
+}
+
+function physicalIdentifier(token: SqlToken, dialect: SqlCompletionDialect): boolean {
+  return token.kind === "word" && (token.quoted
+    || !dialect.keywords.some((keyword) => keyword.toLocaleLowerCase() === token.lower));
+}
+
+function oracleCompatible(providerId: string): boolean {
+  return providerId === "oracle" || providerId === "oceanbase-oracle";
 }
 
 function resultNamespace(index: CompletionIndex, catalog: string, schema: string): IndexedNamespace | undefined {

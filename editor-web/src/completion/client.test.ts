@@ -47,6 +47,22 @@ describe("CompletionClient worker protocol", () => {
       .toEqual(["model.sync", "model.change", "model.release"]);
   });
 
+  it("sends executed SQL when resolving result column remarks", async () => {
+    vi.stubGlobal("Worker", MockWorker);
+    const client = new CompletionClient();
+    await client.resolveResultColumnRemarks("oracle-cache", "oracle",
+      "select * from CBSAC.CUSTOMERS", [
+        { index: 0, catalog: "", schema: "", table: "", name: "ID" }
+      ]);
+    expect(MockWorker.latest?.messages[0]).toMatchObject({
+      type: "result-columns.resolve",
+      cacheKey: "oracle-cache",
+      providerId: "oracle",
+      sql: "select * from CBSAC.CUSTOMERS",
+      columns: [{ index: 0, catalog: "", schema: "", table: "", name: "ID" }]
+    });
+  });
+
   it("uses streaming snapshots only for Oracle-compatible providers", async () => {
     vi.stubGlobal("Worker", MockWorker);
     const client = new CompletionClient();

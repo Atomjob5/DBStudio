@@ -41,10 +41,10 @@ export class CompletionClient {
       modelVersion, cursorOffset, prefix, limit }) as Promise<CompletionResult>;
   }
 
-  resolveResultColumnRemarks(cacheKey: string, providerId: string,
+  resolveResultColumnRemarks(cacheKey: string, providerId: string, sql: string,
                              columns: ResultColumnRemarkLookup[]): Promise<ResolvedResultColumnRemark[]> {
     return this.send({ id: crypto.randomUUID(), type: "result-columns.resolve", cacheKey, providerId,
-      columns }) as Promise<ResolvedResultColumnRemark[]>;
+      sql, columns }) as Promise<ResolvedResultColumnRemark[]>;
   }
 
   enrichQuery(options: { cacheKey: string; providerId: string; workspaceId: string; clientId: string;
