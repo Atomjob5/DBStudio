@@ -10,11 +10,6 @@ export interface ColumnMetrics {
   totalWidth: number;
 }
 
-export interface WheelDelta {
-  x: number;
-  y: number;
-}
-
 export interface ResultVirtualColumn {
   key: string;
   sourceIndex: number;
@@ -73,29 +68,6 @@ function firstColumnEndingAfter(widths: number[], offsets: number[], position: n
     else low = middle + 1;
   }
   return Math.min(widths.length - 1, low);
-}
-
-export function normalizedWheelDelta(deltaX: number, deltaY: number, deltaMode: number,
-                                     shiftKey: boolean, lineHeight: number,
-                                     pageWidth: number, pageHeight: number): WheelDelta {
-  const multiplierX = deltaMode === 1 ? lineHeight : deltaMode === 2 ? pageWidth : 1;
-  const multiplierY = deltaMode === 1 ? lineHeight : deltaMode === 2 ? pageHeight : 1;
-  let x = deltaX * multiplierX;
-  let y = deltaY * multiplierY;
-  if (shiftKey && Math.abs(x) < Math.abs(y)) {
-    x = y;
-    y = 0;
-  }
-  return { x, y };
-}
-
-export function shouldAnimateWheel(deltaMode: number, delta: WheelDelta): boolean {
-  return deltaMode !== 0 || Math.max(Math.abs(delta.x), Math.abs(delta.y)) >= 40;
-}
-
-export function easeOutCubic(progress: number): number {
-  const bounded = Math.max(0, Math.min(1, progress));
-  return 1 - Math.pow(1 - bounded, 3);
 }
 
 export function clampScroll(value: number, contentSize: number, viewportSize: number): number {

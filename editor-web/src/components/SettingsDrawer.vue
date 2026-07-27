@@ -121,7 +121,7 @@
         <el-form-item class="compact-setting-row">
           <template #label>
             <div class="setting-label"><span>滚动优化</span>
-              <el-tooltip content="减少滚动时渲染的行列数量，并启用快速平滑滚动，适合低配置设备。" placement="top">
+              <el-tooltip content="减少滚动时渲染的行列数量，降低宽表和大量数据滚动时的渲染压力，适合低配置设备。" placement="top">
                 <el-icon class="setting-help" tabindex="0" aria-label="滚动优化说明"><QuestionFilled /></el-icon>
               </el-tooltip>
             </div>

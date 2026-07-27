@@ -865,8 +865,23 @@ onBeforeUnmount(() => {
 .column-option { min-width: 0; display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
 .column-option span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .column-option small { overflow: hidden; color: var(--db-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.table-host { flex: 1; min-height: 0; outline: none; }
+.table-host {
+  flex: 1;
+  min-height: 0;
+  outline: none;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
 .table-host:focus-visible { box-shadow: inset 0 0 0 1px var(--db-accent); }
+:deep(.el-table-v2),
+:deep(.result-virtual-grid__viewport) {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
 :deep(.el-table-v2__header-cell) { padding: 0; }
 :deep(.el-table-v2__left) {
   border-right: 0;
@@ -895,6 +910,10 @@ onBeforeUnmount(() => {
   padding: 0 7px;
   overflow: hidden;
   border-radius: 6px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
   line-height: 27px;
@@ -943,7 +962,7 @@ onBeforeUnmount(() => {
 .result-column-header.drop-before::before { left: 0; }
 .result-column-header.drop-after::after { right: 0; }
 .result-column-title, .result-column-remarks { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.result-column-title { font-weight: 600; }
+.result-column-title { font-size: 12px; font-weight: 600; }
 .result-column-remarks { color: var(--db-muted); font-size: 10px; font-weight: 400; }
 .column-selection-count {
   flex: none; padding: 1px 5px; border-radius: 8px; background: var(--db-accent); color: #fff; font-size: 9px;

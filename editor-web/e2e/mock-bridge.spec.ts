@@ -31,6 +31,27 @@ async function dismissCompletionSchemaDialog(page: Page): Promise<void> {
   }
 }
 
+async function resultTypography(page: Page) {
+  return page.locator(".table-host").evaluate((host) => {
+    const cell = getComputedStyle(host.querySelector(".result-cell")!);
+    const title = getComputedStyle(host.querySelector(".result-column-title")!);
+    return {
+      cellFamily: cell.fontFamily,
+      cellSize: cell.fontSize,
+      cellWeight: cell.fontWeight,
+      cellVariant: cell.fontVariantNumeric,
+      cellHeight: cell.height,
+      cellLineHeight: cell.lineHeight,
+      cellOverflow: cell.overflow,
+      cellTextOverflow: cell.textOverflow,
+      cellWhiteSpace: cell.whiteSpace,
+      titleFamily: title.fontFamily,
+      titleSize: title.fontSize,
+      titleWeight: title.fontWeight
+    };
+  });
+}
+
 test.beforeEach(async ({ page }) => {
   await page.goto("/?mock=1");
   await ensureMockWorkspace(page);
@@ -173,7 +194,7 @@ test("connects and renders a streamed query result with the development bridge",
   expect(darkSpectrum.innerContent).toBe("none");
 });
 
-test("enables the optimized 200 by 30 result grid with smooth wheel scrolling", async ({ page }) => {
+test("enables the optimized 200 by 30 result grid with native wheel scrolling", async ({ page }) => {
   await connectMock(page);
   await dismissCompletionSchemaDialog(page);
   const editor = page.locator(".monaco-editor .view-lines");
@@ -183,6 +204,21 @@ test("enables the optimized 200 by 30 result grid with smooth wheel scrolling", 
   await page.getByRole("button", { name: "执行", exact: true }).click();
   await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
   await expect(page.locator(".el-table-v2")).toBeVisible();
+  const legacyTypography = await resultTypography(page);
+  expect(legacyTypography).toMatchObject({
+    cellSize: "12px",
+    cellWeight: "400",
+    cellVariant: "tabular-nums",
+    cellHeight: "27px",
+    cellLineHeight: "27px",
+    cellOverflow: "hidden",
+    cellTextOverflow: "ellipsis",
+    cellWhiteSpace: "nowrap",
+    titleSize: "12px",
+    titleWeight: "600"
+  });
+  expect(legacyTypography.cellFamily).toContain("-apple-system");
+  expect(legacyTypography.titleFamily).toBe(legacyTypography.cellFamily);
   const legacyScroller = page.locator(".el-table-v2__main .el-table-v2__body");
   await legacyScroller.hover();
   await page.mouse.wheel(0, 320);
@@ -200,6 +236,8 @@ test("enables the optimized 200 by 30 result grid with smooth wheel scrolling", 
   const grid = page.locator(".result-virtual-grid__viewport");
   await expect(grid).toBeVisible();
   await expect(page.locator(".el-table-v2")).toHaveCount(0);
+  const optimizedTypography = await resultTypography(page);
+  expect(optimizedTypography).toEqual(legacyTypography);
   await expect.poll(() => grid.evaluate((element) => ({
     top: Math.round(element.scrollTop), left: Math.round(element.scrollLeft)
   }))).toEqual({ top: 320, left: 480 });
@@ -238,12 +276,12 @@ test("enables the optimized 200 by 30 result grid with smooth wheel scrolling", 
   expect(alignment.gutterLeft).toBe(alignment.viewportLeft);
   expect(alignment.cellLeft - alignment.headerCellLeft).toBe(3);
 
-  await grid.dispatchEvent("wheel", { deltaY: 96, deltaMode: 0 });
-  await page.waitForTimeout(150);
+  await grid.hover();
+  await page.mouse.wheel(0, 96);
+  await expect.poll(() => grid.evaluate((element) => element.scrollTop)).toBeGreaterThan(rendered.top);
   const optimizedPosition = await grid.evaluate((element) => ({
     top: element.scrollTop, left: element.scrollLeft
   }));
-  expect(optimizedPosition.top).toBeGreaterThan(rendered.top);
 
   await page.getByRole("button", { name: "更多操作", exact: true }).click();
   await page.getByRole("menuitem", { name: "设置", exact: true }).click();
@@ -494,6 +532,7 @@ test("supports Apple appearance, system theme settings and compact windows", asy
   test.setTimeout(45_000);
   await expect(page).toHaveScreenshot("apple-connection-light.png");
   await connectMock(page);
+  await dismissCompletionSchemaDialog(page);
   await page.getByRole("button", { name: "执行", exact: true }).click();
   await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
   await expect(page).toHaveScreenshot("apple-workspace-light.png");

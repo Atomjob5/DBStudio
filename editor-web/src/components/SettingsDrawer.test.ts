@@ -54,7 +54,7 @@ describe("SettingsDrawer compact result settings", () => {
     expect(tooltips.map((tooltip) => tooltip.props("content"))).toEqual(expect.arrayContaining([
       expect.stringContaining("完整导出不受影响"),
       expect.stringContaining("事件触发更频繁"),
-      expect.stringContaining("快速平滑滚动"),
+      expect.stringContaining("渲染压力"),
       expect.stringContaining("字段集合完全一致"),
       expect.stringContaining("自动转义"),
       expect.stringContaining("IndexedDB"),

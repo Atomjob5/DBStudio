@@ -2,8 +2,7 @@
   <div ref="viewport" class="result-virtual-grid__viewport" role="table"
        :aria-rowcount="rows.length" :aria-colcount="columns.length + 1"
        @scroll="scheduleWindowRefresh" @pointerdown="delegatePointerDown"
-       @pointerover="delegatePointerOver" @contextmenu="delegateContextMenu"
-       @touchstart="cancelSmoothScroll">
+       @pointerover="delegatePointerOver" @contextmenu="delegateContextMenu">
     <div class="result-virtual-grid__canvas" :style="canvasStyle">
       <div class="result-virtual-grid__header" role="row" :style="headerStyle">
         <span class="result-row-number result-row-number-header result-virtual-grid__gutter"
@@ -45,13 +44,12 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import type { CellRange, ViewRow } from "../resultGrid";
 import { normalizeRange } from "../resultGrid";
 import {
-  clampScroll, columnMetrics, easeOutCubic, normalizedWheelDelta, shouldAnimateWheel,
-  visibleColumnRange, visibleRowRange, type ResultGridScrollPosition, type ResultVirtualColumn, type VirtualRange
+  clampScroll, columnMetrics, visibleColumnRange, visibleRowRange,
+  type ResultGridScrollPosition, type ResultVirtualColumn, type VirtualRange
 } from "../resultVirtualGrid";
 
 const ROW_HEIGHT = 32;
 const GUTTER_WIDTH = 34;
-const SMOOTH_DURATION_MS = 120;
 
 const props = defineProps<{
   rows: ViewRow[];
@@ -91,12 +89,7 @@ const headerStyle = computed(() => ({
 }));
 
 let refreshFrame = 0;
-let smoothFrame = 0;
 let resizeObserver: ResizeObserver | undefined;
-let reducedMotion: MediaQueryList | undefined;
-let smoothStart = 0;
-let smoothFrom = { left: 0, top: 0 };
-let smoothTarget = { left: 0, top: 0 };
 let lastPointerKey = "";
 
 function rangeEntries<T>(values: T[], range: VirtualRange): Array<{ index: number; value: T; row: T }> {
@@ -178,7 +171,6 @@ function delegatedTarget(event: Event): HTMLElement | undefined {
 }
 
 function delegatePointerDown(event: PointerEvent): void {
-  cancelSmoothScroll();
   const target = delegatedTarget(event);
   if (!target) return;
   if (target.dataset.gridKind === "row") {
@@ -214,72 +206,17 @@ function delegateContextMenu(event: MouseEvent): void {
   emit("cell-contextmenu", event, rowIndex, Number(target.dataset.gridColumn), props.rows[rowIndex]);
 }
 
-function onWheel(event: WheelEvent): void {
-  const element = viewport.value;
-  if (!element || reducedMotion?.matches) return;
-  const delta = normalizedWheelDelta(event.deltaX, event.deltaY, event.deltaMode, event.shiftKey,
-    ROW_HEIGHT, element.clientWidth, element.clientHeight);
-  if (!shouldAnimateWheel(event.deltaMode, delta)) return;
-  event.preventDefault();
-  startSmoothDelta(delta.x, delta.y);
-}
-
-function startSmoothDelta(left: number, top: number): void {
-  const element = viewport.value;
-  if (!element) return;
-  const contentWidth = GUTTER_WIDTH + metrics.value.totalWidth;
-  const contentHeight = props.headerHeight + props.rows.length * ROW_HEIGHT;
-  const base = smoothFrame ? smoothTarget : { left: element.scrollLeft, top: element.scrollTop };
-  smoothFrom = { left: element.scrollLeft, top: element.scrollTop };
-  smoothTarget = {
-    left: clampScroll(base.left + left, contentWidth, element.clientWidth),
-    top: clampScroll(base.top + top, contentHeight, element.clientHeight)
-  };
-  smoothStart = performance.now();
-  if (!smoothFrame) smoothFrame = requestFrame(animateSmoothScroll);
-}
-
-function animateSmoothScroll(timestamp: number): void {
-  const element = viewport.value;
-  if (!element) { smoothFrame = 0; return; }
-  const progress = Math.min(1, Math.max(0, timestamp - smoothStart) / SMOOTH_DURATION_MS);
-  const eased = easeOutCubic(progress);
-  element.scrollLeft = smoothFrom.left + (smoothTarget.left - smoothFrom.left) * eased;
-  element.scrollTop = smoothFrom.top + (smoothTarget.top - smoothFrom.top) * eased;
-  if (progress < 1) smoothFrame = requestFrame(animateSmoothScroll);
-  else {
-    smoothFrame = 0;
-    element.scrollLeft = smoothTarget.left;
-    element.scrollTop = smoothTarget.top;
-  }
-}
-
-function cancelSmoothScroll(): void {
-  if (smoothFrame) cancelFrame(smoothFrame);
-  smoothFrame = 0;
-}
-
 function getScrollPosition(): ResultGridScrollPosition {
   return { left: viewport.value?.scrollLeft ?? 0, top: viewport.value?.scrollTop ?? 0 };
 }
 
 function setScrollPosition(position: ResultGridScrollPosition): void {
-  cancelSmoothScroll();
   const element = viewport.value;
   if (!element) return;
   element.scrollLeft = clampScroll(position.left, GUTTER_WIDTH + metrics.value.totalWidth, element.clientWidth);
   element.scrollTop = clampScroll(position.top,
     props.headerHeight + props.rows.length * ROW_HEIGHT, element.clientHeight);
   refreshWindow();
-}
-
-function scrollBySmooth(left: number, top: number): void {
-  const element = viewport.value;
-  if (!element || reducedMotion?.matches) {
-    if (element) setScrollPosition({ left: element.scrollLeft + left, top: element.scrollTop + top });
-    return;
-  }
-  startSmoothDelta(left, top);
 }
 
 function requestFrame(callback: FrameRequestCallback): number {
@@ -298,8 +235,6 @@ watch([() => props.rows.length, () => props.columns.map((column) => `${column.ke
 
 onMounted(() => {
   const element = viewport.value;
-  element?.addEventListener("wheel", onWheel, { passive: false });
-  reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
   if (typeof ResizeObserver !== "undefined" && element) {
     resizeObserver = new ResizeObserver(scheduleWindowRefresh);
     resizeObserver.observe(element);
@@ -308,13 +243,11 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  viewport.value?.removeEventListener("wheel", onWheel);
   resizeObserver?.disconnect();
   if (refreshFrame) cancelFrame(refreshFrame);
-  cancelSmoothScroll();
 });
 
-defineExpose({ getScrollPosition, setScrollPosition, scrollBySmooth });
+defineExpose({ getScrollPosition, setScrollPosition });
 </script>
 
 <style scoped>
