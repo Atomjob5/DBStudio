@@ -81,7 +81,8 @@ const visibleColumns = computed(() => rangeEntries(props.columns, columnRange.va
 const canvasStyle = computed(() => ({
   width: `${GUTTER_WIDTH + metrics.value.totalWidth}px`,
   minWidth: "100%",
-  height: `${props.headerHeight + props.rows.length * ROW_HEIGHT}px`
+  height: `${props.headerHeight + props.rows.length * ROW_HEIGHT}px`,
+  minHeight: "100%"
 }));
 const headerStyle = computed(() => ({
   width: `${GUTTER_WIDTH + metrics.value.totalWidth}px`,
@@ -94,7 +95,9 @@ let lastPointerKey = "";
 
 function rangeEntries<T>(values: T[], range: VirtualRange): Array<{ index: number; value: T; row: T }> {
   const entries: Array<{ index: number; value: T; row: T }> = [];
-  for (let index = range.start; index < range.end; index++) {
+  const start = Math.max(0, Math.min(values.length, range.start));
+  const end = Math.max(start, Math.min(values.length, range.end));
+  for (let index = start; index < end; index++) {
     entries.push({ index, value: values[index], row: values[index] });
   }
   return entries;
@@ -219,6 +222,16 @@ function setScrollPosition(position: ResultGridScrollPosition): void {
   refreshWindow();
 }
 
+function normalizeScrollPosition(): void {
+  const element = viewport.value;
+  if (!element) return;
+  element.scrollLeft = clampScroll(element.scrollLeft,
+    GUTTER_WIDTH + metrics.value.totalWidth, element.clientWidth);
+  element.scrollTop = clampScroll(element.scrollTop,
+    props.headerHeight + props.rows.length * ROW_HEIGHT, element.clientHeight);
+  refreshWindow();
+}
+
 function requestFrame(callback: FrameRequestCallback): number {
   return typeof window.requestAnimationFrame === "function"
     ? window.requestAnimationFrame(callback)
@@ -231,7 +244,7 @@ function cancelFrame(frame: number): void {
 }
 
 watch([() => props.rows.length, () => props.columns.map((column) => `${column.key}:${column.width}`).join(","),
-  () => props.headerHeight], () => void nextTick(refreshWindow));
+  () => props.headerHeight], () => void nextTick(normalizeScrollPosition));
 
 onMounted(() => {
   const element = viewport.value;

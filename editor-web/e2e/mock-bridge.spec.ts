@@ -232,6 +232,7 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
   await scrollOptimization.scrollIntoViewIfNeeded();
   await scrollOptimization.locator(".el-switch").click();
   await settings.getByRole("button", { name: "Close this dialog", exact: true }).click();
+  await expect(settings).toBeHidden();
 
   const grid = page.locator(".result-virtual-grid__viewport");
   await expect(grid).toBeVisible();
@@ -276,9 +277,38 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
   expect(alignment.gutterLeft).toBe(alignment.viewportLeft);
   expect(alignment.cellLeft - alignment.headerCellLeft).toBe(3);
 
+  const fieldSelector = page.locator(".result-actions .el-select");
+  await fieldSelector.click();
+  await page.getByRole("option", { name: /column_1/ }).first().click();
+  await page.keyboard.press("Escape");
+  await expect(grid.locator(".result-column-title")).toHaveCount(1);
+  await expect(grid.locator(".result-column-title")).toHaveText("column_1");
+  await expect(grid.locator(".result-virtual-grid__header")).toBeVisible();
+  await expect.poll(() => grid.evaluate((element) => element.scrollLeft)).toBe(0);
+
+  await fieldSelector.click();
+  await page.getByRole("option", { name: /column_1/ }).first().click();
+  await page.keyboard.press("Escape");
+  await expect(grid.locator(".result-column-title").first()).toHaveText("column_1");
+
+  await page.getByRole("button", { name: "筛选 column_1", exact: true }).click();
+  await page.locator(".result-filter-popover .el-select").first().click();
+  await page.getByRole("option", { name: "大于", exact: true }).click();
+  await page.getByRole("textbox", { name: "筛选值", exact: true }).fill("199");
+  await page.getByRole("button", { name: "应用", exact: true }).click();
+  await expect(page.getByText("显示 1 / 已加载 200 行 · 38 ms", { exact: true })).toBeVisible();
+  await expect(grid.locator(".result-virtual-grid__header")).toBeVisible();
+  await expect(grid.locator(".result-column-title").first()).toHaveText("column_1");
+  await expect.poll(() => grid.evaluate((element) => element.scrollTop)).toBe(0);
+
+  await page.getByRole("button", { name: "筛选 column_1", exact: true }).click();
+  await page.getByRole("button", { name: "清除", exact: true }).click();
+  await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
+
+  const nativeScrollStart = await grid.evaluate((element) => element.scrollTop);
   await grid.hover();
   await page.mouse.wheel(0, 96);
-  await expect.poll(() => grid.evaluate((element) => element.scrollTop)).toBeGreaterThan(rendered.top);
+  await expect.poll(() => grid.evaluate((element) => element.scrollTop)).toBeGreaterThan(nativeScrollStart);
   const optimizedPosition = await grid.evaluate((element) => ({
     top: element.scrollTop, left: element.scrollLeft
   }));

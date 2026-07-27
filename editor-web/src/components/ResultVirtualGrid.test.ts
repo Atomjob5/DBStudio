@@ -96,6 +96,29 @@ describe("ResultVirtualGrid", () => {
     wrapper.unmount();
   });
 
+  it("clamps stale scroll offsets when filtering reduces rows and columns", async () => {
+    const wrapper = mount(ResultVirtualGrid, {
+      props: { rows, columns, headerHeight: 32, selectionMode: "cells", selectedRowSources: [] }
+    });
+    const viewport = wrapper.get(".result-virtual-grid__viewport").element as HTMLElement;
+    Object.defineProperties(viewport, {
+      clientWidth: { configurable: true, value: 514 },
+      clientHeight: { configurable: true, value: 320 }
+    });
+    wrapper.vm.setScrollPosition({ left: 2400, top: 4800 });
+    await nextTick();
+
+    await wrapper.setProps({ rows: rows.slice(0, 1), columns: columns.slice(0, 2) });
+    await nextTick();
+    await nextTick();
+
+    expect(wrapper.vm.getScrollPosition()).toEqual({ left: 0, top: 0 });
+    expect(wrapper.find(".result-virtual-grid__header").exists()).toBe(true);
+    expect(wrapper.findAll(".result-virtual-grid__header-cell")).toHaveLength(2);
+    expect(wrapper.findAll(".result-virtual-grid__row")).toHaveLength(1);
+    wrapper.unmount();
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
