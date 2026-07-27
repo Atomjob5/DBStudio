@@ -19,6 +19,7 @@ describe("SettingsDrawer compact result settings", () => {
         headerFilteringEnabled: true,
         showColumnRemarksInHeader: false,
         scrollOptimizationEnabled: false,
+        scrollOptimizationBufferScreens: 1,
         showSelectedColumnRemarks: true,
         maxActiveSessions: 10,
         autoCommit: false,
@@ -108,6 +109,27 @@ describe("SettingsDrawer compact result settings", () => {
     await wrapper.setProps({ completionCacheSize: "0 B", completionCacheEnvironmentCount: 0,
       completionCacheLoadingCount: 0, canClearCompletionCaches: false });
     expect(wrapper.get('button[aria-label="清理全部补全缓存"]').attributes("disabled")).toBeDefined();
+    wrapper.unmount();
+  });
+
+  it("only shows and updates the buffer setting while scroll optimization is enabled", async () => {
+    const wrapper = mountDrawer();
+    await flushPromises();
+    expect(wrapper.find('input[aria-label="预渲染缓冲"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("预渲染缓冲");
+
+    await wrapper.setProps({ scrollOptimizationEnabled: true, scrollOptimizationBufferScreens: 2 });
+    const buffer = wrapper.findAllComponents({ name: "ElInputNumber" }).at(-1);
+    expect(buffer?.props("modelValue")).toBe(2);
+    expect(buffer?.props("min")).toBe(0.5);
+    expect(buffer?.props("max")).toBe(3);
+    buffer?.vm.$emit("update:modelValue", 1.5);
+    expect(wrapper.emitted("update:scrollOptimizationBufferScreens")?.[0]).toEqual([1.5]);
+
+    await wrapper.setProps({ scrollOptimizationEnabled: false });
+    expect(wrapper.text()).not.toContain("预渲染缓冲");
+    await wrapper.setProps({ scrollOptimizationEnabled: true });
+    expect(wrapper.findAllComponents({ name: "ElInputNumber" }).at(-1)?.props("modelValue")).toBe(2);
     wrapper.unmount();
   });
 });

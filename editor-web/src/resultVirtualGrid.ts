@@ -34,29 +34,36 @@ export function columnMetrics(widths: number[]): ColumnMetrics {
 }
 
 export function visibleRowRange(rowCount: number, rowHeight: number, scrollTop: number,
-                                viewportHeight: number, headerHeight: number, overscan = 4): VirtualRange {
+                                viewportHeight: number, headerHeight: number,
+                                bufferScreens = 0): VirtualRange {
   if (rowCount <= 0 || rowHeight <= 0) return { start: 0, end: 0 };
   const visibleHeight = Math.max(0, viewportHeight - headerHeight);
-  const first = Math.floor(Math.max(0, scrollTop) / rowHeight);
-  const last = Math.ceil((Math.max(0, scrollTop) + visibleHeight) / rowHeight);
-  const start = Math.min(rowCount, Math.max(0, first - Math.max(0, overscan)));
+  const bufferHeight = visibleHeight * Math.max(0, bufferScreens);
+  const top = Math.max(0, scrollTop - bufferHeight);
+  const bottom = Math.max(0, scrollTop) + visibleHeight + bufferHeight;
+  const start = Math.min(rowCount, Math.floor(top / rowHeight));
   return {
     start,
-    end: Math.max(start, Math.min(rowCount, last + Math.max(0, overscan)))
+    end: Math.max(start, Math.min(rowCount, Math.ceil(bottom / rowHeight)))
   };
 }
 
 export function visibleColumnRange(widths: number[], metrics: ColumnMetrics, scrollLeft: number,
-                                   viewportWidth: number, gutterWidth: number, overscan = 2): VirtualRange {
+                                   viewportWidth: number, gutterWidth: number,
+                                   bufferScreens = 0): VirtualRange {
   if (!widths.length) return { start: 0, end: 0 };
-  const left = Math.max(0, scrollLeft);
-  const right = left + Math.max(0, viewportWidth - gutterWidth);
+  const visibleWidth = Math.max(0, viewportWidth - gutterWidth);
+  const bufferWidth = visibleWidth * Math.max(0, bufferScreens);
+  const left = Math.max(0, scrollLeft - bufferWidth);
+  const right = Math.max(0, scrollLeft) + visibleWidth + bufferWidth;
   let first = firstColumnEndingAfter(widths, metrics.offsets, left);
   let last = first;
   while (last < widths.length && metrics.offsets[last] < right) last++;
-  first = Math.max(0, first - Math.max(0, overscan));
-  last = Math.min(widths.length, last + Math.max(0, overscan));
   return { start: first, end: Math.max(first, last) };
+}
+
+export function containsRange(container: VirtualRange, range: VirtualRange): boolean {
+  return container.start <= range.start && container.end >= range.end;
 }
 
 function firstColumnEndingAfter(widths: number[], offsets: number[], position: number): number {

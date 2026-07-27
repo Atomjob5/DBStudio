@@ -94,7 +94,7 @@ public final class DbStudioApiController {
             "ui.theme", "result.maxRows", "result.streamBatchRows", "result.columnLayoutScope",
             "result.copyHeaderOnDoubleClick", "result.copySeparator",
             "result.headerSortingEnabled", "result.headerFilteringEnabled", "result.showColumnRemarksInHeader",
-            "result.scrollOptimizationEnabled",
+            "result.scrollOptimizationEnabled", "result.scrollOptimizationBufferScreens",
             "statusBar.showSelectedColumnRemarks",
             "connection.maxActiveSessions", "connection.autoCommit", "connection.idleTimeoutMinutes",
             "connection.transactionDisconnectRollbackMinutes",
@@ -887,6 +887,17 @@ public final class DbStudioApiController {
                 && !Arrays.asList("true", "false").contains(value)) {
             throw new ApiException("INVALID_SETTING", "开关设置无效");
         }
+        if ("result.scrollOptimizationBufferScreens".equals(key)) {
+            try {
+                double screens = Double.parseDouble(value);
+                if (!Double.isFinite(screens) || screens < 0.5 || screens > 3
+                        || Math.abs(screens * 2 - Math.rint(screens * 2)) > 0.000_001) {
+                    throw new NumberFormatException();
+                }
+            } catch (NumberFormatException exception) {
+                throw new ApiException("INVALID_SETTING", "预渲染缓冲必须在 0.5 到 3 屏之间，并以 0.5 屏递增");
+            }
+        }
         if ("result.copySeparator".equals(key)
                 && !Arrays.asList("comma", "tab", "semicolon", "pipe").contains(value)) {
             throw new ApiException("INVALID_SETTING", "复制分隔符设置无效");
@@ -1249,6 +1260,9 @@ public final class DbStudioApiController {
         if (!result.containsKey("result.headerFilteringEnabled")) result.put("result.headerFilteringEnabled", "true");
         if (!result.containsKey("result.showColumnRemarksInHeader")) result.put("result.showColumnRemarksInHeader", "false");
         if (!result.containsKey("result.scrollOptimizationEnabled")) result.put("result.scrollOptimizationEnabled", "false");
+        if (!result.containsKey("result.scrollOptimizationBufferScreens")) {
+            result.put("result.scrollOptimizationBufferScreens", "1");
+        }
         if (!result.containsKey("statusBar.showSelectedColumnRemarks")) result.put("statusBar.showSelectedColumnRemarks", "true");
         if (!result.containsKey("connection.maxActiveSessions")) result.put("connection.maxActiveSessions", "10");
         if (!result.containsKey("connection.autoCommit")) result.put("connection.autoCommit", "false");

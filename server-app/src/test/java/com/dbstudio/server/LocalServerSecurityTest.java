@@ -206,6 +206,7 @@ class LocalServerSecurityTest {
         assertTrue(defaults.getBody().contains("\"result.headerFilteringEnabled\":\"true\""));
         assertTrue(defaults.getBody().contains("\"result.showColumnRemarksInHeader\":\"false\""));
         assertTrue(defaults.getBody().contains("\"result.scrollOptimizationEnabled\":\"false\""));
+        assertTrue(defaults.getBody().contains("\"result.scrollOptimizationBufferScreens\":\"1\""));
         assertTrue(defaults.getBody().contains("\"statusBar.showSelectedColumnRemarks\":\"true\""));
         assertTrue(defaults.getBody().contains("\"connection.maxActiveSessions\":\"10\""));
         assertTrue(defaults.getBody().contains("\"connection.autoCommit\":\"false\""));
@@ -258,6 +259,18 @@ class LocalServerSecurityTest {
         setting.put("value", "space");
         assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                 new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+
+        setting.put("key", "result.scrollOptimizationBufferScreens");
+        for (String screens : Arrays.asList("0.5", "1", "1.5", "3")) {
+            setting.put("value", screens);
+            assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                    new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+        }
+        for (String screens : Arrays.asList("0", "1.25", "3.5", "invalid")) {
+            setting.put("value", screens);
+            assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                    new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+        }
 
         setting.put("key", "connection.maxActiveSessions");
         setting.put("value", "12");

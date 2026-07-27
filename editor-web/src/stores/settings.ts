@@ -13,6 +13,7 @@ export const useSettingsStore = defineStore("settings", () => {
   const headerFilteringEnabled = ref(true);
   const showColumnRemarksInHeader = ref(false);
   const scrollOptimizationEnabled = ref(false);
+  const scrollOptimizationBufferScreens = ref(1);
   const showSelectedColumnRemarks = ref(true);
   const maxActiveSessions = ref(10);
   const autoCommit = ref(false);
@@ -34,6 +35,10 @@ export const useSettingsStore = defineStore("settings", () => {
     headerFilteringEnabled.value = settings["result.headerFilteringEnabled"] !== "false";
     showColumnRemarksInHeader.value = settings["result.showColumnRemarksInHeader"] === "true";
     scrollOptimizationEnabled.value = settings["result.scrollOptimizationEnabled"] === "true";
+    const bufferScreens = Number.parseFloat(settings["result.scrollOptimizationBufferScreens"] ?? "1");
+    scrollOptimizationBufferScreens.value = Number.isFinite(bufferScreens)
+      && bufferScreens >= 0.5 && bufferScreens <= 3 && Number.isInteger(bufferScreens * 2)
+      ? bufferScreens : 1;
     showSelectedColumnRemarks.value = settings["statusBar.showSelectedColumnRemarks"] !== "false";
     const maximum = Number.parseInt(settings["connection.maxActiveSessions"] ?? "10", 10);
     maxActiveSessions.value = Number.isFinite(maximum) ? maximum : 10;
@@ -49,7 +54,7 @@ export const useSettingsStore = defineStore("settings", () => {
 
   return { maxResultRows, streamBatchRows, columnLayoutScope, copyHeaderOnDoubleClick, copySeparator,
     headerSortingEnabled, headerFilteringEnabled, showColumnRemarksInHeader, showSelectedColumnRemarks,
-    scrollOptimizationEnabled,
+    scrollOptimizationEnabled, scrollOptimizationBufferScreens,
     maxActiveSessions, autoCommit, idleTimeoutMinutes, transactionDisconnectRollbackMinutes,
     completionCandidateLimit,
     recentFiles, initialize };

@@ -135,6 +135,7 @@ describe("App result loading status toolbar", () => {
     const settings = useSettingsStore();
     const vm = wrapper.vm as unknown as {
       updateScrollOptimizationEnabled: (value: boolean) => Promise<void>;
+      updateScrollOptimizationBufferScreens: (value: number) => Promise<void>;
     };
     rpcRequest.mockResolvedValueOnce({});
     await vm.updateScrollOptimizationEnabled(true);
@@ -142,6 +143,17 @@ describe("App result loading status toolbar", () => {
     expect(rpcRequest).toHaveBeenLastCalledWith("settings.update", {
       key: "result.scrollOptimizationEnabled", value: "true"
     });
+
+    rpcRequest.mockResolvedValueOnce({});
+    await vm.updateScrollOptimizationBufferScreens(1.5);
+    expect(settings.scrollOptimizationBufferScreens).toBe(1.5);
+    expect(rpcRequest).toHaveBeenLastCalledWith("settings.update", {
+      key: "result.scrollOptimizationBufferScreens", value: "1.5"
+    });
+
+    rpcRequest.mockRejectedValueOnce(new Error("save failed"));
+    await vm.updateScrollOptimizationBufferScreens(2);
+    expect(settings.scrollOptimizationBufferScreens).toBe(1.5);
 
     rpcRequest.mockRejectedValueOnce(new Error("save failed"));
     await vm.updateScrollOptimizationEnabled(false);

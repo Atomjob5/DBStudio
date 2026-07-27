@@ -44,6 +44,7 @@
            @keydown="tableKeydown" @pointermove="autoScrollSelection">
         <ResultVirtualGrid v-if="settings.scrollOptimizationEnabled" ref="virtualGrid"
                            :rows="displayRows" :columns="virtualColumns" :header-height="headerHeight"
+                           :buffer-screens="settings.scrollOptimizationBufferScreens"
                            :selection-mode="selectionMode" :cell-range="cellRange"
                            :selected-row-sources="selectedRowSources"
                            @cell-pointerdown="startCellSelection" @cell-pointerenter="extendCellSelection"

@@ -230,7 +230,10 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
   const settings = page.getByRole("dialog", { name: "设置", exact: true });
   const scrollOptimization = settings.locator(".compact-setting-row").filter({ hasText: "滚动优化" });
   await scrollOptimization.scrollIntoViewIfNeeded();
+  await expect(settings.getByText("预渲染缓冲", { exact: true })).toHaveCount(0);
   await scrollOptimization.locator(".el-switch").click();
+  await expect(settings.getByText("预渲染缓冲", { exact: true })).toBeVisible();
+  await expect(settings.getByRole("spinbutton", { name: "预渲染缓冲", exact: true })).toHaveValue("1.0");
   await settings.getByRole("button", { name: "Close this dialog", exact: true }).click();
   await expect(settings).toBeHidden();
 
@@ -248,15 +251,49 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
     element.dispatchEvent(new Event("scroll"));
   });
   await page.waitForTimeout(50);
-  const rendered = await grid.evaluate((element) => ({
-    rows: element.querySelectorAll(".result-virtual-grid__row").length,
-    headers: element.querySelectorAll(".result-virtual-grid__header-cell").length,
-    cells: element.querySelectorAll(".result-virtual-grid__cell").length,
-    top: element.scrollTop
-  }));
-  expect(rendered.rows).toBeLessThan(24);
-  expect(rendered.headers).toBeLessThan(18);
-  expect(rendered.cells).toBeLessThan(420);
+  const rendered = await grid.evaluate((element) => {
+    const headers = [...element.querySelectorAll<HTMLElement>(".result-virtual-grid__header-cell")];
+    const widths = headers.map((header) => header.getBoundingClientRect().width);
+    return {
+      rows: element.querySelectorAll(".result-virtual-grid__row").length,
+      headers: headers.length,
+      cells: element.querySelectorAll(".result-virtual-grid__cell").length,
+      renderedWidth: widths.reduce((sum, width) => sum + width, 0),
+      maximumColumnWidth: Math.max(0, ...widths),
+      bodyHeight: Math.max(0, element.clientHeight - 32),
+      bodyWidth: Math.max(0, element.clientWidth - 34),
+      top: element.scrollTop
+    };
+  });
+  expect(rendered.rows).toBeLessThanOrEqual(Math.ceil(rendered.bodyHeight * 3 / 32) + 2);
+  expect(rendered.renderedWidth).toBeLessThanOrEqual(
+    rendered.bodyWidth * 3 + rendered.maximumColumnWidth * 2 + 1);
+  expect(rendered.cells).toBe(rendered.rows * rendered.headers);
+
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+  const jumpCoverage = await grid.evaluate(async (element) => {
+    const maximumTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    const maximumLeft = Math.max(0, element.scrollWidth - element.clientWidth);
+    const targets = [[0.15, 0.1], [0.85, 0.75], [0.35, 0.95], [0.7, 0.25]];
+    const samples: number[] = [];
+    for (const [topRatio, leftRatio] of targets) {
+      element.scrollTop = maximumTop * topRatio;
+      element.scrollLeft = maximumLeft * leftRatio;
+      element.dispatchEvent(new Event("scroll"));
+      await Promise.resolve();
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const viewport = element.getBoundingClientRect();
+      const bodyTop = viewport.top + 32;
+      samples.push([...element.querySelectorAll(".result-virtual-grid__cell")]
+        .map((cell) => cell.getBoundingClientRect())
+        .filter((bounds) => bounds.bottom > bodyTop && bounds.top < viewport.bottom
+          && bounds.right > viewport.left + 34 && bounds.left < viewport.right).length);
+    }
+    return samples;
+  });
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+  expect(jumpCoverage.every((visibleCells) => visibleCells > 0)).toBe(true);
   const alignment = await grid.evaluate((element) => {
     const viewport = element.getBoundingClientRect();
     const header = element.querySelector(".result-virtual-grid__header")!.getBoundingClientRect();
@@ -335,7 +372,9 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
   const reopenedSettings = page.getByRole("dialog", { name: "设置", exact: true });
   const reopenedOptimization = reopenedSettings.locator(".compact-setting-row").filter({ hasText: "滚动优化" });
   await reopenedOptimization.scrollIntoViewIfNeeded();
+  await expect(reopenedSettings.getByText("预渲染缓冲", { exact: true })).toBeVisible();
   await reopenedOptimization.locator(".el-switch").click();
+  await expect(reopenedSettings.getByText("预渲染缓冲", { exact: true })).toHaveCount(0);
   await reopenedSettings.getByRole("button", { name: "Close this dialog", exact: true }).click();
   await expect(page.locator(".el-table-v2")).toBeVisible();
 
@@ -344,7 +383,9 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
   const finalSettings = page.getByRole("dialog", { name: "设置", exact: true });
   const finalOptimization = finalSettings.locator(".compact-setting-row").filter({ hasText: "滚动优化" });
   await finalOptimization.scrollIntoViewIfNeeded();
+  await expect(finalSettings.getByText("预渲染缓冲", { exact: true })).toHaveCount(0);
   await finalOptimization.locator(".el-switch").click();
+  await expect(finalSettings.getByText("预渲染缓冲", { exact: true })).toBeVisible();
   await finalSettings.getByRole("button", { name: "Close this dialog", exact: true }).click();
   await expect.poll(() => page.locator(".result-virtual-grid__viewport").evaluate((element) => ({
     top: Math.round(element.scrollTop), left: Math.round(element.scrollLeft)

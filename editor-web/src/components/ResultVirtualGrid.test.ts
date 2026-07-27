@@ -28,7 +28,7 @@ describe("ResultVirtualGrid", () => {
     const wrapper = mount(ResultVirtualGrid, {
       props: {
         rows, columns, headerHeight: 32, selectionMode: "cells",
-        selectedRowSources: [], cellRange: undefined
+        selectedRowSources: [], cellRange: undefined, bufferScreens: 1
       }
     });
     const viewport = wrapper.get(".result-virtual-grid__viewport").element as HTMLElement;
@@ -39,9 +39,9 @@ describe("ResultVirtualGrid", () => {
     wrapper.vm.setScrollPosition({ left: 1200, top: 1600 });
     await nextTick();
 
-    expect(wrapper.findAll(".result-virtual-grid__row").length).toBeLessThanOrEqual(18);
-    expect(wrapper.findAll(".result-virtual-grid__header-cell").length).toBeLessThanOrEqual(8);
-    expect(wrapper.findAll(".result-virtual-grid__cell").length).toBeLessThan(150);
+    expect(wrapper.findAll(".result-virtual-grid__row").length).toBeLessThanOrEqual(28);
+    expect(wrapper.findAll(".result-virtual-grid__header-cell").length).toBeLessThanOrEqual(13);
+    expect(wrapper.findAll(".result-virtual-grid__cell").length).toBeLessThan(370);
 
     const cell = wrapper.get(".result-virtual-grid__cell");
     await cell.trigger("pointerdown", { button: 0 });
@@ -62,6 +62,7 @@ describe("ResultVirtualGrid", () => {
         rows: mixedRows,
         columns: columns.slice(0, 6),
         headerHeight: 32,
+        bufferScreens: 1,
         selectionMode: "cells",
         selectedRowSources: []
       }
@@ -86,7 +87,8 @@ describe("ResultVirtualGrid", () => {
 
   it("leaves wheel input to the browser's native scrolling", () => {
     const wrapper = mount(ResultVirtualGrid, {
-      props: { rows, columns, headerHeight: 32, selectionMode: "cells", selectedRowSources: [] }
+      props: { rows, columns, headerHeight: 32, bufferScreens: 1,
+        selectionMode: "cells", selectedRowSources: [] }
     });
     const viewport = wrapper.get(".result-virtual-grid__viewport").element as HTMLElement;
     const wheel = new WheelEvent("wheel", { deltaY: 96, deltaMode: 0, cancelable: true });
@@ -98,7 +100,8 @@ describe("ResultVirtualGrid", () => {
 
   it("clamps stale scroll offsets when filtering reduces rows and columns", async () => {
     const wrapper = mount(ResultVirtualGrid, {
-      props: { rows, columns, headerHeight: 32, selectionMode: "cells", selectedRowSources: [] }
+      props: { rows, columns, headerHeight: 32, bufferScreens: 1,
+        selectionMode: "cells", selectedRowSources: [] }
     });
     const viewport = wrapper.get(".result-virtual-grid__viewport").element as HTMLElement;
     Object.defineProperties(viewport, {
@@ -116,6 +119,54 @@ describe("ResultVirtualGrid", () => {
     expect(wrapper.find(".result-virtual-grid__header").exists()).toBe(true);
     expect(wrapper.findAll(".result-virtual-grid__header-cell")).toHaveLength(2);
     expect(wrapper.findAll(".result-virtual-grid__row")).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it("immediately covers scrollbar jumps, cancels stale frames and reuses body slots", async () => {
+    let frameSequence = 0;
+    const frames = new Map<number, FrameRequestCallback>();
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      const frame = ++frameSequence;
+      frames.set(frame, callback);
+      return frame;
+    });
+    const cancelAnimationFrame = vi.fn((frame: number) => frames.delete(frame));
+    vi.stubGlobal("requestAnimationFrame", requestAnimationFrame);
+    vi.stubGlobal("cancelAnimationFrame", cancelAnimationFrame);
+
+    const wrapper = mount(ResultVirtualGrid, {
+      props: { rows, columns, headerHeight: 32, bufferScreens: 1,
+        selectionMode: "cells", selectedRowSources: [] }
+    });
+    const viewport = wrapper.get(".result-virtual-grid__viewport").element as HTMLElement;
+    Object.defineProperties(viewport, {
+      clientWidth: { configurable: true, value: 514 },
+      clientHeight: { configurable: true, value: 320 }
+    });
+    wrapper.vm.setScrollPosition({ left: 1200, top: 1600 });
+    await nextTick();
+    const firstRows = wrapper.findAll(".result-virtual-grid__row").map((row) => row.element);
+    const firstCells = wrapper.findAll(".result-virtual-grid__cell").map((cell) => cell.element);
+
+    viewport.scrollTop = 1760;
+    viewport.dispatchEvent(new Event("scroll"));
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+
+    viewport.scrollTop = 3200;
+    viewport.scrollLeft = 2400;
+    viewport.dispatchEvent(new Event("scroll"));
+    expect(cancelAnimationFrame).toHaveBeenCalledTimes(1);
+    await nextTick();
+
+    expect(wrapper.find('[data-grid-row="100"]').exists()).toBe(true);
+    expect(wrapper.find('[data-grid-column="20"]').exists()).toBe(true);
+    expect(wrapper.findAll(".result-virtual-grid__row").every((row) => firstRows.includes(row.element))).toBe(true);
+    expect(wrapper.findAll(".result-virtual-grid__cell").every((cell) => firstCells.includes(cell.element))).toBe(true);
+
+    for (const callback of frames.values()) callback(performance.now());
+    await nextTick();
+    expect(wrapper.find('[data-grid-row="100"]').exists()).toBe(true);
+    expect(wrapper.find('[data-grid-column="20"]').exists()).toBe(true);
     wrapper.unmount();
   });
 

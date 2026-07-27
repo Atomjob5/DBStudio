@@ -62,6 +62,11 @@ describe("ResultPanel streaming rendering", () => {
     const grid = wrapper.findComponent({ name: "ResultVirtualGrid" });
     expect(grid.exists()).toBe(true);
     expect(grid.props("rows")).toHaveLength(2);
+    expect(grid.props("bufferScreens")).toBe(1);
+
+    settings.scrollOptimizationBufferScreens = 1.5;
+    await nextTick();
+    expect(grid.props("bufferScreens")).toBe(1.5);
 
     settings.scrollOptimizationEnabled = false;
     await nextTick();

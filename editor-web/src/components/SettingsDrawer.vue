@@ -129,6 +129,22 @@
           <el-switch size="small" aria-label="滚动优化" :model-value="scrollOptimizationEnabled"
                      @update:model-value="$emit('update:scrollOptimizationEnabled', $event === true)" />
         </el-form-item>
+        <el-form-item v-if="scrollOptimizationEnabled" class="compact-setting-row">
+          <template #label>
+            <div class="setting-label"><span>预渲染缓冲</span>
+              <el-tooltip content="在可视区域四周额外渲染指定屏数的数据。值越大快速拖动越稳定，但会增加DOM和内存占用。" placement="top">
+                <el-icon class="setting-help" tabindex="0" aria-label="预渲染缓冲说明"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </div>
+          </template>
+          <div class="number-with-unit">
+            <el-input-number class="compact-number" size="small" aria-label="预渲染缓冲"
+                             :model-value="scrollOptimizationBufferScreens"
+                             :min="0.5" :max="3" :step="0.5" :precision="1" controls-position="right"
+                             @update:model-value="$emit('update:scrollOptimizationBufferScreens', $event ?? 1)" />
+            <span>屏</span>
+          </div>
+        </el-form-item>
         <el-form-item class="compact-setting-row">
           <template #label>
             <div class="setting-label"><span>列布局保留范围</span>
@@ -213,7 +229,8 @@ defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: Resolv
   streamBatchRows: number; columnLayoutScope: ColumnLayoutScope; copyHeaderOnDoubleClick: boolean;
   copySeparator: CopySeparator; maxActiveSessions: number; idleTimeoutMinutes: number;
   headerSortingEnabled: boolean; headerFilteringEnabled: boolean;
-  showColumnRemarksInHeader: boolean; scrollOptimizationEnabled: boolean; showSelectedColumnRemarks: boolean;
+  showColumnRemarksInHeader: boolean; scrollOptimizationEnabled: boolean;
+  scrollOptimizationBufferScreens: number; showSelectedColumnRemarks: boolean;
   autoCommit: boolean;
   transactionDisconnectRollbackMinutes: number;
   completionCacheSize: string; completionCacheEnvironmentCount: number; completionCacheLoadingCount: number;
@@ -225,6 +242,7 @@ const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme"
   "update:autoCommit": [value: boolean];
   "update:headerSortingEnabled": [value: boolean]; "update:headerFilteringEnabled": [value: boolean];
   "update:showColumnRemarksInHeader": [value: boolean]; "update:scrollOptimizationEnabled": [value: boolean];
+  "update:scrollOptimizationBufferScreens": [value: number];
   "update:showSelectedColumnRemarks": [value: boolean];
   "update:idleTimeoutMinutes": [value: number]; "update:transactionDisconnectRollbackMinutes": [value: number];
   "update:completionCandidateLimit": [value: number];

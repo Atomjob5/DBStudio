@@ -43,7 +43,7 @@ function metadata(payload: Record<string, unknown>): unknown[] {
 }
 
 export const developmentMockRequest: MockRequestHandler = async (type, payload, emit) => {
-  if (type === "app.bootstrap") return { providers, systems, environments, profiles, recentFiles: [], settings: { "ui.theme": "system", "result.maxRows": "1000", "result.streamBatchRows": "100", "result.columnLayoutScope": "result", "result.copyHeaderOnDoubleClick": "true", "result.copySeparator": "comma", "result.headerSortingEnabled": "true", "result.headerFilteringEnabled": "true", "result.scrollOptimizationEnabled": "false", "connection.maxActiveSessions": "10", "connection.idleTimeoutMinutes": "10" } };
+  if (type === "app.bootstrap") return { providers, systems, environments, profiles, recentFiles: [], settings: { "ui.theme": "system", "result.maxRows": "1000", "result.streamBatchRows": "100", "result.columnLayoutScope": "result", "result.copyHeaderOnDoubleClick": "true", "result.copySeparator": "comma", "result.headerSortingEnabled": "true", "result.headerFilteringEnabled": "true", "result.scrollOptimizationEnabled": "false", "result.scrollOptimizationBufferScreens": "1", "connection.maxActiveSessions": "10", "connection.idleTimeoutMinutes": "10" } };
   if (type === "connection.catalog") return { systems, environments, profiles };
   if (type === "connection.system.create") { const value = { id: crypto.randomUUID(), name: String(payload.name), revision: String(Date.now()) }; systems.push(value); return value; }
   if (type === "connection.system.update") { const value = systems.find((item) => item.id === payload.id); if (value) { value.name = String(payload.name); value.revision = String(Date.now()); } return value; }

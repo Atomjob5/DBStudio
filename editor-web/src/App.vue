@@ -166,6 +166,7 @@
                   :header-sorting-enabled="settings.headerSortingEnabled" :header-filtering-enabled="settings.headerFilteringEnabled"
                   :show-column-remarks-in-header="settings.showColumnRemarksInHeader"
                   :scroll-optimization-enabled="settings.scrollOptimizationEnabled"
+                  :scroll-optimization-buffer-screens="settings.scrollOptimizationBufferScreens"
                   :show-selected-column-remarks="settings.showSelectedColumnRemarks"
                   :max-active-sessions="settings.maxActiveSessions" :auto-commit="settings.autoCommit"
                   :idle-timeout-minutes="settings.idleTimeoutMinutes"
@@ -180,6 +181,7 @@
                   @update:header-filtering-enabled="updateHeaderFilteringEnabled"
                   @update:show-column-remarks-in-header="updateShowColumnRemarksInHeader"
                   @update:scroll-optimization-enabled="updateScrollOptimizationEnabled"
+                  @update:scroll-optimization-buffer-screens="updateScrollOptimizationBufferScreens"
                   @update:show-selected-column-remarks="updateShowSelectedColumnRemarks"
                   @update:copy-separator="updateCopySeparator" @update:max-active-sessions="updateMaxActiveSessions"
                   @update:auto-commit="updateAutoCommit"
@@ -1389,6 +1391,11 @@ async function updateScrollOptimizationEnabled(value: boolean): Promise<void> {
   const previous = settings.scrollOptimizationEnabled; settings.scrollOptimizationEnabled = value;
   try { await rpc.request("settings.update", { key: "result.scrollOptimizationEnabled", value: String(value) }); }
   catch (error) { settings.scrollOptimizationEnabled = previous; reportError(error); }
+}
+async function updateScrollOptimizationBufferScreens(value: number): Promise<void> {
+  const previous = settings.scrollOptimizationBufferScreens; settings.scrollOptimizationBufferScreens = value;
+  try { await rpc.request("settings.update", { key: "result.scrollOptimizationBufferScreens", value: String(value) }); }
+  catch (error) { settings.scrollOptimizationBufferScreens = previous; reportError(error); }
 }
 async function updateShowSelectedColumnRemarks(value: boolean): Promise<void> {
   const previous = settings.showSelectedColumnRemarks; settings.showSelectedColumnRemarks = value;

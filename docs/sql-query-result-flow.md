@@ -126,6 +126,7 @@ sequenceDiagram
 | `result.maxRows` | 1000 | 1–100000 | 单个结果集允许读取、保存在执行快照并发送到前端的最大行数。 |
 | `result.streamBatchRows` | 100 | 1–1000 | 一条 `query.rows` WebSocket 事件最多携带的行数。 |
 | `result.scrollOptimizationEnabled` | false | true / false | 开启结果集行列双向虚拟化；只影响前端渲染，不改变查询和分页语义。 |
+| `result.scrollOptimizationBufferScreens` | 1 | 0.5 - 3，步长 0.5 | 双向虚拟表格在可视区域四周额外渲染的屏数；仅在滚动优化开启时生效。 |
 
 读取循环的规则如下：
 

@@ -1,7 +1,7 @@
 <template>
   <div ref="viewport" class="result-virtual-grid__viewport" role="table"
        :aria-rowcount="rows.length" :aria-colcount="columns.length + 1"
-       @scroll="scheduleWindowRefresh" @pointerdown="delegatePointerDown"
+       @scroll="handleScroll" @pointerdown="delegatePointerDown"
        @pointerover="delegatePointerOver" @contextmenu="delegateContextMenu">
     <div class="result-virtual-grid__canvas" :style="canvasStyle">
       <div class="result-virtual-grid__header" role="row" :style="headerStyle">
@@ -16,7 +16,7 @@
         </div>
       </div>
 
-      <div v-for="entry in visibleRows" :key="entry.row.sourceIndex"
+      <div v-for="entry in visibleRows" :key="entry.slot"
            class="result-virtual-grid__row" role="row" :style="rowStyle(entry.index)">
         <span class="result-row-number result-virtual-grid__gutter"
               :class="{ selected: selectionMode === 'rows' && selectedRowSet.has(entry.row.sourceIndex) }"
@@ -25,7 +25,7 @@
               :title="`选择第 ${entry.row.sourceIndex + 1} 行；按住拖动可连续选择多行`">
           {{ entry.row.sourceIndex + 1 }}
         </span>
-        <span v-for="columnEntry in visibleColumns" :key="columnEntry.column.key"
+        <span v-for="columnEntry in visibleColumns" :key="columnEntry.slot"
               class="result-cell result-virtual-grid__cell"
               :class="cellClasses(entry.index, columnEntry.column)"
               role="cell" data-grid-kind="cell" :data-grid-row="entry.index"
@@ -44,7 +44,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import type { CellRange, ViewRow } from "../resultGrid";
 import { normalizeRange } from "../resultGrid";
 import {
-  clampScroll, columnMetrics, visibleColumnRange, visibleRowRange,
+  clampScroll, columnMetrics, containsRange, visibleColumnRange, visibleRowRange,
   type ResultGridScrollPosition, type ResultVirtualColumn, type VirtualRange
 } from "../resultVirtualGrid";
 
@@ -55,6 +55,7 @@ const props = defineProps<{
   rows: ViewRow[];
   columns: ResultVirtualColumn[];
   headerHeight: number;
+  bufferScreens: number;
   selectionMode: "cells" | "rows";
   cellRange?: CellRange;
   selectedRowSources: number[];
@@ -72,12 +73,17 @@ const emit = defineEmits<{
 const viewport = ref<HTMLElement>();
 const rowRange = ref<VirtualRange>({ start: 0, end: 0 });
 const columnRange = ref<VirtualRange>({ start: 0, end: 0 });
+const rowSlots = ref<RenderSlot[]>([]);
+const columnSlots = ref<RenderSlot[]>([]);
 const metrics = computed(() => columnMetrics(props.columns.map((column) => column.width)));
 const selectedRowSet = computed(() => new Set(props.selectedRowSources));
 const normalizedSelection = computed(() => props.cellRange ? normalizeRange(props.cellRange) : undefined);
-const visibleRows = computed(() => rangeEntries(props.rows, rowRange.value));
-const visibleColumns = computed(() => rangeEntries(props.columns, columnRange.value)
-  .map((entry) => ({ index: entry.index, column: entry.value })));
+const visibleRows = computed(() => rowSlots.value
+  .filter((entry) => entry.index < props.rows.length)
+  .map((entry) => ({ ...entry, row: props.rows[entry.index] })));
+const visibleColumns = computed(() => columnSlots.value
+  .filter((entry) => entry.index < props.columns.length)
+  .map((entry) => ({ ...entry, column: props.columns[entry.index] })));
 const canvasStyle = computed(() => ({
   width: `${GUTTER_WIDTH + metrics.value.totalWidth}px`,
   minWidth: "100%",
@@ -93,30 +99,91 @@ let refreshFrame = 0;
 let resizeObserver: ResizeObserver | undefined;
 let lastPointerKey = "";
 
-function rangeEntries<T>(values: T[], range: VirtualRange): Array<{ index: number; value: T; row: T }> {
-  const entries: Array<{ index: number; value: T; row: T }> = [];
-  const start = Math.max(0, Math.min(values.length, range.start));
-  const end = Math.max(start, Math.min(values.length, range.end));
+interface RenderSlot {
+  index: number;
+  slot: number;
+}
+
+function reuseRenderSlots(current: RenderSlot[], range: VirtualRange): RenderSlot[] {
+  const start = Math.max(0, range.start);
+  const end = Math.max(start, range.end);
+  const currentByIndex = new Map(current.map((entry) => [entry.index, entry.slot]));
+  const kept: RenderSlot[] = [];
+  const usedSlots = new Set<number>();
   for (let index = start; index < end; index++) {
-    entries.push({ index, value: values[index], row: values[index] });
+    const slot = currentByIndex.get(index);
+    if (slot === undefined) continue;
+    kept.push({ index, slot });
+    usedSlots.add(slot);
   }
-  return entries;
+  const capacity = Math.max(end - start,
+    current.reduce((maximum, entry) => Math.max(maximum, entry.slot + 1), 0));
+  const availableSlots: number[] = [];
+  for (let slot = 0; slot < capacity; slot++) {
+    if (!usedSlots.has(slot)) availableSlots.push(slot);
+  }
+  let availableIndex = 0;
+  const result = [...kept];
+  for (let index = start; index < end; index++) {
+    if (currentByIndex.has(index)) continue;
+    result.push({ index, slot: availableSlots[availableIndex++] });
+  }
+  return result.sort((left, right) => left.index - right.index);
+}
+
+function rangesFor(element: HTMLElement, bufferScreens: number): {
+  rows: VirtualRange;
+  columns: VirtualRange;
+} {
+  return {
+    rows: visibleRowRange(props.rows.length, ROW_HEIGHT, element.scrollTop,
+      element.clientHeight, props.headerHeight, bufferScreens),
+    columns: visibleColumnRange(props.columns.map((column) => column.width), metrics.value,
+      element.scrollLeft, element.clientWidth, GUTTER_WIDTH, bufferScreens)
+  };
+}
+
+function applyWindow(nextRows: VirtualRange, nextColumns: VirtualRange): void {
+  if (!sameRange(rowRange.value, nextRows)) {
+    rowSlots.value = reuseRenderSlots(rowSlots.value, nextRows);
+    rowRange.value = nextRows;
+  }
+  if (!sameRange(columnRange.value, nextColumns)) {
+    columnSlots.value = reuseRenderSlots(columnSlots.value, nextColumns);
+    columnRange.value = nextColumns;
+  }
 }
 
 function refreshWindow(): void {
   refreshFrame = 0;
   const element = viewport.value;
   if (!element) return;
-  const nextRows = visibleRowRange(props.rows.length, ROW_HEIGHT, element.scrollTop,
-    element.clientHeight, props.headerHeight);
-  const nextColumns = visibleColumnRange(props.columns.map((column) => column.width), metrics.value,
-    element.scrollLeft, element.clientWidth, GUTTER_WIDTH);
-  if (!sameRange(rowRange.value, nextRows)) rowRange.value = nextRows;
-  if (!sameRange(columnRange.value, nextColumns)) columnRange.value = nextColumns;
+  const next = rangesFor(element, props.bufferScreens);
+  applyWindow(next.rows, next.columns);
 }
 
 function scheduleWindowRefresh(): void {
   if (!refreshFrame) refreshFrame = requestFrame(refreshWindow);
+}
+
+function handleScroll(): void {
+  const element = viewport.value;
+  if (!element) return;
+  const visible = rangesFor(element, 0);
+  if (!containsRange(rowRange.value, visible.rows)
+      || !containsRange(columnRange.value, visible.columns)) {
+    if (refreshFrame) {
+      cancelFrame(refreshFrame);
+      refreshFrame = 0;
+    }
+    refreshWindow();
+    return;
+  }
+  const safe = rangesFor(element, props.bufferScreens / 2);
+  if (!containsRange(rowRange.value, safe.rows)
+      || !containsRange(columnRange.value, safe.columns)) {
+    scheduleWindowRefresh();
+  }
 }
 
 function sameRange(left: VirtualRange, right: VirtualRange): boolean {
@@ -244,7 +311,7 @@ function cancelFrame(frame: number): void {
 }
 
 watch([() => props.rows.length, () => props.columns.map((column) => `${column.key}:${column.width}`).join(","),
-  () => props.headerHeight], () => void nextTick(normalizeScrollPosition));
+  () => props.headerHeight, () => props.bufferScreens], () => void nextTick(normalizeScrollPosition));
 
 onMounted(() => {
   const element = viewport.value;
