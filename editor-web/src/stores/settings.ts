@@ -12,6 +12,7 @@ export const useSettingsStore = defineStore("settings", () => {
   const headerSortingEnabled = ref(true);
   const headerFilteringEnabled = ref(true);
   const showColumnRemarksInHeader = ref(false);
+  const scrollOptimizationEnabled = ref(false);
   const showSelectedColumnRemarks = ref(true);
   const maxActiveSessions = ref(10);
   const autoCommit = ref(false);
@@ -32,6 +33,7 @@ export const useSettingsStore = defineStore("settings", () => {
     headerSortingEnabled.value = settings["result.headerSortingEnabled"] !== "false";
     headerFilteringEnabled.value = settings["result.headerFilteringEnabled"] !== "false";
     showColumnRemarksInHeader.value = settings["result.showColumnRemarksInHeader"] === "true";
+    scrollOptimizationEnabled.value = settings["result.scrollOptimizationEnabled"] === "true";
     showSelectedColumnRemarks.value = settings["statusBar.showSelectedColumnRemarks"] !== "false";
     const maximum = Number.parseInt(settings["connection.maxActiveSessions"] ?? "10", 10);
     maxActiveSessions.value = Number.isFinite(maximum) ? maximum : 10;
@@ -47,6 +49,7 @@ export const useSettingsStore = defineStore("settings", () => {
 
   return { maxResultRows, streamBatchRows, columnLayoutScope, copyHeaderOnDoubleClick, copySeparator,
     headerSortingEnabled, headerFilteringEnabled, showColumnRemarksInHeader, showSelectedColumnRemarks,
+    scrollOptimizationEnabled,
     maxActiveSessions, autoCommit, idleTimeoutMinutes, transactionDisconnectRollbackMinutes,
     completionCandidateLimit,
     recentFiles, initialize };

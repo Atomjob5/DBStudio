@@ -205,6 +205,7 @@ class LocalServerSecurityTest {
         assertTrue(defaults.getBody().contains("\"result.headerSortingEnabled\":\"true\""));
         assertTrue(defaults.getBody().contains("\"result.headerFilteringEnabled\":\"true\""));
         assertTrue(defaults.getBody().contains("\"result.showColumnRemarksInHeader\":\"false\""));
+        assertTrue(defaults.getBody().contains("\"result.scrollOptimizationEnabled\":\"false\""));
         assertTrue(defaults.getBody().contains("\"statusBar.showSelectedColumnRemarks\":\"true\""));
         assertTrue(defaults.getBody().contains("\"connection.maxActiveSessions\":\"10\""));
         assertTrue(defaults.getBody().contains("\"connection.autoCommit\":\"false\""));
@@ -241,7 +242,8 @@ class LocalServerSecurityTest {
         }
 
         for (String key : Arrays.asList("result.headerSortingEnabled", "result.headerFilteringEnabled",
-                "result.showColumnRemarksInHeader", "statusBar.showSelectedColumnRemarks")) {
+                "result.showColumnRemarksInHeader", "result.scrollOptimizationEnabled",
+                "statusBar.showSelectedColumnRemarks")) {
             setting.put("key", key);
             setting.put("value", "false");
             assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,

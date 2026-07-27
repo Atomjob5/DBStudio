@@ -120,6 +120,17 @@
         </el-form-item>
         <el-form-item class="compact-setting-row">
           <template #label>
+            <div class="setting-label"><span>滚动优化</span>
+              <el-tooltip content="减少滚动时渲染的行列数量，并启用快速平滑滚动，适合低配置设备。" placement="top">
+                <el-icon class="setting-help" tabindex="0" aria-label="滚动优化说明"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </div>
+          </template>
+          <el-switch size="small" aria-label="滚动优化" :model-value="scrollOptimizationEnabled"
+                     @update:model-value="$emit('update:scrollOptimizationEnabled', $event === true)" />
+        </el-form-item>
+        <el-form-item class="compact-setting-row">
+          <template #label>
             <div class="setting-label"><span>列布局保留范围</span>
               <el-tooltip content="当前结果集会在新执行时重置；当前编辑标签仅在字段集合完全一致时复用列顺序和宽度。" placement="top">
                 <el-icon class="setting-help" tabindex="0" aria-label="列布局保留范围说明"><QuestionFilled /></el-icon>
@@ -202,7 +213,7 @@ defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: Resolv
   streamBatchRows: number; columnLayoutScope: ColumnLayoutScope; copyHeaderOnDoubleClick: boolean;
   copySeparator: CopySeparator; maxActiveSessions: number; idleTimeoutMinutes: number;
   headerSortingEnabled: boolean; headerFilteringEnabled: boolean;
-  showColumnRemarksInHeader: boolean; showSelectedColumnRemarks: boolean;
+  showColumnRemarksInHeader: boolean; scrollOptimizationEnabled: boolean; showSelectedColumnRemarks: boolean;
   autoCommit: boolean;
   transactionDisconnectRollbackMinutes: number;
   completionCacheSize: string; completionCacheEnvironmentCount: number; completionCacheLoadingCount: number;
@@ -213,7 +224,8 @@ const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme"
   "update:copySeparator": [value: CopySeparator]; "update:maxActiveSessions": [value: number];
   "update:autoCommit": [value: boolean];
   "update:headerSortingEnabled": [value: boolean]; "update:headerFilteringEnabled": [value: boolean];
-  "update:showColumnRemarksInHeader": [value: boolean]; "update:showSelectedColumnRemarks": [value: boolean];
+  "update:showColumnRemarksInHeader": [value: boolean]; "update:scrollOptimizationEnabled": [value: boolean];
+  "update:showSelectedColumnRemarks": [value: boolean];
   "update:idleTimeoutMinutes": [value: number]; "update:transactionDisconnectRollbackMinutes": [value: number];
   "update:completionCandidateLimit": [value: number];
   clearCompletionCaches: [] }>();

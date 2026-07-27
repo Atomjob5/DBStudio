@@ -18,6 +18,7 @@ describe("SettingsDrawer compact result settings", () => {
         headerSortingEnabled: true,
         headerFilteringEnabled: true,
         showColumnRemarksInHeader: false,
+        scrollOptimizationEnabled: false,
         showSelectedColumnRemarks: true,
         maxActiveSessions: 10,
         autoCommit: false,
@@ -36,7 +37,7 @@ describe("SettingsDrawer compact result settings", () => {
   it("renders compact connection and result settings without the old alert", async () => {
     const wrapper = mountDrawer();
     await flushPromises();
-    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(15);
+    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(16);
     expect(wrapper.findComponent({ name: "ElAlert" }).exists()).toBe(false);
     const separator = wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "comma");
@@ -53,6 +54,7 @@ describe("SettingsDrawer compact result settings", () => {
     expect(tooltips.map((tooltip) => tooltip.props("content"))).toEqual(expect.arrayContaining([
       expect.stringContaining("完整导出不受影响"),
       expect.stringContaining("事件触发更频繁"),
+      expect.stringContaining("快速平滑滚动"),
       expect.stringContaining("字段集合完全一致"),
       expect.stringContaining("自动转义"),
       expect.stringContaining("IndexedDB"),
@@ -71,11 +73,12 @@ describe("SettingsDrawer compact result settings", () => {
     numbers[5].vm.$emit("update:modelValue", 50);
     const switches = wrapper.findAllComponents({ name: "ElSwitch" });
     switches[0].vm.$emit("update:modelValue", true);
-    switches[1].vm.$emit("update:modelValue", false);
+    switches[1].vm.$emit("update:modelValue", true);
     switches[2].vm.$emit("update:modelValue", false);
     switches[3].vm.$emit("update:modelValue", false);
-    switches[4].vm.$emit("update:modelValue", true);
-    switches[5].vm.$emit("update:modelValue", false);
+    switches[4].vm.$emit("update:modelValue", false);
+    switches[5].vm.$emit("update:modelValue", true);
+    switches[6].vm.$emit("update:modelValue", false);
     wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "result")!.vm.$emit("update:modelValue", "editor");
     wrapper.findAllComponents({ name: "ElRadioGroup" })
@@ -92,6 +95,7 @@ describe("SettingsDrawer compact result settings", () => {
     expect(wrapper.emitted("update:headerSortingEnabled")?.[0]).toEqual([false]);
     expect(wrapper.emitted("update:headerFilteringEnabled")?.[0]).toEqual([false]);
     expect(wrapper.emitted("update:showColumnRemarksInHeader")?.[0]).toEqual([true]);
+    expect(wrapper.emitted("update:scrollOptimizationEnabled")?.[0]).toEqual([true]);
     expect(wrapper.emitted("update:showSelectedColumnRemarks")?.[0]).toEqual([false]);
     expect(wrapper.emitted("update:columnLayoutScope")?.[0]).toEqual(["editor"]);
     expect(wrapper.emitted("update:copySeparator")?.[0]).toEqual(["pipe"]);

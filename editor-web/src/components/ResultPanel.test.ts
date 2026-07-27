@@ -42,6 +42,34 @@ describe("ResultPanel streaming rendering", () => {
     expect(wrapper.text()).not.toContain("执行查询后在这里查看结果");
   });
 
+  it("keeps the legacy table by default and switches to the optimized grid without losing data", async () => {
+    const settings = useSettingsStore();
+    const execution = {
+      executionId: "execution-scroll", editorId: "editor-1", busy: false, cancelled: false,
+      failed: false, durationMs: 8,
+      results: [{ resultIndex: 0, sql: "select id, name", type: "QUERY", columns: ["id", "name"],
+        rows: [["1", "Apple"], ["2", "Banana"]], updateCount: -1, truncated: false, durationMs: 7, complete: true }]
+    };
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: 0, execution }, global: { plugins: [ElementPlus] }
+    });
+    expect(wrapper.findComponent({ name: "ElTableV2" }).exists()).toBe(true);
+    expect(wrapper.findComponent({ name: "ResultVirtualGrid" }).exists()).toBe(false);
+
+    settings.scrollOptimizationEnabled = true;
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ElTableV2" }).exists()).toBe(false);
+    const grid = wrapper.findComponent({ name: "ResultVirtualGrid" });
+    expect(grid.exists()).toBe(true);
+    expect(grid.props("rows")).toHaveLength(2);
+
+    settings.scrollOptimizationEnabled = false;
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ElTableV2" }).exists()).toBe(true);
+    expect(wrapper.text()).toContain("2 行 · 7 ms");
+    wrapper.unmount();
+  });
+
   it("removes the local data toolbar and synchronizes the active result", async () => {
     const wrapper = mount(ResultPanel, {
       props: { activeResultIndex: 0, execution: {

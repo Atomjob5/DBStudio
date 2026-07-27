@@ -42,9 +42,19 @@
       <el-alert v-if="activeResult?.errorMessage" :title="activeResult.errorMessage" type="error" show-icon :closable="false" />
       <div v-else-if="activeResult?.columns.length" ref="tableHost" class="table-host" tabindex="0"
            @keydown="tableKeydown" @pointermove="autoScrollSelection">
-        <el-auto-resizer v-slot="{ width, height }">
-          <el-table-v2 :columns="tableColumns" :data="displayRows" :width="width" :height="height"
-                       row-key="sourceIndex" :row-height="32" :header-height="headerHeight" fixed />
+        <ResultVirtualGrid v-if="settings.scrollOptimizationEnabled" ref="virtualGrid"
+                           :rows="displayRows" :columns="virtualColumns" :header-height="headerHeight"
+                           :selection-mode="selectionMode" :cell-range="cellRange"
+                           :selected-row-sources="selectedRowSources"
+                           @cell-pointerdown="startCellSelection" @cell-pointerenter="extendCellSelection"
+                           @cell-contextmenu="openCellMenu"
+                           @row-pointerdown="selectResultRow" @row-pointerenter="extendRowSelection"
+                           @row-contextmenu="openRowMenu" />
+        <el-auto-resizer v-else v-slot="{ width, height }">
+          <el-table-v2 ref="legacyTable" :columns="tableColumns" :data="displayRows"
+                       :width="width" :height="height" row-key="sourceIndex"
+                       :row-height="32" :header-height="headerHeight" fixed
+                       @scroll="captureLegacyScroll" />
         </el-auto-resizer>
       </div>
       <el-result v-else icon="success" title="语句执行完成" :sub-title="`影响行数：${activeResult?.updateCount ?? 0}`" />
@@ -63,7 +73,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, h, onBeforeUnmount, ref, watch } from "vue";
+import { computed, h, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { ElMessage, TableV2FixedDir } from "element-plus";
 import { CopyDocument, DataAnalysis, Download, RefreshLeft } from "@element-plus/icons-vue";
 import type { Column } from "element-plus";
@@ -77,9 +87,11 @@ import { resultCopyText, type ResultCopyMode } from "../resultCopy";
 import { writeClipboardText } from "../clipboard";
 import { copyGrid, copyInPredicate, copyRowSql, inRange, normalizeRange, selectRows, visibleRows,
   type CellPoint, type CellRange, type ResultFilter, type ResultSort, type ViewRow } from "../resultGrid";
+import type { ResultGridScrollPosition, ResultVirtualColumn } from "../resultVirtualGrid";
 import ResultHeaderContextMenu, { type HeaderMenuCommand } from "./ResultHeaderContextMenu.vue";
 import ResultHeaderTools from "./ResultHeaderTools.vue";
 import ResultDataContextMenu, { type DataMenuCommand } from "./ResultDataContextMenu.vue";
+import ResultVirtualGrid from "./ResultVirtualGrid.vue";
 
 const props = defineProps<{
   execution?: QueryExecutionState;
@@ -95,6 +107,14 @@ const emit = defineEmits<{
 const columnLayouts = useColumnLayoutStore();
 const settings = useSettingsStore();
 const tableHost = ref<HTMLElement>();
+const virtualGrid = ref<{
+  getScrollPosition: () => ResultGridScrollPosition;
+  setScrollPosition: (position: ResultGridScrollPosition) => void;
+}>();
+const legacyTable = ref<{
+  scrollTo: (position: { scrollLeft?: number; scrollTop?: number }) => void;
+}>();
+const legacyScrollPosition = ref<ResultGridScrollPosition>({ left: 0, top: 0 });
 const activeLayout = ref<{ layoutKey: string; viewKey: string; identities: string[] }>();
 const dropTarget = ref<{ identity: string; side: DropSide }>();
 const resizing = ref<{ identity: string; startX: number; startWidth: number }>();
@@ -181,21 +201,35 @@ watch(() => visibleColumnOptions.value.map((column) => column.index).join(","), 
 });
 watch(() => settings.headerSortingEnabled, (enabled) => { if (!enabled) { sorts.value = {}; clearSelection(); } });
 watch(() => settings.headerFilteringEnabled, (enabled) => { if (!enabled) { filters.value = {}; clearSelection(); } });
+watch(() => settings.scrollOptimizationEnabled, async () => {
+  const position = currentScrollPosition();
+  await nextTick();
+  restoreScrollPosition(position);
+}, { flush: "sync" });
 
 const displayRows = computed(() => visibleRows(activeResult.value?.rows ?? [], columnOptions.value,
   settings.headerSortingEnabled ? activeSort.value : undefined,
   settings.headerFilteringEnabled ? activeFilters.value : []));
 const tableColumns = computed<Column[]>(() => [rowSelectorColumn(), ...visibleColumnOptions.value.map((column, index) =>
   columnDefinition(column, index))]);
+const virtualColumns = computed<ResultVirtualColumn[]>(() => visibleColumnOptions.value.map((column, visibleIndex) => {
+  const identity = currentIdentities.value[column.index];
+  return {
+    key: `c${column.index}`,
+    sourceIndex: column.index,
+    visibleIndex,
+    width: resultColumnWidth(column, identity),
+    headerRenderer: () => renderHeader(column, identity)
+  };
+}));
 
 function columnDefinition(column: ColumnOption, visiblePosition: number): Column {
   const identity = currentIdentities.value[column.index];
-  const stored = activeLayout.value ? columnLayouts.layout(activeLayout.value.layoutKey) : undefined;
   return {
   key: `c${column.index}`,
   dataKey: "cells",
   title: column.label,
-  width: stored?.widths[identity] ?? defaultColumnWidth(column.label),
+  width: resultColumnWidth(column, identity),
   minWidth: 72,
   maxWidth: 800,
   headerCellRenderer: () => renderHeader(column, identity),
@@ -211,6 +245,11 @@ function columnDefinition(column: ColumnOption, visiblePosition: number): Column
     }, cellData === null ? "NULL" : cellData);
   }
   };
+}
+
+function resultColumnWidth(column: ColumnOption, identity: string): number {
+  const stored = activeLayout.value ? columnLayouts.layout(activeLayout.value.layoutKey) : undefined;
+  return stored?.widths[identity] ?? defaultColumnWidth(column.label);
 }
 
 function rowSelectorColumn(): Column {
@@ -738,13 +777,48 @@ function tableKeydown(event: KeyboardEvent): void {
 function autoScrollSelection(event: PointerEvent): void {
   if ((!selectingCells.value && !selectingRows.value) || !tableHost.value) return;
   const bounds = tableHost.value.getBoundingClientRect();
-  const scroller = tableHost.value.querySelector<HTMLElement>(".el-table-v2__body, .el-scrollbar__wrap");
-  if (!scroller) return;
   const edge = 26;
-  if (event.clientY < bounds.top + edge) scroller.scrollTop -= 18;
-  else if (event.clientY > bounds.bottom - edge) scroller.scrollTop += 18;
-  if (event.clientX < bounds.left + edge) scroller.scrollLeft -= 18;
-  else if (event.clientX > bounds.right - edge) scroller.scrollLeft += 18;
+  const delta = { left: 0, top: 0 };
+  if (event.clientY < bounds.top + edge) delta.top -= 18;
+  else if (event.clientY > bounds.bottom - edge) delta.top += 18;
+  if (event.clientX < bounds.left + edge) delta.left -= 18;
+  else if (event.clientX > bounds.right - edge) delta.left += 18;
+  if (!delta.left && !delta.top) return;
+  const scroller = tableHost.value.querySelector<HTMLElement>(".result-virtual-grid__viewport");
+  if (scroller) {
+    scroller.scrollTop += delta.top;
+    scroller.scrollLeft += delta.left;
+    return;
+  }
+  restoreLegacyScrollPosition({
+    left: legacyScrollPosition.value.left + delta.left,
+    top: legacyScrollPosition.value.top + delta.top
+  });
+}
+
+function currentScrollPosition(): ResultGridScrollPosition {
+  if (virtualGrid.value) return virtualGrid.value.getScrollPosition();
+  return { ...legacyScrollPosition.value };
+}
+
+function restoreScrollPosition(position: ResultGridScrollPosition): void {
+  if (virtualGrid.value) {
+    virtualGrid.value.setScrollPosition(position);
+    return;
+  }
+  restoreLegacyScrollPosition(position);
+}
+
+function captureLegacyScroll(position: { scrollLeft: number; scrollTop: number }): void {
+  legacyScrollPosition.value = { left: position.scrollLeft, top: position.scrollTop };
+}
+
+function restoreLegacyScrollPosition(position: ResultGridScrollPosition): void {
+  legacyScrollPosition.value = { left: Math.max(0, position.left), top: Math.max(0, position.top) };
+  legacyTable.value?.scrollTo({
+    scrollLeft: legacyScrollPosition.value.left,
+    scrollTop: legacyScrollPosition.value.top
+  });
 }
 
 async function copyText(text: string, successMessage: string): Promise<void> {
@@ -836,7 +910,8 @@ onBeforeUnmount(() => {
 :deep(.result-row-number-header) { background: var(--db-table-header); font-weight: 600; }
 :deep(.result-row-number:not(.result-row-number-header)) { cursor: pointer; }
 :deep(.el-table-v2__row:hover .result-row-number),
-:deep(.el-table-v2__row.is-hovered .result-row-number) { color: var(--db-text-secondary); }
+:deep(.el-table-v2__row.is-hovered .result-row-number),
+:deep(.result-virtual-grid__row:hover .result-row-number) { color: var(--db-text-secondary); }
 :deep(.result-row-number.selected) { outline: 0; background: var(--db-row-gutter-bg); color: var(--db-accent); font-weight: 600; }
 :deep(.result-row-number.selected::before) {
   content: ""; position: absolute; top: 5px; bottom: 5px; left: 0; width: 2px;

@@ -125,6 +125,7 @@ sequenceDiagram
 | --- | ---: | ---: | --- |
 | `result.maxRows` | 1000 | 1–100000 | 单个结果集允许读取、保存在执行快照并发送到前端的最大行数。 |
 | `result.streamBatchRows` | 100 | 1–1000 | 一条 `query.rows` WebSocket 事件最多携带的行数。 |
+| `result.scrollOptimizationEnabled` | false | true / false | 开启结果集行列双向虚拟化与快速平滑滚动；只影响前端渲染，不改变查询和分页语义。 |
 
 读取循环的规则如下：
 
@@ -164,7 +165,7 @@ query.started
 
 Query Store 使用 `shallowRef<Record<string, QueryExecutionState>>`，但不会原地修改 execution、result 或 rows。每收到一批行都会新建目标结果对象、`rows` 数组、`results` 数组和 execution 对象，再替换对应编辑器的引用。这样传给 `ResultPanel` 的 `execution` Prop 每批都会改变引用，Vue 可稳定触发计算属性和 `el-table-v2` 更新，同时不对每个单元格建立深层响应式代理。
 
-`ResultPanel` 只根据当前结果的列和行渲染；表格使用 `el-table-v2` 虚拟滚动，排序时创建当前行数组的副本，不修改 Store 中的原始结果。结果面板中的“已截断”提示仅说明 UI 保留的行受到 `result.maxRows` 限制，不代表数据库查询本身返回的数据总量。
+`ResultPanel` 只根据当前结果的列和行渲染。滚动优化关闭时继续使用 `el-table-v2`；开启时使用单滚动容器的行列双向虚拟网格，并对离散滚轮输入应用约 120 ms 的快速缓动。两种模式共用排序、筛选、选择和列布局状态，切换时保留横纵滚动位置。排序只创建当前行数组的副本，不修改 Store 中的原始结果。结果面板中的“已截断”提示仅说明 UI 保留的行受到 `result.maxRows` 限制，不代表数据库查询本身返回的数据总量。
 
 ## 6. 取消、失败与事务
 

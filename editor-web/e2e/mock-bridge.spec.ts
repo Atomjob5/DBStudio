@@ -1,5 +1,16 @@
 import { expect, test, type Page } from "@playwright/test";
 
+async function ensureMockWorkspace(page: Page): Promise<void> {
+  const picker = page.getByRole("main", { name: "选择工作空间" });
+  const selector = page.locator(".connection-pill input");
+  await expect(picker.or(selector)).toBeVisible();
+  if (!(await picker.isVisible())) return;
+  await page.getByRole("button", { name: "创建第一个工作空间" }).click();
+  await page.getByPlaceholder("例如：订单系统开发").fill("Playwright 工作空间");
+  await page.getByRole("button", { name: "创建", exact: true }).click();
+  await expect(selector).toBeVisible();
+}
+
 async function connectMock(page: Page): Promise<void> {
   const selector = page.locator(".connection-pill input");
   await expect(selector).toBeVisible();
@@ -11,14 +22,18 @@ async function connectMock(page: Page): Promise<void> {
   await expect(selector).toHaveValue("DEV / 本地开发库");
 }
 
+async function dismissCompletionSchemaDialog(page: Page): Promise<void> {
+  const schemaDialog = page.getByRole("dialog", { name: "选择 SQL 补全 Schema", exact: true });
+  await schemaDialog.waitFor({ state: "visible", timeout: 1_000 }).catch(() => undefined);
+  if (await schemaDialog.isVisible()) {
+    await schemaDialog.getByRole("button", { name: "取消", exact: true }).click();
+    await expect(schemaDialog).toBeHidden();
+  }
+}
+
 test.beforeEach(async ({ page }) => {
   await page.goto("/?mock=1");
-  if (await page.getByRole("main", { name: "选择工作空间" }).isVisible()) {
-    await page.getByRole("button", { name: "创建第一个工作空间" }).click();
-    await page.getByPlaceholder("例如：订单系统开发").fill("Playwright 工作空间");
-    await page.getByRole("button", { name: "创建", exact: true }).click();
-    await expect(page.locator(".connection-pill input")).toBeVisible();
-  }
+  await ensureMockWorkspace(page);
 });
 
 test("keeps the activity bar flush, restores a collapsed panel and renders a compact connection selector", async ({ page }) => {
@@ -158,6 +173,99 @@ test("connects and renders a streamed query result with the development bridge",
   expect(darkSpectrum.innerContent).toBe("none");
 });
 
+test("enables the optimized 200 by 30 result grid with smooth wheel scrolling", async ({ page }) => {
+  await connectMock(page);
+  await dismissCompletionSchemaDialog(page);
+  const editor = page.locator(".monaco-editor .view-lines");
+  await editor.click();
+  await page.keyboard.press("ControlOrMeta+A");
+  await page.keyboard.type("select /*wide_result*/ 1");
+  await page.getByRole("button", { name: "执行", exact: true }).click();
+  await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
+  await expect(page.locator(".el-table-v2")).toBeVisible();
+  const legacyScroller = page.locator(".el-table-v2__main .el-table-v2__body");
+  await legacyScroller.hover();
+  await page.mouse.wheel(0, 320);
+  await page.mouse.wheel(480, 0);
+  await page.waitForTimeout(50);
+
+  await page.getByRole("button", { name: "更多操作", exact: true }).click();
+  await page.getByRole("menuitem", { name: "设置", exact: true }).click();
+  const settings = page.getByRole("dialog", { name: "设置", exact: true });
+  const scrollOptimization = settings.locator(".compact-setting-row").filter({ hasText: "滚动优化" });
+  await scrollOptimization.scrollIntoViewIfNeeded();
+  await scrollOptimization.locator(".el-switch").click();
+  await settings.getByRole("button", { name: "Close this dialog", exact: true }).click();
+
+  const grid = page.locator(".result-virtual-grid__viewport");
+  await expect(grid).toBeVisible();
+  await expect(page.locator(".el-table-v2")).toHaveCount(0);
+  await expect.poll(() => grid.evaluate((element) => ({
+    top: Math.round(element.scrollTop), left: Math.round(element.scrollLeft)
+  }))).toEqual({ top: 320, left: 480 });
+  await grid.evaluate((element) => {
+    element.scrollTop = 1600;
+    element.scrollLeft = 1200;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await page.waitForTimeout(50);
+  const rendered = await grid.evaluate((element) => ({
+    rows: element.querySelectorAll(".result-virtual-grid__row").length,
+    headers: element.querySelectorAll(".result-virtual-grid__header-cell").length,
+    cells: element.querySelectorAll(".result-virtual-grid__cell").length,
+    top: element.scrollTop
+  }));
+  expect(rendered.rows).toBeLessThan(24);
+  expect(rendered.headers).toBeLessThan(18);
+  expect(rendered.cells).toBeLessThan(420);
+  const alignment = await grid.evaluate((element) => {
+    const viewport = element.getBoundingClientRect();
+    const header = element.querySelector(".result-virtual-grid__header")!.getBoundingClientRect();
+    const headerCell = element.querySelector(".result-virtual-grid__header-cell")!.getBoundingClientRect();
+    const cell = element.querySelector(".result-virtual-grid__cell")!.getBoundingClientRect();
+    const gutter = element.querySelector(
+      ".result-virtual-grid__row .result-virtual-grid__gutter")!.getBoundingClientRect();
+    return {
+      headerTop: Math.round(header.top),
+      viewportTop: Math.round(viewport.top),
+      headerCellLeft: Math.round(headerCell.left),
+      cellLeft: Math.round(cell.left),
+      gutterLeft: Math.round(gutter.left),
+      viewportLeft: Math.round(viewport.left)
+    };
+  });
+  expect(alignment.headerTop).toBe(alignment.viewportTop);
+  expect(alignment.gutterLeft).toBe(alignment.viewportLeft);
+  expect(alignment.cellLeft - alignment.headerCellLeft).toBe(3);
+
+  await grid.dispatchEvent("wheel", { deltaY: 96, deltaMode: 0 });
+  await page.waitForTimeout(150);
+  const optimizedPosition = await grid.evaluate((element) => ({
+    top: element.scrollTop, left: element.scrollLeft
+  }));
+  expect(optimizedPosition.top).toBeGreaterThan(rendered.top);
+
+  await page.getByRole("button", { name: "更多操作", exact: true }).click();
+  await page.getByRole("menuitem", { name: "设置", exact: true }).click();
+  const reopenedSettings = page.getByRole("dialog", { name: "设置", exact: true });
+  const reopenedOptimization = reopenedSettings.locator(".compact-setting-row").filter({ hasText: "滚动优化" });
+  await reopenedOptimization.scrollIntoViewIfNeeded();
+  await reopenedOptimization.locator(".el-switch").click();
+  await reopenedSettings.getByRole("button", { name: "Close this dialog", exact: true }).click();
+  await expect(page.locator(".el-table-v2")).toBeVisible();
+
+  await page.getByRole("button", { name: "更多操作", exact: true }).click();
+  await page.getByRole("menuitem", { name: "设置", exact: true }).click();
+  const finalSettings = page.getByRole("dialog", { name: "设置", exact: true });
+  const finalOptimization = finalSettings.locator(".compact-setting-row").filter({ hasText: "滚动优化" });
+  await finalOptimization.scrollIntoViewIfNeeded();
+  await finalOptimization.locator(".el-switch").click();
+  await finalSettings.getByRole("button", { name: "Close this dialog", exact: true }).click();
+  await expect.poll(() => page.locator(".result-virtual-grid__viewport").evaluate((element) => ({
+    top: Math.round(element.scrollTop), left: Math.round(element.scrollLeft)
+  }))).toEqual({ top: Math.round(optimizedPosition.top), left: Math.round(optimizedPosition.left) });
+});
+
 test("shares completion cache across editors and refreshes it only from the object explorer", async ({ page }) => {
   await connectMock(page);
   await expect(page.locator(".completion-status")).toContainText("补全已更新");
@@ -212,6 +320,7 @@ test("filters duplicate column names by the SQL alias at the cursor", async ({ p
 test("uses a static spectrum edge when reduced motion is enabled", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.reload();
+  await ensureMockWorkspace(page);
   await connectMock(page);
   await page.getByRole("button", { name: "执行", exact: true }).click();
   await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
@@ -402,7 +511,7 @@ test("supports Apple appearance, system theme settings and compact windows", asy
   await expect(page.getByText("双击表头复制列名", { exact: true })).toBeVisible();
   await expect(page.getByText("多列复制分隔符", { exact: true })).toBeVisible();
   const compactRows = page.locator(".settings-drawer .compact-setting-row");
-  await expect(compactRows).toHaveCount(11);
+  await expect(compactRows).toHaveCount(16);
   expect(await compactRows.evaluateAll((rows) => rows.every((row) => {
     const style = getComputedStyle(row);
     const label = row.querySelector(".el-form-item__label")?.getBoundingClientRect();
@@ -445,6 +554,7 @@ test("supports Apple appearance, system theme settings and compact windows", asy
 test("follows the system color scheme and reduces nonessential motion", async ({ page }) => {
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
   await page.reload();
+  await ensureMockWorkspace(page);
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   const duration = await page.locator(".connection-pill").evaluate((element) => getComputedStyle(element).transitionDuration);
   expect(Number.parseFloat(duration)).toBeLessThan(0.01);

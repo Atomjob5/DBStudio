@@ -131,6 +131,23 @@ describe("App result loading status toolbar", () => {
     expect(wrapper.find(".result-data-toolbar").exists()).toBe(false);
   });
 
+  it("persists scroll optimization and rolls the switch back when saving fails", async () => {
+    const settings = useSettingsStore();
+    const vm = wrapper.vm as unknown as {
+      updateScrollOptimizationEnabled: (value: boolean) => Promise<void>;
+    };
+    rpcRequest.mockResolvedValueOnce({});
+    await vm.updateScrollOptimizationEnabled(true);
+    expect(settings.scrollOptimizationEnabled).toBe(true);
+    expect(rpcRequest).toHaveBeenLastCalledWith("settings.update", {
+      key: "result.scrollOptimizationEnabled", value: "true"
+    });
+
+    rpcRequest.mockRejectedValueOnce(new Error("save failed"));
+    await vm.updateScrollOptimizationEnabled(false);
+    expect(settings.scrollOptimizationEnabled).toBe(true);
+  });
+
   it("工作空间恢复时只恢复编辑器内容并清空旧结果", async () => {
     await flushPromises();
     const connections = useConnectionStore();
