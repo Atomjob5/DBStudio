@@ -19,6 +19,10 @@
             <el-menu-item index="copy-delete" :disabled="!canDelete">复制为 DELETE 语句</el-menu-item>
           </template>
         </el-sub-menu>
+        <template v-if="mode === 'cells'">
+          <el-menu-item index="compare" :disabled="!canCompare">比较</el-menu-item>
+          <el-menu-item index="sum" :disabled="!canSum">求和</el-menu-item>
+        </template>
       </el-menu>
     </div>
   </teleport>
@@ -28,9 +32,11 @@
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { fitContextMenuPosition } from "../contextMenuPosition";
 
-export type DataMenuCommand = "copy-data" | "copy-in" | "copy-all" | "copy-insert" | "copy-update" | "copy-delete";
+export type DataMenuCommand = "copy-data" | "copy-in" | "copy-all" | "copy-insert" | "copy-update" | "copy-delete"
+  | "compare" | "sum";
 const props = defineProps<{ visible: boolean; x: number; y: number; mode: "cells" | "rows";
-  canIn: boolean; canInsert: boolean; canUpdate: boolean; canDelete: boolean }>();
+  canIn: boolean; canInsert: boolean; canUpdate: boolean; canDelete: boolean;
+  canCompare: boolean; canSum: boolean }>();
 const emit = defineEmits<{ close: []; command: [command: DataMenuCommand] }>();
 const menuHost = ref<HTMLElement>();
 const position = ref({ x: 0, y: 0, ready: false });
@@ -62,7 +68,8 @@ watch([() => props.visible, () => props.x, () => props.y], async ([visible], pre
   }
 });
 function selectCommand(index: string): void {
-  if (["copy-data", "copy-in", "copy-all", "copy-insert", "copy-update", "copy-delete"].includes(index)) {
+  if (["copy-data", "copy-in", "copy-all", "copy-insert", "copy-update", "copy-delete",
+    "compare", "sum"].includes(index)) {
     emit("command", index as DataMenuCommand); emit("close");
   }
 }
@@ -87,6 +94,7 @@ onBeforeUnmount(removeListeners);
 .result-data-context-menu .el-menu--collapse>.el-sub-menu>.el-sub-menu__title span{display:inline;width:auto;height:auto;overflow:visible;visibility:visible}
 .result-data-context-menu .el-menu--collapse>.el-sub-menu>.el-sub-menu__title .el-sub-menu__icon-arrow{display:block;right:10px;margin-top:-6px}
 .result-data-context-menu .el-menu-item,.result-data-context-menu .el-sub-menu__title{height:32px;border-radius:7px;line-height:32px}
+.result-data-context-menu>.el-menu>.el-menu-item:first-of-type{margin-top:2px;border-top:1px solid var(--db-border-soft);border-radius:0;padding-top:2px}
 .result-data-context-submenu{border-radius:10px}.result-data-context-submenu .el-menu{min-width:190px;padding:5px}
 .result-data-context-submenu .el-menu-item{height:32px;border-radius:7px;line-height:32px}
 </style>

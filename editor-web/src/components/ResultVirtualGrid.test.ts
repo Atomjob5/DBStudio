@@ -45,9 +45,41 @@ describe("ResultVirtualGrid", () => {
 
     const cell = wrapper.get(".result-virtual-grid__cell");
     await cell.trigger("pointerdown", { button: 0 });
+    await cell.trigger("dblclick");
     await cell.trigger("contextmenu");
     expect(wrapper.emitted("cell-pointerdown")).toHaveLength(1);
+    expect(wrapper.emitted("cell-dblclick")).toHaveLength(1);
     expect(wrapper.emitted("cell-contextmenu")).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it("highlights complete selected rows and identity-based sparse cells", async () => {
+    const wrapper = mount(ResultVirtualGrid, {
+      props: {
+        rows: rows.slice(0, 3), columns: columns.slice(0, 3), headerHeight: 32,
+        bufferScreens: 1, selectionMode: "rows", selectedRowSources: [1],
+        selectedCellKeys: [], hasFooter: true
+      },
+      slots: { footer: "<div class=\"test-footer\">sum</div>" }
+    });
+    const viewport = wrapper.get(".result-virtual-grid__viewport").element as HTMLElement;
+    Object.defineProperties(viewport, {
+      clientWidth: { configurable: true, value: 514 },
+      clientHeight: { configurable: true, value: 160 }
+    });
+    wrapper.vm.setScrollPosition({ left: 0, top: 0 });
+    await nextTick();
+    expect(wrapper.get('[data-grid-source="1"]').element.parentElement?.classList)
+      .toContain("result-row-selected");
+    expect(wrapper.find(".test-footer").exists()).toBe(true);
+
+    await wrapper.setProps({
+      selectionMode: "cells", selectedRowSources: [], selectedCellKeys: ["0:0", "2:2"]
+    });
+    await nextTick();
+    expect(wrapper.get('[data-grid-row="0"][data-grid-column="0"]').classes()).toContain("selected");
+    expect(wrapper.get('[data-grid-row="2"][data-grid-column="2"]').classes()).toContain("selected");
+    expect(wrapper.get('[data-grid-row="1"][data-grid-column="1"]').classes()).not.toContain("selected");
     wrapper.unmount();
   });
 

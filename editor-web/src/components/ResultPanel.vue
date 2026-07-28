@@ -46,16 +46,29 @@
                            :rows="displayRows" :columns="virtualColumns" :header-height="headerHeight"
                            :buffer-screens="settings.scrollOptimizationBufferScreens"
                            :selection-mode="selectionMode" :cell-range="cellRange"
+                           :selected-cell-keys="selectedCellKeys"
                            :selected-row-sources="selectedRowSources"
+                           :has-footer="!!sumSummary"
                            @cell-pointerdown="startCellSelection" @cell-pointerenter="extendCellSelection"
-                           @cell-contextmenu="openCellMenu"
+                           @cell-contextmenu="openCellMenu" @cell-dblclick="openCellValue"
                            @row-pointerdown="selectResultRow" @row-pointerenter="extendRowSelection"
-                           @row-contextmenu="openRowMenu" />
+                           @row-contextmenu="openRowMenu">
+          <template #footer>
+            <ResultSummaryFooter v-if="sumSummary" :total="sumSummary.total" :count="sumSummary.count"
+                                 @close="sumSummary = undefined" />
+          </template>
+        </ResultVirtualGrid>
         <el-auto-resizer v-else v-slot="{ width, height }">
           <el-table-v2 ref="legacyTable" :columns="tableColumns" :data="displayRows"
                        :width="width" :height="height" row-key="sourceIndex"
                        :row-height="32" :header-height="headerHeight" fixed
-                       @scroll="captureLegacyScroll" />
+                       :row-class="legacyRowClass" :footer-height="sumSummary ? 32 : 0"
+                       @scroll="captureLegacyScroll">
+            <template #footer>
+              <ResultSummaryFooter v-if="sumSummary" :total="sumSummary.total" :count="sumSummary.count"
+                                   @close="sumSummary = undefined" />
+            </template>
+          </el-table-v2>
         </el-auto-resizer>
       </div>
       <el-result v-else icon="success" title="语句执行完成" :sub-title="`影响行数：${activeResult?.updateCount ?? 0}`" />
@@ -65,11 +78,16 @@
     </el-empty>
     <ResultHeaderContextMenu :visible="headerMenu.visible" :x="headerMenu.x" :y="headerMenu.y"
                              :can-copy-data="canCopyHeaderData" :can-move-left="canMoveSelectionLeft"
-                             :can-move-right="canMoveSelectionRight" @close="closeHeaderMenu"
+                             :can-move-right="canMoveSelectionRight" :can-sum="canSumHeaderData"
+                             @close="closeHeaderMenu"
                              @command="headerMenuCommand" />
     <ResultDataContextMenu :visible="dataMenu.visible" :x="dataMenu.x" :y="dataMenu.y" :mode="dataMenu.mode"
                            :can-in="canCopyIn" :can-insert="canCopyInsert" :can-update="canCopyUpdate"
-                           :can-delete="canCopyDelete" @close="closeDataMenu" @command="dataMenuCommand" />
+                           :can-delete="canCopyDelete" :can-compare="canCompareCells" :can-sum="canSumCells"
+                           @close="closeDataMenu" @command="dataMenuCommand" />
+    <ResultValueDialog v-model="valueDialog.visible" :value="valueDialog.value" />
+    <ResultValueCompareDialog v-model="compareDialog" :left="compareValues.left" :right="compareValues.right"
+                              :theme="app.theme" />
   </section>
 </template>
 
@@ -84,15 +102,20 @@ import { autoColumnWidth, clampColumnWidth, columnIdentityKeys, defaultColumnWid
   type ColumnEdge, type DropSide } from "../columnLayout";
 import { useColumnLayoutStore } from "../stores/columnLayout";
 import { useSettingsStore } from "../stores/settings";
+import { useAppStore } from "../stores/app";
 import { resultCopyText, type ResultCopyMode } from "../resultCopy";
 import { writeClipboardText } from "../clipboard";
-import { copyGrid, copyInPredicate, copyRowSql, inRange, normalizeRange, selectRows, visibleRows,
-  type CellPoint, type CellRange, type ResultFilter, type ResultSort, type ViewRow } from "../resultGrid";
+import { cellSelectionKey, copyGrid, copyInPredicate, copyRowSql, normalizeRange, selectRows,
+  sumDecimalValues, visibleRows, type CellPoint, type CellRange, type DecimalSumResult,
+  type ResultFilter, type ResultSort, type SelectedCell, type ViewRow } from "../resultGrid";
 import type { ResultGridScrollPosition, ResultVirtualColumn } from "../resultVirtualGrid";
 import ResultHeaderContextMenu, { type HeaderMenuCommand } from "./ResultHeaderContextMenu.vue";
 import ResultHeaderTools from "./ResultHeaderTools.vue";
 import ResultDataContextMenu, { type DataMenuCommand } from "./ResultDataContextMenu.vue";
 import ResultVirtualGrid from "./ResultVirtualGrid.vue";
+import ResultSummaryFooter from "./ResultSummaryFooter.vue";
+import ResultValueDialog from "./ResultValueDialog.vue";
+import ResultValueCompareDialog from "./ResultValueCompareDialog.vue";
 
 const props = defineProps<{
   execution?: QueryExecutionState;
@@ -107,6 +130,7 @@ const emit = defineEmits<{
 }>();
 const columnLayouts = useColumnLayoutStore();
 const settings = useSettingsStore();
+const app = useAppStore();
 const tableHost = ref<HTMLElement>();
 const virtualGrid = ref<{
   getScrollPosition: () => ResultGridScrollPosition;
@@ -134,6 +158,7 @@ const sorts = ref<Record<string, ResultSort | undefined>>({});
 const filters = ref<Record<string, ResultFilter[]>>({});
 const cellRange = ref<CellRange>();
 const cellAnchor = ref<CellPoint>();
+const selectedCells = ref<SelectedCell[]>([]);
 const selectedColumnIndex = ref<number>();
 const selectingCells = ref(false);
 const selectingRows = ref(false);
@@ -143,6 +168,9 @@ const rowDragMode = ref<"replace" | "add" | "remove">("replace");
 const selectedRowSources = ref<number[]>([]);
 const rowAnchor = ref<number>();
 const selectionMode = ref<"cells" | "rows">("cells");
+const valueDialog = ref<{ visible: boolean; value: string | null }>({ visible: false, value: null });
+const compareDialog = ref(false);
+const sumSummary = ref<{ total: string; count: number }>();
 const activeResult = computed(() => props.execution?.results.find((item) => item.resultIndex === activeIndex.value) ?? props.execution?.results[0]);
 const headerHeight = computed(() => settings.showColumnRemarksInHeader ? 48 : 32);
 const resultKey = computed(() => String(activeResult.value?.resultIndex ?? 0));
@@ -181,12 +209,18 @@ const summary = computed(() => {
 
 watch(() => props.execution?.executionId, () => {
   clearSelection();
+  sumSummary.value = undefined;
+  compareDialog.value = false;
+  valueDialog.value.visible = false;
   sorts.value = {}; filters.value = {};
   selectedColumns.value = {};
   columnQuery.value = "";
   closeHeaderMenu(); closeDataMenu();
 });
-watch(activeIndex, () => { clearSelection(); columnQuery.value = ""; closeHeaderMenu(); closeDataMenu(); });
+watch(activeIndex, () => {
+  clearSelection(); sumSummary.value = undefined; compareDialog.value = false; valueDialog.value.visible = false;
+  columnQuery.value = ""; closeHeaderMenu(); closeDataMenu();
+});
 watch(() => activeResult.value?.columnDetails, () => emitSelectedColumn());
 watch([
   () => props.execution?.executionId,
@@ -198,10 +232,12 @@ watch([
 ], activateLayout, { immediate: true });
 watch([() => activeLayout.value?.viewKey, () => selectedColumnIndices.value.join(",")], syncVisibleFilter);
 watch(() => visibleColumnOptions.value.map((column) => column.index).join(","), () => {
-  reconcileViewState(); clearSelection();
+  reconcileViewState(); detachCellRange(); reconcileSelectedColumn();
 });
-watch(() => settings.headerSortingEnabled, (enabled) => { if (!enabled) { sorts.value = {}; clearSelection(); } });
-watch(() => settings.headerFilteringEnabled, (enabled) => { if (!enabled) { filters.value = {}; clearSelection(); } });
+watch(() => settings.headerSortingEnabled, (enabled) => { if (!enabled) { sorts.value = {}; detachCellRange(); } });
+watch(() => settings.headerFilteringEnabled, (enabled) => {
+  if (!enabled) { filters.value = {}; detachCellRange(); sumSummary.value = undefined; }
+});
 watch(() => settings.scrollOptimizationEnabled, async () => {
   const position = currentScrollPosition();
   await nextTick();
@@ -211,6 +247,28 @@ watch(() => settings.scrollOptimizationEnabled, async () => {
 const displayRows = computed(() => visibleRows(activeResult.value?.rows ?? [], columnOptions.value,
   settings.headerSortingEnabled ? activeSort.value : undefined,
   settings.headerFilteringEnabled ? activeFilters.value : []));
+const selectedCellKeySet = computed(() => new Set(selectedCells.value.map((cell) =>
+  cellSelectionKey(cell.sourceRow, cell.sourceColumn))));
+const selectedCellKeys = computed(() => [...selectedCellKeySet.value]);
+const selectedCellsInView = computed<SelectedCell[]>(() => {
+  const rowPositions = new Map(displayRows.value.map((row, index) => [row.sourceIndex, index]));
+  const columnPositions = new Map(visibleColumnOptions.value.map((column, index) => [column.index, index]));
+  return selectedCells.value.map((cell) => {
+    const row = rowPositions.get(cell.sourceRow);
+    const column = columnPositions.get(cell.sourceColumn);
+    if (row === undefined || column === undefined) return undefined;
+    return {
+      row,
+      sourceRow: cell.sourceRow,
+      column,
+      sourceColumn: cell.sourceColumn,
+      value: activeResult.value?.rows[cell.sourceRow]?.[cell.sourceColumn] ?? null
+    };
+  }).filter((cell): cell is SelectedCell => !!cell);
+});
+watch(() => activeResult.value?.rows, (rows, previous) => {
+  if (previous && rows !== previous) sumSummary.value = undefined;
+});
 const tableColumns = computed<Column[]>(() => [rowSelectorColumn(), ...visibleColumnOptions.value.map((column, index) =>
   columnDefinition(column, index))]);
 const virtualColumns = computed<ResultVirtualColumn[]>(() => visibleColumnOptions.value.map((column, visibleIndex) => {
@@ -236,16 +294,23 @@ function columnDefinition(column: ColumnOption, visiblePosition: number): Column
   headerCellRenderer: () => renderHeader(column, identity),
   cellRenderer: ({ rowData, rowIndex }: { rowData: ViewRow; rowIndex: number }) => {
     const cellData = rowData.cells[column.index] ?? null;
+    const selected = selectedCellKeySet.value.has(cellSelectionKey(rowData.sourceIndex, column.index));
     return h("span", {
       class: ["result-cell", cellData === null ? "null-value" : cellData.startsWith?.("0x") ? "binary-value" : "",
-        selectionMode.value === "cells" && inRange(cellRange.value, rowIndex, visiblePosition) ? "selected" : ""],
+        selectionMode.value === "cells" && selected ? "selected" : ""],
       title: cellData !== null && cellData.length >= 40 ? cellData : undefined,
       onPointerdown: (event: PointerEvent) => startCellSelection(event, rowIndex, visiblePosition),
       onPointerenter: () => extendCellSelection(rowIndex, visiblePosition),
-      onContextmenu: (event: MouseEvent) => openCellMenu(event, rowIndex, visiblePosition, rowData)
+      onContextmenu: (event: MouseEvent) => openCellMenu(event, rowIndex, visiblePosition, rowData),
+      onDblclick: () => openCellValue(rowIndex, visiblePosition, rowData)
     }, cellData === null ? "NULL" : cellData);
   }
   };
+}
+
+function legacyRowClass({ rowData }: { rowData: ViewRow }): string {
+  return selectionMode.value === "rows" && selectedRowSources.value.includes(rowData.sourceIndex)
+    ? "result-row-selected" : "";
 }
 
 function resultColumnWidth(column: ColumnOption, identity: string): number {
@@ -396,6 +461,10 @@ function canMoveSelection(edge: ColumnEdge): boolean {
 }
 
 function headerMenuCommand(command: HeaderMenuCommand): void {
+  if (command === "sum") {
+    applySum(headerSumResult.value);
+    return;
+  }
   if (command === "move-left" || command === "move-right") {
     moveSelectedColumns(command === "move-left" ? "left" : "right");
     return;
@@ -545,20 +614,22 @@ function cycleSort(columnIndex: number): void {
     ? { columnIndex, direction: "asc" }
     : current.direction === "asc" ? { columnIndex, direction: "desc" } : undefined;
   sorts.value = { ...sorts.value, [resultKey.value]: next };
-  clearSelection();
+  detachCellRange();
 }
 
 function applyFilter(filter: ResultFilter): void {
   const next = activeFilters.value.filter((item) => item.columnIndex !== filter.columnIndex);
   next.push(filter);
   filters.value = { ...filters.value, [resultKey.value]: next };
-  clearSelection();
+  detachCellRange();
+  sumSummary.value = undefined;
 }
 
 function clearFilter(columnIndex: number): void {
   filters.value = { ...filters.value,
     [resultKey.value]: activeFilters.value.filter((item) => item.columnIndex !== columnIndex) };
-  clearSelection();
+  detachCellRange();
+  sumSummary.value = undefined;
 }
 
 function reconcileViewState(): void {
@@ -576,10 +647,18 @@ function clearSelection(): void {
   selectingRows.value = false;
   cellRange.value = undefined;
   cellAnchor.value = undefined;
+  selectedCells.value = [];
   selectedColumnIndex.value = undefined;
   emit("selected-column", undefined);
   selectedRowSources.value = [];
   rowAnchor.value = undefined;
+}
+
+function detachCellRange(): void {
+  selectingCells.value = false;
+  cellRange.value = undefined;
+  cellAnchor.value = undefined;
+  window.removeEventListener("pointerup", finishCellSelection);
 }
 
 function startCellSelection(event: PointerEvent, row: number, column: number): void {
@@ -590,12 +669,32 @@ function startCellSelection(event: PointerEvent, row: number, column: number): v
   selectedRowSources.value = [];
   rowAnchor.value = undefined;
   const point = { row, column };
-  if (event.shiftKey && cellAnchor.value) cellRange.value = { start: cellAnchor.value, end: point };
-  else { cellAnchor.value = point; cellRange.value = { start: point, end: point }; }
+  if (event.ctrlKey || event.metaKey) {
+    const selected = selectedCellAt(row, column);
+    if (!selected) return;
+    const key = cellSelectionKey(selected.sourceRow, selected.sourceColumn);
+    selectedCells.value = selectedCellKeySet.value.has(key)
+      ? selectedCells.value.filter((cell) => cellSelectionKey(cell.sourceRow, cell.sourceColumn) !== key)
+      : [...selectedCells.value, selected];
+    cellAnchor.value = point;
+    cellRange.value = undefined;
+    selectingCells.value = false;
+    if (selectedCells.value.length) selectStatusColumn(column);
+    else {
+      selectedColumnIndex.value = undefined;
+      emit("selected-column", undefined);
+    }
+    return;
+  }
+  if (event.shiftKey && cellAnchor.value) {
+    cellRange.value = { start: cellAnchor.value, end: point };
+  } else {
+    cellAnchor.value = point;
+    cellRange.value = { start: point, end: point };
+  }
+  selectedCells.value = cellsInRange(cellRange.value);
   selectingCells.value = true;
-  const selected = visibleColumnOptions.value[column];
-  selectedColumnIndex.value = selected?.index;
-  emitSelectedColumn();
+  selectStatusColumn(column);
   window.removeEventListener("pointerup", finishCellSelection);
   window.addEventListener("pointerup", finishCellSelection, { once: true });
 }
@@ -603,6 +702,7 @@ function startCellSelection(event: PointerEvent, row: number, column: number): v
 function extendCellSelection(row: number, column: number): void {
   if (!selectingCells.value || !cellAnchor.value) return;
   cellRange.value = { start: cellAnchor.value, end: { row, column } };
+  selectedCells.value = cellsInRange(cellRange.value);
 }
 
 function finishCellSelection(): void {
@@ -617,7 +717,7 @@ function selectResultRow(event: PointerEvent, sourceIndex: number): void {
   selectionMode.value = "rows";
   selectedColumnIndex.value = undefined;
   emit("selected-column", undefined);
-  cellRange.value = undefined; cellAnchor.value = undefined;
+  cellRange.value = undefined; cellAnchor.value = undefined; selectedCells.value = [];
   const order = displayRows.value.map((row) => row.sourceIndex);
   const before = [...selectedRowSources.value];
   const rangeAnchor = event.shiftKey && rowAnchor.value !== undefined ? rowAnchor.value : sourceIndex;
@@ -661,11 +761,13 @@ function openCellMenu(event: MouseEvent, row: number, column: number, rowData: V
   }
   selectionMode.value = "cells";
   selectedRowSources.value = [];
-  selectedColumnIndex.value = visibleColumnOptions.value[column]?.index;
-  emitSelectedColumn();
-  if (!inRange(cellRange.value, row, column)) {
+  selectStatusColumn(column);
+  const sourceColumn = visibleColumnOptions.value[column]?.index;
+  const key = sourceColumn === undefined ? "" : cellSelectionKey(rowData.sourceIndex, sourceColumn);
+  if (!selectedCellKeySet.value.has(key)) {
     const point = { row, column };
     cellAnchor.value = point; cellRange.value = { start: point, end: point };
+    selectedCells.value = cellsInRange(cellRange.value);
   }
   openDataMenu(event, "cells");
 }
@@ -675,11 +777,51 @@ function openRowMenu(event: MouseEvent, sourceIndex: number): void {
   selectionMode.value = "rows";
   selectedColumnIndex.value = undefined;
   emit("selected-column", undefined);
-  cellRange.value = undefined; cellAnchor.value = undefined;
+  cellRange.value = undefined; cellAnchor.value = undefined; selectedCells.value = [];
   if (!selectedRowSources.value.includes(sourceIndex)) {
     selectedRowSources.value = [sourceIndex]; rowAnchor.value = sourceIndex;
   }
   openDataMenu(event, "rows");
+}
+
+function selectedCellAt(row: number, column: number): SelectedCell | undefined {
+  const viewRow = displayRows.value[row];
+  const viewColumn = visibleColumnOptions.value[column];
+  if (!viewRow || !viewColumn) return undefined;
+  return {
+    row,
+    sourceRow: viewRow.sourceIndex,
+    column,
+    sourceColumn: viewColumn.index,
+    value: viewRow.cells[viewColumn.index] ?? null
+  };
+}
+
+function cellsInRange(range: CellRange | undefined): SelectedCell[] {
+  if (!range) return [];
+  const normalized = normalizeRange(range);
+  const result: SelectedCell[] = [];
+  for (let row = normalized.start.row; row <= normalized.end.row; row++) {
+    for (let column = normalized.start.column; column <= normalized.end.column; column++) {
+      const cell = selectedCellAt(row, column);
+      if (cell) result.push(cell);
+    }
+  }
+  return result;
+}
+
+function selectStatusColumn(column: number): void {
+  selectedColumnIndex.value = visibleColumnOptions.value[column]?.index;
+  emitSelectedColumn();
+}
+
+function reconcileSelectedColumn(): void {
+  const selected = selectedColumnIndex.value;
+  if (selected === undefined || visibleColumnOptions.value.some((column) => column.index === selected)) return;
+  const fallback = selectedCellsInView.value.at(-1)?.sourceColumn;
+  selectedColumnIndex.value = fallback;
+  if (fallback === undefined) emit("selected-column", undefined);
+  else emitSelectedColumn();
 }
 
 function emitSelectedColumn(): void {
@@ -699,25 +841,36 @@ function openDataMenu(event: MouseEvent, mode: "cells" | "rows"): void {
 
 function closeDataMenu(): void { dataMenu.value = { ...dataMenu.value, visible: false }; }
 
-const selectedCellColumns = computed(() => {
-  if (selectionMode.value !== "cells" || !cellRange.value) return [];
-  const range = normalizeRange(cellRange.value);
-  return visibleColumnOptions.value.slice(range.start.column, range.end.column + 1);
+const selectedCellBounds = computed(() => {
+  const cells = selectedCellsInView.value;
+  if (selectionMode.value !== "cells" || !cells.length) {
+    return { columns: [] as ColumnOption[], rows: [] as ViewRow[], complete: false };
+  }
+  const startRow = Math.min(...cells.map((cell) => cell.row));
+  const endRow = Math.max(...cells.map((cell) => cell.row));
+  const startColumn = Math.min(...cells.map((cell) => cell.column));
+  const endColumn = Math.max(...cells.map((cell) => cell.column));
+  const rows = displayRows.value.slice(startRow, endRow + 1);
+  const columns = visibleColumnOptions.value.slice(startColumn, endColumn + 1);
+  const selected = new Set(cells.map((cell) => cellSelectionKey(cell.sourceRow, cell.sourceColumn)));
+  const complete = rows.length * columns.length === cells.length
+    && rows.every((row) => columns.every((column) =>
+      selected.has(cellSelectionKey(row.sourceIndex, column.index))));
+  return { columns, rows, complete };
 });
-const selectedCellRows = computed(() => {
-  if (selectionMode.value !== "cells" || !cellRange.value) return [];
-  const range = normalizeRange(cellRange.value);
-  return displayRows.value.slice(range.start.row, range.end.row + 1);
-});
+const selectedCellColumns = computed(() =>
+  selectedCellBounds.value.complete ? selectedCellBounds.value.columns : []);
+const selectedCellRows = computed(() =>
+  selectedCellBounds.value.complete ? selectedCellBounds.value.rows : []);
 const selectedRowsInDisplayOrder = computed(() => {
   const selected = new Set(selectedRowSources.value);
   return displayRows.value.filter((row) => selected.has(row.sourceIndex));
 });
 const selectedRowCount = computed(() => selectionMode.value === "cells"
-  ? selectedCellRows.value.length
+  ? new Set(selectedCellsInView.value.map((cell) => cell.sourceRow)).size
   : selectedRowsInDisplayOrder.value.length);
 const hasDataSelection = computed(() => selectionMode.value === "cells"
-  ? selectedCellColumns.value.length > 0 && selectedCellRows.value.length > 0
+  ? selectedCellsInView.value.length > 0
   : selectedRowsInDisplayOrder.value.length > 0);
 const copySelectionTitle = computed(() => selectionMode.value === "rows" ? "复制选中行" : "复制选中单元格");
 
@@ -727,7 +880,15 @@ function selectedCopyText(includeHeaders = false): string {
   if (selectionMode.value === "rows") {
     return copyGrid(visibleColumnOptions.value, selectedRowsInDisplayOrder.value, includeHeaders, settings.copySeparator);
   }
-  return copyGrid(selectedCellColumns.value, selectedCellRows.value, includeHeaders, settings.copySeparator);
+  const bounds = selectedCellBounds.value;
+  const selected = new Set(selectedCellsInView.value.map((cell) =>
+    cellSelectionKey(cell.sourceRow, cell.sourceColumn)));
+  const sparseRows = bounds.rows.map((row) => ({
+    sourceIndex: row.sourceIndex,
+    cells: row.cells.map((value, sourceColumn) =>
+      selected.has(cellSelectionKey(row.sourceIndex, sourceColumn)) ? value : "")
+  }));
+  return copyGrid(bounds.columns, sparseRows, includeHeaders, settings.copySeparator);
 }
 
 async function copyCurrentSelection(includeHeaders = false): Promise<void> {
@@ -752,8 +913,31 @@ const canCopyIn = computed(() => selectionMode.value === "cells" && !!inPredicat
 const canCopyInsert = computed(() => selectionMode.value === "rows" && !!rowSql("insert"));
 const canCopyUpdate = computed(() => selectionMode.value === "rows" && !!rowSql("update"));
 const canCopyDelete = computed(() => selectionMode.value === "rows" && !!rowSql("delete"));
+const compareValues = computed(() => ({
+  left: selectedCellsInView.value[0]?.value ?? null,
+  right: selectedCellsInView.value[1]?.value ?? null
+}));
+const canCompareCells = computed(() =>
+  selectionMode.value === "cells" && selectedCellsInView.value.length === 2);
+const cellSumResult = computed(() =>
+  sumDecimalValues(selectedCellsInView.value.map((cell) => cell.value)));
+const canSumCells = computed(() => selectionMode.value === "cells"
+  && selectedCellsInView.value.length >= 2
+  && cellSumResult.value.valid && cellSumResult.value.count > 0);
+const headerSumResult = computed(() => sumDecimalValues(selectedOrderedColumns().flatMap((column) =>
+  displayRows.value.map((row) => row.cells[column.index] ?? null))));
+const canSumHeaderData = computed(() => selectedOrderedColumns().length > 0
+  && headerSumResult.value.valid && headerSumResult.value.count > 0);
 
 function dataMenuCommand(command: DataMenuCommand): void {
+  if (command === "compare") {
+    if (canCompareCells.value) compareDialog.value = true;
+    return;
+  }
+  if (command === "sum") {
+    applySum(cellSumResult.value);
+    return;
+  }
   if (command === "copy-data") { void copyCurrentSelection(); return; }
   if (command === "copy-all") { void copyCurrentSelection(true); return; }
   if (command === "copy-in") {
@@ -762,6 +946,24 @@ function dataMenuCommand(command: DataMenuCommand): void {
   const mode = command.replace("copy-", "") as "insert" | "update" | "delete";
   const text = rowSql(mode);
   if (text) void copyText(text, `已复制 ${mode.toUpperCase()} 语句`);
+}
+
+function applySum(result: DecimalSumResult): void {
+  if (!result.valid) {
+    ElMessage.warning(`无法求和：包含非数字值${result.invalidValue ? `“${result.invalidValue}”` : ""}`);
+    return;
+  }
+  if (!result.count) {
+    ElMessage.warning("没有可求和的数字");
+    return;
+  }
+  sumSummary.value = { total: result.total, count: result.count };
+}
+
+function openCellValue(_row: number, column: number, rowData: ViewRow): void {
+  const sourceColumn = visibleColumnOptions.value[column]?.index;
+  if (sourceColumn === undefined) return;
+  valueDialog.value = { visible: true, value: rowData.cells[sourceColumn] ?? null };
 }
 
 function tableKeydown(event: KeyboardEvent): void {
@@ -882,6 +1084,13 @@ onBeforeUnmount(() => {
   font-variant-numeric: tabular-nums;
 }
 :deep(.el-table-v2__header-cell) { padding: 0; }
+:deep(.el-table-v2__row.result-row-selected),
+:deep(.el-table-v2__row.result-row-selected:hover),
+:deep(.el-table-v2__row.result-row-selected.is-hovered) {
+  background: var(--db-accent-soft);
+}
+:deep(.el-table-v2__row.result-row-selected .result-row-number) { background: transparent; }
+:deep(.el-table-v2__footer) { background: var(--db-panel-soft); }
 :deep(.el-table-v2__left) {
   border-right: 0;
   background: var(--db-row-gutter-bg);

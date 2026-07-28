@@ -11,6 +11,19 @@ export interface ResultFilter { columnIndex: number; operator: FilterOperator; v
 export interface ViewRow { sourceIndex: number; cells: Array<string | null> }
 export interface CellPoint { row: number; column: number }
 export interface CellRange { start: CellPoint; end: CellPoint }
+export interface SelectedCell {
+  row: number;
+  sourceRow: number;
+  column: number;
+  sourceColumn: number;
+  value: string | null;
+}
+export interface DecimalSumResult {
+  valid: boolean;
+  total: string;
+  count: number;
+  invalidValue?: string;
+}
 
 const NUMBER_TYPES = new Set([-6, 5, 4, -5, 6, 7, 8, 2, 3]);
 const BOOLEAN_TYPES = new Set([-7, 16]);
@@ -91,6 +104,41 @@ export function inRange(range: CellRange | undefined, row: number, column: numbe
   if (!range) return false;
   const value = normalizeRange(range);
   return row >= value.start.row && row <= value.end.row && column >= value.start.column && column <= value.end.column;
+}
+
+export function cellSelectionKey(sourceRow: number, sourceColumn: number): string {
+  return `${sourceRow}:${sourceColumn}`;
+}
+
+export function formatJsonValue(value: string | null): string | undefined {
+  if (value === null) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (parsed === null || typeof parsed !== "object") return undefined;
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return undefined;
+  }
+}
+
+export function comparableValue(value: string | null): string {
+  if (value === null) return "NULL";
+  return formatJsonValue(value) ?? value;
+}
+
+export function sumDecimalValues(values: Array<string | null>): DecimalSumResult {
+  const parsed: Array<{ coefficient: bigint; scale: number }> = [];
+  for (const value of values) {
+    if (value === null || value.trim() === "") continue;
+    const decimal = exactDecimal(value);
+    if (!decimal) return { valid: false, total: "", count: parsed.length, invalidValue: value };
+    parsed.push(decimal);
+  }
+  if (!parsed.length) return { valid: true, total: "0", count: 0 };
+  const scale = Math.max(...parsed.map((value) => value.scale));
+  const total = parsed.reduce((sum, value) =>
+    sum + value.coefficient * powerOfTen(scale - value.scale), 0n);
+  return { valid: true, total: formatExactDecimal(total, scale), count: parsed.length };
 }
 
 export function selectRows(order: number[], current: number[], anchor: number | undefined, clicked: number,
@@ -208,4 +256,31 @@ function decimalParts(value: string): { negative: boolean; integer: string; frac
   if (!match || (!match[2] && !match[3]) || match[4]) return undefined;
   return { negative: match[1] === "-", integer: (match[2] || "0").replace(/^0+(?=\d)/, ""),
     fraction: (match[3] || "").replace(/0+$/, "") };
+}
+
+function exactDecimal(value: string): { coefficient: bigint; scale: number } | undefined {
+  const match = /^\s*([+-])?(\d*)(?:\.(\d*))?(?:e([+-]?\d+))?\s*$/i.exec(value);
+  if (!match || (!match[2] && !match[3])) return undefined;
+  const fraction = match[3] || "";
+  const exponent = Number(match[4] || 0);
+  if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 10_000) return undefined;
+  const digits = `${match[2] || "0"}${fraction}`.replace(/^0+(?=\d)/, "") || "0";
+  let coefficient = BigInt(digits);
+  if (match[1] === "-") coefficient = -coefficient;
+  const scale = fraction.length - exponent;
+  if (scale >= 0) return { coefficient, scale };
+  return { coefficient: coefficient * powerOfTen(-scale), scale: 0 };
+}
+
+function powerOfTen(exponent: number): bigint {
+  return 10n ** BigInt(exponent);
+}
+
+function formatExactDecimal(coefficient: bigint, scale: number): string {
+  const negative = coefficient < 0n;
+  const digits = (negative ? -coefficient : coefficient).toString().padStart(scale + 1, "0");
+  if (!scale) return `${negative ? "-" : ""}${digits}`;
+  const integer = digits.slice(0, -scale) || "0";
+  const fraction = digits.slice(-scale);
+  return `${negative ? "-" : ""}${integer}.${fraction}`;
 }

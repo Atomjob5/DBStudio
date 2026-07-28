@@ -438,4 +438,126 @@ describe("ResultPanel streaming rendering", () => {
     expect(clipboardWrite).toHaveBeenLastCalledWith(
       "UPDATE `db`.`sample` SET `name` = 'Apple' WHERE `id` = 1;\nUPDATE `db`.`sample` SET `name` = 'Banana' WHERE `id` = 2;\nUPDATE `db`.`sample` SET `name` = 'Cherry' WHERE `id` = 3;");
   });
+
+  it("supports sparse cell comparison, exact sums, value viewing and complete row highlighting", async () => {
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: 0, execution: {
+        executionId: "execution-tools", editorId: "editor-1", busy: false, cancelled: false,
+        failed: false, durationMs: 4,
+        results: [{ resultIndex: 0, sql: "select id, amount, payload", type: "QUERY",
+          columns: ["id", "amount", "payload"],
+          columnDetails: [
+            { label: "id", name: "id", remarks: "", catalog: "db", schema: "", table: "sample", typeName: "DECIMAL", jdbcType: 3 },
+            { label: "amount", name: "amount", remarks: "", catalog: "db", schema: "", table: "sample", typeName: "DECIMAL", jdbcType: 3 },
+            { label: "payload", name: "payload", remarks: "", catalog: "db", schema: "", table: "sample", typeName: "JSON", jdbcType: 12 }
+          ],
+          rows: [["1.20", "10", "{\"a\":1}"], ["20", "2.30", "{\"a\":2}"]],
+          updateCount: -1, truncated: false, durationMs: 3, complete: true }]
+      } },
+      global: {
+        plugins: [ElementPlus],
+        stubs: { ResultValueCompareDialog: true }
+      }
+    });
+    const table = () => wrapper.findComponent({ name: "ElTableV2" });
+    const columns = () => table().props("columns") as Column[];
+    const rows = () => table().props("data") as Array<{ sourceIndex: number; cells: string[] }>;
+    const cell = (row: number, column: number) =>
+      columns()[column + 1].cellRenderer?.({ rowData: rows()[row], rowIndex: row } as never) as VNode;
+
+    cell(0, 0).props?.onPointerdown({
+      button: 0, preventDefault: vi.fn(), ctrlKey: false, metaKey: false, shiftKey: false
+    });
+    window.dispatchEvent(new Event("pointerup"));
+    cell(1, 1).props?.onPointerdown({
+      button: 0, preventDefault: vi.fn(), ctrlKey: true, metaKey: false, shiftKey: false
+    });
+    await nextTick();
+    await wrapper.get(".table-host").trigger("keydown", { metaKey: true, key: "c" });
+    await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith("1.20,\n,2.30");
+
+    cell(1, 1).props?.onContextmenu({
+      preventDefault: vi.fn(), stopPropagation: vi.fn(), clientX: 20, clientY: 30
+    });
+    await nextTick();
+    const menu = wrapper.findComponent({ name: "ResultDataContextMenu" });
+    expect(menu.props("canCompare")).toBe(true);
+    expect(menu.props("canSum")).toBe(true);
+    menu.vm.$emit("command", "sum");
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ResultSummaryFooter" }).props()).toMatchObject({
+      total: "3.50", count: 2
+    });
+    expect(table().props("footerHeight")).toBe(32);
+
+    menu.vm.$emit("command", "compare");
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ResultValueCompareDialog" }).props()).toMatchObject({
+      modelValue: true, left: "1.20", right: "2.30"
+    });
+
+    cell(0, 2).props?.onDblclick();
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ResultValueDialog" }).props()).toMatchObject({
+      modelValue: true, value: "{\"a\":1}"
+    });
+
+    const rowClass = table().props("rowClass") as (params: { rowData: { sourceIndex: number } }) => string;
+    const rowNumber = columns()[0].cellRenderer?.({ rowData: rows()[0] } as never) as VNode;
+    rowNumber.props?.onPointerdown({
+      button: 0, preventDefault: vi.fn(), stopPropagation: vi.fn(),
+      ctrlKey: false, metaKey: false, shiftKey: false
+    });
+    expect(rowClass({ rowData: rows()[0] })).toBe("result-row-selected");
+    expect(rowClass({ rowData: rows()[1] })).toBe("");
+  });
+
+  it("sums selected headers across the current filtered rows and clears stale totals", async () => {
+    const result = {
+      resultIndex: 0, sql: "select amount", type: "QUERY", columns: ["amount"],
+      columnDetails: [{
+        label: "amount", name: "amount", remarks: "", catalog: "db", schema: "", table: "sample",
+        typeName: "DECIMAL", jdbcType: 3
+      }],
+      rows: [["1.20"], ["2.30"], [null]], updateCount: -1, truncated: false, durationMs: 3, complete: true
+    };
+    const execution = {
+      executionId: "execution-header-sum", editorId: "editor-1", busy: false, cancelled: false,
+      failed: false, durationMs: 4, results: [result]
+    };
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: 0, execution }, global: { plugins: [ElementPlus] }
+    });
+    const table = () => wrapper.findComponent({ name: "ElTableV2" });
+    const header = () => (table().props("columns") as Column[])[1]
+      .headerCellRenderer?.({} as never) as VNode;
+    header().props?.onClick({ ctrlKey: false, metaKey: false, shiftKey: false });
+    header().props?.onContextmenu({ preventDefault: vi.fn(), clientX: 20, clientY: 30 });
+    await nextTick();
+    const menu = wrapper.findComponent({ name: "ResultHeaderContextMenu" });
+    expect(menu.props("canSum")).toBe(true);
+    menu.vm.$emit("command", "sum");
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ResultSummaryFooter" }).props()).toMatchObject({
+      total: "3.50", count: 2
+    });
+
+    const tools = (header().children as VNode[]).find((child) => child?.props?.columnIndex === 0) as VNode;
+    tools.props?.onApply({ columnIndex: 0, operator: "gt", value: "1.20" });
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ResultSummaryFooter" }).exists()).toBe(false);
+    header().props?.onContextmenu({ preventDefault: vi.fn(), clientX: 20, clientY: 30 });
+    menu.vm.$emit("command", "sum");
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ResultSummaryFooter" }).props()).toMatchObject({
+      total: "2.30", count: 1
+    });
+
+    await wrapper.setProps({ execution: {
+      ...execution, results: [{ ...result, rows: [...result.rows, ["5.00"]] }]
+    } });
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ResultSummaryFooter" }).exists()).toBe(false);
+  });
 });

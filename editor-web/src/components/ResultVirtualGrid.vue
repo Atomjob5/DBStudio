@@ -1,9 +1,11 @@
 <template>
-  <div ref="viewport" class="result-virtual-grid__viewport" role="table"
-       :aria-rowcount="rows.length" :aria-colcount="columns.length + 1"
-       @scroll="handleScroll" @pointerdown="delegatePointerDown"
-       @pointerover="delegatePointerOver" @contextmenu="delegateContextMenu">
-    <div class="result-virtual-grid__canvas" :style="canvasStyle">
+  <div class="result-virtual-grid">
+    <div ref="viewport" class="result-virtual-grid__viewport" role="table"
+         :aria-rowcount="rows.length" :aria-colcount="columns.length + 1"
+         @scroll="handleScroll" @pointerdown="delegatePointerDown"
+         @pointerover="delegatePointerOver" @dblclick="delegateDoubleClick"
+         @contextmenu="delegateContextMenu">
+      <div class="result-virtual-grid__canvas" :style="canvasStyle">
       <div class="result-virtual-grid__header" role="row" :style="headerStyle">
         <span class="result-row-number result-row-number-header result-virtual-grid__gutter"
               role="columnheader" title="单击或拖动行号选择整行"
@@ -16,8 +18,10 @@
         </div>
       </div>
 
-      <div v-for="entry in visibleRows" :key="entry.slot"
-           class="result-virtual-grid__row" role="row" :style="rowStyle(entry.index)">
+        <div v-for="entry in visibleRows" :key="entry.slot"
+             class="result-virtual-grid__row" role="row"
+             :class="{ 'result-row-selected': selectionMode === 'rows' && selectedRowSet.has(entry.row.sourceIndex) }"
+             :style="rowStyle(entry.index)">
         <span class="result-row-number result-virtual-grid__gutter"
               :class="{ selected: selectionMode === 'rows' && selectedRowSet.has(entry.row.sourceIndex) }"
               role="rowheader" data-grid-kind="row" :data-grid-source="entry.row.sourceIndex"
@@ -34,8 +38,10 @@
               :title="cellTitle(entry.row, columnEntry.column)">
           {{ cellText(entry.row, columnEntry.column) }}
         </span>
+        </div>
       </div>
     </div>
+    <div v-if="hasFooter" class="result-virtual-grid__footer"><slot name="footer" /></div>
   </div>
 </template>
 
@@ -58,13 +64,16 @@ const props = defineProps<{
   bufferScreens: number;
   selectionMode: "cells" | "rows";
   cellRange?: CellRange;
+  selectedCellKeys?: string[];
   selectedRowSources: number[];
+  hasFooter?: boolean;
 }>();
 
 const emit = defineEmits<{
   "cell-pointerdown": [event: PointerEvent, rowIndex: number, columnIndex: number];
   "cell-pointerenter": [rowIndex: number, columnIndex: number];
   "cell-contextmenu": [event: MouseEvent, rowIndex: number, columnIndex: number, row: ViewRow];
+  "cell-dblclick": [rowIndex: number, columnIndex: number, row: ViewRow];
   "row-pointerdown": [event: PointerEvent, sourceIndex: number];
   "row-pointerenter": [sourceIndex: number];
   "row-contextmenu": [event: MouseEvent, sourceIndex: number];
@@ -77,6 +86,7 @@ const rowSlots = ref<RenderSlot[]>([]);
 const columnSlots = ref<RenderSlot[]>([]);
 const metrics = computed(() => columnMetrics(props.columns.map((column) => column.width)));
 const selectedRowSet = computed(() => new Set(props.selectedRowSources));
+const selectedCellSet = computed(() => new Set(props.selectedCellKeys ?? []));
 const normalizedSelection = computed(() => props.cellRange ? normalizeRange(props.cellRange) : undefined);
 const visibleRows = computed(() => rowSlots.value
   .filter((entry) => entry.index < props.rows.length)
@@ -227,11 +237,14 @@ function cellTitle(row: ViewRow, column: ResultVirtualColumn): string | undefine
 }
 
 function cellClasses(rowIndex: number, column: ResultVirtualColumn): Array<string | false> {
-  const value = props.rows[rowIndex] ? cellValue(props.rows[rowIndex], column) : null;
+  const row = props.rows[rowIndex];
+  const value = row ? cellValue(row, column) : null;
   const range = normalizedSelection.value;
-  const selected = props.selectionMode === "cells" && !!range
+  const selectedByIdentity = !!row && selectedCellSet.value.has(`${row.sourceIndex}:${column.sourceIndex}`);
+  const selectedByRange = !!range
     && rowIndex >= range.start.row && rowIndex <= range.end.row
     && column.visibleIndex >= range.start.column && column.visibleIndex <= range.end.column;
+  const selected = props.selectionMode === "cells" && (selectedByIdentity || selectedByRange);
   return [value === null ? "null-value" : "", value?.startsWith("0x") ? "binary-value" : "", selected && "selected"];
 }
 
@@ -274,6 +287,13 @@ function delegateContextMenu(event: MouseEvent): void {
   }
   const rowIndex = Number(target.dataset.gridRow);
   emit("cell-contextmenu", event, rowIndex, Number(target.dataset.gridColumn), props.rows[rowIndex]);
+}
+
+function delegateDoubleClick(event: MouseEvent): void {
+  const target = delegatedTarget(event);
+  if (!target || target.dataset.gridKind !== "cell") return;
+  const rowIndex = Number(target.dataset.gridRow);
+  emit("cell-dblclick", rowIndex, Number(target.dataset.gridColumn), props.rows[rowIndex]);
 }
 
 function getScrollPosition(): ResultGridScrollPosition {
@@ -331,10 +351,18 @@ defineExpose({ getScrollPosition, setScrollPosition });
 </script>
 
 <style scoped>
+.result-virtual-grid {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+}
 .result-virtual-grid__viewport {
   position: relative;
   width: 100%;
-  height: 100%;
+  min-height: 0;
+  flex: 1;
   overflow: auto;
   contain: layout paint style;
   scrollbar-width: thin;
@@ -359,6 +387,9 @@ defineExpose({ getScrollPosition, setScrollPosition });
   border-bottom: 1px solid var(--db-border-soft);
 }
 .result-virtual-grid__row:hover { background: var(--db-accent-soft); }
+.result-virtual-grid__row.result-row-selected,
+.result-virtual-grid__row.result-row-selected:hover { background: var(--db-accent-soft); }
+.result-virtual-grid__row.result-row-selected .result-virtual-grid__gutter { background: transparent; }
 .result-virtual-grid__gutter {
   position: sticky;
   z-index: 3;
@@ -380,6 +411,7 @@ defineExpose({ getScrollPosition, setScrollPosition });
   position: absolute;
   top: 2px;
 }
+.result-virtual-grid__footer { flex: none; }
 .result-virtual-grid__viewport::-webkit-scrollbar { width: 8px; height: 8px; }
 .result-virtual-grid__viewport::-webkit-scrollbar-thumb {
   border: 2px solid transparent;

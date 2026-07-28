@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { QueryColumn, QueryMutationTarget } from "./types";
-import { copyGrid, copyInPredicate, copyRowSql, selectRows, sqlLiteral, visibleRows } from "./resultGrid";
+import { comparableValue, copyGrid, copyInPredicate, copyRowSql, formatJsonValue, selectRows,
+  sqlLiteral, sumDecimalValues, visibleRows } from "./resultGrid";
 
 const columns: QueryColumn[] = [
   { label: "id", name: "id", remarks: "", catalog: "db", schema: "", table: "orders", typeName: "BIGINT", jdbcType: -5, quotedLabel: "`id`" },
@@ -65,5 +66,28 @@ describe("result grid transformations", () => {
     expect(sqlLiteral("0x0aff", -3, "oracle")).toBe("HEXTORAW('0aff')");
     expect(sqlLiteral("2026-07-22", 91, "oracle")).toBe("DATE '2026-07-22'");
     expect(sqlLiteral("true", 16, "oceanbase-oracle")).toBe("1");
+  });
+
+  it("formats only JSON objects and arrays for viewing and comparison", () => {
+    expect(formatJsonValue('{"b":2,"a":[1]}')).toBe('{\n  "b": 2,\n  "a": [\n    1\n  ]\n}');
+    expect(formatJsonValue('"text"')).toBeUndefined();
+    expect(formatJsonValue("{bad json")).toBeUndefined();
+    expect(comparableValue("[1,2]")).toBe("[\n  1,\n  2\n]");
+    expect(comparableValue(null)).toBe("NULL");
+  });
+
+  it("sums exact decimal values without floating-point loss and rejects text", () => {
+    expect(sumDecimalValues(["9007199254740993", "7"])).toEqual({
+      valid: true, total: "9007199254741000", count: 2
+    });
+    expect(sumDecimalValues(["1.20", "2.3", null, " "])).toEqual({
+      valid: true, total: "3.50", count: 2
+    });
+    expect(sumDecimalValues(["1e-2", "-0.005"])).toEqual({
+      valid: true, total: "0.005", count: 2
+    });
+    expect(sumDecimalValues(["1", "not-a-number"])).toEqual({
+      valid: false, total: "", count: 1, invalidValue: "not-a-number"
+    });
   });
 });
