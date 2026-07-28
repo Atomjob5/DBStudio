@@ -6,7 +6,6 @@ import * as monaco from "monaco-editor";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import type { CompletionCandidate, CompletionResult } from "../types";
 import { completionClient } from "../completion/client";
-import { registerCompletionShortcut } from "../completion/monacoCommands";
 import { CompletionModelSynchronizer, isModelVersionChanged } from "../completion/modelSynchronizer";
 import { completionDocumentation, truncateCompletionComment } from "../completion/presentation";
 
@@ -17,7 +16,6 @@ const props = defineProps<{ modelKey: string; initialValue: string; theme: "dark
 const emit = defineEmits<{
   dirty: [];
   execute: [scope: "current" | "script", selection: string, cursorOffset: number];
-  format: [];
 }>();
 const container = ref<HTMLElement>();
 const instance = shallowRef<monaco.editor.IStandaloneCodeEditor>();
@@ -109,10 +107,6 @@ onMounted(() => {
     padding: { top: 10, bottom: 10 },
     tabSize: 2
   });
-  instance.value.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => trigger("current"));
-  instance.value.addCommand(monaco.KeyCode.F5, () => trigger("script"));
-  registerCompletionShortcut(instance.value, monaco.KeyCode.F6);
-  instance.value.addCommand(monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF, () => emit("format"));
   completionProvider = monaco.languages.registerCompletionItemProvider("dbstudio-mysql", {
     triggerCharacters: [".", "`", "\"", " "],
     async provideCompletionItems(model, position, _context, token) {
@@ -212,6 +206,11 @@ function trigger(scope: "current" | "script"): void {
   emit("execute", scope, selected, position ? model.getOffsetAt(position) : 0);
 }
 
+function triggerCompletion(): void {
+  instance.value?.focus();
+  void instance.value?.trigger("shortcut", "editor.action.triggerSuggest", {});
+}
+
 function getValue(key = props.modelKey): string {
   return models.get(key)?.getValue() ?? "";
 }
@@ -225,7 +224,7 @@ function setValue(value: string, key = props.modelKey): void {
   if (isCompletionBound()) synchronizeInBackground(key, model);
 }
 
-defineExpose({ getValue, setValue });
+defineExpose({ getValue, setValue, triggerExecute: trigger, triggerCompletion });
 
 onBeforeUnmount(() => {
   contentListener?.dispose();

@@ -5,7 +5,7 @@
         <strong>数据库对象</strong>
         <span>{{ connectionName ?? "当前连接" }}</span>
       </div>
-      <el-tooltip content="刷新对象树 · ⌘/Ctrl R">
+      <el-tooltip :content="shortcutTooltip('刷新对象树', 'workspace.refreshObjects', settings.shortcuts)">
         <el-button text circle :icon="Refresh" size="small" aria-label="刷新对象树"
                    :loading="completionLoading" @click="refresh" />
       </el-tooltip>
@@ -41,6 +41,8 @@ import { Coin, Collection, Document, Folder, FolderOpened, Grid, Refresh, Search
 import type { ElTree, LoadFunction, TreeNodeData } from "element-plus";
 import { rpc } from "../bridge/rpc";
 import { useMetadataStore } from "../stores/metadata";
+import { useSettingsStore } from "../stores/settings";
+import { shortcutTooltip } from "../shortcuts";
 import type { MetadataNode } from "../types";
 
 const emit = defineEmits<{
@@ -50,6 +52,7 @@ const emit = defineEmits<{
 }>();
 const props = defineProps<{ connectionName?: string; editorId: string; connectionKey: string; completionLoading?: boolean }>();
 const metadata = useMetadataStore();
+const settings = useSettingsStore();
 const treeRef = ref<InstanceType<typeof ElTree>>();
 const treeKey = ref(0);
 const filterText = ref("");

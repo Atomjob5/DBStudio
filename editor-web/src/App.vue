@@ -19,10 +19,10 @@
       </el-tooltip>
 
       <div class="toolbar-cluster file-actions" aria-label="文件操作">
-        <el-tooltip content="新建查询 · ⌘/Ctrl N" placement="bottom">
+        <el-tooltip :content="actionTooltip('新建查询', 'file.newQuery')" placement="bottom">
           <el-button text :icon="Plus" aria-label="新建查询" @click="newEditor()" />
         </el-tooltip>
-        <el-tooltip content="打开 SQL · ⌘/Ctrl O" placement="bottom">
+        <el-tooltip :content="actionTooltip('打开 SQL', 'file.openSql')" placement="bottom">
           <el-button text :icon="FolderOpened" aria-label="打开 SQL 文件" @click="openFile" />
         </el-tooltip>
         <el-dropdown trigger="click" @command="openRecent">
@@ -34,7 +34,7 @@
             </el-dropdown-menu>
           </template>
         </el-dropdown>
-        <el-tooltip content="保存 · ⌘/Ctrl S" placement="bottom">
+        <el-tooltip :content="actionTooltip('保存', 'file.saveSql')" placement="bottom">
           <el-button text :icon="DocumentChecked" aria-label="保存 SQL" :disabled="!editors.active" @click="saveActive(false)" />
         </el-tooltip>
       </div>
@@ -46,25 +46,27 @@
           {{ activeCancellationPhase === "cancelling" ? "正在取消…" : "取消执行" }}
         </el-button>
       </el-tooltip>
-      <el-dropdown v-else class="execute-control" split-button type="primary" :icon="VideoPlay" :disabled="!canExecute"
-                   @click="executeActive('current')" @command="executeCommand">
-        执行
-        <template #dropdown>
-          <el-dropdown-menu>
-            <el-dropdown-item command="current"><span>执行当前语句</span><kbd>⌘↵</kbd></el-dropdown-item>
-            <el-dropdown-item command="script"><span>执行整个脚本</span><kbd>F5</kbd></el-dropdown-item>
-          </el-dropdown-menu>
-        </template>
-      </el-dropdown>
+      <el-tooltip v-else :content="actionTooltip('执行当前语句', 'query.executeCurrent')" placement="bottom">
+        <el-dropdown class="execute-control" split-button type="primary" :icon="VideoPlay" :disabled="!canExecute"
+                     @click="triggerEditorExecution('current')" @command="executeCommand">
+          执行
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="current"><span>执行当前语句</span><kbd v-if="settings.shortcuts['query.executeCurrent']">{{ displayShortcut(settings.shortcuts["query.executeCurrent"]) }}</kbd></el-dropdown-item>
+              <el-dropdown-item command="script"><span>执行整个脚本</span><kbd v-if="settings.shortcuts['query.executeAll']">{{ displayShortcut(settings.shortcuts["query.executeAll"]) }}</kbd></el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </el-tooltip>
 
       <Transition name="transaction-actions">
         <el-button-group v-if="hasActiveTransaction" class="query-actions" aria-label="事务操作">
-          <el-tooltip content="提交事务 · ⌘/Ctrl Alt C" placement="bottom">
+          <el-tooltip :content="actionTooltip('提交事务', 'transaction.commit')" placement="bottom">
             <el-button type="success" :icon="Select" aria-label="提交事务"
                        :loading="editors.active?.transactionOperation === 'committing'"
                        :disabled="!canOperateTransaction" @click="commitActive" />
           </el-tooltip>
-          <el-tooltip content="回滚事务 · ⌘/Ctrl Alt R" placement="bottom">
+          <el-tooltip :content="actionTooltip('回滚事务', 'transaction.rollback')" placement="bottom">
             <el-button type="danger" :icon="RefreshLeft" aria-label="回滚事务"
                        :loading="editors.active?.transactionOperation === 'rolling-back'"
                        :disabled="!canOperateTransaction" @click="rollbackActive" />
@@ -77,14 +79,14 @@
         <el-button text circle :icon="MoreFilled" aria-label="更多操作" />
         <template #dropdown>
           <el-dropdown-menu>
-            <el-dropdown-item command="import" :icon="Upload" :disabled="!activeConnected || app.transportState !== 'ready'">导入 CSV / TSV</el-dropdown-item>
-            <el-dropdown-item command="history" :icon="Clock">查询历史</el-dropdown-item>
-            <el-dropdown-item divided command="settings" :icon="Setting">设置</el-dropdown-item>
-            <el-dropdown-item divided command="exit" :icon="SwitchButton">退出 DBStudio</el-dropdown-item>
+            <el-dropdown-item command="import" :icon="Upload" :disabled="!activeConnected || app.transportState !== 'ready'"><span>导入 CSV / TSV</span><kbd v-if="settings.shortcuts['data.import']">{{ displayShortcut(settings.shortcuts["data.import"]) }}</kbd></el-dropdown-item>
+            <el-dropdown-item command="history" :icon="Clock"><span>查询历史</span><kbd v-if="settings.shortcuts['history.open']">{{ displayShortcut(settings.shortcuts["history.open"]) }}</kbd></el-dropdown-item>
+            <el-dropdown-item divided command="settings" :icon="Setting"><span>设置</span><kbd v-if="settings.shortcuts['settings.open']">{{ displayShortcut(settings.shortcuts["settings.open"]) }}</kbd></el-dropdown-item>
+            <el-dropdown-item divided command="exit" :icon="SwitchButton"><span>退出 DBStudio</span><kbd v-if="settings.shortcuts['app.exit']">{{ displayShortcut(settings.shortcuts["app.exit"]) }}</kbd></el-dropdown-item>
           </el-dropdown-menu>
         </template>
       </el-dropdown>
-      <el-tooltip :content="app.theme === 'dark' ? '切换亮色主题' : '切换深色主题'">
+      <el-tooltip :content="actionTooltip(app.theme === 'dark' ? '切换亮色主题' : '切换深色主题', 'ui.toggleTheme')">
         <el-button text circle :icon="app.theme === 'dark' ? Sunny : Moon" aria-label="切换界面主题"
                    @click="updateTheme(app.theme === 'dark' ? 'light' : 'dark')" />
       </el-tooltip>
@@ -92,9 +94,9 @@
 
     <el-main class="workspace">
       <nav class="activity-bar" aria-label="工作区工具导航">
-        <el-tooltip content="数据库对象" placement="right"><el-button text :icon="Coin" aria-label="数据库对象"
+        <el-tooltip :content="actionTooltip('数据库对象', 'workspace.objects')" placement="right"><el-button text :icon="Coin" aria-label="数据库对象"
           :class="{ active: activeTool === 'objects' && panelVisible }" :aria-pressed="activeTool === 'objects' && panelVisible" @click="selectTool('objects')" /></el-tooltip>
-        <el-tooltip content="连接管理" placement="right"><el-button text :icon="Connection" aria-label="连接管理"
+        <el-tooltip :content="actionTooltip('连接管理', 'workspace.connections')" placement="right"><el-button text :icon="Connection" aria-label="连接管理"
           :class="{ active: activeTool === 'connections' && panelVisible }" :aria-pressed="activeTool === 'connections' && panelVisible" @click="selectTool('connections')" /></el-tooltip>
       </nav>
       <el-splitter class="workbench" lazy>
@@ -128,7 +130,7 @@
                                 :initial-value="editors.active.content" :theme="app.theme"
                                 :completion-key="activeCompletionKey" :provider-id="editors.active.connection?.providerId || 'generic'"
                                 :completion-candidate-limit="settings.completionCandidateLimit"
-                                @dirty="markActiveDirty" @execute="executeFromEditor" @format="formatActive" />
+                                @dirty="markActiveDirty" @execute="executeFromEditor" />
                   <el-empty v-else class="workspace-empty" description="新建 SQL 标签开始查询">
                     <template #image><el-icon><Document /></el-icon></template>
                     <el-button round @click="newEditor()">新建查询</el-button>
@@ -136,7 +138,7 @@
                 </section>
               </el-splitter-panel>
               <el-splitter-panel :min="150" collapsible>
-                <ResultPanel v-model:active-result-index="activeResultIndex" :execution="activeExecution"
+                <ResultPanel ref="resultPanel" v-model:active-result-index="activeResultIndex" :execution="activeExecution"
                              @export-loaded="exportLoaded" @export-full="exportFull"
                              @selected-column="selectedResultColumn = $event"
                              @selected-row-count="selectedResultRowCount = $event" />
@@ -188,7 +190,10 @@
                   @update:idle-timeout-minutes="updateIdleTimeoutMinutes"
                   @update:transaction-disconnect-rollback-minutes="updateTransactionDisconnectRollbackMinutes"
                   @update:completion-candidate-limit="updateCompletionCandidateLimit"
-                  @clear-completion-caches="clearCompletionCaches" />
+                  @clear-completion-caches="clearCompletionCaches" @open-shortcuts="shortcutDrawer = true" />
+  <ShortcutSettingsDrawer v-model="shortcutDrawer" :bindings="settings.shortcuts" :saving="shortcutSaving"
+                          @update-binding="updateShortcutBinding" @reset-defaults="resetShortcutBindings"
+                          @recording="settings.shortcutRecordingActive = $event" />
   <CompletionSchemaDialog v-model="completionSchemaDialog" :namespaces="completionSchemaNamespaces"
                           :initial-selected-keys="completionSchemaInitialKeys" :refresh="completionSchemaRefresh"
                           @confirm="completeSchemaSelection" @cancel="cancelSchemaSelection" />
@@ -229,6 +234,7 @@ import MonacoEditor from "./components/MonacoEditor.vue";
 import ObjectExplorer from "./components/ObjectExplorer.vue";
 import ResultPanel from "./components/ResultPanel.vue";
 import SettingsDrawer from "./components/SettingsDrawer.vue";
+import ShortcutSettingsDrawer from "./components/ShortcutSettingsDrawer.vue";
 import AppStatusBar from "./components/AppStatusBar.vue";
 import WorkspaceChooser from "./components/WorkspaceChooser.vue";
 import { useAppStore } from "./stores/app";
@@ -244,19 +250,43 @@ import { applyDocumentTheme } from "./theme";
 import { openRecentSql, openSqlFile, recentSqlFiles, saveSqlFile } from "./files/browserFiles";
 import { completionClient } from "./completion/client";
 import { initialCompletionNamespaceKeys } from "./completion/schemaSelection";
+import {
+  DEFAULT_SHORTCUT_BINDINGS,
+  actionForShortcut,
+  displayShortcut,
+  isDangerousLegacyShortcut,
+  serializeShortcutBindings,
+  shortcutFromKeyboardEvent,
+  shortcutTooltip,
+  type ShortcutActionId,
+  type ShortcutBinding,
+  type ShortcutBindings,
+} from "./shortcuts";
 import type { BootstrapResponse, CompletionCache, CompletionNamespaceDescriptor, CompletionNamespacesResponse, CompletionProgress, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryResult, RecoveredEditor, SavedProfile, SelectedResultColumn, StatusBarSystemItem, ThemePreference, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "./types";
 
 const app = useAppStore(); const connections = useConnectionStore(); const metadata = useMetadataStore();
 const editors = useEditorStore(); const queries = useQueryStore(); const settings = useSettingsStore();
 const statusBar = useStatusBarStore();
-const connectionDialog = ref(false); const historyDrawer = ref(false); const settingsDrawer = ref(false); const csvDialog = ref(false);
+const connectionDialog = ref(false); const historyDrawer = ref(false); const settingsDrawer = ref(false);
+const shortcutDrawer = ref(false); const shortcutSaving = ref(false); const csvDialog = ref(false);
 const leftWidth = ref(248); const lastLeftWidth = ref(248); const editorHeight = ref("62%");
 const activeTool = ref<"objects" | "connections">("connections"); const panelOpen = ref(true);
 const editingProfile = ref<SavedProfile>(); const profileEnvironmentId = ref("");
 const connectionCascader = ref();
 const connectionCascaderOpen = ref(false);
 const objectExplorer = ref<InstanceType<typeof ObjectExplorer>>();
-const monacoEditor = ref<{ getValue(key?: string): string; setValue(value: string, key?: string): void }>();
+const monacoEditor = ref<{
+  getValue(key?: string): string;
+  setValue(value: string, key?: string): void;
+  triggerExecute(scope: "current" | "script"): void;
+  triggerCompletion(): void;
+}>();
+const resultPanel = ref<{
+  restoreLayout(): void;
+  copyCurrentSelection(): Promise<void>;
+  exportLoaded(): void;
+  exportFull(): void;
+}>();
 const resultContentPanel = ref<HTMLElement>();
 const resultContentOffset = ref(0);
 const recentHandles = new Map<string, FileSystemFileHandle>();
@@ -300,8 +330,8 @@ const activeResultLoading = computed(() => {
 const canLoadMore = computed(() => Boolean(activeResult.value?.columns.length && activeResult.value.complete
   && activeResult.value.truncated && !activeExecution.value?.busy && !activeExecution.value?.historical
   && !resultLoading.value && app.transportState === "ready"));
-const nextPageTooltip = computed(() => resultLoadTooltip("next"));
-const allRowsTooltip = computed(() => resultLoadTooltip("all"));
+const nextPageTooltip = computed(() => actionTooltip(resultLoadTooltip("next"), "result.loadNext"));
+const allRowsTooltip = computed(() => actionTooltip(resultLoadTooltip("all"), "result.loadAll"));
 const activeConnected = computed(() => Boolean(editors.active?.connection && editors.active.connectionState !== "unbound"));
 const activeConnectionKey = computed(() => editors.active?.connection ? `${editors.active.connection.id}@${editors.active.connection.revision}` : "unbound");
 const activeCompletionContext = computed(() => connections.completionContext(editors.active?.connection));
@@ -331,10 +361,10 @@ const canCancelExecution = computed(() => app.transportState === "ready"
     ? activeResultLoading.value.phase === "running"
     : Boolean(editors.active?.busy && editors.active.activeExecutionId
       && editors.active.executionPhase === "running")));
-const cancelExecutionTooltip = computed(() => activeCancellationPhase.value === "starting"
+const cancelExecutionTooltip = computed(() => actionTooltip(activeCancellationPhase.value === "starting"
   ? "正在启动执行，获取执行编号后即可取消"
   : activeCancellationPhase.value === "cancelling" ? "已发送取消请求，正在等待数据库响应"
-    : app.transportState !== "ready" ? "事件通道恢复后可取消执行" : "取消执行 · Esc");
+    : app.transportState !== "ready" ? "事件通道恢复后可取消执行" : "取消执行", "query.cancel"));
 const hasActiveTransaction = computed(() => Boolean(editors.active?.transactionDirty
   && editors.active.transactionState === "active"));
 const canOperateTransaction = computed(() => Boolean(hasActiveTransaction.value && !activeDatabaseBusy.value
@@ -399,6 +429,10 @@ const colorSchemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
 let layoutSaveTimer: number | undefined;
 let resultContentResizeObserver: ResizeObserver | undefined;
 const completionNoticeTimers = new Map<string, number>();
+let confirmedShortcutBindings: ShortcutBindings = { ...DEFAULT_SHORTCUT_BINDINGS };
+let shortcutSaveQueue: Promise<void> = Promise.resolve();
+let shortcutSaveEpoch = 0;
+let shortcutSaveCount = 0;
 
 watch(leftWidth, (value) => {
   const width = numericPanelWidth(value);
@@ -410,6 +444,7 @@ watch(resultContentPanel, async () => {
 }, { flush: "post" });
 
 onMounted(async () => {
+  window.addEventListener("keydown", handleShortcut, true);
   if (typeof ResizeObserver !== "undefined") {
     resultContentResizeObserver = new ResizeObserver(measureResultContentOffset);
   }
@@ -425,7 +460,6 @@ onMounted(async () => {
     app.status = "启动失败";
     ElNotification.error({ title: "DBStudio 启动失败", message: message(error), duration: 0 });
   } finally { workspaceLoading.value = false; }
-  window.addEventListener("keydown", handleShortcut);
   window.addEventListener("pagehide", flushDrafts);
   window.addEventListener("resize", measureResultContentOffset);
 });
@@ -433,7 +467,7 @@ onBeforeUnmount(() => {
   disposers.forEach((dispose) => dispose());
   resultContentResizeObserver?.disconnect();
   colorSchemeQuery?.removeEventListener?.("change", systemThemeChanged);
-  window.removeEventListener("keydown", handleShortcut);
+  window.removeEventListener("keydown", handleShortcut, true);
   window.removeEventListener("pagehide", flushDrafts);
   window.removeEventListener("resize", measureResultContentOffset);
   if (layoutSaveTimer !== undefined) window.clearTimeout(layoutSaveTimer);
@@ -462,6 +496,9 @@ watch(activeResultIndex, () => {
 });
 watch(() => settings.showSelectedColumnRemarks, (enabled) => {
   if (!enabled) selectedResultColumn.value = undefined;
+});
+watch(settingsDrawer, (open) => {
+  if (!open) shortcutDrawer.value = false;
 });
 
 function systemThemeChanged(event: MediaQueryListEvent): void {
@@ -680,6 +717,7 @@ async function bootstrapWorkspace(recovered: RecoveredEditor[]): Promise<void> {
     const data = await rpc.request<BootstrapResponse>("app.bootstrap");
     connections.initialize(data.providers, data.profiles, data.systems ?? [], data.environments ?? []);
     settings.initialize(data.settings, data.recentFiles);
+    confirmedShortcutBindings = { ...settings.shortcuts };
     void refreshCompletionStats();
     for (const recent of await recentSqlFiles().catch(() => [])) {
       recentHandles.set(recent.name, recent.handle);
@@ -803,8 +841,16 @@ async function formatActive(): Promise<void> {
   scheduleDraft(tab.id);
 }
 function executeFromEditor(scope: "current" | "script", selectedText: string, cursorOffset: number): void { void executeActive(scope, selectedText, cursorOffset); }
+function triggerEditorExecution(scope: "current" | "script"): void {
+  if (!canExecute.value) return;
+  if (typeof monacoEditor.value?.triggerExecute === "function") {
+    monacoEditor.value.triggerExecute(scope);
+    return;
+  }
+  void executeActive(scope);
+}
 function executeCommand(command: string): void {
-  if (command === "current" || command === "script") void executeActive(command);
+  if (command === "current" || command === "script") triggerEditorExecution(command);
 }
 async function executeActive(scope: "current" | "script", selectedText = "", cursorOffset = 0,
                              recoveryRetried = false): Promise<void> {
@@ -1221,28 +1267,98 @@ async function requestConnectionPassword(): Promise<{ password: string; remember
 }
 
 function handleShortcut(event: KeyboardEvent): void {
-  if (event.key.toLowerCase() === "escape") {
-    if (!activeDatabaseBusy.value) return;
+  if (settings.shortcutRecordingActive || event.isComposing) return;
+  const binding = shortcutFromKeyboardEvent(event);
+  if (!binding) return;
+  const actionId = actionForShortcut(settings.shortcuts, binding);
+  if (actionId) {
     event.preventDefault();
     event.stopPropagation();
-    void cancelActive();
+    if (actionId !== "query.cancel" && hasBlockingShortcutLayer()) return;
+    if (!event.repeat) runShortcutAction(actionId);
     return;
   }
-  const shortcut = event.metaKey || event.ctrlKey;
-  if (!shortcut) return;
-  const key = event.key.toLowerCase();
-  let action: (() => void) | undefined;
-  if (event.altKey && key === "c") action = () => { void commitActive().catch(reportError); };
-  else if (event.altKey && key === "r") action = () => { void rollbackActive().catch(reportError); };
-  else if (event.shiftKey && key === "c") action = () => { if (!connections.profiles.length) openConnectionManager(); else connectionCascader.value?.focus?.(); };
-  else if (key === "n") action = () => { void newEditor().catch(reportError); };
-  else if (key === "o") action = () => { void openFile().catch(reportError); };
-  else if (key === "s") action = () => { void saveActive(event.shiftKey).catch(reportError); };
-  else if (key === "r") action = () => { objectExplorer.value?.refresh(); };
-  if (!action) return;
-  event.preventDefault();
-  event.stopPropagation();
-  action();
+  if (isDangerousLegacyShortcut(binding)) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+}
+
+function runShortcutAction(actionId: ShortcutActionId): void {
+  if (!workspaceOpened.value) return;
+  if (actionId === "file.newQuery") { void newEditor().catch(reportError); return; }
+  if (actionId === "file.openSql") { void openFile().catch(reportError); return; }
+  if (actionId === "file.saveSql") {
+    if (editors.active) void saveActive(false).catch(reportError);
+    return;
+  }
+  if (actionId === "query.executeCurrent") { triggerEditorExecution("current"); return; }
+  if (actionId === "query.executeAll") { triggerEditorExecution("script"); return; }
+  if (actionId === "query.cancel") {
+    if (canCancelExecution.value) void cancelActive();
+    return;
+  }
+  if (actionId === "transaction.commit") {
+    if (canOperateTransaction.value) void commitActive().catch(reportError);
+    return;
+  }
+  if (actionId === "transaction.rollback") {
+    if (canOperateTransaction.value) void rollbackActive().catch(reportError);
+    return;
+  }
+  if (actionId === "data.import") {
+    if (activeConnected.value && app.transportState === "ready") csvDialog.value = true;
+    return;
+  }
+  if (actionId === "history.open") { historyDrawer.value = true; return; }
+  if (actionId === "settings.open") { settingsDrawer.value = true; return; }
+  if (actionId === "ui.toggleTheme") {
+    void updateTheme(app.theme === "dark" ? "light" : "dark").catch(reportError);
+    return;
+  }
+  if (actionId === "app.exit") { void closeApplication(); return; }
+  if (actionId === "workspace.objects") { selectTool("objects"); return; }
+  if (actionId === "workspace.connections") { selectTool("connections"); return; }
+  if (actionId === "workspace.refreshObjects") {
+    if (activeTool.value === "objects" && panelVisible.value) objectExplorer.value?.refresh();
+    return;
+  }
+  if (actionId === "editor.format") {
+    if (editors.active?.connection && !activeDatabaseBusy.value && app.transportState === "ready") {
+      void formatActive().catch(reportError);
+    }
+    return;
+  }
+  if (actionId === "editor.complete") {
+    if (editors.active && activeCompletionKey.value !== "unbound") monacoEditor.value?.triggerCompletion();
+    return;
+  }
+  if (actionId === "result.restoreLayout") { resultPanel.value?.restoreLayout(); return; }
+  if (actionId === "result.copySelection") {
+    void resultPanel.value?.copyCurrentSelection().catch(reportError);
+    return;
+  }
+  if (actionId === "result.exportLoaded") { resultPanel.value?.exportLoaded(); return; }
+  if (actionId === "result.exportFull") { resultPanel.value?.exportFull(); return; }
+  if (actionId === "result.loadNext") {
+    if (canLoadMore.value) void loadNextResultPage();
+    return;
+  }
+  if (actionId === "result.loadAll" && canLoadMore.value) void loadAllResultRows();
+}
+
+function hasBlockingShortcutLayer(): boolean {
+  if (connectionDialog.value || historyDrawer.value || settingsDrawer.value || shortcutDrawer.value
+      || csvDialog.value || completionSchemaDialog.value) return true;
+  return Array.from(document.querySelectorAll<HTMLElement>(".el-overlay"))
+    .some((overlay) => {
+      const style = getComputedStyle(overlay);
+      return overlay.style.display !== "none" && style.display !== "none" && style.visibility !== "hidden";
+    });
+}
+
+function actionTooltip(label: string, actionId: ShortcutActionId): string {
+  return shortcutTooltip(label, actionId, settings.shortcuts);
 }
 
 async function openFile(): Promise<void> {
@@ -1434,6 +1550,41 @@ async function updateCompletionCandidateLimit(value: number): Promise<void> {
   settings.completionCandidateLimit = normalized;
   try { await rpc.request("settings.update", { key: "editor.completionCandidateLimit", value: String(normalized) }); }
   catch (error) { settings.completionCandidateLimit = previous; reportError(error); }
+}
+function updateShortcutBinding(actionId: ShortcutActionId, binding: ShortcutBinding): void {
+  if (settings.shortcuts[actionId] === binding) return;
+  const next: ShortcutBindings = { ...settings.shortcuts, [actionId]: binding };
+  settings.setShortcuts(next);
+  persistShortcutBindings(next);
+}
+function resetShortcutBindings(): void {
+  const next: ShortcutBindings = { ...DEFAULT_SHORTCUT_BINDINGS };
+  settings.setShortcuts(next);
+  persistShortcutBindings(next);
+}
+function persistShortcutBindings(bindings: ShortcutBindings): void {
+  const candidate: ShortcutBindings = { ...bindings };
+  const epoch = shortcutSaveEpoch;
+  shortcutSaveCount++;
+  shortcutSaving.value = true;
+  shortcutSaveQueue = shortcutSaveQueue.then(async () => {
+    if (epoch !== shortcutSaveEpoch) return;
+    try {
+      await rpc.request("settings.update", {
+        key: "keyboard.shortcuts",
+        value: serializeShortcutBindings(candidate),
+      });
+      if (epoch === shortcutSaveEpoch) confirmedShortcutBindings = { ...candidate };
+    } catch (error) {
+      if (epoch !== shortcutSaveEpoch) return;
+      shortcutSaveEpoch++;
+      settings.setShortcuts(confirmedShortcutBindings);
+      reportError(error);
+    }
+  }).finally(() => {
+    shortcutSaveCount = Math.max(0, shortcutSaveCount - 1);
+    shortcutSaving.value = shortcutSaveCount > 0;
+  });
 }
 async function clearCompletionCaches(): Promise<void> {
   const stats = { ...metadata.completionStats };

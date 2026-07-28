@@ -12,7 +12,7 @@
           <el-tag v-if="activeResult?.truncated" size="small" type="warning" effect="plain">已截断</el-tag>
         </div>
         <div class="result-actions" aria-label="结果操作">
-          <el-tooltip v-if="showRestoreLayout" content="复原列顺序和宽度">
+          <el-tooltip v-if="showRestoreLayout" :content="restoreLayoutTitle">
             <el-button text :icon="RefreshLeft" aria-label="复原列布局" @click="restoreLayout" />
           </el-tooltip>
           <el-select v-model="selectedColumnIndices" multiple filterable clearable collapse-tags collapse-tags-tooltip
@@ -32,8 +32,8 @@
             <el-button text :icon="Download" aria-label="导出结果" title="导出结果" />
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item command="loaded">导出已加载行</el-dropdown-item>
-                <el-dropdown-item command="full">重新执行并完整导出</el-dropdown-item>
+                <el-dropdown-item command="loaded"><span>导出已加载行</span><kbd v-if="settings.shortcuts['result.exportLoaded']">{{ displayShortcut(settings.shortcuts["result.exportLoaded"]) }}</kbd></el-dropdown-item>
+                <el-dropdown-item command="full"><span>重新执行并完整导出</span><kbd v-if="settings.shortcuts['result.exportFull']">{{ displayShortcut(settings.shortcuts["result.exportFull"]) }}</kbd></el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
@@ -116,6 +116,7 @@ import ResultVirtualGrid from "./ResultVirtualGrid.vue";
 import ResultSummaryFooter from "./ResultSummaryFooter.vue";
 import ResultValueDialog from "./ResultValueDialog.vue";
 import ResultValueCompareDialog from "./ResultValueCompareDialog.vue";
+import { displayShortcut, shortcutTooltip } from "../shortcuts";
 
 const props = defineProps<{
   execution?: QueryExecutionState;
@@ -592,8 +593,11 @@ function measureText(text: string): number {
 
 const showRestoreLayout = computed(() => settings.columnLayoutScope === "editor"
   && !!activeLayout.value && columnLayouts.orderDirty(activeLayout.value.layoutKey));
+const restoreLayoutTitle = computed(() =>
+  shortcutTooltip("复原列顺序和宽度", "result.restoreLayout", settings.shortcuts));
 
 function restoreLayout(): void {
+  if (!showRestoreLayout.value) return;
   const active = activeLayout.value;
   if (!active) return;
   columnLayouts.reset(active.layoutKey, active.viewKey, active.identities, defaultWidths.value);
@@ -872,7 +876,11 @@ const selectedRowCount = computed(() => selectionMode.value === "cells"
 const hasDataSelection = computed(() => selectionMode.value === "cells"
   ? selectedCellsInView.value.length > 0
   : selectedRowsInDisplayOrder.value.length > 0);
-const copySelectionTitle = computed(() => selectionMode.value === "rows" ? "复制选中行" : "复制选中单元格");
+const copySelectionTitle = computed(() => shortcutTooltip(
+  selectionMode.value === "rows" ? "复制选中行" : "复制选中单元格",
+  "result.copySelection",
+  settings.shortcuts,
+));
 
 watch(selectedRowCount, (count) => emit("selected-row-count", count), { immediate: true });
 
@@ -1032,12 +1040,19 @@ async function copyText(text: string, successMessage: string): Promise<void> {
 }
 
 function exportCommand(command: string): void {
-  if (props.execution?.historical) return;
+  if (props.execution?.historical || !activeResult.value?.columns.length) return;
   const resultIndex = activeResult.value?.resultIndex;
   if (resultIndex === undefined) return;
   if (command === "loaded") emit("export-loaded", resultIndex);
   else if (command === "full") emit("export-full", resultIndex);
 }
+
+defineExpose({
+  restoreLayout,
+  copyCurrentSelection,
+  exportLoaded: () => exportCommand("loaded"),
+  exportFull: () => exportCommand("full"),
+});
 
 onBeforeUnmount(() => {
   finishColumnResize(); finishCellSelection(); finishRowSelection(); endColumnDrag(); closeHeaderMenu(); closeDataMenu();

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { nextTick } from "vue";
+import { defineComponent, h, nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import ElementPlus, { ElMessageBox } from "element-plus";
@@ -51,6 +51,21 @@ vi.mock("./bridge/rpc", () => ({
 }));
 vi.mock("./completion/client", () => ({ completionClient: completionMock }));
 
+const MonacoEditorStub = defineComponent({
+  name: "MonacoEditor",
+  props: { initialValue: { type: String, default: "" } },
+  emits: ["execute"],
+  setup(props, { emit, expose }) {
+    expose({
+      getValue: () => props.initialValue,
+      setValue: () => undefined,
+      triggerExecute: (scope: "current" | "script") => emit("execute", scope, "", 0),
+      triggerCompletion: () => undefined,
+    });
+    return () => h("div", { class: "monaco-editor-stub" });
+  },
+});
+
 describe("App result loading status toolbar", () => {
   let wrapper: VueWrapper;
 
@@ -81,7 +96,7 @@ describe("App result loading status toolbar", () => {
       global: {
         plugins: [ElementPlus],
         stubs: {
-          ConnectionDialog: true, ConnectionManagerPanel: true, CsvImportDialog: true, HistoryDrawer: true, MonacoEditor: true,
+          ConnectionDialog: true, ConnectionManagerPanel: true, CsvImportDialog: true, HistoryDrawer: true, MonacoEditor: MonacoEditorStub,
           ObjectExplorer: true, SettingsDrawer: true, WorkspaceChooser: true
         }
       }
@@ -158,6 +173,80 @@ describe("App result loading status toolbar", () => {
     rpcRequest.mockRejectedValueOnce(new Error("save failed"));
     await vm.updateScrollOptimizationEnabled(false);
     expect(settings.scrollOptimizationEnabled).toBe(true);
+  });
+
+  it("uses F8 and F7 for execution, preserves editing shortcuts, and suppresses dangerous legacy keys", async () => {
+    const editors = useEditorStore();
+    editors.patch("bootstrap-editor", {
+      content: "select 1",
+      connection: completionProfile(),
+      connectionState: "active",
+      busy: false,
+      executionPhase: "idle",
+    });
+    rpcRequest.mockImplementation(async (type: string) => {
+      if (type === "query.execute") return { executionId: `execution-${rpcRequest.mock.calls.length}` };
+      return {};
+    });
+    await nextTick();
+    expect(useSettingsStore().shortcuts["query.executeCurrent"]).toBe("F8");
+    expect((wrapper.vm as unknown as { canExecute: boolean }).canExecute).toBe(true);
+
+    const f8Event = new KeyboardEvent("keydown", { key: "F8", code: "F8", bubbles: true, cancelable: true });
+    document.body.dispatchEvent(f8Event);
+    await flushPromises();
+    expect(rpcRequest).toHaveBeenCalledWith("query.execute", expect.objectContaining({
+      editorId: "bootstrap-editor", scope: "current",
+    }));
+
+    editors.patch("bootstrap-editor", { busy: false, activeExecutionId: undefined, executionPhase: "idle" });
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "F7", code: "F7", bubbles: true, cancelable: true }));
+    await flushPromises();
+    expect(rpcRequest).toHaveBeenCalledWith("query.execute", expect.objectContaining({
+      editorId: "bootstrap-editor", scope: "script",
+    }));
+
+    const executionCalls = () => rpcRequest.mock.calls.filter(([type]) => type === "query.execute").length;
+    const previousCount = executionCalls();
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", metaKey: true, bubbles: true, cancelable: true }));
+    await flushPromises();
+    expect(executionCalls()).toBe(previousCount);
+
+    editors.patch("bootstrap-editor", { busy: false, activeExecutionId: undefined, executionPhase: "idle" });
+    const settings = useSettingsStore();
+    settings.setShortcut("query.executeCurrent", "F9");
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "F8", code: "F8", bubbles: true, cancelable: true }));
+    await flushPromises();
+    expect(executionCalls()).toBe(previousCount);
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "F9", code: "F9", bubbles: true, cancelable: true }));
+    await flushPromises();
+    expect(executionCalls()).toBe(previousCount + 1);
+
+    expect(document.body.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "c", code: "KeyC", metaKey: true, bubbles: true, cancelable: true,
+    }))).toBe(true);
+    expect(document.body.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "F5", code: "F5", bubbles: true, cancelable: true,
+    }))).toBe(false);
+  });
+
+  it("applies a changed shortcut immediately and rolls back a failed save", async () => {
+    const settings = useSettingsStore();
+    const vm = wrapper.vm as unknown as {
+      updateShortcutBinding: (actionId: "query.executeCurrent", binding: string | null) => void;
+    };
+    rpcRequest.mockRejectedValueOnce(new Error("save failed"));
+    vm.updateShortcutBinding("query.executeCurrent", "F9");
+    expect(settings.shortcuts["query.executeCurrent"]).toBe("F9");
+    await nextTick();
+    expect(wrapper.findAllComponents({ name: "ElTooltip" })
+      .some((tooltip) => String(tooltip.props("content")).includes("F9"))).toBe(true);
+    await flushPromises();
+    expect(settings.shortcuts["query.executeCurrent"]).toBe("F8");
+    expect(rpcRequest).toHaveBeenCalledWith("settings.update", {
+      key: "keyboard.shortcuts",
+      value: expect.stringContaining('"query.executeCurrent":"F9"'),
+    });
   });
 
   it("工作空间恢复时只恢复编辑器内容并清空旧结果", async () => {
@@ -267,7 +356,7 @@ describe("App result loading status toolbar", () => {
       editorId: "editor-1", executionId: keyboardExecutionId, resultIndex: 0
     }));
     await nextTick();
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", shiftKey: true, bubbles: true }));
     await flushPromises();
     expect(rpcRequest).toHaveBeenCalledWith("query.cancel", {
       editorId: "editor-1", executionId: keyboardExecutionId

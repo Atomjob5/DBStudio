@@ -272,7 +272,8 @@ describe("application stores", () => {
       "statusBar.showSelectedColumnRemarks": "false",
       "connection.autoCommit": "true",
       "connection.maxActiveSessions": "12", "connection.idleTimeoutMinutes": "30",
-      "editor.completionCandidateLimit": "250" }, []);
+      "editor.completionCandidateLimit": "250",
+      "keyboard.shortcuts": "{\"query.executeCurrent\":null,\"query.executeAll\":\"Mod+7\"}" }, []);
     expect(settings.maxResultRows).toBe(2500);
     expect(settings.streamBatchRows).toBe(75);
     expect(settings.columnLayoutScope).toBe("editor");
@@ -286,6 +287,9 @@ describe("application stores", () => {
     expect(settings.maxActiveSessions).toBe(12);
     expect(settings.idleTimeoutMinutes).toBe(30);
     expect(settings.completionCandidateLimit).toBe(250);
+    expect(settings.shortcuts["query.executeCurrent"]).toBeNull();
+    expect(settings.shortcuts["query.executeAll"]).toBe("Mod+7");
+    expect(settings.shortcuts["query.cancel"]).toBe("Shift+Escape");
     settings.initialize({ "result.columnLayoutScope": "legacy", "result.copySeparator": "legacy" }, []);
     expect(settings.columnLayoutScope).toBe("result");
     expect(settings.copyHeaderOnDoubleClick).toBe(true);
@@ -298,6 +302,8 @@ describe("application stores", () => {
     expect(settings.maxActiveSessions).toBe(10);
     expect(settings.idleTimeoutMinutes).toBe(10);
     expect(settings.completionCandidateLimit).toBe(100);
+    expect(settings.shortcuts["query.executeCurrent"]).toBe("F8");
+    expect(settings.shortcuts["query.executeAll"]).toBe("F7");
 
     settings.initialize({ "result.scrollOptimizationBufferScreens": "1.25" }, []);
     expect(settings.scrollOptimizationBufferScreens).toBe(1);

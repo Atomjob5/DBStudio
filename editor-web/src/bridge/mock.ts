@@ -1,4 +1,5 @@
 import type { MockRequestHandler } from "./rpc";
+import { DEFAULT_SHORTCUT_BINDINGS, serializeShortcutBindings } from "../shortcuts";
 
 const providers = [{ id: "mysql", displayName: "MySQL", capabilities: ["TABLES", "VIEWS", "PROCEDURES"], fields: [
   { key: "host", label: "主机", type: "TEXT", required: true, defaultValue: "127.0.0.1", description: "数据库主机" },
@@ -33,6 +34,21 @@ const profiles = [{ id: "c5d49b11-47bc-4c64-a31e-a17633e68a73", providerId: "mys
   settings: { host: "127.0.0.1", port: "3306", database: "eastwealthcrawler", username: "root", timeoutSeconds: "10" }, rememberPassword: true }];
 let editorSequence = 0;
 const editorProfiles = new Map<string, string>();
+const mockSettings: Record<string, string> = {
+  "ui.theme": "system",
+  "result.maxRows": "1000",
+  "result.streamBatchRows": "100",
+  "result.columnLayoutScope": "result",
+  "result.copyHeaderOnDoubleClick": "true",
+  "result.copySeparator": "comma",
+  "result.headerSortingEnabled": "true",
+  "result.headerFilteringEnabled": "true",
+  "result.scrollOptimizationEnabled": "false",
+  "result.scrollOptimizationBufferScreens": "1",
+  "connection.maxActiveSessions": "10",
+  "connection.idleTimeoutMinutes": "10",
+  "keyboard.shortcuts": serializeShortcutBindings(DEFAULT_SHORTCUT_BINDINGS),
+};
 
 function metadata(payload: Record<string, unknown>): unknown[] {
   if (payload.kind === "root") return [{ id: "catalog-demo", label: "eastwealthcrawler", kind: "catalog", leaf: false, catalog: "eastwealthcrawler" }];
@@ -43,7 +59,13 @@ function metadata(payload: Record<string, unknown>): unknown[] {
 }
 
 export const developmentMockRequest: MockRequestHandler = async (type, payload, emit) => {
-  if (type === "app.bootstrap") return { providers, systems, environments, profiles, recentFiles: [], settings: { "ui.theme": "system", "result.maxRows": "1000", "result.streamBatchRows": "100", "result.columnLayoutScope": "result", "result.copyHeaderOnDoubleClick": "true", "result.copySeparator": "comma", "result.headerSortingEnabled": "true", "result.headerFilteringEnabled": "true", "result.scrollOptimizationEnabled": "false", "result.scrollOptimizationBufferScreens": "1", "connection.maxActiveSessions": "10", "connection.idleTimeoutMinutes": "10" } };
+  if (type === "app.bootstrap") return { providers, systems, environments, profiles, recentFiles: [], settings: { ...mockSettings } };
+  if (type === "settings.update") {
+    const key = String(payload.key ?? "");
+    const value = String(payload.value ?? "");
+    mockSettings[key] = value;
+    return { key, value };
+  }
   if (type === "connection.catalog") return { systems, environments, profiles };
   if (type === "connection.system.create") { const value = { id: crypto.randomUUID(), name: String(payload.name), revision: String(Date.now()) }; systems.push(value); return value; }
   if (type === "connection.system.update") { const value = systems.find((item) => item.id === payload.id); if (value) { value.name = String(payload.name); value.revision = String(Date.now()); } return value; }

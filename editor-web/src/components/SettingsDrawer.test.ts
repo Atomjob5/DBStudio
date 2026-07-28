@@ -101,6 +101,8 @@ describe("SettingsDrawer compact result settings", () => {
     expect(wrapper.emitted("update:columnLayoutScope")?.[0]).toEqual(["editor"]);
     expect(wrapper.emitted("update:copySeparator")?.[0]).toEqual(["pipe"]);
     expect(wrapper.emitted("clearCompletionCaches")).toHaveLength(1);
+    await wrapper.get(".shortcut-settings-button").trigger("click");
+    expect(wrapper.emitted("openShortcuts")).toHaveLength(1);
     wrapper.unmount();
   });
 

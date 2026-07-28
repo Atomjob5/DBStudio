@@ -306,6 +306,38 @@ class LocalServerSecurityTest {
     }
 
     @Test
+    void validatesAndPersistsShortcutBindings() {
+        HttpHeaders headers = authenticatedHeaders();
+        ResponseEntity<String> defaults = http.exchange(url("/api/v1/settings"), HttpMethod.GET,
+                new HttpEntity<String>(headers), String.class);
+        assertEquals(HttpStatus.OK, defaults.getStatusCode());
+        assertTrue(defaults.getBody().contains("\\\"query.executeCurrent\\\":\\\"F8\\\""));
+        assertTrue(defaults.getBody().contains("\\\"query.executeAll\\\":\\\"F7\\\""));
+        assertTrue(defaults.getBody().contains("\\\"query.cancel\\\":\\\"Shift+Escape\\\""));
+
+        Map<String, String> setting = new HashMap<String, String>();
+        setting.put("key", "keyboard.shortcuts");
+        setting.put("value", "{\"query.executeCurrent\":\"Mod+8\",\"query.executeAll\":null,"
+                + "\"query.cancel\":\"Shift+Escape\",\"editor.complete\":\"F6\"}");
+        assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+
+        for (String invalid : Arrays.asList(
+                "{\"unknown.action\":\"F9\"}",
+                "{\"file.newQuery\":\"Mod+C\"}",
+                "{\"file.newQuery\":\"F9\",\"file.openSql\":\"F9\"}",
+                "{\"query.cancel\":\"Escape\"}",
+                "{\"file.newQuery\":\"N\"}",
+                "not-json")) {
+            setting.put("value", invalid);
+            ResponseEntity<String> rejected = http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                    new HttpEntity<Map<String, String>>(setting, headers), String.class);
+            assertEquals(HttpStatus.BAD_REQUEST, rejected.getStatusCode());
+            assertTrue(rejected.getBody().contains("INVALID_SETTING"));
+        }
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void movesConnectionProfileAcrossSystemsWithoutChangingRevision() {
         HttpHeaders headers = authenticatedHeaders();

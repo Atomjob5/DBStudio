@@ -2,6 +2,13 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import type { ColumnLayoutScope } from "../columnLayout";
 import type { CopySeparator } from "../resultCopy";
+import {
+  DEFAULT_SHORTCUT_BINDINGS,
+  parseShortcutBindings,
+  type ShortcutActionId,
+  type ShortcutBinding,
+  type ShortcutBindings,
+} from "../shortcuts";
 
 export const useSettingsStore = defineStore("settings", () => {
   const maxResultRows = ref(1000);
@@ -20,6 +27,8 @@ export const useSettingsStore = defineStore("settings", () => {
   const idleTimeoutMinutes = ref(10);
   const transactionDisconnectRollbackMinutes = ref(10);
   const completionCandidateLimit = ref(100);
+  const shortcuts = ref<ShortcutBindings>({ ...DEFAULT_SHORTCUT_BINDINGS });
+  const shortcutRecordingActive = ref(false);
   const recentFiles = ref<string[]>([]);
 
   function initialize(settings: Record<string, string>, recent: string[]): void {
@@ -49,13 +58,26 @@ export const useSettingsStore = defineStore("settings", () => {
     transactionDisconnectRollbackMinutes.value = Number.isFinite(transactionTimeout) ? transactionTimeout : 10;
     const completionLimit = Number.parseInt(settings["editor.completionCandidateLimit"] ?? "100", 10);
     completionCandidateLimit.value = Number.isFinite(completionLimit) ? Math.max(10, Math.min(1000, completionLimit)) : 100;
+    shortcuts.value = parseShortcutBindings(settings["keyboard.shortcuts"]);
     recentFiles.value = recent;
+  }
+
+  function setShortcuts(value: ShortcutBindings): void {
+    shortcuts.value = { ...value };
+  }
+
+  function setShortcut(actionId: ShortcutActionId, binding: ShortcutBinding): void {
+    shortcuts.value = { ...shortcuts.value, [actionId]: binding };
+  }
+
+  function resetShortcuts(): void {
+    shortcuts.value = { ...DEFAULT_SHORTCUT_BINDINGS };
   }
 
   return { maxResultRows, streamBatchRows, columnLayoutScope, copyHeaderOnDoubleClick, copySeparator,
     headerSortingEnabled, headerFilteringEnabled, showColumnRemarksInHeader, showSelectedColumnRemarks,
     scrollOptimizationEnabled, scrollOptimizationBufferScreens,
     maxActiveSessions, autoCommit, idleTimeoutMinutes, transactionDisconnectRollbackMinutes,
-    completionCandidateLimit,
-    recentFiles, initialize };
+    completionCandidateLimit, shortcuts, shortcutRecordingActive,
+    recentFiles, initialize, setShortcuts, setShortcut, resetShortcuts };
 });

@@ -15,6 +15,16 @@
         </el-form-item>
       </section>
 
+      <section class="settings-section shortcut-settings">
+        <div class="section-heading">
+          <div><strong>快捷键</strong><span>按界面区域配置应用操作快捷键</span></div>
+        </div>
+        <el-button class="shortcut-settings-button" :icon="Operation" @click="$emit('openShortcuts')">
+          配置快捷键
+          <el-icon class="shortcut-settings-arrow"><ArrowRight /></el-icon>
+        </el-button>
+      </section>
+
       <section class="settings-section connection-settings">
         <div class="section-heading"><div><strong>数据库连接</strong><span>控制事务模式、活动会话与空闲回收</span></div></div>
         <el-form-item class="compact-setting-row">
@@ -220,7 +230,7 @@
 </template>
 
 <script setup lang="ts">
-import { Delete, Monitor, Moon, QuestionFilled, Sunny } from "@element-plus/icons-vue";
+import { ArrowRight, Delete, Monitor, Moon, Operation, QuestionFilled, Sunny } from "@element-plus/icons-vue";
 import type { ResolvedTheme, ThemePreference } from "../types";
 import type { ColumnLayoutScope } from "../columnLayout";
 import type { CopySeparator } from "../resultCopy";
@@ -246,7 +256,7 @@ const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme"
   "update:showSelectedColumnRemarks": [value: boolean];
   "update:idleTimeoutMinutes": [value: number]; "update:transactionDisconnectRollbackMinutes": [value: number];
   "update:completionCandidateLimit": [value: number];
-  clearCompletionCaches: [] }>();
+  clearCompletionCaches: []; openShortcuts: [] }>();
 function themeChanged(value: string | number | boolean | undefined): void {
   if (value === "system" || value === "dark" || value === "light") emit("update:theme", value);
 }
@@ -280,6 +290,8 @@ function copyHeaderToggleChanged(value: string | number | boolean): void {
 .theme-options :deep(.el-radio-button) { flex: 1; }
 .theme-options :deep(.el-radio-button__inner) { width: 100%; padding-inline: 8px; }
 .theme-options .el-icon { margin-right: 5px; vertical-align: -2px; }
+.shortcut-settings-button { width: 100%; justify-content: flex-start; }
+.shortcut-settings-arrow { margin-left: auto; }
 .settings-section :deep(.el-form-item:last-of-type) { margin-bottom: 12px; }
 .result-settings .section-heading { margin-bottom: 8px; }
 .compact-setting-row {

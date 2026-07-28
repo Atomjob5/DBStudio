@@ -99,7 +99,33 @@ public final class DbStudioApiController {
             "connection.maxActiveSessions", "connection.autoCommit", "connection.idleTimeoutMinutes",
             "connection.transactionDisconnectRollbackMinutes",
             "editor.completionCandidateLimit",
+            "keyboard.shortcuts",
             "layout.leftWidth", "layout.editorHeight");
+    private static final Set<String> SHORTCUT_ACTION_IDS = new LinkedHashSet<String>(Arrays.asList(
+            "file.newQuery", "file.openSql", "file.saveSql",
+            "query.executeCurrent", "query.executeAll", "query.cancel",
+            "transaction.commit", "transaction.rollback", "data.import", "history.open",
+            "settings.open", "ui.toggleTheme", "app.exit",
+            "workspace.objects", "workspace.connections", "workspace.refreshObjects",
+            "editor.format", "editor.complete",
+            "result.restoreLayout", "result.copySelection", "result.exportLoaded", "result.exportFull",
+            "result.loadNext", "result.loadAll"));
+    private static final Set<String> RESERVED_SHORTCUTS = new LinkedHashSet<String>(Arrays.asList(
+            "Mod+C", "Mod+V", "Mod+X", "Mod+Z", "Mod+Shift+Z", "Mod+Y", "Mod+A", "Mod+F"));
+    private static final Set<String> SHORTCUT_NAMED_KEYS = new LinkedHashSet<String>(Arrays.asList(
+            "Enter", "Tab", "Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+            "Home", "End", "PageUp", "PageDown", "Delete", "Backspace",
+            "Minus", "Equal", "BracketLeft", "BracketRight", "Backslash", "Semicolon",
+            "Quote", "Comma", "Period", "Slash", "Backquote"));
+    private static final String DEFAULT_SHORTCUTS =
+            "{\"file.newQuery\":null,\"file.openSql\":null,\"file.saveSql\":null,"
+            + "\"query.executeCurrent\":\"F8\",\"query.executeAll\":\"F7\",\"query.cancel\":\"Shift+Escape\","
+            + "\"transaction.commit\":null,\"transaction.rollback\":null,\"data.import\":null,"
+            + "\"history.open\":null,\"settings.open\":null,\"ui.toggleTheme\":null,\"app.exit\":null,"
+            + "\"workspace.objects\":null,\"workspace.connections\":null,\"workspace.refreshObjects\":null,"
+            + "\"editor.format\":null,\"editor.complete\":null,\"result.restoreLayout\":null,"
+            + "\"result.copySelection\":null,\"result.exportLoaded\":null,\"result.exportFull\":null,"
+            + "\"result.loadNext\":null,\"result.loadAll\":null}";
 
     private final ProviderRegistry providers;
     private final ConnectionProfileRepository profiles;
@@ -943,8 +969,63 @@ public final class DbStudioApiController {
                 throw new ApiException("INVALID_SETTING", "补全候选词数量必须在 10 到 1000 之间");
             }
         }
+        if ("keyboard.shortcuts".equals(key)) validateShortcutSettings(value);
         settings.put(key, value);
         return ApiPayloads.map("key", key, "value", value);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void validateShortcutSettings(String value) {
+        if (value == null || value.length() > 8_192) {
+            throw new ApiException("INVALID_SETTING", "快捷键设置内容过长");
+        }
+        final Map<String, Object> bindings;
+        try {
+            Object parsed = objectMapper.readValue(value, Object.class);
+            if (!(parsed instanceof Map)) throw new IllegalArgumentException();
+            bindings = (Map<String, Object>) parsed;
+        } catch (Exception exception) {
+            throw new ApiException("INVALID_SETTING", "快捷键设置格式无效");
+        }
+        Set<String> used = new LinkedHashSet<String>();
+        for (Map.Entry<String, Object> entry : bindings.entrySet()) {
+            if (!SHORTCUT_ACTION_IDS.contains(entry.getKey())) {
+                throw new ApiException("INVALID_SETTING", "快捷键设置包含未知操作");
+            }
+            if (entry.getValue() == null) continue;
+            if (!(entry.getValue() instanceof String)) {
+                throw new ApiException("INVALID_SETTING", "快捷键绑定必须是字符串或 null");
+            }
+            String binding = (String) entry.getValue();
+            if (!isValidShortcutBinding(binding) || RESERVED_SHORTCUTS.contains(binding)) {
+                throw new ApiException("INVALID_SETTING", "快捷键组合无效或已被系统保留");
+            }
+            if (!used.add(binding)) {
+                throw new ApiException("INVALID_SETTING", "一个快捷键只能绑定一个操作");
+            }
+        }
+    }
+
+    private static boolean isValidShortcutBinding(String binding) {
+        if (binding == null || binding.isEmpty() || binding.length() > 64) return false;
+        String[] parts = binding.split("\\+", -1);
+        if (parts.length == 0) return false;
+        int modifierOrder = -1;
+        Set<String> modifiers = new LinkedHashSet<String>();
+        for (int index = 0; index < parts.length - 1; index++) {
+            String modifier = parts[index];
+            int currentOrder = "Mod".equals(modifier) ? 0 : "Alt".equals(modifier) ? 1
+                    : "Shift".equals(modifier) ? 2 : -1;
+            if (currentOrder <= modifierOrder || !modifiers.add(modifier)) return false;
+            modifierOrder = currentOrder;
+        }
+        String key = parts[parts.length - 1];
+        boolean functionKey = key.matches("F(?:[1-9]|1[0-2])");
+        boolean alphaNumeric = key.matches("[A-Z0-9]");
+        boolean named = SHORTCUT_NAMED_KEYS.contains(key);
+        if ("Escape".equals(key)) return "Shift+Escape".equals(binding);
+        if (!functionKey && !alphaNumeric && !named) return false;
+        return functionKey || !modifiers.isEmpty();
     }
 
     @PostMapping(value = "/workspaces/{workspaceId}/csv/uploads", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -1267,6 +1348,7 @@ public final class DbStudioApiController {
         if (!result.containsKey("connection.maxActiveSessions")) result.put("connection.maxActiveSessions", "10");
         if (!result.containsKey("connection.autoCommit")) result.put("connection.autoCommit", "false");
         if (!result.containsKey("editor.completionCandidateLimit")) result.put("editor.completionCandidateLimit", "100");
+        if (!result.containsKey("keyboard.shortcuts")) result.put("keyboard.shortcuts", DEFAULT_SHORTCUTS);
         if (!result.containsKey("connection.idleTimeoutMinutes")) result.put("connection.idleTimeoutMinutes", "10");
         if (!result.containsKey("connection.transactionDisconnectRollbackMinutes")) {
             result.put("connection.transactionDisconnectRollbackMinutes", "10");
