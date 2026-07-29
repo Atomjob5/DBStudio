@@ -8,11 +8,14 @@ import type { CompletionCandidate, CompletionResult } from "../types";
 import { completionClient } from "../completion/client";
 import { CompletionModelSynchronizer, isModelVersionChanged } from "../completion/modelSynchronizer";
 import { completionDocumentation, truncateCompletionComment } from "../completion/presentation";
+import { matchingSnippetCandidate } from "../completion/snippets";
+import type { SqlCompletionSnippet } from "../types";
 
 (self as typeof self & { MonacoEnvironment: object }).MonacoEnvironment = { getWorker: () => new EditorWorker() };
 
 const props = defineProps<{ modelKey: string; initialValue: string; theme: "dark" | "light";
-  completionKey: string; providerId: string; completionCandidateLimit: number }>();
+  completionKey: string; providerId: string; completionCandidateLimit: number;
+  completionPreciseMatchingEnabled: boolean; completionSnippets: SqlCompletionSnippet[] }>();
 const emit = defineEmits<{
   dirty: [];
   execute: [scope: "current" | "script", selection: string, cursorOffset: number];
@@ -110,23 +113,53 @@ onMounted(() => {
   completionProvider = monaco.languages.registerCompletionItemProvider("dbstudio-mysql", {
     triggerCharacters: [".", "`", "\"", " "],
     async provideCompletionItems(model, position, _context, token) {
-      if (!props.completionKey || props.completionKey === "unbound") return { suggestions: [] };
-      const modelKey = modelKeys.get(model);
-      if (!modelKey) return { suggestions: [] };
       const word = model.getWordUntilPosition(position);
+      const snippetWord = snippetWordAt(model, position);
+      const snippet = matchingSnippetCandidate(props.completionSnippets, snippetWord.word);
+      const snippetEntry = snippet ? [{
+        item: snippet,
+        range: completionRange(position, snippetWord.startColumn, position.column),
+      }] : [];
+      if (!props.completionKey || props.completionKey === "unbound") {
+        return { suggestions: completionSuggestions(snippetEntry) };
+      }
+      const modelKey = modelKeys.get(model);
+      if (!modelKey) return { suggestions: completionSuggestions(snippetEntry) };
       const modelVersion = model.getVersionId();
       const cursorOffset = model.getOffsetAt(position);
       let result: CompletionResult;
       try {
         result = await modelSynchronizer.execute(modelKey, model, modelVersion,
           () => completionClient.complete(props.completionKey, props.providerId, modelKey,
-            modelVersion, cursorOffset, word.word, props.completionCandidateLimit));
+            modelVersion, cursorOffset, word.word, props.completionCandidateLimit,
+            props.completionPreciseMatchingEnabled));
       } catch (error) {
-        if (isModelVersionChanged(error)) return { suggestions: [] };
+        if (isModelVersionChanged(error)) return { suggestions: completionSuggestions(snippetEntry) };
+        if (snippetEntry.length) return { suggestions: completionSuggestions(snippetEntry) };
         throw error;
       }
       if (token.isCancellationRequested) return { suggestions: [] };
-      return { incomplete: result.incomplete, suggestions: result.items.map((item, index) => ({
+      const databaseEntries = result.items.map((item) => ({
+        item: !props.completionPreciseMatchingEnabled && word.word
+          ? { ...item, filterText: word.word } : item,
+        range: completionRange(position, word.startColumn, word.endColumn),
+      }));
+      return {
+        incomplete: result.incomplete,
+        suggestions: completionSuggestions([...snippetEntry, ...databaseEntries]),
+      };
+    }
+  });
+  switchModel(props.modelKey, props.initialValue);
+});
+
+interface CompletionEntry {
+  item: CompletionCandidate;
+  range: monaco.IRange;
+}
+
+function completionSuggestions(entries: CompletionEntry[]): monaco.languages.CompletionItem[] {
+  return entries.map(({ item, range }, index) => ({
         label: {
           label: item.displayLabel,
           detail: item.remarks ? `  ${truncateCompletionComment(item.remarks)}` : undefined,
@@ -137,14 +170,33 @@ onMounted(() => {
         sortText: String(index).padStart(5, "0"),
         documentation: { value: completionDocumentation(item) },
         kind: completionKind(item.kind),
-        range: { startLineNumber: position.lineNumber, endLineNumber: position.lineNumber, startColumn: word.startColumn, endColumn: word.endColumn }
-      })) };
-    }
-  });
-  switchModel(props.modelKey, props.initialValue);
-});
+        range,
+      }));
+}
+
+function completionRange(position: monaco.Position, startColumn: number, endColumn: number): monaco.IRange {
+  return {
+    startLineNumber: position.lineNumber,
+    endLineNumber: position.lineNumber,
+    startColumn,
+    endColumn,
+  };
+}
+
+function snippetWordAt(model: monaco.editor.ITextModel, position: monaco.Position): {
+  word: string;
+  startColumn: number;
+} {
+  const beforeCursor = model.getLineContent(position.lineNumber).slice(0, position.column - 1);
+  const match = beforeCursor.match(/[\p{L}\p{N}_$]+$/u);
+  return {
+    word: match?.[0] ?? "",
+    startColumn: match ? position.column - match[0].length : position.column,
+  };
+}
 
 function completionKind(kind: CompletionCandidate["kind"]): monaco.languages.CompletionItemKind {
+  if (kind === "snippet") return monaco.languages.CompletionItemKind.Snippet;
   if (kind === "column") return monaco.languages.CompletionItemKind.Field;
   if (kind === "schema") return monaco.languages.CompletionItemKind.Module;
   if (kind === "view") return monaco.languages.CompletionItemKind.Interface;

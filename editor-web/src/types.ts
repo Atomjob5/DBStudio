@@ -195,7 +195,7 @@ export interface CompletionCandidate {
   documentationPath: string;
   insertText: string;
   filterText: string;
-  kind: "keyword" | "schema" | "table" | "view" | "column";
+  kind: "keyword" | "schema" | "table" | "view" | "column" | "snippet";
   remarks: string;
   typeName: string;
 }
@@ -203,6 +203,13 @@ export interface CompletionCandidate {
 export interface CompletionResult {
   items: CompletionCandidate[];
   incomplete: boolean;
+}
+
+export interface SqlCompletionSnippet {
+  id: string;
+  trigger: string;
+  remarks: string;
+  sql: string;
 }
 
 export interface ResultColumnRemarkLookup {

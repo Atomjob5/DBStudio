@@ -212,6 +212,8 @@ class LocalServerSecurityTest {
         assertTrue(defaults.getBody().contains("\"connection.autoCommit\":\"false\""));
         assertTrue(defaults.getBody().contains("\"connection.idleTimeoutMinutes\":\"10\""));
         assertTrue(defaults.getBody().contains("\"connection.transactionDisconnectRollbackMinutes\":\"10\""));
+        assertTrue(defaults.getBody().contains("\"editor.completionPreciseMatchingEnabled\":\"false\""));
+        assertTrue(defaults.getBody().contains("\"editor.completionSnippets\":\"[]\""));
 
         Map<String, String> setting = new HashMap<String, String>();
         setting.put("key", "result.columnLayoutScope");
@@ -329,6 +331,43 @@ class LocalServerSecurityTest {
                 "{\"query.cancel\":\"Escape\"}",
                 "{\"file.newQuery\":\"N\"}",
                 "not-json")) {
+            setting.put("value", invalid);
+            ResponseEntity<String> rejected = http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                    new HttpEntity<Map<String, String>>(setting, headers), String.class);
+            assertEquals(HttpStatus.BAD_REQUEST, rejected.getStatusCode());
+            assertTrue(rejected.getBody().contains("INVALID_SETTING"));
+        }
+    }
+
+    @Test
+    void validatesAndPersistsSqlCompletionSettings() {
+        HttpHeaders headers = authenticatedHeaders();
+        Map<String, String> setting = new HashMap<String, String>();
+        setting.put("key", "editor.completionPreciseMatchingEnabled");
+        setting.put("value", "true");
+        assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+        setting.put("value", "enabled");
+        assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+
+        setting.put("key", "editor.completionSnippets");
+        setting.put("value", "[{\"id\":\"5d652bad-8dce-4b56-9c94-d62d74a74576\","
+                + "\"trigger\":\"sf\",\"remarks\":\"通用查询\",\"sql\":\"select * from\"}]");
+        assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+
+        for (String invalid : Arrays.asList(
+                "not-json",
+                "[{\"id\":\"bad\",\"trigger\":\"sf\",\"remarks\":\"\",\"sql\":\"select 1\"}]",
+                "[{\"id\":\"5d652bad-8dce-4b56-9c94-d62d74a74576\",\"trigger\":\"select all\","
+                        + "\"remarks\":\"\",\"sql\":\"select 1\"}]",
+                "[{\"id\":\"5d652bad-8dce-4b56-9c94-d62d74a74576\",\"trigger\":\"sf\","
+                        + "\"remarks\":\"\",\"sql\":\"\"}]",
+                "[{\"id\":\"5d652bad-8dce-4b56-9c94-d62d74a74576\",\"trigger\":\"sf\","
+                        + "\"remarks\":\"\",\"sql\":\"select 1\"},"
+                        + "{\"id\":\"dbf3fc10-3b72-41b8-a83f-9f786314303e\",\"trigger\":\"SF\","
+                        + "\"remarks\":\"\",\"sql\":\"select 2\"}]")) {
             setting.put("value", invalid);
             ResponseEntity<String> rejected = http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                     new HttpEntity<Map<String, String>>(setting, headers), String.class);

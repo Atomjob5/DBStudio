@@ -50,6 +50,13 @@ interface CandidateRank extends CompletionCandidate {
   namespacePriority?: number;
 }
 
+interface IdentifierMatch {
+  quality: number;
+  span: number;
+  skipped: number;
+  start: number;
+}
+
 export interface CompletionIndex {
   namespaces: Map<string, IndexedNamespace>;
   namespaceValues: IndexedNamespace[];
@@ -76,6 +83,7 @@ export interface CompletionRequest {
   cursorOffset?: number;
   prefix: string;
   limit: number;
+  preciseMatchingEnabled?: boolean;
 }
 
 const SOURCE_TERMINATORS = new Set([
@@ -411,6 +419,7 @@ function resultNamespace(index: CompletionIndex, catalog: string, schema: string
 
 export function resolveCompletion(index: CompletionIndex | undefined, request: CompletionRequest): CompletionResult {
   const limit = Math.max(10, Math.min(1000, request.limit || 100));
+  const preciseMatchingEnabled = request.preciseMatchingEnabled !== false;
   const dialect = completionDialect(request.providerId);
   const cursorOffset = Math.max(0, Math.min(request.sql.length, request.cursorOffset ?? request.sql.length));
   const statement = lexStatementAt(request.sql, cursorOffset, dialect);
@@ -427,15 +436,15 @@ export function resolveCompletion(index: CompletionIndex | undefined, request: C
   const candidates: CandidateRank[] = [];
 
   if (index && tableContext) {
-    candidates.push(...tableCandidates(index, qualifier.parts, prefix, limit + 1));
+    candidates.push(...tableCandidates(index, qualifier.parts, prefix, limit + 1, preciseMatchingEnabled));
   } else if (index && columnContext) {
-    candidates.push(...columnCandidates(index, scope, qualifier.parts, prefix, limit + 1));
+    candidates.push(...columnCandidates(index, scope, qualifier.parts, prefix, limit + 1, preciseMatchingEnabled));
   }
 
   candidates.push(...keywordCandidates(dialect, tableContext ? "table" : columnContext ? "column" : clause, prefix));
   const filtered = deduplicate(candidates)
-    .filter((candidate) => matchesPrefix(candidate, prefix))
-    .sort((left, right) => compareCandidates(left, right, prefix));
+    .filter((candidate) => matchesCandidate(candidate, prefix, preciseMatchingEnabled))
+    .sort((left, right) => compareCandidates(left, right, prefix, preciseMatchingEnabled));
   return { items: filtered.slice(0, limit), incomplete: filtered.length > limit };
 }
 
@@ -702,16 +711,17 @@ function sourceColumnNames(source: CompletionSource): string[] {
   return source.columns ?? [];
 }
 
-function tableCandidates(index: CompletionIndex, qualifier: string[], prefix: string, maximum: number): CandidateRank[] {
+function tableCandidates(index: CompletionIndex, qualifier: string[], prefix: string, maximum: number,
+                         preciseMatchingEnabled: boolean): CandidateRank[] {
   if (qualifier.length > 1) return [];
   if (qualifier.length === 1) {
     const namespace = index.namespaces.get(normalize(qualifier[0]));
-    return namespace ? objectCandidates(index, namespace, true, prefix, maximum) : [];
+    return namespace ? objectCandidates(index, namespace, true, prefix, maximum, preciseMatchingEnabled) : [];
   }
   const result: CandidateRank[] = [];
   for (const namespace of index.namespaceValues) {
-    if (matchesName(namespace.snapshot.label, prefix)) {
-      result.push({
+    if (matchesName(namespace.snapshot.label, prefix, preciseMatchingEnabled)) {
+      pushBoundedCandidate(result, {
         displayLabel: namespace.snapshot.label,
         documentationPath: namespace.snapshot.label,
         insertText: namespace.snapshot.label,
@@ -720,23 +730,27 @@ function tableCandidates(index: CompletionIndex, qualifier: string[], prefix: st
         remarks: "",
         typeName: "SCHEMA",
         namespacePriority: namespace === index.defaultNamespace ? 0 : 1
-      });
+      }, maximum, prefix, preciseMatchingEnabled);
     }
-    result.push(...objectCandidates(index, namespace, false, prefix, maximum));
+    for (const candidate of objectCandidates(index, namespace, false, prefix, maximum,
+      preciseMatchingEnabled)) {
+      pushBoundedCandidate(result, candidate, maximum, prefix, preciseMatchingEnabled);
+    }
   }
-  return result;
+  return result.sort((left, right) =>
+    compareCandidates(left, right, prefix, preciseMatchingEnabled)).slice(0, maximum);
 }
 
 function objectCandidates(index: CompletionIndex, namespace: IndexedNamespace, qualified: boolean,
-                          prefix: string, maximum: number): CandidateRank[] {
+                          prefix: string, maximum: number, preciseMatchingEnabled: boolean): CandidateRank[] {
   const isDefault = namespace === index.defaultNamespace;
   const result: CandidateRank[] = [];
   for (const indexed of namespace.sortedObjects) {
     const object = indexed.snapshot;
-    if (!matchesName(object.name, prefix)) continue;
+    if (!matchesName(object.name, prefix, preciseMatchingEnabled)) continue;
     const path = `${namespace.snapshot.label}.${object.name}`;
     const contextual = qualified || isDefault ? object.name : path;
-    result.push({
+    pushBoundedCandidate(result, {
       displayLabel: contextual,
       documentationPath: path,
       insertText: contextual,
@@ -745,14 +759,14 @@ function objectCandidates(index: CompletionIndex, namespace: IndexedNamespace, q
       remarks: object.remarks,
       typeName: object.kind.toUpperCase(),
       namespacePriority: isDefault ? 0 : 1
-    });
-    if (result.length >= maximum) break;
+    }, maximum, prefix, preciseMatchingEnabled);
   }
-  return result;
+  return result.sort((left, right) =>
+    compareCandidates(left, right, prefix, preciseMatchingEnabled)).slice(0, maximum);
 }
 
 function columnCandidates(index: CompletionIndex, scope: CompletionScope | undefined, qualifier: string[],
-                          prefix: string, maximum: number): CandidateRank[] {
+                          prefix: string, maximum: number, preciseMatchingEnabled: boolean): CandidateRank[] {
   let sources: CompletionSource[] = [];
   if (qualifier.length >= 2) {
     const namespace = index.namespaces.get(normalize(qualifier.at(-2) ?? ""));
@@ -770,32 +784,30 @@ function columnCandidates(index: CompletionIndex, scope: CompletionScope | undef
   const qualifyWithAlias = !explicitlyQualified && resolved.length > 1;
   const result: CandidateRank[] = [];
   for (const source of resolved) {
-    let sourceMatches = 0;
     if (source.kind === "physical" && source.namespace && source.object) {
       for (const column of source.object.columns) {
-        if (!matchesName(column.name, prefix)) continue;
+        if (!matchesName(column.name, prefix, preciseMatchingEnabled)) continue;
         const contextual = qualifyWithAlias ? `${source.alias}.${column.name}` : column.name;
         const path = `${source.namespace.snapshot.label}.${source.object.snapshot.name}.${column.name}`;
-        result.push({ displayLabel: contextual, documentationPath: path, insertText: contextual,
+        pushBoundedCandidate(result, { displayLabel: contextual, documentationPath: path, insertText: contextual,
           filterText: `${column.name} ${source.alias}.${column.name} ${path}`, kind: "column",
           remarks: column.remarks, typeName: column.typeName,
-          namespacePriority: source.namespace === index.defaultNamespace ? 0 : 1 });
-        sourceMatches += 1;
-        if (sourceMatches >= maximum) break;
+          namespacePriority: source.namespace === index.defaultNamespace ? 0 : 1 },
+        maximum, prefix, preciseMatchingEnabled);
       }
     } else {
       for (const column of [...(source.columns ?? [])].sort(compareName)) {
-        if (!matchesName(column, prefix)) continue;
+        if (!matchesName(column, prefix, preciseMatchingEnabled)) continue;
         const contextual = qualifyWithAlias ? `${source.alias}.${column}` : column;
-        result.push({ displayLabel: contextual, documentationPath: `${source.alias}.${column}`,
+        pushBoundedCandidate(result, { displayLabel: contextual, documentationPath: `${source.alias}.${column}`,
           insertText: contextual, filterText: `${column} ${source.alias}.${column}`, kind: "column",
-          remarks: "", typeName: source.kind === "cte" ? "CTE" : "DERIVED" });
-        sourceMatches += 1;
-        if (sourceMatches >= maximum) break;
+          remarks: "", typeName: source.kind === "cte" ? "CTE" : "DERIVED" },
+        maximum, prefix, preciseMatchingEnabled);
       }
     }
   }
-  return result;
+  return result.sort((left, right) =>
+    compareCandidates(left, right, prefix, preciseMatchingEnabled)).slice(0, maximum);
 }
 
 function findQualifiedSources(scope: CompletionScope | undefined, qualifier: string): CompletionSource[] {
@@ -812,7 +824,7 @@ function keywordCandidates(dialect: SqlCompletionDialect, context: string, prefi
   const values = context === "table" ? []
     : context === "column" || COLUMN_CLAUSES.has(context) ? dialect.expressionKeywords
       : context === "from" ? dialect.sourceKeywords : dialect.statementKeywords;
-  return values.filter((keyword) => matchesName(keyword, prefix)).map((keyword) => ({
+  return values.filter((keyword) => matchesName(keyword, prefix, true)).map((keyword) => ({
     displayLabel: keyword,
     documentationPath: keyword,
     insertText: keyword,
@@ -844,30 +856,92 @@ function deduplicateSources(values: CompletionSource[]): CompletionSource[] {
   });
 }
 
-function compareCandidates(left: CandidateRank, right: CandidateRank, prefix: string): number {
+function compareCandidates(left: CandidateRank, right: CandidateRank, prefix: string,
+                           preciseMatchingEnabled = true): number {
   const leftName = normalize(lastIdentifier(left.displayLabel));
   const rightName = normalize(lastIdentifier(right.displayLabel));
+  if (!preciseMatchingEnabled && prefix) {
+    const leftMatch = identifierMatch(leftName, prefix, false);
+    const rightMatch = identifierMatch(rightName, prefix, false);
+    const matchOrder = compareIdentifierMatch(leftMatch, rightMatch);
+    if (matchOrder !== 0) return matchOrder;
+  }
   const leftExact = prefix && leftName === prefix ? 0 : 1;
   const rightExact = prefix && rightName === prefix ? 0 : 1;
   if (leftExact !== rightExact) return leftExact - rightExact;
   if ((left.namespacePriority ?? 1) !== (right.namespacePriority ?? 1)) {
     return (left.namespacePriority ?? 1) - (right.namespacePriority ?? 1);
   }
-  const priority: Record<CompletionCandidate["kind"], number> = { column: 0, table: 1, view: 2, schema: 3, keyword: 4 };
+  const priority: Record<CompletionCandidate["kind"], number> = {
+    snippet: -1, column: 0, table: 1, view: 2, schema: 3, keyword: 4
+  };
   return priority[left.kind] - priority[right.kind]
     || compareName(leftName, rightName)
     || compareName(left.documentationPath, right.documentationPath);
 }
 
-function matchesPrefix(candidate: CompletionCandidate, prefix: string): boolean {
+function matchesCandidate(candidate: CompletionCandidate, prefix: string,
+                          preciseMatchingEnabled: boolean): boolean {
   if (!prefix) return true;
-  return normalize(lastIdentifier(candidate.displayLabel)).startsWith(prefix)
-    || normalize(lastIdentifier(candidate.insertText)).startsWith(prefix)
-    || candidate.filterText.split(/\s+/).some((value) => normalize(lastIdentifier(value)).startsWith(prefix));
+  const precise = candidate.kind === "keyword" || candidate.kind === "snippet"
+    ? true : preciseMatchingEnabled;
+  return Boolean(identifierMatch(lastIdentifier(candidate.displayLabel), prefix, precise)
+    || identifierMatch(lastIdentifier(candidate.insertText), prefix, precise)
+    || candidate.filterText.split(/\s+/).some((value) =>
+      identifierMatch(lastIdentifier(value), prefix, precise)));
 }
 
-function matchesName(value: string, prefix: string): boolean {
-  return !prefix || normalize(value).startsWith(prefix);
+function matchesName(value: string, prefix: string, preciseMatchingEnabled: boolean): boolean {
+  return Boolean(identifierMatch(value, prefix, preciseMatchingEnabled));
+}
+
+function identifierMatch(value: string, prefix: string, preciseMatchingEnabled: boolean): IdentifierMatch | undefined {
+  const name = Array.from(normalize(value));
+  const query = Array.from(normalize(prefix));
+  if (!query.length) return { quality: 3, span: 0, skipped: 0, start: 0 };
+  if (query.length > name.length) return undefined;
+  const normalizedName = name.join("");
+  const normalizedPrefix = query.join("");
+  if (normalizedName === normalizedPrefix) {
+    return { quality: 0, span: query.length, skipped: 0, start: 0 };
+  }
+  if (normalizedName.startsWith(normalizedPrefix)) {
+    return { quality: 1, span: query.length, skipped: 0, start: 0 };
+  }
+  if (preciseMatchingEnabled) return undefined;
+  let best: IdentifierMatch | undefined;
+  for (let start = 0; start < name.length; start += 1) {
+    if (name[start] !== query[0]) continue;
+    let nameIndex = start + 1;
+    let queryIndex = 1;
+    while (nameIndex < name.length && queryIndex < query.length) {
+      if (name[nameIndex] === query[queryIndex]) queryIndex += 1;
+      nameIndex += 1;
+    }
+    if (queryIndex !== query.length) continue;
+    const span = nameIndex - start;
+    const match = { quality: 2, span, skipped: start + span - query.length, start };
+    if (compareIdentifierMatch(match, best) < 0) best = match;
+  }
+  return best;
+}
+
+function compareIdentifierMatch(left: IdentifierMatch | undefined,
+                                right: IdentifierMatch | undefined): number {
+  if (!left) return right ? 1 : 0;
+  if (!right) return -1;
+  return left.quality - right.quality
+    || left.span - right.span
+    || left.skipped - right.skipped
+    || left.start - right.start;
+}
+
+function pushBoundedCandidate(values: CandidateRank[], candidate: CandidateRank, maximum: number,
+                              prefix: string, preciseMatchingEnabled: boolean): void {
+  values.push(candidate);
+  if (values.length <= maximum * 2) return;
+  values.sort((left, right) => compareCandidates(left, right, prefix, preciseMatchingEnabled));
+  values.splice(maximum);
 }
 
 function statementKind(tokens: SqlToken[], start: number, depth: number): string {

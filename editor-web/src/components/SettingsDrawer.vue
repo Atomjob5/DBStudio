@@ -78,6 +78,17 @@
         <div class="section-heading"><div><strong>SQL补全</strong><span>上下文建议与浏览器持久缓存</span></div></div>
         <el-form-item class="compact-setting-row">
           <template #label>
+            <div class="setting-label"><span>精准匹配</span>
+              <el-tooltip content="开启后仅匹配以输入内容开头的候选；关闭后表、视图、Schema和字段支持按字符顺序模糊匹配。" placement="top">
+                <el-icon class="setting-help" tabindex="0" aria-label="精准匹配说明"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </div>
+          </template>
+          <el-switch size="small" aria-label="精准匹配" :model-value="completionPreciseMatchingEnabled"
+                     @update:model-value="$emit('update:completionPreciseMatchingEnabled', $event === true)" />
+        </el-form-item>
+        <el-form-item class="compact-setting-row">
+          <template #label>
             <div class="setting-label"><span>补全候选词数量</span>
               <el-tooltip content="每次最多返回给编辑器的候选数量；继续输入会在Worker中重新筛选。" placement="top">
                 <el-icon class="setting-help" tabindex="0" aria-label="补全候选词数量说明"><QuestionFilled /></el-icon>
@@ -102,6 +113,12 @@
                        :disabled="!canClearCompletionCaches" @click="$emit('clearCompletionCaches')">清理</el-button>
           </div>
         </el-form-item>
+        <el-button class="shortcut-settings-button completion-snippet-settings-button"
+                   :icon="DocumentCopy" @click="$emit('openCompletionSnippets')">
+          管理 SQL 片段
+          <span class="completion-snippet-count">{{ completionSnippetCount }}项</span>
+          <el-icon class="shortcut-settings-arrow"><ArrowRight /></el-icon>
+        </el-button>
       </section>
 
       <section class="settings-section result-settings">
@@ -230,7 +247,7 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowRight, Delete, Monitor, Moon, Operation, QuestionFilled, Sunny } from "@element-plus/icons-vue";
+import { ArrowRight, Delete, DocumentCopy, Monitor, Moon, Operation, QuestionFilled, Sunny } from "@element-plus/icons-vue";
 import type { ResolvedTheme, ThemePreference } from "../types";
 import type { ColumnLayoutScope } from "../columnLayout";
 import type { CopySeparator } from "../resultCopy";
@@ -244,7 +261,8 @@ defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: Resolv
   autoCommit: boolean;
   transactionDisconnectRollbackMinutes: number;
   completionCacheSize: string; completionCacheEnvironmentCount: number; completionCacheLoadingCount: number;
-  completionCandidateLimit: number; canClearCompletionCaches: boolean }>();
+  completionCandidateLimit: number; completionPreciseMatchingEnabled: boolean;
+  completionSnippetCount: number; canClearCompletionCaches: boolean }>();
 const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme": [value: ThemePreference];
   "update:maxRows": [value: number]; "update:streamBatchRows": [value: number];
   "update:columnLayoutScope": [value: ColumnLayoutScope]; "update:copyHeaderOnDoubleClick": [value: boolean];
@@ -256,7 +274,8 @@ const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme"
   "update:showSelectedColumnRemarks": [value: boolean];
   "update:idleTimeoutMinutes": [value: number]; "update:transactionDisconnectRollbackMinutes": [value: number];
   "update:completionCandidateLimit": [value: number];
-  clearCompletionCaches: []; openShortcuts: [] }>();
+  "update:completionPreciseMatchingEnabled": [value: boolean];
+  clearCompletionCaches: []; openShortcuts: []; openCompletionSnippets: [] }>();
 function themeChanged(value: string | number | boolean | undefined): void {
   if (value === "system" || value === "dark" || value === "light") emit("update:theme", value);
 }
@@ -292,6 +311,9 @@ function copyHeaderToggleChanged(value: string | number | boolean): void {
 .theme-options .el-icon { margin-right: 5px; vertical-align: -2px; }
 .shortcut-settings-button { width: 100%; justify-content: flex-start; }
 .shortcut-settings-arrow { margin-left: auto; }
+.completion-snippet-settings-button { margin-top: 10px; }
+.completion-snippet-count { margin-left: auto; color: var(--db-muted); font-size: 11px; }
+.completion-snippet-settings-button .shortcut-settings-arrow { margin-left: 4px; }
 .settings-section :deep(.el-form-item:last-of-type) { margin-bottom: 12px; }
 .result-settings .section-heading { margin-bottom: 8px; }
 .compact-setting-row {

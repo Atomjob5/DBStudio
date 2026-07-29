@@ -98,9 +98,12 @@ public final class DbStudioApiController {
             "statusBar.showSelectedColumnRemarks",
             "connection.maxActiveSessions", "connection.autoCommit", "connection.idleTimeoutMinutes",
             "connection.transactionDisconnectRollbackMinutes",
-            "editor.completionCandidateLimit",
+            "editor.completionCandidateLimit", "editor.completionPreciseMatchingEnabled",
+            "editor.completionSnippets",
             "keyboard.shortcuts",
             "layout.leftWidth", "layout.editorHeight");
+    private static final Set<String> COMPLETION_SNIPPET_FIELDS = new LinkedHashSet<String>(Arrays.asList(
+            "id", "trigger", "remarks", "sql"));
     private static final Set<String> SHORTCUT_ACTION_IDS = new LinkedHashSet<String>(Arrays.asList(
             "file.newQuery", "file.openSql", "file.saveSql",
             "query.executeCurrent", "query.executeAll", "query.cancel",
@@ -969,9 +972,71 @@ public final class DbStudioApiController {
                 throw new ApiException("INVALID_SETTING", "补全候选词数量必须在 10 到 1000 之间");
             }
         }
+        if ("editor.completionPreciseMatchingEnabled".equals(key)
+                && !Arrays.asList("true", "false").contains(value)) {
+            throw new ApiException("INVALID_SETTING", "精准匹配设置无效");
+        }
+        if ("editor.completionSnippets".equals(key)) validateCompletionSnippets(value);
         if ("keyboard.shortcuts".equals(key)) validateShortcutSettings(value);
         settings.put(key, value);
         return ApiPayloads.map("key", key, "value", value);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void validateCompletionSnippets(String value) {
+        if (value == null || value.length() > 256 * 1024) {
+            throw new ApiException("INVALID_SETTING", "SQL片段设置内容过长");
+        }
+        final List<Object> snippets;
+        try {
+            Object parsed = objectMapper.readValue(value, Object.class);
+            if (!(parsed instanceof List)) throw new IllegalArgumentException();
+            snippets = (List<Object>) parsed;
+        } catch (Exception exception) {
+            throw new ApiException("INVALID_SETTING", "SQL片段设置格式无效");
+        }
+        if (snippets.size() > 100) throw new ApiException("INVALID_SETTING", "SQL片段数量不能超过100条");
+        Set<String> ids = new LinkedHashSet<String>();
+        Set<String> triggers = new LinkedHashSet<String>();
+        for (Object item : snippets) {
+            if (!(item instanceof Map)) throw new ApiException("INVALID_SETTING", "SQL片段结构无效");
+            Map<String, Object> snippet = (Map<String, Object>) item;
+            if (!COMPLETION_SNIPPET_FIELDS.equals(snippet.keySet())) {
+                throw new ApiException("INVALID_SETTING", "SQL片段包含未知字段");
+            }
+            Object idValue = snippet.get("id");
+            Object triggerValue = snippet.get("trigger");
+            Object remarksValue = snippet.get("remarks");
+            Object sqlValue = snippet.get("sql");
+            if (!(idValue instanceof String) || !(triggerValue instanceof String)
+                    || !(remarksValue instanceof String) || !(sqlValue instanceof String)) {
+                throw new ApiException("INVALID_SETTING", "SQL片段字段类型无效");
+            }
+            String id = (String) idValue;
+            try {
+                UUID.fromString(id);
+            } catch (IllegalArgumentException exception) {
+                throw new ApiException("INVALID_SETTING", "SQL片段ID无效");
+            }
+            if (!ids.add(id)) throw new ApiException("INVALID_SETTING", "SQL片段ID不能重复");
+            String trigger = ((String) triggerValue).trim();
+            int triggerLength = trigger.codePointCount(0, trigger.length());
+            if (triggerLength < 1 || triggerLength > 64 || !trigger.matches("[\\p{L}\\p{N}_$]+")) {
+                throw new ApiException("INVALID_SETTING", "SQL片段提示词无效");
+            }
+            String normalizedTrigger = trigger.toLowerCase(Locale.ROOT);
+            if (!triggers.add(normalizedTrigger)) {
+                throw new ApiException("INVALID_SETTING", "SQL片段提示词不能重复");
+            }
+            String remarks = (String) remarksValue;
+            if (remarks.codePointCount(0, remarks.length()) > 200) {
+                throw new ApiException("INVALID_SETTING", "SQL片段备注不能超过200个字符");
+            }
+            String sql = (String) sqlValue;
+            if (sql.trim().isEmpty() || sql.length() > 64 * 1024) {
+                throw new ApiException("INVALID_SETTING", "SQL片段内容不能为空且不能超过64 KiB");
+            }
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -1348,6 +1413,10 @@ public final class DbStudioApiController {
         if (!result.containsKey("connection.maxActiveSessions")) result.put("connection.maxActiveSessions", "10");
         if (!result.containsKey("connection.autoCommit")) result.put("connection.autoCommit", "false");
         if (!result.containsKey("editor.completionCandidateLimit")) result.put("editor.completionCandidateLimit", "100");
+        if (!result.containsKey("editor.completionPreciseMatchingEnabled")) {
+            result.put("editor.completionPreciseMatchingEnabled", "false");
+        }
+        if (!result.containsKey("editor.completionSnippets")) result.put("editor.completionSnippets", "[]");
         if (!result.containsKey("keyboard.shortcuts")) result.put("keyboard.shortcuts", DEFAULT_SHORTCUTS);
         if (!result.containsKey("connection.idleTimeoutMinutes")) result.put("connection.idleTimeoutMinutes", "10");
         if (!result.containsKey("connection.transactionDisconnectRollbackMinutes")) {

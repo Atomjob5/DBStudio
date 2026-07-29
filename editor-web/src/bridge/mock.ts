@@ -47,6 +47,9 @@ const mockSettings: Record<string, string> = {
   "result.scrollOptimizationBufferScreens": "1",
   "connection.maxActiveSessions": "10",
   "connection.idleTimeoutMinutes": "10",
+  "editor.completionCandidateLimit": "100",
+  "editor.completionPreciseMatchingEnabled": "false",
+  "editor.completionSnippets": "[]",
   "keyboard.shortcuts": serializeShortcutBindings(DEFAULT_SHORTCUT_BINDINGS),
 };
 

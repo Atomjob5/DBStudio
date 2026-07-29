@@ -131,7 +131,8 @@ async function handle(request: CompletionWorkerRequest) {
     }
     const entry = await completionIndex(request.cacheKey, request.providerId);
     return resolveCompletion(entry?.index, { providerId: request.providerId, sql,
-      cursorOffset: request.cursorOffset, prefix: request.prefix, limit: request.limit });
+      cursorOffset: request.cursorOffset, prefix: request.prefix, limit: request.limit,
+      preciseMatchingEnabled: request.preciseMatchingEnabled });
   }
   if (request.type === "result-columns.resolve") {
     const entry = await completionIndex(request.cacheKey, request.providerId);

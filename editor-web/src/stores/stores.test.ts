@@ -273,6 +273,9 @@ describe("application stores", () => {
       "connection.autoCommit": "true",
       "connection.maxActiveSessions": "12", "connection.idleTimeoutMinutes": "30",
       "editor.completionCandidateLimit": "250",
+      "editor.completionPreciseMatchingEnabled": "true",
+      "editor.completionSnippets": "[{\"id\":\"5d652bad-8dce-4b56-9c94-d62d74a74576\","
+        + "\"trigger\":\"sf\",\"remarks\":\"通用查询\",\"sql\":\"select * from\"}]",
       "keyboard.shortcuts": "{\"query.executeCurrent\":null,\"query.executeAll\":\"Mod+7\"}" }, []);
     expect(settings.maxResultRows).toBe(2500);
     expect(settings.streamBatchRows).toBe(75);
@@ -287,6 +290,13 @@ describe("application stores", () => {
     expect(settings.maxActiveSessions).toBe(12);
     expect(settings.idleTimeoutMinutes).toBe(30);
     expect(settings.completionCandidateLimit).toBe(250);
+    expect(settings.completionPreciseMatchingEnabled).toBe(true);
+    expect(settings.completionSnippets).toEqual([{
+      id: "5d652bad-8dce-4b56-9c94-d62d74a74576",
+      trigger: "sf",
+      remarks: "通用查询",
+      sql: "select * from"
+    }]);
     expect(settings.shortcuts["query.executeCurrent"]).toBeNull();
     expect(settings.shortcuts["query.executeAll"]).toBe("Mod+7");
     expect(settings.shortcuts["query.cancel"]).toBe("Shift+Escape");
@@ -302,6 +312,8 @@ describe("application stores", () => {
     expect(settings.maxActiveSessions).toBe(10);
     expect(settings.idleTimeoutMinutes).toBe(10);
     expect(settings.completionCandidateLimit).toBe(100);
+    expect(settings.completionPreciseMatchingEnabled).toBe(false);
+    expect(settings.completionSnippets).toEqual([]);
     expect(settings.shortcuts["query.executeCurrent"]).toBe("F8");
     expect(settings.shortcuts["query.executeAll"]).toBe("F7");
 

@@ -21,4 +21,14 @@ describe("completion presentation", () => {
     expect(documentation).toContain("BIGINT");
     expect(documentation).toContain("完整字段注释");
   });
+
+  it("shows SQL snippet remarks and a SQL preview", () => {
+    const documentation = completionDocumentation({
+      displayLabel: "sf", documentationPath: "sf", insertText: "select *\nfrom",
+      filterText: "sf", kind: "snippet", typeName: "SQL片段", remarks: "通用查询"
+    });
+    expect(documentation).toContain("SQL片段：sf");
+    expect(documentation).toContain("通用查询");
+    expect(documentation).toContain("```sql\nselect *\nfrom\n```");
+  });
 });

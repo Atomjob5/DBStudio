@@ -175,6 +175,45 @@ describe("App result loading status toolbar", () => {
     expect(settings.scrollOptimizationEnabled).toBe(true);
   });
 
+  it("persists SQL completion matching and snippets with confirmed-value rollback", async () => {
+    const settings = useSettingsStore();
+    const vm = wrapper.vm as unknown as {
+      updateCompletionPreciseMatchingEnabled: (value: boolean) => void;
+      updateCompletionSnippets: (value: Array<{ id: string; trigger: string;
+        remarks: string; sql: string }>) => void;
+    };
+    rpcRequest.mockResolvedValueOnce({});
+    vm.updateCompletionPreciseMatchingEnabled(true);
+    expect(settings.completionPreciseMatchingEnabled).toBe(true);
+    await flushPromises();
+    expect(rpcRequest).toHaveBeenCalledWith("settings.update", {
+      key: "editor.completionPreciseMatchingEnabled", value: "true"
+    });
+
+    rpcRequest.mockRejectedValueOnce(new Error("save failed"));
+    vm.updateCompletionPreciseMatchingEnabled(false);
+    expect(settings.completionPreciseMatchingEnabled).toBe(false);
+    await flushPromises();
+    expect(settings.completionPreciseMatchingEnabled).toBe(true);
+
+    const snippet = { id: "5d652bad-8dce-4b56-9c94-d62d74a74576",
+      trigger: "sf", remarks: "通用查询", sql: "select * from" };
+    rpcRequest.mockResolvedValueOnce({});
+    vm.updateCompletionSnippets([snippet]);
+    expect(settings.completionSnippets).toEqual([snippet]);
+    await flushPromises();
+    expect(rpcRequest).toHaveBeenCalledWith("settings.update", {
+      key: "editor.completionSnippets",
+      value: JSON.stringify([snippet])
+    });
+
+    rpcRequest.mockRejectedValueOnce(new Error("save failed"));
+    vm.updateCompletionSnippets([{ ...snippet, remarks: "修改后" }]);
+    expect(settings.completionSnippets[0].remarks).toBe("修改后");
+    await flushPromises();
+    expect(settings.completionSnippets).toEqual([snippet]);
+  });
+
   it("uses F8 and F7 for execution, preserves editing shortcuts, and suppresses dangerous legacy keys", async () => {
     const editors = useEditorStore();
     editors.patch("bootstrap-editor", {

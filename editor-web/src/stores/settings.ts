@@ -2,6 +2,8 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import type { ColumnLayoutScope } from "../columnLayout";
 import type { CopySeparator } from "../resultCopy";
+import type { SqlCompletionSnippet } from "../types";
+import { parseSqlCompletionSnippets } from "../completion/snippets";
 import {
   DEFAULT_SHORTCUT_BINDINGS,
   parseShortcutBindings,
@@ -27,6 +29,8 @@ export const useSettingsStore = defineStore("settings", () => {
   const idleTimeoutMinutes = ref(10);
   const transactionDisconnectRollbackMinutes = ref(10);
   const completionCandidateLimit = ref(100);
+  const completionPreciseMatchingEnabled = ref(false);
+  const completionSnippets = ref<SqlCompletionSnippet[]>([]);
   const shortcuts = ref<ShortcutBindings>({ ...DEFAULT_SHORTCUT_BINDINGS });
   const shortcutRecordingActive = ref(false);
   const recentFiles = ref<string[]>([]);
@@ -58,6 +62,8 @@ export const useSettingsStore = defineStore("settings", () => {
     transactionDisconnectRollbackMinutes.value = Number.isFinite(transactionTimeout) ? transactionTimeout : 10;
     const completionLimit = Number.parseInt(settings["editor.completionCandidateLimit"] ?? "100", 10);
     completionCandidateLimit.value = Number.isFinite(completionLimit) ? Math.max(10, Math.min(1000, completionLimit)) : 100;
+    completionPreciseMatchingEnabled.value = settings["editor.completionPreciseMatchingEnabled"] === "true";
+    completionSnippets.value = parseSqlCompletionSnippets(settings["editor.completionSnippets"]);
     shortcuts.value = parseShortcutBindings(settings["keyboard.shortcuts"]);
     recentFiles.value = recent;
   }
@@ -74,10 +80,15 @@ export const useSettingsStore = defineStore("settings", () => {
     shortcuts.value = { ...DEFAULT_SHORTCUT_BINDINGS };
   }
 
+  function setCompletionSnippets(value: SqlCompletionSnippet[]): void {
+    completionSnippets.value = value.map((item) => ({ ...item }));
+  }
+
   return { maxResultRows, streamBatchRows, columnLayoutScope, copyHeaderOnDoubleClick, copySeparator,
     headerSortingEnabled, headerFilteringEnabled, showColumnRemarksInHeader, showSelectedColumnRemarks,
     scrollOptimizationEnabled, scrollOptimizationBufferScreens,
     maxActiveSessions, autoCommit, idleTimeoutMinutes, transactionDisconnectRollbackMinutes,
-    completionCandidateLimit, shortcuts, shortcutRecordingActive,
-    recentFiles, initialize, setShortcuts, setShortcut, resetShortcuts };
+    completionCandidateLimit, completionPreciseMatchingEnabled, completionSnippets,
+    shortcuts, shortcutRecordingActive,
+    recentFiles, initialize, setCompletionSnippets, setShortcuts, setShortcut, resetShortcuts };
 });

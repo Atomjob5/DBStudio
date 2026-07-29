@@ -9,7 +9,8 @@ export type CompletionWorkerRequest =
   | { id: string; type: "model.change"; modelKey: string; fromVersion: number; toVersion: number; changes: CompletionTextChange[] }
   | { id: string; type: "model.release"; modelKey: string }
   | { id: string; type: "complete"; cacheKey: string; providerId: string; modelKey: string;
-      modelVersion: number; cursorOffset: number; prefix: string; limit: number }
+      modelVersion: number; cursorOffset: number; prefix: string; limit: number;
+      preciseMatchingEnabled: boolean }
   | { id: string; type: "result-columns.resolve"; cacheKey: string; providerId: string;
       sql: string; columns: ResultColumnRemarkLookup[] }
   | { id: string; type: "query.enrich"; cacheKey: string; providerId: string; url: string;

@@ -374,3 +374,100 @@ function metadata(sql: string) {
 function columns(sql: string) {
   return complete(sql).filter((item) => item.kind === "column");
 }
+
+describe("ordered fuzzy SQL completion", () => {
+  const fuzzyIndex = buildCompletionIndex({
+    formatVersion: 1,
+    providerId: "mysql",
+    sourceProfileId: "profile-fuzzy",
+    generatedAt: "2026-07-28T00:00:00Z",
+    defaultNamespaceKey: "catalog:knowledge_data",
+    selectedNamespaceKeys: ["catalog:knowledge_data"],
+    namespaces: [{
+      key: "catalog:knowledge_data",
+      catalog: "knowledge_data",
+      schema: "",
+      label: "knowledge_data",
+      objects: [
+        { name: "kdpa_acct_info", kind: "table", remarks: "", columns: [
+          { name: "customer_account_info", typeName: "varchar", remarks: "" },
+          { name: "created_at", typeName: "datetime", remarks: "" }
+        ] },
+        { name: "kinfo", kind: "table", remarks: "", columns: [] },
+        { name: "kinfo_archive", kind: "table", remarks: "", columns: [] },
+        { name: "kdpa_account_view", kind: "view", remarks: "", columns: [] }
+      ]
+    }]
+  });
+
+  it.each(["kinfo", "dpainfo"])("matches %s as an ordered table-name subsequence", (prefix) => {
+    const sql = `select * from ${prefix}`;
+    const result = resolveCompletion(fuzzyIndex, {
+      providerId: "mysql", sql, cursorOffset: sql.length, prefix, limit: 100,
+      preciseMatchingEnabled: false
+    });
+    expect(result.items.some((item) => item.kind === "table"
+      && item.displayLabel === "kdpa_acct_info")).toBe(true);
+  });
+
+  it("preserves prefix-only behavior when precise matching is enabled", () => {
+    const sql = "select * from kinfo";
+    const result = resolveCompletion(fuzzyIndex, {
+      providerId: "mysql", sql, cursorOffset: sql.length, prefix: "kinfo", limit: 100,
+      preciseMatchingEnabled: true
+    });
+    expect(result.items.filter((item) => item.kind === "table").map((item) => item.displayLabel))
+      .toEqual(["kinfo", "kinfo_archive"]);
+  });
+
+  it("ranks exact and prefix matches ahead of ordered subsequences", () => {
+    const sql = "select * from kinfo";
+    const result = resolveCompletion(fuzzyIndex, {
+      providerId: "mysql", sql, cursorOffset: sql.length, prefix: "kinfo", limit: 100,
+      preciseMatchingEnabled: false
+    });
+    expect(result.items.filter((item) => item.kind === "table").map((item) => item.displayLabel))
+      .toEqual(["kinfo", "kinfo_archive", "kdpa_acct_info"]);
+  });
+
+  it("supports schemas, views, physical columns and derived columns without fuzzing keywords", () => {
+    const tablesSql = "select * from kaview";
+    expect(resolveCompletion(fuzzyIndex, {
+      providerId: "mysql", sql: tablesSql, cursorOffset: tablesSql.length, prefix: "kaview", limit: 100,
+      preciseMatchingEnabled: false
+    }).items.some((item) => item.kind === "view" && item.displayLabel === "kdpa_account_view")).toBe(true);
+
+    const schemaSql = "select * from kdata";
+    expect(resolveCompletion(fuzzyIndex, {
+      providerId: "mysql", sql: schemaSql, cursorOffset: schemaSql.length, prefix: "kdata", limit: 100,
+      preciseMatchingEnabled: false
+    }).items.some((item) => item.kind === "schema" && item.displayLabel === "knowledge_data")).toBe(true);
+
+    const columnSql = "select k.cinfo from kdpa_acct_info k";
+    expect(resolveCompletion(fuzzyIndex, {
+      providerId: "mysql", sql: columnSql, cursorOffset: "select k.cinfo".length,
+      prefix: "cinfo", limit: 100, preciseMatchingEnabled: false
+    }).items.some((item) => item.kind === "column" && item.displayLabel === "customer_account_info")).toBe(true);
+
+    const derivedSql = "select d.ainfo from (select customer_account_info from kdpa_acct_info) d";
+    expect(resolveCompletion(fuzzyIndex, {
+      providerId: "mysql", sql: derivedSql, cursorOffset: "select d.ainfo".length,
+      prefix: "ainfo", limit: 100, preciseMatchingEnabled: false
+    }).items.some((item) => item.kind === "column" && item.displayLabel === "customer_account_info")).toBe(true);
+
+    const keywordSql = "slt";
+    expect(resolveCompletion(undefined, {
+      providerId: "mysql", sql: keywordSql, cursorOffset: keywordSql.length,
+      prefix: "slt", limit: 100, preciseMatchingEnabled: false
+    }).items.some((item) => item.kind === "keyword" && item.displayLabel.toLowerCase() === "select")).toBe(false);
+  });
+
+  it("rejects candidates whose characters are not in the requested order", () => {
+    const sql = "select * from infok";
+    const result = resolveCompletion(fuzzyIndex, {
+      providerId: "mysql", sql, cursorOffset: sql.length, prefix: "infok", limit: 100,
+      preciseMatchingEnabled: false
+    });
+    expect(result.items.some((item) => item.kind === "table" && item.displayLabel === "kdpa_acct_info")).toBe(false);
+  });
+});

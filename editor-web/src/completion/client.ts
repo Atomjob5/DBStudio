@@ -36,9 +36,10 @@ export class CompletionClient {
   }
 
   complete(cacheKey: string, providerId: string, modelKey: string, modelVersion: number,
-           cursorOffset: number, prefix: string, limit: number): Promise<CompletionResult> {
+           cursorOffset: number, prefix: string, limit: number,
+           preciseMatchingEnabled: boolean): Promise<CompletionResult> {
     return this.send({ id: crypto.randomUUID(), type: "complete", cacheKey, providerId, modelKey,
-      modelVersion, cursorOffset, prefix, limit }) as Promise<CompletionResult>;
+      modelVersion, cursorOffset, prefix, limit, preciseMatchingEnabled }) as Promise<CompletionResult>;
   }
 
   resolveResultColumnRemarks(cacheKey: string, providerId: string, sql: string,

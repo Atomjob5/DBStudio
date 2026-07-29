@@ -29,6 +29,8 @@ describe("SettingsDrawer compact result settings", () => {
         completionCacheEnvironmentCount: 3,
         completionCacheLoadingCount: 1,
         completionCandidateLimit: 100,
+        completionPreciseMatchingEnabled: false,
+        completionSnippetCount: 0,
         canClearCompletionCaches: true
       },
       global: { plugins: [ElementPlus], stubs: { teleport: true } }
@@ -38,7 +40,7 @@ describe("SettingsDrawer compact result settings", () => {
   it("renders compact connection and result settings without the old alert", async () => {
     const wrapper = mountDrawer();
     await flushPromises();
-    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(16);
+    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(17);
     expect(wrapper.findComponent({ name: "ElAlert" }).exists()).toBe(false);
     const separator = wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "comma");
@@ -75,11 +77,12 @@ describe("SettingsDrawer compact result settings", () => {
     const switches = wrapper.findAllComponents({ name: "ElSwitch" });
     switches[0].vm.$emit("update:modelValue", true);
     switches[1].vm.$emit("update:modelValue", true);
-    switches[2].vm.$emit("update:modelValue", false);
+    switches[2].vm.$emit("update:modelValue", true);
     switches[3].vm.$emit("update:modelValue", false);
     switches[4].vm.$emit("update:modelValue", false);
-    switches[5].vm.$emit("update:modelValue", true);
-    switches[6].vm.$emit("update:modelValue", false);
+    switches[5].vm.$emit("update:modelValue", false);
+    switches[6].vm.$emit("update:modelValue", true);
+    switches[7].vm.$emit("update:modelValue", false);
     wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "result")!.vm.$emit("update:modelValue", "editor");
     wrapper.findAllComponents({ name: "ElRadioGroup" })
@@ -92,6 +95,7 @@ describe("SettingsDrawer compact result settings", () => {
     expect(wrapper.emitted("update:maxRows")?.[0]).toEqual([2500]);
     expect(wrapper.emitted("update:streamBatchRows")?.[0]).toEqual([50]);
     expect(wrapper.emitted("update:autoCommit")?.[0]).toEqual([true]);
+    expect(wrapper.emitted("update:completionPreciseMatchingEnabled")?.[0]).toEqual([true]);
     expect(wrapper.emitted("update:copyHeaderOnDoubleClick")?.[0]).toEqual([false]);
     expect(wrapper.emitted("update:headerSortingEnabled")?.[0]).toEqual([false]);
     expect(wrapper.emitted("update:headerFilteringEnabled")?.[0]).toEqual([false]);
@@ -101,8 +105,10 @@ describe("SettingsDrawer compact result settings", () => {
     expect(wrapper.emitted("update:columnLayoutScope")?.[0]).toEqual(["editor"]);
     expect(wrapper.emitted("update:copySeparator")?.[0]).toEqual(["pipe"]);
     expect(wrapper.emitted("clearCompletionCaches")).toHaveLength(1);
-    await wrapper.get(".shortcut-settings-button").trigger("click");
+    await wrapper.findAll(".shortcut-settings-button")[0].trigger("click");
     expect(wrapper.emitted("openShortcuts")).toHaveLength(1);
+    await wrapper.get(".completion-snippet-settings-button").trigger("click");
+    expect(wrapper.emitted("openCompletionSnippets")).toHaveLength(1);
     wrapper.unmount();
   });
 

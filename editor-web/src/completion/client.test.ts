@@ -30,10 +30,11 @@ describe("CompletionClient worker protocol", () => {
   it("sends model identity and cursor data without copying SQL into completion requests", async () => {
     vi.stubGlobal("Worker", MockWorker);
     const client = new CompletionClient();
-    await client.complete("cache", "oracle", "editor", 7, 19, "CUS", 100);
+    await client.complete("cache", "oracle", "editor", 7, 19, "CUS", 100, false);
     const request = MockWorker.latest?.messages[0];
     expect(request).toMatchObject({ type: "complete", cacheKey: "cache", providerId: "oracle",
       modelKey: "editor", modelVersion: 7, cursorOffset: 19, prefix: "CUS", limit: 100 });
+    expect(request).toHaveProperty("preciseMatchingEnabled", false);
     expect(request).not.toHaveProperty("sql");
   });
 

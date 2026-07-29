@@ -130,6 +130,8 @@
                                 :initial-value="editors.active.content" :theme="app.theme"
                                 :completion-key="activeCompletionKey" :provider-id="editors.active.connection?.providerId || 'generic'"
                                 :completion-candidate-limit="settings.completionCandidateLimit"
+                                :completion-precise-matching-enabled="settings.completionPreciseMatchingEnabled"
+                                :completion-snippets="settings.completionSnippets"
                                 @dirty="markActiveDirty" @execute="executeFromEditor" />
                   <el-empty v-else class="workspace-empty" description="新建 SQL 标签开始查询">
                     <template #image><el-icon><Document /></el-icon></template>
@@ -174,6 +176,8 @@
                   :idle-timeout-minutes="settings.idleTimeoutMinutes"
                   :transaction-disconnect-rollback-minutes="settings.transactionDisconnectRollbackMinutes"
                   :completion-candidate-limit="settings.completionCandidateLimit"
+                  :completion-precise-matching-enabled="settings.completionPreciseMatchingEnabled"
+                  :completion-snippet-count="settings.completionSnippets.length"
                   :completion-cache-size="completionCacheSize" :completion-cache-environment-count="metadata.completionStats.environmentCount"
                   :completion-cache-loading-count="metadata.completionStats.loadingCount" :can-clear-completion-caches="metadata.canClearCompletions"
                   @update:theme="updateTheme" @update:max-rows="updateMaxRows"
@@ -190,10 +194,14 @@
                   @update:idle-timeout-minutes="updateIdleTimeoutMinutes"
                   @update:transaction-disconnect-rollback-minutes="updateTransactionDisconnectRollbackMinutes"
                   @update:completion-candidate-limit="updateCompletionCandidateLimit"
-                  @clear-completion-caches="clearCompletionCaches" @open-shortcuts="shortcutDrawer = true" />
+                  @update:completion-precise-matching-enabled="updateCompletionPreciseMatchingEnabled"
+                  @clear-completion-caches="clearCompletionCaches" @open-shortcuts="openShortcutSettings"
+                  @open-completion-snippets="openCompletionSnippetSettings" />
   <ShortcutSettingsDrawer v-model="shortcutDrawer" :bindings="settings.shortcuts" :saving="shortcutSaving"
                           @update-binding="updateShortcutBinding" @reset-defaults="resetShortcutBindings"
                           @recording="settings.shortcutRecordingActive = $event" />
+  <SqlSnippetSettingsDrawer v-model="completionSnippetDrawer" :snippets="settings.completionSnippets"
+                            :saving="completionSnippetSaving" @update-snippets="updateCompletionSnippets" />
   <CompletionSchemaDialog v-model="completionSchemaDialog" :namespaces="completionSchemaNamespaces"
                           :initial-selected-keys="completionSchemaInitialKeys" :refresh="completionSchemaRefresh"
                           @confirm="completeSchemaSelection" @cancel="cancelSchemaSelection" />
@@ -235,6 +243,7 @@ import ObjectExplorer from "./components/ObjectExplorer.vue";
 import ResultPanel from "./components/ResultPanel.vue";
 import SettingsDrawer from "./components/SettingsDrawer.vue";
 import ShortcutSettingsDrawer from "./components/ShortcutSettingsDrawer.vue";
+import SqlSnippetSettingsDrawer from "./components/SqlSnippetSettingsDrawer.vue";
 import AppStatusBar from "./components/AppStatusBar.vue";
 import WorkspaceChooser from "./components/WorkspaceChooser.vue";
 import { useAppStore } from "./stores/app";
@@ -250,6 +259,7 @@ import { applyDocumentTheme } from "./theme";
 import { openRecentSql, openSqlFile, recentSqlFiles, saveSqlFile } from "./files/browserFiles";
 import { completionClient } from "./completion/client";
 import { initialCompletionNamespaceKeys } from "./completion/schemaSelection";
+import { serializeSqlCompletionSnippets } from "./completion/snippets";
 import {
   DEFAULT_SHORTCUT_BINDINGS,
   actionForShortcut,
@@ -262,13 +272,14 @@ import {
   type ShortcutBinding,
   type ShortcutBindings,
 } from "./shortcuts";
-import type { BootstrapResponse, CompletionCache, CompletionNamespaceDescriptor, CompletionNamespacesResponse, CompletionProgress, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryResult, RecoveredEditor, SavedProfile, SelectedResultColumn, StatusBarSystemItem, ThemePreference, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "./types";
+import type { BootstrapResponse, CompletionCache, CompletionNamespaceDescriptor, CompletionNamespacesResponse, CompletionProgress, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryResult, RecoveredEditor, SavedProfile, SelectedResultColumn, SqlCompletionSnippet, StatusBarSystemItem, ThemePreference, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "./types";
 
 const app = useAppStore(); const connections = useConnectionStore(); const metadata = useMetadataStore();
 const editors = useEditorStore(); const queries = useQueryStore(); const settings = useSettingsStore();
 const statusBar = useStatusBarStore();
 const connectionDialog = ref(false); const historyDrawer = ref(false); const settingsDrawer = ref(false);
 const shortcutDrawer = ref(false); const shortcutSaving = ref(false); const csvDialog = ref(false);
+const completionSnippetDrawer = ref(false); const completionSnippetSaving = ref(false);
 const leftWidth = ref(248); const lastLeftWidth = ref(248); const editorHeight = ref("62%");
 const activeTool = ref<"objects" | "connections">("connections"); const panelOpen = ref(true);
 const editingProfile = ref<SavedProfile>(); const profileEnvironmentId = ref("");
@@ -433,6 +444,12 @@ let confirmedShortcutBindings: ShortcutBindings = { ...DEFAULT_SHORTCUT_BINDINGS
 let shortcutSaveQueue: Promise<void> = Promise.resolve();
 let shortcutSaveEpoch = 0;
 let shortcutSaveCount = 0;
+let confirmedCompletionPreciseMatchingEnabled = false;
+let completionPreciseMatchingSaveQueue: Promise<void> = Promise.resolve();
+let confirmedCompletionSnippets: SqlCompletionSnippet[] = [];
+let completionSnippetSaveQueue: Promise<void> = Promise.resolve();
+let completionSnippetSaveEpoch = 0;
+let completionSnippetSaveCount = 0;
 
 watch(leftWidth, (value) => {
   const width = numericPanelWidth(value);
@@ -498,7 +515,10 @@ watch(() => settings.showSelectedColumnRemarks, (enabled) => {
   if (!enabled) selectedResultColumn.value = undefined;
 });
 watch(settingsDrawer, (open) => {
-  if (!open) shortcutDrawer.value = false;
+  if (!open) {
+    shortcutDrawer.value = false;
+    completionSnippetDrawer.value = false;
+  }
 });
 
 function systemThemeChanged(event: MediaQueryListEvent): void {
@@ -718,6 +738,8 @@ async function bootstrapWorkspace(recovered: RecoveredEditor[]): Promise<void> {
     connections.initialize(data.providers, data.profiles, data.systems ?? [], data.environments ?? []);
     settings.initialize(data.settings, data.recentFiles);
     confirmedShortcutBindings = { ...settings.shortcuts };
+    confirmedCompletionPreciseMatchingEnabled = settings.completionPreciseMatchingEnabled;
+    confirmedCompletionSnippets = settings.completionSnippets.map((item) => ({ ...item }));
     void refreshCompletionStats();
     for (const recent of await recentSqlFiles().catch(() => [])) {
       recentHandles.set(recent.name, recent.handle);
@@ -1550,6 +1572,63 @@ async function updateCompletionCandidateLimit(value: number): Promise<void> {
   settings.completionCandidateLimit = normalized;
   try { await rpc.request("settings.update", { key: "editor.completionCandidateLimit", value: String(normalized) }); }
   catch (error) { settings.completionCandidateLimit = previous; reportError(error); }
+}
+function updateCompletionPreciseMatchingEnabled(value: boolean): void {
+  settings.completionPreciseMatchingEnabled = value;
+  const candidate = value;
+  completionPreciseMatchingSaveQueue = completionPreciseMatchingSaveQueue.then(async () => {
+    try {
+      await rpc.request("settings.update", {
+        key: "editor.completionPreciseMatchingEnabled",
+        value: String(candidate),
+      });
+      confirmedCompletionPreciseMatchingEnabled = candidate;
+    } catch (error) {
+      if (settings.completionPreciseMatchingEnabled === candidate) {
+        settings.completionPreciseMatchingEnabled = confirmedCompletionPreciseMatchingEnabled;
+      }
+      reportError(error);
+    }
+  });
+}
+function openShortcutSettings(): void {
+  completionSnippetDrawer.value = false;
+  shortcutDrawer.value = true;
+}
+function openCompletionSnippetSettings(): void {
+  shortcutDrawer.value = false;
+  completionSnippetDrawer.value = true;
+}
+function updateCompletionSnippets(value: SqlCompletionSnippet[]): void {
+  const next = value.map((item) => ({ ...item }));
+  settings.setCompletionSnippets(next);
+  persistCompletionSnippets(next);
+}
+function persistCompletionSnippets(value: SqlCompletionSnippet[]): void {
+  const candidate = value.map((item) => ({ ...item }));
+  const epoch = completionSnippetSaveEpoch;
+  completionSnippetSaveCount += 1;
+  completionSnippetSaving.value = true;
+  completionSnippetSaveQueue = completionSnippetSaveQueue.then(async () => {
+    if (epoch !== completionSnippetSaveEpoch) return;
+    try {
+      await rpc.request("settings.update", {
+        key: "editor.completionSnippets",
+        value: serializeSqlCompletionSnippets(candidate),
+      });
+      if (epoch === completionSnippetSaveEpoch) {
+        confirmedCompletionSnippets = candidate.map((item) => ({ ...item }));
+      }
+    } catch (error) {
+      if (epoch !== completionSnippetSaveEpoch) return;
+      completionSnippetSaveEpoch += 1;
+      settings.setCompletionSnippets(confirmedCompletionSnippets);
+      reportError(error);
+    }
+  }).finally(() => {
+    completionSnippetSaveCount = Math.max(0, completionSnippetSaveCount - 1);
+    completionSnippetSaving.value = completionSnippetSaveCount > 0;
+  });
 }
 function updateShortcutBinding(actionId: ShortcutActionId, binding: ShortcutBinding): void {
   if (settings.shortcuts[actionId] === binding) return;
