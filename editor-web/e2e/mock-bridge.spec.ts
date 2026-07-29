@@ -333,6 +333,24 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
 
   const fieldSelector = page.locator(".result-actions .el-select");
   await fieldSelector.click();
+  const fieldDropdown = page.locator(".el-select__popper:visible");
+  await expect(fieldDropdown).toBeVisible();
+  const selectorBounds = await fieldSelector.boundingBox();
+  const dropdownBounds = await fieldDropdown.boundingBox();
+  if (!selectorBounds || !dropdownBounds) throw new Error("Field selector dropdown is not measurable");
+  expect(Math.abs(dropdownBounds.width - selectorBounds.width)).toBeLessThanOrEqual(2);
+  const longDetail = fieldDropdown.locator(".column-option small").first();
+  await expect(longDetail).toHaveAttribute("title",
+    "用于验证字段筛选宽度约束的超长中文注释 Long field remark that must never expand the selector dropdown");
+  expect(await longDetail.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      clipped: element.scrollWidth > element.clientWidth,
+      overflow: style.overflow,
+      textOverflow: style.textOverflow,
+      whiteSpace: style.whiteSpace
+    };
+  })).toEqual({ clipped: true, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
   await page.getByRole("option", { name: /column_1/ }).first().click();
   await page.keyboard.press("Escape");
   await expect(grid.locator(".result-column-title")).toHaveCount(1);
@@ -340,9 +358,18 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
   await expect(grid.locator(".result-virtual-grid__header")).toBeVisible();
   await expect.poll(() => grid.evaluate((element) => element.scrollLeft)).toBe(0);
 
+  await page.setViewportSize({ width: 1024, height: 640 });
   await fieldSelector.click();
+  const compactSelectorBounds = await fieldSelector.boundingBox();
+  const compactDropdownBounds = await fieldDropdown.boundingBox();
+  if (!compactSelectorBounds || !compactDropdownBounds) {
+    throw new Error("Compact field selector dropdown is not measurable");
+  }
+  expect(Math.abs(compactDropdownBounds.width - compactSelectorBounds.width)).toBeLessThanOrEqual(2);
+  expect(compactDropdownBounds.x + compactDropdownBounds.width).toBeLessThanOrEqual(1024);
   await page.getByRole("option", { name: /column_1/ }).first().click();
   await page.keyboard.press("Escape");
+  await page.setViewportSize({ width: 1440, height: 900 });
   await expect(grid.locator(".result-column-title").first()).toHaveText("column_1");
 
   await page.getByRole("button", { name: "筛选 column_1", exact: true }).click();

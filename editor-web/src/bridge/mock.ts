@@ -139,7 +139,11 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
     const wideResult = String(payload.text ?? "").includes("wide_result");
     const resultColumns = wideResult ? Array.from({ length: 30 }, (_, index) => `column_${index + 1}`) : ["id", "name"];
     const resultDetails = wideResult ? resultColumns.map((label, index) => ({
-      label, name: label, remarks: index === 0 ? "记录编号" : "", catalog: "demo", schema: "",
+      label, name: label,
+      remarks: index === 0
+        ? "用于验证字段筛选宽度约束的超长中文注释 Long field remark that must never expand the selector dropdown"
+        : "",
+      catalog: "demo", schema: "",
       table: "sample", typeName: index === 0 ? "BIGINT" : "VARCHAR",
       jdbcType: index === 0 ? -5 : 12, quotedLabel: `\`${label}\``
     })) : [

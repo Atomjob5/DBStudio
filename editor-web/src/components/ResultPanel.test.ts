@@ -173,6 +173,7 @@ describe("ResultPanel streaming rendering", () => {
   });
 
   it("filters options by metadata and only renders selected columns in source order", async () => {
+    const longRemarks = "订单金额字段的超长中文注释 Long field remark that must stay inside the selector dropdown";
     const wrapper = mount(ResultPanel, {
       props: { activeResultIndex: 0, execution: {
         executionId: "execution-filter", editorId: "editor-1", busy: false, cancelled: false, failed: false, durationMs: 8,
@@ -181,7 +182,7 @@ describe("ResultPanel streaming rendering", () => {
           columnDetails: [
             { label: "id", name: "id", remarks: "订单编号", catalog: "db", schema: "", table: "sample", typeName: "BIGINT" },
             { label: "customer_name", name: "customer_name", remarks: "客户名称", catalog: "db", schema: "", table: "sample", typeName: "VARCHAR" },
-            { label: "amount", name: "amount", remarks: "订单金额", catalog: "db", schema: "", table: "sample", typeName: "DECIMAL" }
+            { label: "amount", name: "amount", remarks: longRemarks, catalog: "db", schema: "", table: "sample", typeName: "DECIMAL" }
           ],
           rows: [["1", "Apple", "12.30"]], updateCount: -1, truncated: false, durationMs: 7, complete: true }]
       } },
@@ -189,12 +190,18 @@ describe("ResultPanel streaming rendering", () => {
     });
     const select = wrapper.findComponent({ name: "ElSelect" });
     const table = wrapper.findComponent({ name: "ElTableV2" });
+    expect(select.props("fitInputWidth")).toBe(true);
     expect((table.props("columns") as Array<{ title: string }>).map((column) => column.title))
       .toEqual(["#", "id", "customer_name", "amount"]);
 
     (select.props("filterMethod") as (query: string) => void)("订单 金额");
     await nextTick();
-    expect(wrapper.findAllComponents({ name: "ElOption" }).map((option) => option.props("label"))).toEqual(["amount"]);
+    const option = wrapper.findComponent({ name: "ElOption" });
+    expect(wrapper.findAllComponents({ name: "ElOption" }).map((item) => item.props("label"))).toEqual(["amount"]);
+    const optionContent = option.vm.$slots.default?.()[0] as VNode;
+    const optionLabels = optionContent.children as VNode[];
+    expect(optionLabels[0].props?.title).toBe("amount");
+    expect(optionLabels[1].props?.title).toBe(longRemarks);
 
     select.vm.$emit("update:modelValue", [2, 0]);
     await nextTick();

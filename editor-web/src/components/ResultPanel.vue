@@ -21,12 +21,13 @@
             <el-button text :icon="RefreshLeft" aria-label="复原列布局" @click="restoreLayout" />
           </el-tooltip>
           <el-select v-model="selectedColumnIndices" multiple filterable clearable collapse-tags collapse-tags-tooltip
+                     fit-input-width
                      :max-collapse-tags="1" :filter-method="filterColumns" placeholder="筛选字段" size="small"
                      aria-label="筛选展示字段">
             <el-option v-for="column in filteredColumnOptions" :key="column.index" :label="column.label" :value="column.index">
               <div class="column-option">
-                <span>{{ column.label }}</span>
-                <small v-if="optionDetail(column)">{{ optionDetail(column) }}</small>
+                <span :title="column.label">{{ column.label }}</span>
+                <small v-if="optionDetail(column)" :title="optionDetail(column)">{{ optionDetail(column) }}</small>
               </div>
             </el-option>
           </el-select>
@@ -1165,9 +1166,33 @@ onBeforeUnmount(() => {
 .result-actions .el-select { width: 210px; }
 .result-actions :deep(.el-button) { width: 28px; min-height: 28px; padding: 0; }
 .result-actions :deep(.el-dropdown) { display: inline-flex; }
-.column-option { min-width: 0; display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
-.column-option span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.column-option small { overflow: hidden; color: var(--db-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.column-option {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  overflow: hidden;
+}
+.column-option span {
+  min-width: 0;
+  max-width: 55%;
+  flex: 0 0 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.column-option span:only-child { max-width: 100%; }
+.column-option small {
+  min-width: 0;
+  flex: 1 1 0;
+  overflow: hidden;
+  color: var(--db-muted);
+  font-size: 10px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .table-host {
   flex: 1;
   min-height: 0;
