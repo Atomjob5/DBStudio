@@ -139,6 +139,129 @@ describe("ResultPanel streaming rendering", () => {
       .toEqual(["#", "id", "customer_name", "amount"]);
   });
 
+  it("views one selected record vertically with every source column and disables for cross-row selections", async () => {
+    const result = {
+      resultIndex: 0, sql: "select id, name, note from sample", type: "QUERY",
+      columns: ["id", "name", "note"],
+      columnDetails: [
+        { label: "id", name: "id", remarks: "编号", catalog: "db", schema: "", table: "sample", typeName: "NUMBER" },
+        { label: "name", name: "name", remarks: "名称", catalog: "db", schema: "", table: "sample", typeName: "VARCHAR2" },
+        { label: "note", name: "note", remarks: "备注", catalog: "db", schema: "", table: "sample", typeName: "VARCHAR2" }
+      ],
+      rows: [["1", "Apple", null], ["2", "Banana", "yellow"]],
+      updateCount: -1, truncated: false, durationMs: 7, complete: true
+    };
+    const execution = {
+      executionId: "execution-single-record", editorId: "editor-1", busy: false, cancelled: false,
+      failed: false, durationMs: 8, results: [result]
+    };
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: 0, execution }, global: { plugins: [ElementPlus] }
+    });
+    const button = () => wrapper.get("button.single-record-button");
+    const table = () => wrapper.findComponent({ name: "ElTableV2" });
+    const columns = () => table().props("columns") as Column[];
+    const rows = () => table().props("data") as Array<{ sourceIndex: number; cells: Array<string | null> }>;
+    const cell = (row: number, column: number) =>
+      columns()[column + 1].cellRenderer?.({ rowData: rows()[row], rowIndex: row } as never) as VNode;
+
+    expect(button().attributes("disabled")).toBeDefined();
+    expect(button().attributes("aria-label")).toBe("单个记录查看");
+    expect(button().text()).toBe("");
+    expect(button().find("svg").exists()).toBe(true);
+    const select = wrapper.findComponent({ name: "ElSelect" });
+    select.vm.$emit("update:modelValue", [1]);
+    await nextTick();
+    cell(0, 0).props?.onPointerdown({
+      button: 0, preventDefault: vi.fn(), ctrlKey: false, metaKey: false, shiftKey: false
+    });
+    window.dispatchEvent(new Event("pointerup"));
+    await nextTick();
+    expect(button().attributes("disabled")).toBeUndefined();
+
+    await button().trigger("click");
+    await nextTick();
+    expect(table().exists()).toBe(false);
+    const singleRecord = wrapper.findComponent({ name: "ResultSingleRecordView" });
+    expect(singleRecord.exists()).toBe(true);
+    expect(singleRecord.props("columns").map((column: { label: string }) => column.label))
+      .toEqual(["id", "name", "note"]);
+    expect(singleRecord.props("row")).toEqual({ sourceIndex: 0, cells: ["1", "Apple", null] });
+    expect(button().attributes("aria-pressed")).toBe("true");
+    expect(button().attributes("aria-label")).toBe("返回结果表格");
+
+    await wrapper.setProps({ execution: {
+      ...execution,
+      results: [{ ...result, columnDetails: [
+        result.columnDetails[0],
+        { ...result.columnDetails[1], remarks: "商品名称" },
+        result.columnDetails[2]
+      ] }]
+    } });
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ResultSingleRecordView" }).props("columns")[1])
+      .toMatchObject({ remarks: "商品名称" });
+
+    await button().trigger("click");
+    await nextTick();
+    expect(table().exists()).toBe(true);
+    expect(button().attributes("disabled")).toBeUndefined();
+
+    cell(1, 0).props?.onPointerdown({
+      button: 0, preventDefault: vi.fn(), ctrlKey: true, metaKey: false, shiftKey: false
+    });
+    await nextTick();
+    expect(button().attributes("disabled")).toBeDefined();
+
+    const rowSelector = columns()[0];
+    const secondRow = rowSelector.cellRenderer?.({ rowData: rows()[1] } as never) as VNode;
+    secondRow.props?.onPointerdown({
+      button: 0, preventDefault: vi.fn(), stopPropagation: vi.fn(),
+      ctrlKey: false, metaKey: false, shiftKey: false
+    });
+    window.dispatchEvent(new Event("pointerup"));
+    await nextTick();
+    expect(button().attributes("disabled")).toBeUndefined();
+    await button().trigger("click");
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ResultSingleRecordView" }).props("row"))
+      .toEqual({ sourceIndex: 1, cells: ["2", "Banana", "yellow"] });
+
+    await wrapper.setProps({ execution: {
+      ...execution, executionId: "execution-single-record-next"
+    } });
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ResultSingleRecordView" }).exists()).toBe(false);
+    expect(button().attributes("disabled")).toBeDefined();
+  });
+
+  it("enables single-record view for an optimized-grid cell selection", async () => {
+    useSettingsStore().scrollOptimizationEnabled = true;
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: 0, execution: {
+        executionId: "execution-single-record-virtual", editorId: "editor-1", busy: false,
+        cancelled: false, failed: false, durationMs: 8,
+        results: [{ resultIndex: 0, sql: "select id", type: "QUERY", columns: ["id"],
+          rows: [["1"]], updateCount: -1, truncated: false, durationMs: 7, complete: true }]
+      } },
+      global: { plugins: [ElementPlus] }
+    });
+    const button = () => wrapper.get("button.single-record-button");
+    expect(button().attributes("disabled")).toBeDefined();
+
+    wrapper.findComponent({ name: "ResultVirtualGrid" }).vm.$emit("cell-pointerdown",
+      { button: 0, preventDefault: vi.fn(), ctrlKey: false, metaKey: false, shiftKey: false }, 0, 0);
+    window.dispatchEvent(new Event("pointerup"));
+    await nextTick();
+    expect(button().attributes("disabled")).toBeUndefined();
+
+    await button().trigger("click");
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ResultVirtualGrid" }).exists()).toBe(false);
+    expect(wrapper.findComponent({ name: "ResultSingleRecordView" }).props("row"))
+      .toEqual({ sourceIndex: 0, cells: ["1"] });
+  });
+
   it("shows a bounded second header line and emits the physical column selected by a cell", async () => {
     const settings = useSettingsStore();
     const remarks = "这是一段非常长的字段备注，用于验证表头不会因为备注内容持续变宽或换行导致结果集布局变形";

@@ -25,6 +25,14 @@
               </div>
             </el-option>
           </el-select>
+          <el-tooltip :content="singleRecordMode ? '返回结果表格' : '单个记录查看'">
+            <el-button text class="single-record-button" :icon="Postcard"
+                       :type="singleRecordMode ? 'primary' : 'default'"
+                       :disabled="!canViewSingleRecord"
+                       :aria-label="singleRecordMode ? '返回结果表格' : '单个记录查看'"
+                       :aria-pressed="singleRecordMode"
+                       @click="toggleSingleRecordView" />
+          </el-tooltip>
           <el-tooltip :content="copySelectionTitle">
             <el-button text :icon="CopyDocument" :aria-label="copySelectionTitle" :disabled="!hasDataSelection" @click="copyCurrentSelection()" />
           </el-tooltip>
@@ -42,7 +50,9 @@
       <el-alert v-if="activeResult?.errorMessage" :title="activeResult.errorMessage" type="error" show-icon :closable="false" />
       <div v-else-if="activeResult?.columns.length" ref="tableHost" class="table-host" tabindex="0"
            @keydown="tableKeydown" @pointermove="autoScrollSelection">
-        <ResultVirtualGrid v-if="settings.scrollOptimizationEnabled" ref="virtualGrid"
+        <ResultSingleRecordView v-if="singleRecordMode && selectedRecordRow"
+                                :columns="columnOptions" :row="selectedRecordRow" />
+        <ResultVirtualGrid v-else-if="settings.scrollOptimizationEnabled" ref="virtualGrid"
                            :rows="displayRows" :columns="virtualColumns" :header-height="headerHeight"
                            :buffer-screens="settings.scrollOptimizationBufferScreens"
                            :selection-mode="selectionMode" :cell-range="cellRange"
@@ -94,7 +104,7 @@
 <script setup lang="ts">
 import { computed, h, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { ElMessage, TableV2FixedDir } from "element-plus";
-import { CopyDocument, DataAnalysis, Download, RefreshLeft } from "@element-plus/icons-vue";
+import { CopyDocument, DataAnalysis, Download, Postcard, RefreshLeft } from "@element-plus/icons-vue";
 import type { Column } from "element-plus";
 import type { QueryExecutionState, SelectedResultColumn } from "../types";
 import { matchesColumnQuery, resultColumnOptions, type ColumnOption } from "../columnFilter";
@@ -112,6 +122,7 @@ import type { ResultGridScrollPosition, ResultVirtualColumn } from "../resultVir
 import ResultHeaderContextMenu, { type HeaderMenuCommand } from "./ResultHeaderContextMenu.vue";
 import ResultHeaderTools from "./ResultHeaderTools.vue";
 import ResultDataContextMenu, { type DataMenuCommand } from "./ResultDataContextMenu.vue";
+import ResultSingleRecordView from "./ResultSingleRecordView.vue";
 import ResultVirtualGrid from "./ResultVirtualGrid.vue";
 import ResultSummaryFooter from "./ResultSummaryFooter.vue";
 import ResultValueDialog from "./ResultValueDialog.vue";
@@ -149,6 +160,7 @@ const dataMenu = ref<{ visible: boolean; x: number; y: number; mode: "cells" | "
   { visible: false, x: 0, y: 0, mode: "cells" });
 let dragPreview: HTMLElement | undefined;
 let measureContext: CanvasRenderingContext2D | null | undefined;
+let singleRecordReturnPosition: ResultGridScrollPosition | undefined;
 const activeIndex = computed({
   get: () => props.activeResultIndex,
   set: (value: number) => emit("update:active-result-index", value)
@@ -169,6 +181,7 @@ const rowDragMode = ref<"replace" | "add" | "remove">("replace");
 const selectedRowSources = ref<number[]>([]);
 const rowAnchor = ref<number>();
 const selectionMode = ref<"cells" | "rows">("cells");
+const singleRecordMode = ref(false);
 const valueDialog = ref<{ visible: boolean; value: string | null }>({ visible: false, value: null });
 const compareDialog = ref(false);
 const sumSummary = ref<{ total: string; count: number }>();
@@ -670,6 +683,8 @@ function clearSelection(): void {
   emit("selected-column", undefined);
   selectedRowSources.value = [];
   rowAnchor.value = undefined;
+  singleRecordMode.value = false;
+  singleRecordReturnPosition = undefined;
 }
 
 function detachCellRange(): void {
@@ -884,6 +899,16 @@ const selectedRowsInDisplayOrder = computed(() => {
   const selected = new Set(selectedRowSources.value);
   return displayRows.value.filter((row) => selected.has(row.sourceIndex));
 });
+const selectedRecordRow = computed<ViewRow | undefined>(() => {
+  if (selectionMode.value === "rows") {
+    return selectedRowsInDisplayOrder.value.length === 1 ? selectedRowsInDisplayOrder.value[0] : undefined;
+  }
+  const sourceRows = new Set(selectedCellsInView.value.map((cell) => cell.sourceRow));
+  if (sourceRows.size !== 1) return undefined;
+  const sourceIndex = sourceRows.values().next().value;
+  return displayRows.value.find((row) => row.sourceIndex === sourceIndex);
+});
+const canViewSingleRecord = computed(() => selectedRecordRow.value !== undefined);
 const selectedRowCount = computed(() => selectionMode.value === "cells"
   ? new Set(selectedCellsInView.value.map((cell) => cell.sourceRow)).size
   : selectedRowsInDisplayOrder.value.length);
@@ -897,6 +922,25 @@ const copySelectionTitle = computed(() => shortcutTooltip(
 ));
 
 watch(selectedRowCount, (count) => emit("selected-row-count", count), { immediate: true });
+watch(selectedRecordRow, (row) => {
+  if (!row && singleRecordMode.value) void leaveSingleRecordView();
+  else if (!row) singleRecordReturnPosition = undefined;
+});
+
+async function leaveSingleRecordView(): Promise<void> {
+  const position = singleRecordReturnPosition;
+  singleRecordMode.value = false;
+  singleRecordReturnPosition = undefined;
+  await nextTick();
+  if (position) restoreScrollPosition(position);
+}
+
+function toggleSingleRecordView(): void {
+  if (singleRecordMode.value) { void leaveSingleRecordView(); return; }
+  if (!selectedRecordRow.value) return;
+  singleRecordReturnPosition = currentScrollPosition();
+  singleRecordMode.value = true;
+}
 
 function selectedCopyText(includeHeaders = false): string {
   if (selectionMode.value === "rows") {
