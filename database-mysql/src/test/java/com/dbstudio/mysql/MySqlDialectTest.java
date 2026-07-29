@@ -46,6 +46,22 @@ class MySqlDialectTest {
     }
 
     @Test
+    void compactsSqlWithoutChangingStringsOrDroppingComments() {
+        String sql = "select /*+ MAX_EXECUTION_TIME(1000) */ id, 'a  b' as value /* keep block */\n"
+                + "from demo -- keep line\nwhere id = 1;";
+
+        String compact = dialect.compact(sql);
+
+        assertTrue(compact.contains("/*+ MAX_EXECUTION_TIME(1000) */"));
+        assertTrue(compact.contains("/* keep block */"));
+        assertTrue(compact.contains("-- keep line"));
+        assertTrue(compact.contains("'a  b'"));
+        assertFalse(dialect.compact("select id,\nname\nfrom demo\nwhere id = 1").contains("\n"));
+        assertEquals("", dialect.compact(null));
+        assertEquals("   ", dialect.compact("   "));
+    }
+
+    @Test
     void recognizesOnlySafeSingleTableMutationSources() {
         com.dbstudio.spi.ResultMutationSource source = dialect.resultMutationSource(
                 "SELECT o.id AS order_id, o.amount FROM `eastwealthcrawler`.`orders` o WHERE o.id > 0").get();

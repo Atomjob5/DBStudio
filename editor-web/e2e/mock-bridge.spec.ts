@@ -644,7 +644,7 @@ test("supports Apple appearance, system theme settings and compact windows", asy
   await expect(page.getByText("双击表头复制列名", { exact: true })).toBeVisible();
   await expect(page.getByText("多列复制分隔符", { exact: true })).toBeVisible();
   const compactRows = page.locator(".settings-drawer .compact-setting-row");
-  await expect(compactRows).toHaveCount(16);
+  await expect(compactRows).toHaveCount(19);
   expect(await compactRows.evaluateAll((rows) => rows.every((row) => {
     const style = getComputedStyle(row);
     const label = row.querySelector(".el-form-item__label")?.getBoundingClientRect();

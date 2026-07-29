@@ -14,6 +14,7 @@ import com.dbstudio.spi.DatabaseObject;
 import com.dbstudio.spi.ResultMutationSource;
 import com.dbstudio.spi.SqlDialect;
 import com.dbstudio.spi.SqlStatement;
+import com.dbstudio.spi.SqlTextCompactor;
 import com.dbstudio.spi.StatementType;
 import com.dbstudio.spi.TransactionEffect;
 import java.sql.Types;
@@ -135,6 +136,17 @@ public class OracleDialect implements SqlDialect {
         try { return SQLUtils.format(sql, DbType.oracle); }
         catch (RuntimeException exception) {
             throw new IllegalArgumentException("无法格式化当前 Oracle SQL：" + exception.getMessage(), exception);
+        }
+    }
+
+    @Override public String compact(String sql) {
+        if (sql == null || sql.trim().isEmpty()) return sql == null ? "" : sql;
+        try {
+            return SqlTextCompactor.preserveComments(
+                    sql, SQLUtils.format(sql, DbType.oracle, new SQLUtils.FormatOption(true, false)));
+        }
+        catch (RuntimeException exception) {
+            throw new IllegalArgumentException("无法压缩当前 Oracle SQL：" + exception.getMessage(), exception);
         }
     }
 

@@ -39,6 +39,17 @@
         </el-tooltip>
       </div>
 
+      <div class="toolbar-cluster editor-actions" aria-label="SQL 编辑操作">
+        <el-tooltip :content="actionTooltip('格式化 SQL', 'editor.format')" placement="bottom">
+          <el-button text :icon="MagicStick" aria-label="格式化 SQL" :disabled="!canTransformSql"
+                     @click="requestSqlTransform('format')" />
+        </el-tooltip>
+        <el-tooltip :content="actionTooltip('压缩 SQL', 'editor.compact')" placement="bottom">
+          <el-button text :icon="Fold" aria-label="压缩 SQL" :disabled="!canTransformSql"
+                     @click="requestSqlTransform('compact')" />
+        </el-tooltip>
+      </div>
+
       <el-tooltip v-if="activeExecutionRunning" :content="cancelExecutionTooltip" placement="bottom">
         <el-button class="execute-control cancel-execution-control" type="warning" :icon="Close"
                    aria-label="取消执行" :loading="activeCancellationPhase === 'cancelling'"
@@ -132,6 +143,8 @@
                                 :completion-candidate-limit="settings.completionCandidateLimit"
                                 :completion-precise-matching-enabled="settings.completionPreciseMatchingEnabled"
                                 :completion-snippets="settings.completionSnippets"
+                                :minimap-enabled="settings.minimapEnabled"
+                                :word-wrap-enabled="settings.wordWrapEnabled"
                                 @dirty="markActiveDirty" @execute="executeFromEditor" />
                   <el-empty v-else class="workspace-empty" description="新建 SQL 标签开始查询">
                     <template #image><el-icon><Document /></el-icon></template>
@@ -179,6 +192,7 @@
                   :completion-candidate-limit="settings.completionCandidateLimit"
                   :completion-precise-matching-enabled="settings.completionPreciseMatchingEnabled"
                   :completion-snippet-count="settings.completionSnippets.length"
+                  :minimap-enabled="settings.minimapEnabled" :word-wrap-enabled="settings.wordWrapEnabled"
                   :completion-cache-size="completionCacheSize" :completion-cache-environment-count="metadata.completionStats.environmentCount"
                   :completion-cache-loading-count="metadata.completionStats.loadingCount" :can-clear-completion-caches="metadata.canClearCompletions"
                   @update:theme="updateTheme" @update:max-rows="updateMaxRows"
@@ -196,6 +210,8 @@
                   @update:transaction-disconnect-rollback-minutes="updateTransactionDisconnectRollbackMinutes"
                   @update:completion-candidate-limit="updateCompletionCandidateLimit"
                   @update:completion-precise-matching-enabled="updateCompletionPreciseMatchingEnabled"
+                  @update:minimap-enabled="updateMinimapEnabled"
+                  @update:word-wrap-enabled="updateWordWrapEnabled"
                   @clear-completion-caches="clearCompletionCaches" @open-shortcuts="openShortcutSettings"
                   @open-completion-snippets="openCompletionSnippetSettings" />
   <ShortcutSettingsDrawer v-model="shortcutDrawer" :bindings="settings.shortcuts" :saving="shortcutSaving"
@@ -221,7 +237,9 @@ import {
   Connection,
   Document,
   DocumentChecked,
+  Fold,
   FolderOpened,
+  MagicStick,
   Moon,
   MoreFilled,
   Plus,
@@ -273,7 +291,7 @@ import {
   type ShortcutBinding,
   type ShortcutBindings,
 } from "./shortcuts";
-import type { BootstrapResponse, CompletionCache, CompletionNamespaceDescriptor, CompletionNamespacesResponse, CompletionProgress, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryResult, RecoveredEditor, SavedProfile, SelectedResultColumn, SqlCompletionSnippet, StatusBarSystemItem, ThemePreference, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "./types";
+import type { BootstrapResponse, CompletionCache, CompletionNamespaceDescriptor, CompletionNamespacesResponse, CompletionProgress, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryResult, RecoveredEditor, SavedProfile, SelectedResultColumn, SqlCompletionSnippet, SqlTransformApplyResult, SqlTransformTarget, StatusBarSystemItem, ThemePreference, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "./types";
 
 const app = useAppStore(); const connections = useConnectionStore(); const metadata = useMetadataStore();
 const editors = useEditorStore(); const queries = useQueryStore(); const settings = useSettingsStore();
@@ -292,6 +310,8 @@ const monacoEditor = ref<{
   setValue(value: string, key?: string): void;
   triggerExecute(scope: "current" | "script"): void;
   triggerCompletion(): void;
+  captureSqlTransformTarget(key?: string): SqlTransformTarget | undefined;
+  applySqlTransform(target: SqlTransformTarget, replacement: string): SqlTransformApplyResult;
 }>();
 const resultPanel = ref<{
   restoreLayout(): void;
@@ -363,6 +383,8 @@ const activeConnectionTooltip = computed(() => `${activeConnectionPath.value}${e
 const connectionCascaderProps: CascaderProps = { emitPath: false };
 const activeDatabaseBusy = computed(() => Boolean(editors.active?.busy || activeResultLoading.value));
 const canExecute = computed(() => Boolean(activeConnected.value && !activeDatabaseBusy.value
+  && app.transportState === "ready"));
+const canTransformSql = computed(() => Boolean(activeConnected.value && !activeDatabaseBusy.value
   && app.transportState === "ready"));
 const activeExecutionRunning = computed(() => Boolean(activeDatabaseBusy.value
   || (editors.active?.executionPhase && editors.active.executionPhase !== "idle")));
@@ -855,11 +877,26 @@ function markActiveDirty(): void {
   if (!editors.active) return;
   editors.patch(editors.active.id, { dirty: true }); scheduleDraft(editors.active.id);
 }
-async function formatActive(): Promise<void> {
-  const tab = editors.active; if (!tab) return;
+function requestSqlTransform(mode: "format" | "compact"): void {
+  if (!canTransformSql.value) return;
+  void transformActiveSql(mode).catch(reportError);
+}
+async function transformActiveSql(mode: "format" | "compact"): Promise<void> {
+  const tab = editors.active;
+  if (!tab) return;
   if (!tab.connection) { ElMessage.warning("请先为当前编辑标签选择数据库链接"); return; }
-  const result = await rpc.request<{ text: string }>("sql.format", { editorId: tab.id, text: monacoEditor.value?.getValue(tab.id) ?? tab.content });
-  monacoEditor.value?.setValue(result.text, tab.id);
+  const target = monacoEditor.value?.captureSqlTransformTarget(tab.id);
+  if (!target) return;
+  const result = await rpc.request<{ text: string }>(`sql.${mode}`, {
+    editorId: tab.id,
+    text: target.text,
+  });
+  const applied = monacoEditor.value?.applySqlTransform(target, result.text) ?? "missing";
+  if (applied === "stale" || applied === "missing") {
+    ElMessage.warning("SQL 内容已发生变化，请重试");
+    return;
+  }
+  if (applied === "unchanged") return;
   editors.patch(tab.id, { dirty: true });
   scheduleDraft(tab.id);
 }
@@ -1346,10 +1383,20 @@ function runShortcutAction(actionId: ShortcutActionId): void {
     if (activeTool.value === "objects" && panelVisible.value) objectExplorer.value?.refresh();
     return;
   }
+  if (actionId === "editor.toggleMinimap") {
+    void updateMinimapEnabled(!settings.minimapEnabled);
+    return;
+  }
+  if (actionId === "editor.toggleWordWrap") {
+    void updateWordWrapEnabled(!settings.wordWrapEnabled);
+    return;
+  }
   if (actionId === "editor.format") {
-    if (editors.active?.connection && !activeDatabaseBusy.value && app.transportState === "ready") {
-      void formatActive().catch(reportError);
-    }
+    requestSqlTransform("format");
+    return;
+  }
+  if (actionId === "editor.compact") {
+    requestSqlTransform("compact");
     return;
   }
   if (actionId === "editor.complete") {
@@ -1573,6 +1620,16 @@ async function updateCompletionCandidateLimit(value: number): Promise<void> {
   settings.completionCandidateLimit = normalized;
   try { await rpc.request("settings.update", { key: "editor.completionCandidateLimit", value: String(normalized) }); }
   catch (error) { settings.completionCandidateLimit = previous; reportError(error); }
+}
+async function updateMinimapEnabled(value: boolean): Promise<void> {
+  const previous = settings.minimapEnabled; settings.minimapEnabled = value;
+  try { await rpc.request("settings.update", { key: "editor.minimapEnabled", value: String(value) }); }
+  catch (error) { settings.minimapEnabled = previous; reportError(error); }
+}
+async function updateWordWrapEnabled(value: boolean): Promise<void> {
+  const previous = settings.wordWrapEnabled; settings.wordWrapEnabled = value;
+  try { await rpc.request("settings.update", { key: "editor.wordWrapEnabled", value: String(value) }); }
+  catch (error) { settings.wordWrapEnabled = previous; reportError(error); }
 }
 function updateCompletionPreciseMatchingEnabled(value: boolean): void {
   settings.completionPreciseMatchingEnabled = value;

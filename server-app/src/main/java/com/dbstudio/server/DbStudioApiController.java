@@ -99,7 +99,7 @@ public final class DbStudioApiController {
             "connection.maxActiveSessions", "connection.autoCommit", "connection.idleTimeoutMinutes",
             "connection.transactionDisconnectRollbackMinutes",
             "editor.completionCandidateLimit", "editor.completionPreciseMatchingEnabled",
-            "editor.completionSnippets",
+            "editor.completionSnippets", "editor.minimapEnabled", "editor.wordWrapEnabled",
             "keyboard.shortcuts",
             "layout.leftWidth", "layout.editorHeight");
     private static final Set<String> COMPLETION_SNIPPET_FIELDS = new LinkedHashSet<String>(Arrays.asList(
@@ -110,7 +110,8 @@ public final class DbStudioApiController {
             "transaction.commit", "transaction.rollback", "data.import", "history.open",
             "settings.open", "ui.toggleTheme", "app.exit",
             "workspace.objects", "workspace.connections", "workspace.refreshObjects",
-            "editor.format", "editor.complete",
+            "editor.toggleMinimap", "editor.toggleWordWrap", "editor.format", "editor.compact",
+            "editor.complete",
             "result.restoreLayout", "result.copySelection", "result.exportLoaded", "result.exportFull",
             "result.loadNext", "result.loadAll"));
     private static final Set<String> RESERVED_SHORTCUTS = new LinkedHashSet<String>(Arrays.asList(
@@ -126,7 +127,9 @@ public final class DbStudioApiController {
             + "\"transaction.commit\":null,\"transaction.rollback\":null,\"data.import\":null,"
             + "\"history.open\":null,\"settings.open\":null,\"ui.toggleTheme\":null,\"app.exit\":null,"
             + "\"workspace.objects\":null,\"workspace.connections\":null,\"workspace.refreshObjects\":null,"
-            + "\"editor.format\":null,\"editor.complete\":null,\"result.restoreLayout\":null,"
+            + "\"editor.toggleMinimap\":null,\"editor.toggleWordWrap\":null,"
+            + "\"editor.format\":null,\"editor.compact\":null,\"editor.complete\":null,"
+            + "\"result.restoreLayout\":null,"
             + "\"result.copySelection\":null,\"result.exportLoaded\":null,\"result.exportFull\":null,"
             + "\"result.loadNext\":null,\"result.loadAll\":null}";
 
@@ -846,6 +849,13 @@ public final class DbStudioApiController {
         return ApiPayloads.map("text", provider.dialect().format(ApiPayloads.text(body, "text")));
     }
 
+    @PostMapping("/workspaces/{workspaceId}/sql/compact")
+    public Map<String, Object> compact(@PathVariable String workspaceId,
+                                      @RequestBody Map<String, Object> body) {
+        DatabaseProvider provider = databaseFor(workspaces.require(workspaceId), body).provider();
+        return ApiPayloads.map("text", provider.dialect().compact(ApiPayloads.text(body, "text")));
+    }
+
     @GetMapping("/workspaces/{workspaceId}/sql/completions")
     public List<Map<String, Object>> completions(@PathVariable String workspaceId,
                                                  @RequestParam(defaultValue = "") String prefix,
@@ -975,6 +985,10 @@ public final class DbStudioApiController {
         if ("editor.completionPreciseMatchingEnabled".equals(key)
                 && !Arrays.asList("true", "false").contains(value)) {
             throw new ApiException("INVALID_SETTING", "精准匹配设置无效");
+        }
+        if (("editor.minimapEnabled".equals(key) || "editor.wordWrapEnabled".equals(key))
+                && !Arrays.asList("true", "false").contains(value)) {
+            throw new ApiException("INVALID_SETTING", "编辑器开关设置无效");
         }
         if ("editor.completionSnippets".equals(key)) validateCompletionSnippets(value);
         if ("keyboard.shortcuts".equals(key)) validateShortcutSettings(value);
@@ -1460,6 +1474,8 @@ public final class DbStudioApiController {
             result.put("editor.completionPreciseMatchingEnabled", "false");
         }
         if (!result.containsKey("editor.completionSnippets")) result.put("editor.completionSnippets", "[]");
+        if (!result.containsKey("editor.minimapEnabled")) result.put("editor.minimapEnabled", "true");
+        if (!result.containsKey("editor.wordWrapEnabled")) result.put("editor.wordWrapEnabled", "false");
         if (!result.containsKey("keyboard.shortcuts")) result.put("keyboard.shortcuts", DEFAULT_SHORTCUTS);
         if (!result.containsKey("connection.idleTimeoutMinutes")) result.put("connection.idleTimeoutMinutes", "10");
         if (!result.containsKey("connection.transactionDisconnectRollbackMinutes")) {

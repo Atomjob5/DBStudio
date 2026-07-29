@@ -335,6 +335,7 @@ export class RpcClient {
       case "transaction.commit": return { path: `${ws}/editors/${editorId}/transaction/commit`, method: "POST", body: {} };
       case "transaction.rollback": return { path: `${ws}/editors/${editorId}/transaction/rollback`, method: "POST", body: {} };
       case "sql.format": return { path: `${ws}/sql/format`, method: "POST", body };
+      case "sql.compact": return { path: `${ws}/sql/compact`, method: "POST", body };
       case "sql.complete": return { path: `${ws}/sql/completions?prefix=${encodeURIComponent(String(body.prefix ?? ""))}&editorId=${editorId}`, method: "GET" };
       case "history.list": return { path: `/api/v1/history?limit=${encodeURIComponent(String(body.limit ?? 200))}`, method: "GET" };
       case "settings.get": return { path: "/api/v1/settings", method: "GET" };

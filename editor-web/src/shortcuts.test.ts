@@ -27,6 +27,10 @@ describe("shortcuts", () => {
     expect(DEFAULT_SHORTCUT_BINDINGS["query.executeCurrent"]).toBe("F8");
     expect(DEFAULT_SHORTCUT_BINDINGS["query.executeAll"]).toBe("F7");
     expect(DEFAULT_SHORTCUT_BINDINGS["query.cancel"]).toBe("Shift+Escape");
+    expect(DEFAULT_SHORTCUT_BINDINGS["editor.toggleMinimap"]).toBeNull();
+    expect(DEFAULT_SHORTCUT_BINDINGS["editor.toggleWordWrap"]).toBeNull();
+    expect(DEFAULT_SHORTCUT_BINDINGS["editor.format"]).toBeNull();
+    expect(DEFAULT_SHORTCUT_BINDINGS["editor.compact"]).toBeNull();
     expect(Object.values(DEFAULT_SHORTCUT_BINDINGS).filter(Boolean)).toHaveLength(3);
   });
 

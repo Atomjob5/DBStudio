@@ -2,6 +2,24 @@ export type FieldType = "TEXT" | "NUMBER" | "PASSWORD" | "BOOLEAN" | "SELECT";
 export type ThemePreference = "system" | "light" | "dark";
 export type ResolvedTheme = "light" | "dark";
 
+export interface SqlTransformRange {
+  startLineNumber: number;
+  startColumn: number;
+  endLineNumber: number;
+  endColumn: number;
+}
+
+export interface SqlTransformTarget {
+  modelKey: string;
+  text: string;
+  range: SqlTransformRange;
+  versionId: number;
+  selected: boolean;
+  cursorOffset: number;
+}
+
+export type SqlTransformApplyResult = "applied" | "unchanged" | "stale" | "missing";
+
 export interface ConnectionField {
   key: string;
   label: string;

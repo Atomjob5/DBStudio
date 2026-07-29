@@ -19,10 +19,13 @@ describe("ShortcutSettingsDrawer", () => {
     const wrapper = mountDrawer();
     await flushPromises();
     expect(wrapper.findAll(".shortcut-group")).toHaveLength(5);
-    expect(wrapper.findAll(".shortcut-row")).toHaveLength(24);
+    expect(wrapper.findAll(".shortcut-row")).toHaveLength(27);
     expect(wrapper.text()).toContain("主工具栏");
     expect(wrapper.text()).toContain("工作区侧栏");
     expect(wrapper.text()).toContain("SQL 编辑器");
+    expect(wrapper.text()).toContain("切换 Minimap");
+    expect(wrapper.text()).toContain("切换自动换行");
+    expect(wrapper.text()).toContain("压缩 SQL");
 
     const recorder = wrapper.get('button[aria-label="录制新建查询快捷键"]');
     await recorder.trigger("click");

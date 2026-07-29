@@ -13,6 +13,7 @@ import com.alibaba.druid.sql.ast.statement.SQLSelectStatement;
 import com.dbstudio.spi.ResultMutationSource;
 import com.dbstudio.spi.SqlDialect;
 import com.dbstudio.spi.SqlStatement;
+import com.dbstudio.spi.SqlTextCompactor;
 import com.dbstudio.spi.StatementType;
 import com.dbstudio.spi.DatabaseObject;
 import com.dbstudio.spi.TransactionEffect;
@@ -198,6 +199,19 @@ public final class MySqlDialect implements SqlDialect {
             return SQLUtils.format(sql, DbType.mysql);
         } catch (RuntimeException exception) {
             throw new IllegalArgumentException("无法格式化当前 SQL：" + exception.getMessage(), exception);
+        }
+    }
+
+    @Override
+    public String compact(String sql) {
+        if (sql == null || sql.trim().isEmpty()) {
+            return sql == null ? "" : sql;
+        }
+        try {
+            return SqlTextCompactor.preserveComments(
+                    sql, SQLUtils.format(sql, DbType.mysql, new SQLUtils.FormatOption(true, false)));
+        } catch (RuntimeException exception) {
+            throw new IllegalArgumentException("无法压缩当前 SQL：" + exception.getMessage(), exception);
         }
     }
 

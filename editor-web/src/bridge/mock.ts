@@ -50,6 +50,8 @@ const mockSettings: Record<string, string> = {
   "editor.completionCandidateLimit": "100",
   "editor.completionPreciseMatchingEnabled": "false",
   "editor.completionSnippets": "[]",
+  "editor.minimapEnabled": "true",
+  "editor.wordWrapEnabled": "false",
   "keyboard.shortcuts": serializeShortcutBindings(DEFAULT_SHORTCUT_BINDINGS),
 };
 
@@ -128,6 +130,7 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
   }
   if (type === "sql.complete") return [];
   if (type === "sql.format") return { text: payload.text };
+  if (type === "sql.compact") return { text: payload.text };
   if (type === "metadata.children") return metadata(payload);
   if (type === "metadata.generateQuery") return { sql: `SELECT * FROM \`${payload.name}\` LIMIT 1000;` };
   if (type === "history.list") return [];

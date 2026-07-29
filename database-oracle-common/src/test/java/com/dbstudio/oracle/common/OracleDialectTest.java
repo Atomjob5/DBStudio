@@ -44,6 +44,19 @@ class OracleDialectTest {
                 new SqlStatement("SELECT * FROM x", 0, 15, StatementType.QUERY), true));
     }
 
+    @Test void compactsOracleSqlWithoutChangingStringsOrDroppingComments() {
+        String sql = "select /*+ index(o orders_pk) */ o.id, 'a  b' as value /* keep block */\n"
+                + "from orders o -- keep line\nwhere o.id = 1";
+
+        String compact = dialect.compact(sql);
+
+        assertTrue(compact.contains("/*+ index(o orders_pk) */"));
+        assertTrue(compact.contains("/* keep block */"));
+        assertTrue(compact.contains("-- keep line"));
+        assertTrue(compact.contains("'a  b'"));
+        assertFalse(dialect.compact("select id,\nname\nfrom orders\nwhere id = 1").contains("\n"));
+    }
+
     @Test void safelyResolvesSingleTableMutationSource() {
         ResultMutationSource source = dialect.resultMutationSource(
                 "SELECT a.id, a.name FROM sales.orders a").orElseThrow(AssertionError::new);

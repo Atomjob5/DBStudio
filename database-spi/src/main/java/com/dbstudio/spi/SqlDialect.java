@@ -21,6 +21,10 @@ public interface SqlDialect {
 
     String format(String sql);
 
+    default String compact(String sql) {
+        return format(sql);
+    }
+
     default String qualifiedName(String catalog, String schema, String name) {
         StringBuilder result = new StringBuilder();
         if (catalog != null && !catalog.trim().isEmpty()) result.append(quoteIdentifier(catalog)).append('.');

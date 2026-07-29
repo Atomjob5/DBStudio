@@ -214,6 +214,8 @@ class LocalServerSecurityTest {
         assertTrue(defaults.getBody().contains("\"connection.transactionDisconnectRollbackMinutes\":\"10\""));
         assertTrue(defaults.getBody().contains("\"editor.completionPreciseMatchingEnabled\":\"false\""));
         assertTrue(defaults.getBody().contains("\"editor.completionSnippets\":\"[]\""));
+        assertTrue(defaults.getBody().contains("\"editor.minimapEnabled\":\"true\""));
+        assertTrue(defaults.getBody().contains("\"editor.wordWrapEnabled\":\"false\""));
 
         Map<String, String> setting = new HashMap<String, String>();
         setting.put("key", "result.columnLayoutScope");
@@ -246,7 +248,7 @@ class LocalServerSecurityTest {
 
         for (String key : Arrays.asList("result.headerSortingEnabled", "result.headerFilteringEnabled",
                 "result.showColumnRemarksInHeader", "result.scrollOptimizationEnabled",
-                "statusBar.showSelectedColumnRemarks")) {
+                "statusBar.showSelectedColumnRemarks", "editor.minimapEnabled", "editor.wordWrapEnabled")) {
             setting.put("key", key);
             setting.put("value", "false");
             assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
@@ -320,7 +322,8 @@ class LocalServerSecurityTest {
         Map<String, String> setting = new HashMap<String, String>();
         setting.put("key", "keyboard.shortcuts");
         setting.put("value", "{\"query.executeCurrent\":\"Mod+8\",\"query.executeAll\":null,"
-                + "\"query.cancel\":\"Shift+Escape\",\"editor.complete\":\"F6\"}");
+                + "\"query.cancel\":\"Shift+Escape\",\"editor.compact\":\"Mod+Alt+M\","
+                + "\"editor.toggleMinimap\":null,\"editor.toggleWordWrap\":null,\"editor.complete\":\"F6\"}");
         assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                 new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
 

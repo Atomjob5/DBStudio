@@ -127,6 +127,26 @@ describe("RpcClient websocket recovery", () => {
     client.dispose();
   });
 
+  it("routes SQL compaction through the active workspace", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).includes("/open")
+      ? jsonResponse({ workspaceId: "workspace", recoveryDecisionRequired: false, editors: [] })
+      : jsonResponse({ text: "SELECT 1" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new RpcClient();
+    await open(client);
+
+    await expect(client.request("sql.compact", {
+      editorId: "editor-1",
+      text: "SELECT\n1",
+    })).resolves.toEqual({ text: "SELECT 1" });
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/workspaces/workspace/sql/compact"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ editorId: "editor-1", text: "SELECT\n1" }),
+      }));
+    client.dispose();
+  });
+
   it("rejects a socket closed before opening and reconnects with exponential backoff", async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).includes("/workspaces/")

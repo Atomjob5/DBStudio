@@ -9,7 +9,12 @@ import { useEditorStore } from "./stores/editor";
 import { useMetadataStore } from "./stores/metadata";
 import { useQueryStore } from "./stores/query";
 import { useSettingsStore } from "./stores/settings";
-import type { CompletionCacheSummary, CompletionNamespaceDescriptor, SavedProfile } from "./types";
+import type {
+  CompletionCacheSummary,
+  CompletionNamespaceDescriptor,
+  SavedProfile,
+  SqlTransformTarget,
+} from "./types";
 
 const rpcMock = vi.hoisted(() => ({
   request: vi.fn(),
@@ -51,6 +56,8 @@ vi.mock("./bridge/rpc", () => ({
 }));
 vi.mock("./completion/client", () => ({ completionClient: completionMock }));
 
+const captureSqlTransformTarget = vi.fn<(key?: string) => SqlTransformTarget | undefined>();
+const applySqlTransform = vi.fn();
 const MonacoEditorStub = defineComponent({
   name: "MonacoEditor",
   props: { initialValue: { type: String, default: "" } },
@@ -61,6 +68,8 @@ const MonacoEditorStub = defineComponent({
       setValue: () => undefined,
       triggerExecute: (scope: "current" | "script") => emit("execute", scope, "", 0),
       triggerCompletion: () => undefined,
+      captureSqlTransformTarget,
+      applySqlTransform,
     });
     return () => h("div", { class: "monaco-editor-stub" });
   },
@@ -72,6 +81,8 @@ describe("App result loading status toolbar", () => {
   beforeEach(async () => {
     setActivePinia(createPinia());
     rpcRequest.mockReset();
+    captureSqlTransformTarget.mockReset();
+    applySqlTransform.mockReset().mockReturnValue("applied");
     completionMock.inspect.mockReset().mockResolvedValue(undefined);
     completionMock.refresh.mockReset().mockResolvedValue(completionSummary("profile-completion"));
     completionMock.stats.mockReset().mockResolvedValue({ environmentCount: 0, suggestionCount: 0, estimatedBytes: 0 });
@@ -173,6 +184,164 @@ describe("App result loading status toolbar", () => {
     rpcRequest.mockRejectedValueOnce(new Error("save failed"));
     await vm.updateScrollOptimizationEnabled(false);
     expect(settings.scrollOptimizationEnabled).toBe(true);
+  });
+
+  it("persists editor display settings and rolls back failed saves", async () => {
+    const settings = useSettingsStore();
+    const vm = wrapper.vm as unknown as {
+      updateMinimapEnabled: (value: boolean) => Promise<void>;
+      updateWordWrapEnabled: (value: boolean) => Promise<void>;
+    };
+
+    rpcRequest.mockResolvedValueOnce({});
+    await vm.updateMinimapEnabled(false);
+    expect(settings.minimapEnabled).toBe(false);
+    expect(rpcRequest).toHaveBeenLastCalledWith("settings.update", {
+      key: "editor.minimapEnabled", value: "false"
+    });
+
+    rpcRequest.mockResolvedValueOnce({});
+    await vm.updateWordWrapEnabled(true);
+    expect(settings.wordWrapEnabled).toBe(true);
+    expect(rpcRequest).toHaveBeenLastCalledWith("settings.update", {
+      key: "editor.wordWrapEnabled", value: "true"
+    });
+
+    rpcRequest.mockRejectedValueOnce(new Error("save failed"));
+    await vm.updateMinimapEnabled(true);
+    expect(settings.minimapEnabled).toBe(false);
+  });
+
+  it("formats a selection and compacts the whole document from icon toolbar buttons", async () => {
+    const editors = useEditorStore();
+    const formatButton = wrapper.get('button[aria-label="格式化 SQL"]');
+    const compactButton = wrapper.get('button[aria-label="压缩 SQL"]');
+    expect(formatButton.attributes("disabled")).toBeDefined();
+    expect(compactButton.attributes("disabled")).toBeDefined();
+
+    editors.patch("bootstrap-editor", {
+      connection: completionProfile(),
+      connectionState: "active",
+      busy: false,
+      executionPhase: "idle",
+    });
+    await nextTick();
+    expect(formatButton.attributes("disabled")).toBeUndefined();
+    expect(compactButton.attributes("disabled")).toBeUndefined();
+
+    const selectedTarget: SqlTransformTarget = {
+      modelKey: "bootstrap-editor",
+      text: "select  1",
+      range: { startLineNumber: 2, startColumn: 1, endLineNumber: 2, endColumn: 10 },
+      versionId: 7,
+      selected: true,
+      cursorOffset: 18,
+    };
+    captureSqlTransformTarget.mockReturnValueOnce(selectedTarget);
+    rpcRequest.mockResolvedValueOnce({ text: "SELECT 1" });
+    await formatButton.trigger("click");
+    await flushPromises();
+    expect(rpcRequest).toHaveBeenLastCalledWith("sql.format", {
+      editorId: "bootstrap-editor",
+      text: "select  1",
+    });
+    expect(applySqlTransform).toHaveBeenLastCalledWith(selectedTarget, "SELECT 1");
+    expect(editors.active?.dirty).toBe(true);
+
+    const documentTarget: SqlTransformTarget = {
+      modelKey: "bootstrap-editor",
+      text: "SELECT *\nFROM orders",
+      range: { startLineNumber: 1, startColumn: 1, endLineNumber: 2, endColumn: 12 },
+      versionId: 8,
+      selected: false,
+      cursorOffset: 8,
+    };
+    captureSqlTransformTarget.mockReturnValueOnce(documentTarget);
+    rpcRequest.mockResolvedValueOnce({ text: "SELECT * FROM orders" });
+    await compactButton.trigger("click");
+    await flushPromises();
+    expect(rpcRequest).toHaveBeenLastCalledWith("sql.compact", {
+      editorId: "bootstrap-editor",
+      text: "SELECT *\nFROM orders",
+    });
+    expect(applySqlTransform).toHaveBeenLastCalledWith(documentTarget, "SELECT * FROM orders");
+  });
+
+  it("runs editor display and compact actions through configurable shortcuts", async () => {
+    const settings = useSettingsStore();
+    const editors = useEditorStore();
+    editors.patch("bootstrap-editor", {
+      connection: completionProfile(),
+      connectionState: "active",
+      busy: false,
+      executionPhase: "idle",
+    });
+    settings.setShortcut("editor.toggleMinimap", "Alt+M");
+    settings.setShortcut("editor.toggleWordWrap", "Alt+R");
+    settings.setShortcut("editor.compact", "F6");
+    rpcRequest.mockResolvedValue({});
+
+    document.body.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "m", code: "KeyM", altKey: true, bubbles: true, cancelable: true
+    }));
+    await flushPromises();
+    expect(settings.minimapEnabled).toBe(false);
+    expect(rpcRequest).toHaveBeenCalledWith("settings.update", {
+      key: "editor.minimapEnabled", value: "false"
+    });
+
+    document.body.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "r", code: "KeyR", altKey: true, bubbles: true, cancelable: true
+    }));
+    await flushPromises();
+    expect(settings.wordWrapEnabled).toBe(true);
+
+    const target: SqlTransformTarget = {
+      modelKey: "bootstrap-editor",
+      text: "SELECT\n1",
+      range: { startLineNumber: 1, startColumn: 1, endLineNumber: 2, endColumn: 2 },
+      versionId: 4,
+      selected: false,
+      cursorOffset: 3,
+    };
+    captureSqlTransformTarget.mockReturnValueOnce(target);
+    rpcRequest.mockResolvedValueOnce({ text: "SELECT 1" });
+    document.body.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "F6", code: "F6", bubbles: true, cancelable: true
+    }));
+    await flushPromises();
+    expect(rpcRequest).toHaveBeenCalledWith("sql.compact", {
+      editorId: "bootstrap-editor", text: "SELECT\n1"
+    });
+  });
+
+  it("does not overwrite or dirty an editor after a stale transform response", async () => {
+    const editors = useEditorStore();
+    editors.patch("bootstrap-editor", {
+      connection: completionProfile(),
+      connectionState: "active",
+      dirty: false,
+      busy: false,
+      executionPhase: "idle",
+    });
+    await nextTick();
+    const target: SqlTransformTarget = {
+      modelKey: "bootstrap-editor",
+      text: "select 1",
+      range: { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 9 },
+      versionId: 3,
+      selected: false,
+      cursorOffset: 4,
+    };
+    captureSqlTransformTarget.mockReturnValueOnce(target);
+    applySqlTransform.mockReturnValueOnce("stale");
+    rpcRequest.mockResolvedValueOnce({ text: "SELECT 1" });
+
+    await wrapper.get('button[aria-label="格式化 SQL"]').trigger("click");
+    await flushPromises();
+
+    expect(editors.active?.dirty).toBe(false);
+    expect(applySqlTransform).toHaveBeenCalledWith(target, "SELECT 1");
   });
 
   it("persists SQL completion matching and snippets with confirmed-value rollback", async () => {

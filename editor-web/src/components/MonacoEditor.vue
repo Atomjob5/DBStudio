@@ -4,7 +4,12 @@
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import * as monaco from "monaco-editor";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
-import type { CompletionCandidate, CompletionResult } from "../types";
+import type {
+  CompletionCandidate,
+  CompletionResult,
+  SqlTransformApplyResult,
+  SqlTransformTarget,
+} from "../types";
 import { completionClient } from "../completion/client";
 import { CompletionModelSynchronizer, isModelVersionChanged } from "../completion/modelSynchronizer";
 import { completionDocumentation, truncateCompletionComment } from "../completion/presentation";
@@ -15,7 +20,8 @@ import type { SqlCompletionSnippet } from "../types";
 
 const props = defineProps<{ modelKey: string; initialValue: string; theme: "dark" | "light";
   completionKey: string; providerId: string; completionCandidateLimit: number;
-  completionPreciseMatchingEnabled: boolean; completionSnippets: SqlCompletionSnippet[] }>();
+  completionPreciseMatchingEnabled: boolean; completionSnippets: SqlCompletionSnippet[];
+  minimapEnabled: boolean; wordWrapEnabled: boolean }>();
 const emit = defineEmits<{
   dirty: [];
   execute: [scope: "current" | "script", selection: string, cursorOffset: number];
@@ -100,7 +106,8 @@ onMounted(() => {
     fontSize: 13,
     lineHeight: 21,
     fontLigatures: true,
-    minimap: { enabled: false },
+    minimap: { enabled: props.minimapEnabled },
+    wordWrap: props.wordWrapEnabled ? "on" : "off",
     scrollBeyondLastLine: false,
     smoothScrolling: true,
     fixedOverflowWidgets: true,
@@ -219,6 +226,8 @@ function completionKind(kind: CompletionCandidate["kind"]): monaco.languages.Com
 
 watch(() => props.modelKey, (key) => switchModel(key, props.initialValue));
 watch(() => props.theme, (theme) => monaco.editor.setTheme(monacoTheme(theme)));
+watch(() => props.minimapEnabled, (enabled) => instance.value?.updateOptions({ minimap: { enabled } }));
+watch(() => props.wordWrapEnabled, (enabled) => instance.value?.updateOptions({ wordWrap: enabled ? "on" : "off" }));
 watch(() => [props.completionKey, props.providerId], () => {
   const model = instance.value?.getModel();
   const key = model && modelKeys.get(model);
@@ -289,7 +298,83 @@ function setValue(value: string, key = props.modelKey): void {
   if (isCompletionBound()) synchronizeInBackground(key, model);
 }
 
-defineExpose({ getValue, setValue, triggerExecute: trigger, triggerCompletion });
+function captureSqlTransformTarget(key = props.modelKey): SqlTransformTarget | undefined {
+  const editor = instance.value;
+  const model = models.get(key);
+  if (!editor || !model || editor.getModel() !== model) return undefined;
+  const selection = editor.getSelection();
+  const selected = Boolean(selection && !selection.isEmpty());
+  const range = selected && selection ? selection : model.getFullModelRange();
+  const position = editor.getPosition();
+  return {
+    modelKey: key,
+    text: model.getValueInRange(range),
+    range: {
+      startLineNumber: range.startLineNumber,
+      startColumn: range.startColumn,
+      endLineNumber: range.endLineNumber,
+      endColumn: range.endColumn,
+    },
+    versionId: model.getVersionId(),
+    selected,
+    cursorOffset: position ? model.getOffsetAt(position) : 0,
+  };
+}
+
+function applySqlTransform(target: SqlTransformTarget, replacement: string): SqlTransformApplyResult {
+  const model = models.get(target.modelKey);
+  if (!model) return "missing";
+  if (model.getVersionId() !== target.versionId) return "stale";
+  if (target.text === replacement) return "unchanged";
+  const edit = { range: target.range, text: replacement, forceMoveMarkers: true };
+  const editor = instance.value;
+  const active = editor?.getModel() === model;
+  const selection = transformedSelection(target, replacement);
+  if (active && editor) {
+    editor.pushUndoStop();
+    editor.executeEdits("dbstudio.sqlTransform", [edit], () => [selection]);
+    editor.pushUndoStop();
+    editor.focus();
+  } else {
+    model.pushStackElement();
+    model.pushEditOperations([], [edit], () => null);
+    model.pushStackElement();
+  }
+  return "applied";
+}
+
+function transformedSelection(target: SqlTransformTarget, replacement: string): monaco.Selection {
+  if (target.selected) {
+    const end = positionAfterText(target.range.startLineNumber, target.range.startColumn, replacement);
+    return new monaco.Selection(
+      target.range.startLineNumber,
+      target.range.startColumn,
+      end.lineNumber,
+      end.column,
+    );
+  }
+  const cursor = positionAfterText(1, 1, replacement.slice(0, Math.min(target.cursorOffset, replacement.length)));
+  return new monaco.Selection(cursor.lineNumber, cursor.column, cursor.lineNumber, cursor.column);
+}
+
+function positionAfterText(startLineNumber: number, startColumn: number, text: string): {
+  lineNumber: number;
+  column: number;
+} {
+  const lines = text.split(/\r\n|\r|\n/);
+  return lines.length === 1
+    ? { lineNumber: startLineNumber, column: startColumn + lines[0].length }
+    : { lineNumber: startLineNumber + lines.length - 1, column: lines.at(-1)!.length + 1 };
+}
+
+defineExpose({
+  getValue,
+  setValue,
+  triggerExecute: trigger,
+  triggerCompletion,
+  captureSqlTransformTarget,
+  applySqlTransform,
+});
 
 onBeforeUnmount(() => {
   contentListener?.dispose();
