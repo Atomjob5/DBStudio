@@ -1,6 +1,11 @@
 <template>
   <section class="result-panel fill">
-    <template v-if="execution?.results.length">
+    <div v-if="showExecutionLoading" class="result-loading" role="status" aria-live="polite">
+      <img class="result-loading__image" src="/assets/branding/dbstudio-sql-loading-v4.webp"
+           alt="" aria-hidden="true" />
+      <span>正在执行 SQL…</span>
+    </div>
+    <template v-else-if="execution?.results.length">
       <div class="result-header">
         <el-tabs v-model="activeIndex" class="result-tabs">
           <el-tab-pane v-for="result in execution.results" :key="result.resultIndex" :name="result.resultIndex"
@@ -129,10 +134,11 @@ import ResultValueDialog from "./ResultValueDialog.vue";
 import ResultValueCompareDialog from "./ResultValueCompareDialog.vue";
 import { displayShortcut, shortcutTooltip } from "../shortcuts";
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   execution?: QueryExecutionState;
   activeResultIndex: number;
-}>();
+  executing?: boolean;
+}>(), { executing: false });
 const emit = defineEmits<{
   "export-loaded": [resultIndex: number];
   "export-full": [resultIndex: number];
@@ -185,6 +191,8 @@ const singleRecordMode = ref(false);
 const valueDialog = ref<{ visible: boolean; value: string | null }>({ visible: false, value: null });
 const compareDialog = ref(false);
 const sumSummary = ref<{ total: string; count: number }>();
+const showExecutionLoading = computed(() => props.executing
+  && (!props.execution?.busy || props.execution.results.length === 0));
 const activeResult = computed(() => props.execution?.results.find((item) => item.resultIndex === activeIndex.value) ?? props.execution?.results[0]);
 const headerHeight = computed(() => settings.showColumnRemarksInHeader ? 48 : 32);
 const resultKey = computed(() => String(activeResult.value?.resultIndex ?? 0));
@@ -1121,6 +1129,24 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .result-panel { display: flex; flex-direction: column; background: var(--db-content); }
+.result-loading {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  overflow: hidden;
+  color: var(--db-muted);
+  font-size: 12px;
+}
+.result-loading__image {
+  width: 160px;
+  max-width: 45%;
+  max-height: calc(100% - 32px);
+  object-fit: contain;
+}
 .result-header {
   min-height: 38px;
   display: flex;

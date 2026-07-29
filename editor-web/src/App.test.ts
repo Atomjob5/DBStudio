@@ -866,9 +866,12 @@ describe("App result loading status toolbar", () => {
 
     const vm = wrapper.vm as unknown as { executeActive: (scope: "current") => Promise<void> };
     expect(editors.active).toMatchObject({ connectionState: "active", busy: false, executionPhase: "idle" });
+    expect(wrapper.findComponent({ name: "ResultPanel" }).props("executing")).toBe(false);
     const executing = vm.executeActive("current");
     await flushPromises();
     expect(editors.active).toMatchObject({ busy: true, executionPhase: "starting" });
+    expect(wrapper.findComponent({ name: "ResultPanel" }).props("executing")).toBe(true);
+    expect(wrapper.find(".result-loading").exists()).toBe(true);
 
     let cancel = wrapper.get('button[aria-label="取消执行"]');
     expect(cancel.classes()).toContain("el-button--warning");
@@ -904,6 +907,8 @@ describe("App result loading status toolbar", () => {
     await executing;
     await nextTick();
     expect(editors.active).toMatchObject({ busy: false, executionPhase: "idle" });
+    expect(wrapper.findComponent({ name: "ResultPanel" }).props("executing")).toBe(false);
+    expect(wrapper.find(".result-loading").exists()).toBe(false);
     expect(wrapper.find('button[aria-label="取消执行"]').exists()).toBe(false);
     expect(wrapper.find(".execute-control.el-dropdown").exists()).toBe(true);
   });

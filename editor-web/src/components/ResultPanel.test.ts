@@ -42,6 +42,62 @@ describe("ResultPanel streaming rendering", () => {
     expect(wrapper.text()).not.toContain("执行查询后在这里查看结果");
   });
 
+  it("shows the SQL animation until the first result metadata arrives", async () => {
+    const previousExecution = {
+      executionId: "execution-previous", editorId: "editor-1", busy: false, cancelled: false,
+      failed: false, durationMs: 8,
+      results: [{ resultIndex: 0, sql: "select 1", type: "QUERY", columns: ["value"], rows: [["1"]],
+        updateCount: -1, truncated: false, durationMs: 7, complete: true }]
+    };
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: 0, execution: previousExecution, executing: true },
+      global: { plugins: [ElementPlus] }
+    });
+
+    const loading = wrapper.get(".result-loading");
+    expect(loading.attributes("role")).toBe("status");
+    expect(loading.attributes("aria-live")).toBe("polite");
+    expect(loading.text()).toContain("正在执行 SQL");
+    expect(loading.get("img").attributes()).toMatchObject({
+      src: "/assets/branding/dbstudio-sql-loading-v4.webp",
+      alt: "",
+      "aria-hidden": "true"
+    });
+    expect(wrapper.findComponent({ name: "ElTableV2" }).exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("执行查询后在这里查看结果");
+
+    await wrapper.setProps({
+      execution: {
+        executionId: "execution-new", editorId: "editor-1", busy: true, cancelled: false,
+        failed: false, durationMs: 0, results: []
+      }
+    });
+    expect(wrapper.find(".result-loading").exists()).toBe(true);
+
+    await wrapper.setProps({
+      execution: {
+        executionId: "execution-new", editorId: "editor-1", busy: true, cancelled: false,
+        failed: false, durationMs: 0,
+        results: [{ resultIndex: 0, sql: "select 2", type: "QUERY", columns: ["value"], rows: [],
+          updateCount: -1, truncated: false, durationMs: 0, complete: false }]
+      }
+    });
+    expect(wrapper.find(".result-loading").exists()).toBe(false);
+    expect(wrapper.text()).toContain("结果 1");
+    expect(wrapper.text()).toContain("正在执行");
+    expect(wrapper.findComponent({ name: "ElTableV2" }).exists()).toBe(true);
+
+    await wrapper.setProps({
+      executing: false,
+      execution: {
+        executionId: "execution-new", editorId: "editor-1", busy: false, cancelled: true,
+        failed: false, durationMs: 1, results: []
+      }
+    });
+    expect(wrapper.find(".result-loading").exists()).toBe(false);
+    expect(wrapper.text()).toContain("执行查询后在这里查看结果");
+  });
+
   it("keeps the legacy table by default and switches to the optimized grid without losing data", async () => {
     const settings = useSettingsStore();
     const execution = {

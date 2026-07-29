@@ -141,6 +141,7 @@
               </el-splitter-panel>
               <el-splitter-panel :min="150" collapsible>
                 <ResultPanel ref="resultPanel" v-model:active-result-index="activeResultIndex" :execution="activeExecution"
+                             :executing="editors.active?.busy === true"
                              @export-loaded="exportLoaded" @export-full="exportFull"
                              @selected-column="selectedResultColumn = $event"
                              @selected-row-count="selectedResultRowCount = $event" />
