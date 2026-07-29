@@ -8,12 +8,116 @@ export const MAX_SQL_SNIPPETS_SETTING_LENGTH = 256 * 1024;
 
 const TRIGGER_PATTERN = /^[\p{L}\p{N}_$]+$/u;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const VARIABLE_FIRST_CHARACTER_PATTERN = /^[\p{L}_]$/u;
+const VARIABLE_CHARACTER_PATTERN = /^[\p{L}\p{N}_]$/u;
+
+export interface SqlSnippetCompilation {
+  insertText: string;
+  variables: string[];
+  hasVariables: boolean;
+}
+
+export interface SqlSnippetSyntaxError {
+  message: string;
+  offset: number;
+}
+
+export type SqlSnippetCompilationResult =
+  | { ok: true; compilation: SqlSnippetCompilation }
+  | { ok: false; error: SqlSnippetSyntaxError };
 
 export function normalizeSnippetTrigger(value: string): string {
   return value.trim().toLocaleLowerCase();
 }
 
 export function validateSqlCompletionSnippet(
+  value: SqlCompletionSnippet,
+  siblings: SqlCompletionSnippet[] = [],
+): string | undefined {
+  const baseError = validateSqlCompletionSnippetBase(value, siblings);
+  if (baseError) return baseError;
+  const compilation = compileSqlSnippet(value.sql);
+  if (!compilation.ok) return formatSqlSnippetSyntaxError(compilation.error);
+  return undefined;
+}
+
+export function compileSqlSnippet(value: string): SqlSnippetCompilationResult {
+  const variables: string[] = [];
+  const placeholderByVariable = new Map<string, number>();
+  const fail = (message: string, sourceOffset: number): SqlSnippetCompilationResult =>
+    syntaxFailure(message, Array.from(value.slice(0, sourceOffset)).length);
+  let insertText = "";
+  let literalStart = 0;
+  let index = 0;
+
+  while (index < value.length) {
+    if (value[index] !== "$" || value[index + 1] !== "{") {
+      index += 1;
+      continue;
+    }
+
+    insertText += escapeMonacoSnippetText(value.slice(literalStart, index));
+    const variableStart = index;
+    const nameStart = index + 2;
+    const closingBrace = value.indexOf("}", nameStart);
+    if (closingBrace < 0) {
+      return fail("变量缺少结束符 }", variableStart);
+    }
+    const nestedVariable = value.indexOf("${", nameStart);
+    if (nestedVariable >= 0 && nestedVariable < closingBrace) {
+      return fail("变量不能嵌套", nestedVariable);
+    }
+    const name = value.slice(nameStart, closingBrace);
+    if (!name) return fail("变量名不能为空", nameStart);
+
+    let characterOffset = 0;
+    let characterIndex = 0;
+    for (const character of name) {
+      const valid = characterIndex === 0
+        ? VARIABLE_FIRST_CHARACTER_PATTERN.test(character)
+        : VARIABLE_CHARACTER_PATTERN.test(character);
+      if (!valid) {
+        return fail(characterIndex === 0
+          ? "变量名必须以字母或下划线开头"
+          : "变量名只能包含字母、数字和下划线", nameStart + characterOffset);
+      }
+      characterOffset += character.length;
+      characterIndex += 1;
+    }
+
+    let placeholder = placeholderByVariable.get(name);
+    if (placeholder === undefined) {
+      variables.push(name);
+      placeholder = variables.length;
+      placeholderByVariable.set(name, placeholder);
+    }
+    insertText += "${" + placeholder + "}";
+    index = closingBrace + 1;
+    literalStart = index;
+  }
+
+  insertText += escapeMonacoSnippetText(value.slice(literalStart));
+  if (variables.length) insertText += "$0";
+  return {
+    ok: true,
+    compilation: {
+      insertText,
+      variables,
+      hasVariables: variables.length > 0,
+    },
+  };
+}
+
+export function sqlSnippetSyntaxError(value: string): SqlSnippetSyntaxError | undefined {
+  const result = compileSqlSnippet(value);
+  return result.ok ? undefined : result.error;
+}
+
+export function formatSqlSnippetSyntaxError(error: SqlSnippetSyntaxError): string {
+  return `SQL片段变量语法无效（第${error.offset + 1}个字符）：${error.message}`;
+}
+
+function validateSqlCompletionSnippetBase(
   value: SqlCompletionSnippet,
   siblings: SqlCompletionSnippet[] = [],
 ): string | undefined {
@@ -45,10 +149,9 @@ export function parseSqlCompletionSnippets(value: string | undefined): SqlComple
     for (const item of parsed) {
       if (!isSnippetRecord(item)) return [];
       const normalized = { ...item, trigger: item.trigger.trim() };
-      if (validateSqlCompletionSnippet(normalized, snippets)) return [];
       snippets.push(normalized);
     }
-    if (validateSqlCompletionSnippets(snippets)) return [];
+    if (validateSqlCompletionSnippetsInternal(snippets, false)) return [];
     return snippets;
   } catch {
     return [];
@@ -65,11 +168,20 @@ export function serializeSqlCompletionSnippets(value: SqlCompletionSnippet[]): s
 }
 
 export function validateSqlCompletionSnippets(value: SqlCompletionSnippet[]): string | undefined {
+  return validateSqlCompletionSnippetsInternal(value, true);
+}
+
+function validateSqlCompletionSnippetsInternal(
+  value: SqlCompletionSnippet[],
+  validateVariableSyntax: boolean,
+): string | undefined {
   if (value.length > MAX_SQL_SNIPPETS) return `SQL片段不能超过${MAX_SQL_SNIPPETS}条`;
   const ids = new Set<string>();
   for (const snippet of value) {
     if (!UUID_PATTERN.test(snippet.id) || ids.has(snippet.id)) return "SQL片段ID无效或重复";
-    const error = validateSqlCompletionSnippet(snippet, value);
+    const error = validateVariableSyntax
+      ? validateSqlCompletionSnippet(snippet, value)
+      : validateSqlCompletionSnippetBase(snippet, value);
     if (error) return error;
     ids.add(snippet.id);
   }
@@ -83,19 +195,37 @@ export function matchingSnippetCandidate(
   snippets: SqlCompletionSnippet[],
   activeWord: string,
 ): CompletionCandidate | undefined {
-  if (!activeWord) return undefined;
-  const snippet = snippets.find((item) =>
-    normalizeSnippetTrigger(item.trigger) === normalizeSnippetTrigger(activeWord));
-  if (!snippet) return undefined;
-  return {
-    displayLabel: snippet.trigger,
-    documentationPath: snippet.trigger,
-    insertText: snippet.sql,
-    filterText: activeWord,
-    kind: "snippet",
-    remarks: snippet.remarks,
-    typeName: "SQL片段",
-  };
+  return matchingSnippetCandidates(snippets, activeWord)[0];
+}
+
+export function matchingSnippetCandidates(
+  snippets: SqlCompletionSnippet[],
+  activeWord: string,
+): CompletionCandidate[] {
+  const normalizedWord = normalizeSnippetTrigger(activeWord);
+  if (!normalizedWord) return [];
+  return snippets
+    .map((snippet, index) => ({
+      snippet,
+      index,
+      normalizedTrigger: normalizeSnippetTrigger(snippet.trigger),
+    }))
+    .filter(({ snippet, normalizedTrigger }) =>
+      normalizedTrigger.startsWith(normalizedWord) && compileSqlSnippet(snippet.sql).ok)
+    .sort((left, right) => {
+      const leftExact = left.normalizedTrigger === normalizedWord;
+      const rightExact = right.normalizedTrigger === normalizedWord;
+      return leftExact === rightExact ? left.index - right.index : leftExact ? -1 : 1;
+    })
+    .map(({ snippet }) => ({
+      displayLabel: snippet.trigger,
+      documentationPath: snippet.trigger,
+      insertText: snippet.sql,
+      filterText: snippet.trigger,
+      kind: "snippet",
+      remarks: snippet.remarks,
+      typeName: "SQL片段",
+    }));
 }
 
 function isSnippetRecord(value: unknown): value is SqlCompletionSnippet {
@@ -105,4 +235,12 @@ function isSnippetRecord(value: unknown): value is SqlCompletionSnippet {
     && typeof record.trigger === "string"
     && typeof record.remarks === "string"
     && typeof record.sql === "string";
+}
+
+function escapeMonacoSnippetText(value: string): string {
+  return value.replace(/[\\$}]/g, "\\$&");
+}
+
+function syntaxFailure(message: string, offset: number): SqlSnippetCompilationResult {
+  return { ok: false, error: { message, offset } };
 }

@@ -356,6 +356,12 @@ class LocalServerSecurityTest {
                 + "\"trigger\":\"sf\",\"remarks\":\"通用查询\",\"sql\":\"select * from\"}]");
         assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                 new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+        setting.put("value", "[{\"id\":\"5d652bad-8dce-4b56-9c94-d62d74a74576\","
+                + "\"trigger\":\"sf\",\"remarks\":\"通用查询\","
+                + "\"sql\":\"select * from t where c = '${column_value}' "
+                + "and d = ${column_value} and e = ${中文变量1}\"}]");
+        assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
 
         for (String invalid : Arrays.asList(
                 "not-json",
@@ -367,7 +373,17 @@ class LocalServerSecurityTest {
                 "[{\"id\":\"5d652bad-8dce-4b56-9c94-d62d74a74576\",\"trigger\":\"sf\","
                         + "\"remarks\":\"\",\"sql\":\"select 1\"},"
                         + "{\"id\":\"dbf3fc10-3b72-41b8-a83f-9f786314303e\",\"trigger\":\"SF\","
-                        + "\"remarks\":\"\",\"sql\":\"select 2\"}]")) {
+                        + "\"remarks\":\"\",\"sql\":\"select 2\"}]",
+                "[{\"id\":\"5d652bad-8dce-4b56-9c94-d62d74a74576\",\"trigger\":\"sf\","
+                        + "\"remarks\":\"\",\"sql\":\"select ${}\"}]",
+                "[{\"id\":\"5d652bad-8dce-4b56-9c94-d62d74a74576\",\"trigger\":\"sf\","
+                        + "\"remarks\":\"\",\"sql\":\"select ${1name}\"}]",
+                "[{\"id\":\"5d652bad-8dce-4b56-9c94-d62d74a74576\",\"trigger\":\"sf\","
+                        + "\"remarks\":\"\",\"sql\":\"select ${name-value}\"}]",
+                "[{\"id\":\"5d652bad-8dce-4b56-9c94-d62d74a74576\",\"trigger\":\"sf\","
+                        + "\"remarks\":\"\",\"sql\":\"select ${missing\"}]",
+                "[{\"id\":\"5d652bad-8dce-4b56-9c94-d62d74a74576\",\"trigger\":\"sf\","
+                        + "\"remarks\":\"\",\"sql\":\"select ${outer${inner}}\"}]")) {
             setting.put("value", invalid);
             ResponseEntity<String> rejected = http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                     new HttpEntity<Map<String, String>>(setting, headers), String.class);

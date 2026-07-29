@@ -8,7 +8,7 @@ import type { CompletionCandidate, CompletionResult } from "../types";
 import { completionClient } from "../completion/client";
 import { CompletionModelSynchronizer, isModelVersionChanged } from "../completion/modelSynchronizer";
 import { completionDocumentation, truncateCompletionComment } from "../completion/presentation";
-import { matchingSnippetCandidate } from "../completion/snippets";
+import { compileSqlSnippet, matchingSnippetCandidates } from "../completion/snippets";
 import type { SqlCompletionSnippet } from "../types";
 
 (self as typeof self & { MonacoEnvironment: object }).MonacoEnvironment = { getWorker: () => new EditorWorker() };
@@ -115,11 +115,20 @@ onMounted(() => {
     async provideCompletionItems(model, position, _context, token) {
       const word = model.getWordUntilPosition(position);
       const snippetWord = snippetWordAt(model, position);
-      const snippet = matchingSnippetCandidate(props.completionSnippets, snippetWord.word);
-      const snippetEntry = snippet ? [{
-        item: snippet,
-        range: completionRange(position, snippetWord.startColumn, position.column),
-      }] : [];
+      const snippetEntry: CompletionEntry[] = matchingSnippetCandidates(
+        props.completionSnippets,
+        snippetWord.word,
+      ).flatMap((snippet) => {
+        const compilation = compileSqlSnippet(snippet.insertText);
+        if (!compilation.ok) return [];
+        return [{
+          item: snippet,
+          range: completionRange(position, snippetWord.startColumn, position.column),
+          insertText: compilation.compilation.hasVariables
+            ? compilation.compilation.insertText : undefined,
+          insertAsSnippet: compilation.compilation.hasVariables,
+        }];
+      });
       if (!props.completionKey || props.completionKey === "unbound") {
         return { suggestions: completionSuggestions(snippetEntry) };
       }
@@ -156,16 +165,20 @@ onMounted(() => {
 interface CompletionEntry {
   item: CompletionCandidate;
   range: monaco.IRange;
+  insertText?: string;
+  insertAsSnippet?: boolean;
 }
 
 function completionSuggestions(entries: CompletionEntry[]): monaco.languages.CompletionItem[] {
-  return entries.map(({ item, range }, index) => ({
+  return entries.map(({ item, range, insertText, insertAsSnippet }, index) => ({
         label: {
           label: item.displayLabel,
           detail: item.remarks ? `  ${truncateCompletionComment(item.remarks)}` : undefined,
           description: item.typeName || item.kind.toUpperCase()
         },
-        insertText: item.insertText,
+        insertText: insertText ?? item.insertText,
+        insertTextRules: insertAsSnippet
+          ? monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet : undefined,
         filterText: item.filterText,
         sortText: String(index).padStart(5, "0"),
         documentation: { value: completionDocumentation(item) },

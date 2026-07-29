@@ -1036,7 +1036,50 @@ public final class DbStudioApiController {
             if (sql.trim().isEmpty() || sql.length() > 64 * 1024) {
                 throw new ApiException("INVALID_SETTING", "SQL片段内容不能为空且不能超过64 KiB");
             }
+            validateCompletionSnippetVariables(sql);
         }
+    }
+
+    private void validateCompletionSnippetVariables(String sql) {
+        for (int index = 0; index < sql.length(); index++) {
+            if (sql.charAt(index) != '$' || index + 1 >= sql.length() || sql.charAt(index + 1) != '{') {
+                continue;
+            }
+            int variableStart = index;
+            int nameStart = index + 2;
+            int closingBrace = sql.indexOf('}', nameStart);
+            if (closingBrace < 0) {
+                throw completionSnippetVariableError(sql, variableStart, "变量缺少结束符 }");
+            }
+            int nestedVariable = sql.indexOf("${", nameStart);
+            if (nestedVariable >= 0 && nestedVariable < closingBrace) {
+                throw completionSnippetVariableError(sql, nestedVariable, "变量不能嵌套");
+            }
+            if (nameStart == closingBrace) {
+                throw completionSnippetVariableError(sql, nameStart, "变量名不能为空");
+            }
+            int characterIndex = 0;
+            for (int offset = nameStart; offset < closingBrace;) {
+                int codePoint = sql.codePointAt(offset);
+                boolean valid = characterIndex == 0
+                        ? codePoint == '_' || Character.isLetter(codePoint)
+                        : codePoint == '_' || Character.isLetter(codePoint) || Character.isDigit(codePoint);
+                if (!valid) {
+                    throw completionSnippetVariableError(sql, offset, characterIndex == 0
+                            ? "变量名必须以字母或下划线开头"
+                            : "变量名只能包含字母、数字和下划线");
+                }
+                offset += Character.charCount(codePoint);
+                characterIndex++;
+            }
+            index = closingBrace;
+        }
+    }
+
+    private ApiException completionSnippetVariableError(String sql, int offset, String message) {
+        int characterPosition = sql.codePointCount(0, offset) + 1;
+        return new ApiException("INVALID_SETTING",
+                "SQL片段变量语法无效（第" + characterPosition + "个字符）：" + message);
     }
 
     @SuppressWarnings("unchecked")

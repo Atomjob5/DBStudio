@@ -12,9 +12,9 @@ const snippets: SqlCompletionSnippet[] = [
 ];
 
 describe("SqlSnippetSettingsDrawer", () => {
-  function mountDrawer() {
+  function mountDrawer(values = snippets) {
     return mount(SqlSnippetSettingsDrawer, {
-      props: { modelValue: true, snippets, saving: false },
+      props: { modelValue: true, snippets: values, saving: false },
       global: { plugins: [ElementPlus], stubs: { teleport: true } },
     });
   }
@@ -47,6 +47,28 @@ describe("SqlSnippetSettingsDrawer", () => {
     await wrapper.findAll("button").find((button) => button.text() === "保存")!.trigger("click");
     expect(wrapper.text()).toContain("该提示词已存在");
     expect(wrapper.emitted("updateSnippets")).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it("marks historical invalid variables unavailable and validates them before saving", async () => {
+    const invalidSnippet = { ...snippets[0], sql: "select ${}" };
+    const wrapper = mountDrawer([invalidSnippet]);
+    await flushPromises();
+    expect(wrapper.text()).toContain("不可用");
+    expect(wrapper.text()).toContain("变量名不能为空");
+
+    await wrapper.findAll("button").find((button) => button.text() === "编辑")!.trigger("click");
+    expect(wrapper.text()).toContain("${variable_name}");
+    await wrapper.findAll("button").find((button) => button.text() === "保存")!.trigger("click");
+    expect(wrapper.text()).toContain("变量语法无效");
+    expect(wrapper.emitted("updateSnippets")).toBeUndefined();
+
+    await wrapper.get("textarea").setValue("select * from t where id = '${column_value}'");
+    await wrapper.findAll("button").find((button) => button.text() === "保存")!.trigger("click");
+    expect(wrapper.emitted("updateSnippets")?.[0]?.[0]).toEqual([{
+      ...invalidSnippet,
+      sql: "select * from t where id = '${column_value}'",
+    }]);
     wrapper.unmount();
   });
 });
