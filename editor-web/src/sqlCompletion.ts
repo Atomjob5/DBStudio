@@ -336,7 +336,14 @@ export function resolveResultColumnRemarks(index: CompletionIndex | undefined, p
   for (const source of columns) {
     if (!source.name) continue;
     const namespace = source.table ? resultNamespace(index, source.catalog, source.schema) : undefined;
-    const object = source.table ? namespace?.objects.get(normalize(source.table)) : fallbackObject;
+    const oceanBaseNamespace = source.table && providerId === "oceanbase-oracle"
+      && !source.schema && source.catalog
+      ? resultNamespace(index, "", source.catalog) : undefined;
+    const object = source.table
+      ? namespace?.objects.get(normalize(source.table))
+        ?? oceanBaseNamespace?.objects.get(normalize(source.table))
+        ?? fallbackObject
+      : fallbackObject;
     const column = object?.columns.find((value) => normalize(value.name) === normalize(source.name));
     if (column?.remarks) resolved.push({ index: source.index, remarks: column.remarks });
   }

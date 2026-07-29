@@ -99,6 +99,26 @@ describe("handwritten context-aware SQL completion", () => {
     }
   );
 
+  it("maps OceanBase Oracle result catalogs to cached schemas", () => {
+    const oracleIndex = buildCompletionIndex(oracleSnapshot);
+    expect(resolveResultColumnRemarks(oracleIndex, "oceanbase-oracle",
+      "select ID, CUSTOMER_NAME from CBSAC.CUSTOMERS", [
+        { index: 0, catalog: "CBSAC", schema: "", table: "CUSTOMERS", name: "ID" },
+        { index: 1, catalog: "CBSAC", schema: "", table: "CUSTOMERS", name: "CUSTOMER_NAME" }
+      ])).toEqual([
+      { index: 0, remarks: "客户编号" },
+      { index: 1, remarks: "客户名称" }
+    ]);
+  });
+
+  it("falls back to safe SQL resolution when OceanBase JDBC namespace metadata cannot be matched", () => {
+    const oracleIndex = buildCompletionIndex(oracleSnapshot);
+    expect(resolveResultColumnRemarks(oracleIndex, "oceanbase-oracle",
+      "select ID from CBSAC.CUSTOMERS", [
+        { index: 0, catalog: "TENANT_SERVICE", schema: "", table: "CUSTOMERS", name: "ID" }
+      ])).toEqual([{ index: 0, remarks: "客户编号" }]);
+  });
+
   it("traces direct CTE and derived-table projections for Oracle result remarks", () => {
     const oracleIndex = buildCompletionIndex(oracleSnapshot);
     const column = [{ index: 0, catalog: "", schema: "", table: "", name: "ID" }];
