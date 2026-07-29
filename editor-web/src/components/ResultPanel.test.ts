@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { flushPromises, mount } from "@vue/test-utils";
 import ElementPlus from "element-plus";
 import ResultPanel from "./ResultPanel.vue";
+import { useAppStore } from "../stores/app";
 import { useQueryStore } from "../stores/query";
 import { useSettingsStore } from "../stores/settings";
 import type { Column } from "element-plus";
@@ -43,6 +44,7 @@ describe("ResultPanel streaming rendering", () => {
   });
 
   it("shows the SQL animation until the first result metadata arrives", async () => {
+    const app = useAppStore();
     const previousExecution = {
       executionId: "execution-previous", editorId: "editor-1", busy: false, cancelled: false,
       failed: false, durationMs: 8,
@@ -63,6 +65,14 @@ describe("ResultPanel streaming rendering", () => {
       alt: "",
       "aria-hidden": "true"
     });
+    app.setThemePreference("dark");
+    await nextTick();
+    expect(loading.get("img").attributes("src"))
+      .toBe("/assets/branding/dbstudio-sql-loading-v4-dark.webp");
+    app.setThemePreference("light");
+    await nextTick();
+    expect(loading.get("img").attributes("src"))
+      .toBe("/assets/branding/dbstudio-sql-loading-v4.webp");
     expect(wrapper.findComponent({ name: "ElTableV2" }).exists()).toBe(false);
     expect(wrapper.text()).not.toContain("执行查询后在这里查看结果");
 

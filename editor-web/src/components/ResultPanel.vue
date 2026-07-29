@@ -1,7 +1,7 @@
 <template>
   <section class="result-panel fill">
     <div v-if="showExecutionLoading" class="result-loading" role="status" aria-live="polite">
-      <img class="result-loading__image" src="/assets/branding/dbstudio-sql-loading-v4.webp"
+      <img class="result-loading__image" :src="executionLoadingImage"
            alt="" aria-hidden="true" />
       <span>正在执行 SQL…</span>
     </div>
@@ -191,6 +191,9 @@ const singleRecordMode = ref(false);
 const valueDialog = ref<{ visible: boolean; value: string | null }>({ visible: false, value: null });
 const compareDialog = ref(false);
 const sumSummary = ref<{ total: string; count: number }>();
+const executionLoadingImage = computed(() => app.theme === "dark"
+  ? "/assets/branding/dbstudio-sql-loading-v4-dark.webp"
+  : "/assets/branding/dbstudio-sql-loading-v4.webp");
 const showExecutionLoading = computed(() => props.executing
   && (!props.execution?.busy || props.execution.results.length === 0));
 const activeResult = computed(() => props.execution?.results.find((item) => item.resultIndex === activeIndex.value) ?? props.execution?.results[0]);
