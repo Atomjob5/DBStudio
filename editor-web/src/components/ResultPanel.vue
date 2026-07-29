@@ -103,7 +103,7 @@ import { autoColumnWidth, clampColumnWidth, columnIdentityKeys, defaultColumnWid
 import { useColumnLayoutStore } from "../stores/columnLayout";
 import { useSettingsStore } from "../stores/settings";
 import { useAppStore } from "../stores/app";
-import { resultCopyText, type ResultCopyMode } from "../resultCopy";
+import { resultColumnRemarksText, resultCopyText, type ResultCopyMode } from "../resultCopy";
 import { writeClipboardText } from "../clipboard";
 import { cellSelectionKey, copyGrid, copyInPredicate, copyRowSql, normalizeRange, selectRows,
   sumDecimalValues, visibleRows, type CellPoint, type CellRange, type DecimalSumResult,
@@ -436,7 +436,7 @@ function openHeaderMenu(event: MouseEvent, identity: string, keyboardTarget?: HT
     visible: true,
     x: Math.max(8, Math.min(requestedX, window.innerWidth - 188)),
     // Reserve the fully expanded copy submenu height so opening it never leaves the viewport.
-    y: Math.max(8, Math.min(requestedY, window.innerHeight - 360))
+    y: Math.max(8, Math.min(requestedY, window.innerHeight - 392))
   };
 }
 
@@ -462,6 +462,10 @@ function canMoveSelection(edge: ColumnEdge): boolean {
 }
 
 function headerMenuCommand(command: HeaderMenuCommand): void {
+  if (command === "copy-headers-with-remarks") {
+    void copySelectedColumnRemarks();
+    return;
+  }
   if (command === "sum") {
     applySum(headerSumResult.value);
     return;
@@ -488,6 +492,16 @@ async function copySelectedColumns(mode: ResultCopyMode): Promise<void> {
   const text = resultCopyText(columns.map((column) => ({ label: column.label, index: column.index })),
     activeResult.value?.rows ?? [], mode, settings.copySeparator);
   await copyText(text, mode === "headers" ? "已复制列名" : mode === "data" ? "已复制列数据" : "已复制列名和数据");
+}
+
+async function copySelectedColumnRemarks(): Promise<void> {
+  const columns = selectedOrderedColumns();
+  if (!columns.length) return;
+  const text = resultColumnRemarksText(columns.map((column) => ({
+    label: column.label,
+    remarks: column.remarks,
+  })), settings.copySeparator);
+  await copyText(text, "已复制列名和注释");
 }
 
 function copyDoubleClickedHeader(event: MouseEvent, column: ColumnOption): void {

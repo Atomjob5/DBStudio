@@ -208,6 +208,12 @@ describe("ResultPanel streaming rendering", () => {
     const labels = (header.children as VNode[])[0];
     expect((labels.children as VNode[])[1].children).toBe("客户编号");
     expect(wrapper.emitted("selected-column")?.at(-1)?.[0]).toMatchObject({ remarks: "客户编号" });
+    header.props?.onContextmenu({ preventDefault: vi.fn(), clientX: 20, clientY: 30 });
+    await nextTick();
+    wrapper.findComponent({ name: "ResultHeaderContextMenu" }).vm
+      .$emit("command", "copy-headers-with-remarks");
+    await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith('ID as "客户编号"');
   });
 
   it("keeps selections per result, supports duplicate labels and resets for a new execution", async () => {
@@ -307,6 +313,11 @@ describe("ResultPanel streaming rendering", () => {
       props: { activeResultIndex: 0, execution: {
         executionId: "execution-copy", editorId: "editor-1", busy: false, cancelled: false, failed: false, durationMs: 8,
         results: [{ resultIndex: 0, sql: "select", type: "QUERY", columns: ["id", "name", "amount"],
+          columnDetails: [
+            { label: "id", name: "id", remarks: "订单编号（主键）", catalog: "db", schema: "", table: "sample", typeName: "BIGINT" },
+            { label: "name", name: "name", remarks: "", catalog: "db", schema: "", table: "sample", typeName: "VARCHAR" },
+            { label: "amount", name: "amount", remarks: '金额"含税(enum)', catalog: "db", schema: "", table: "sample", typeName: "DECIMAL" },
+          ],
           rows: [["1", "Apple, Inc.", "12.30"]], updateCount: -1, truncated: false, durationMs: 7, complete: true }]
       } }, global: { plugins: [ElementPlus] }
     });
@@ -325,6 +336,10 @@ describe("ResultPanel streaming rendering", () => {
     await flushPromises();
     expect(clipboardWrite).toHaveBeenLastCalledWith("id,amount\n1,12.30");
 
+    menu.vm.$emit("command", "copy-headers-with-remarks");
+    await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith('id as "订单编号",amount as "金额""含税"');
+
     menu.vm.$emit("command", "move-right");
     await nextTick();
     expect(dataColumns().map((column) => column.title)).toEqual(["name", "id", "amount"]);
@@ -333,6 +348,36 @@ describe("ResultPanel streaming rendering", () => {
     menu.vm.$emit("command", "copy-headers");
     await flushPromises();
     expect(clipboardWrite).toHaveBeenLastCalledWith("name");
+  });
+
+  it("copies selected virtual-grid headers with remarks and the configured separator", async () => {
+    const settings = useSettingsStore();
+    settings.scrollOptimizationEnabled = true;
+    settings.copySeparator = "pipe";
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: 0, execution: {
+        executionId: "execution-virtual-copy", editorId: "editor-1", busy: false,
+        cancelled: false, failed: false, durationMs: 8,
+        results: [{ resultIndex: 0, sql: "select", type: "QUERY", columns: ["ID", "NAME"],
+          columnDetails: [
+            { label: "ID", name: "ID", remarks: "编号（主键）", catalog: "", schema: "", table: "", typeName: "NUMBER" },
+            { label: "NAME", name: "NAME", remarks: "   ", catalog: "", schema: "", table: "", typeName: "VARCHAR" },
+          ],
+          rows: [["1", "Apple"]], updateCount: -1, truncated: false, durationMs: 7, complete: true }]
+      } }, global: { plugins: [ElementPlus] }
+    });
+    const grid = wrapper.findComponent({ name: "ResultVirtualGrid" });
+    const columns = grid.props("columns") as Array<{ headerRenderer: () => VNode }>;
+    const first = columns[0].headerRenderer();
+    const second = columns[1].headerRenderer();
+    first.props?.onClick({ ctrlKey: false, metaKey: false, shiftKey: false });
+    second.props?.onClick({ ctrlKey: true, metaKey: false, shiftKey: false });
+    first.props?.onContextmenu({ preventDefault: vi.fn(), clientX: 20, clientY: 30 });
+    await nextTick();
+    wrapper.findComponent({ name: "ResultHeaderContextMenu" }).vm
+      .$emit("command", "copy-headers-with-remarks");
+    await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith('ID as "编号"|NAME');
   });
 
   it("copies only a double-clicked title when enabled and keeps resize double click independent", async () => {

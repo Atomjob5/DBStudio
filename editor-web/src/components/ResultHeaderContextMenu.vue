@@ -7,6 +7,7 @@
                      :show-timeout="100" :hide-timeout="220">
           <template #title>复制</template>
           <el-menu-item index="copy-headers">复制列名</el-menu-item>
+          <el-menu-item index="copy-headers-with-remarks">复制列名和注释</el-menu-item>
           <el-menu-item index="copy-data" :disabled="!canCopyData">复制数据</el-menu-item>
           <el-menu-item index="copy-all">复制列名和数据</el-menu-item>
         </el-sub-menu>
@@ -21,7 +22,8 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 
-export type HeaderMenuCommand = "copy-headers" | "copy-data" | "copy-all" | "sum" | "move-left" | "move-right";
+export type HeaderMenuCommand = "copy-headers" | "copy-headers-with-remarks" | "copy-data"
+  | "copy-all" | "sum" | "move-left" | "move-right";
 
 const props = defineProps<{ visible: boolean; x: number; y: number; canCopyData: boolean;
   canMoveLeft: boolean; canMoveRight: boolean; canSum: boolean }>();
@@ -36,7 +38,8 @@ watch(() => props.visible, async (visible) => {
 });
 
 function selectCommand(index: string): void {
-  if (["copy-headers", "copy-data", "copy-all", "sum", "move-left", "move-right"].includes(index)) {
+  if (["copy-headers", "copy-headers-with-remarks", "copy-data", "copy-all",
+    "sum", "move-left", "move-right"].includes(index)) {
     emit("command", index as HeaderMenuCommand);
     emit("close");
   }

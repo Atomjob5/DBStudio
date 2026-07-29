@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resultCopyText, separatorCharacter } from "./resultCopy";
+import { resultColumnRemarksText, resultCopyText, separatorCharacter } from "./resultCopy";
 
 describe("result copy formatting", () => {
   const columns = [{ label: "display_id", index: 0 }, { label: "name", index: 2 }];
@@ -19,5 +19,22 @@ describe("result copy formatting", () => {
     expect(separatorCharacter("pipe")).toBe("|");
     expect(resultCopyText(columns, [], "headers-and-data", "pipe")).toBe("display_id|name");
     expect(resultCopyText(columns, [], "data", "comma")).toBe("");
+  });
+
+  it("copies column labels with SQL-escaped remarks using every separator preset", () => {
+    const remarkedColumns = [
+      { label: "col1", remarks: "列1（1：启用，0：停用）" },
+      { label: "col2", remarks: '客户"名称(enum)' },
+      { label: "col3", remarks: "   " },
+      { label: "col4", remarks: "（仅枚举说明）" },
+    ];
+    expect(resultColumnRemarksText(remarkedColumns, "comma"))
+      .toBe('col1 as "列1",col2 as "客户""名称",col3,col4');
+    expect(resultColumnRemarksText(remarkedColumns, "tab"))
+      .toBe('col1 as "列1"\tcol2 as "客户""名称"\tcol3\tcol4');
+    expect(resultColumnRemarksText(remarkedColumns, "semicolon"))
+      .toBe('col1 as "列1";col2 as "客户""名称";col3;col4');
+    expect(resultColumnRemarksText(remarkedColumns, "pipe"))
+      .toBe('col1 as "列1"|col2 as "客户""名称"|col3|col4');
   });
 });

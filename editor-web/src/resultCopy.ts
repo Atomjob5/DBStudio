@@ -6,6 +6,11 @@ export interface CopyColumn {
   index: number;
 }
 
+export interface CopyColumnWithRemarks {
+  label: string;
+  remarks: string;
+}
+
 const SEPARATORS: Record<CopySeparator, string> = {
   comma: ",",
   tab: "\t",
@@ -34,4 +39,21 @@ export function resultCopyText(columns: CopyColumn[], rows: Array<Array<string |
     for (const row of rows) output.push(line(columns.map((column) => row[column.index])));
   }
   return output.join("\n");
+}
+
+export function resultColumnRemarksText(
+  columns: CopyColumnWithRemarks[],
+  separator: CopySeparator,
+): string {
+  const delimiter = separatorCharacter(separator);
+  return columns.map((column) => {
+    const remarks = columnAliasRemarks(column.remarks);
+    return remarks ? `${column.label} as "${remarks.replace(/"/g, '""')}"` : column.label;
+  }).join(delimiter);
+}
+
+function columnAliasRemarks(value: string): string {
+  const brackets = [value.indexOf("（"), value.indexOf("(")].filter((index) => index >= 0);
+  const end = brackets.length ? Math.min(...brackets) : value.length;
+  return value.slice(0, end).trim();
 }
