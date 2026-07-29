@@ -443,6 +443,64 @@ test("filters duplicate column names by the SQL alias at the cursor", async ({ p
   await expect(orderId).not.toContainText("sales_order_item");
 });
 
+test("transforms and comments only the selected SQL with Monaco undo support", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:4173" });
+  const uppercase = page.getByRole("button", { name: "转换大写", exact: true });
+  const lowercase = page.getByRole("button", { name: "转换小写", exact: true });
+  const lineComment = page.getByRole("button", { name: "单行注释", exact: true });
+  const blockComment = page.getByRole("button", { name: "全部注释", exact: true });
+  const localActions = [uppercase, lowercase, lineComment, blockComment];
+  for (const action of localActions) await expect(action).toBeDisabled();
+
+  const editor = page.locator(".monaco-editor .view-lines");
+  await editor.click();
+  await page.keyboard.press("ControlOrMeta+A");
+  const originalSql = "select 'MiXeD' -- Note\n\nfrom Orders";
+  await page.keyboard.insertText(originalSql);
+  for (const action of localActions) await expect(action).toBeDisabled();
+
+  await page.keyboard.press("ControlOrMeta+A");
+  for (const action of localActions) await expect(action).toBeEnabled();
+
+  const expectEditorText = async (text: string) => {
+    await page.keyboard.press("ControlOrMeta+A");
+    await page.keyboard.press("ControlOrMeta+C");
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(text);
+  };
+
+  await uppercase.click();
+  const uppercaseSql = "SELECT 'MIXED' -- NOTE\n\nFROM ORDERS";
+  await expectEditorText(uppercaseSql);
+  await uppercase.click();
+  await expectEditorText(uppercaseSql);
+  await page.keyboard.press("ControlOrMeta+Z");
+  await expectEditorText(originalSql);
+
+  await uppercase.click();
+  await expectEditorText(uppercaseSql);
+  await lowercase.click();
+  const plainSql = "select 'mixed' -- note\n\nfrom orders";
+  await expectEditorText(plainSql);
+
+  await lineComment.click();
+  await expectEditorText("-- select 'mixed' -- note\n\n-- from orders");
+  await lineComment.click();
+  await expectEditorText(plainSql);
+
+  await blockComment.click();
+  await expectEditorText(`/* ${plainSql} */`);
+  await blockComment.click();
+  await expectEditorText(plainSql);
+
+  await blockComment.click();
+  await expectEditorText(`/* ${plainSql} */`);
+  await page.keyboard.press("ControlOrMeta+Z");
+  await expectEditorText(plainSql);
+
+  await page.keyboard.press("ArrowRight");
+  for (const action of localActions) await expect(action).toBeDisabled();
+});
+
 test("uses a static spectrum edge when reduced motion is enabled", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.reload();

@@ -48,6 +48,24 @@
           <el-button text :icon="Fold" aria-label="压缩 SQL" :disabled="!canTransformSql"
                      @click="requestSqlTransform('compact')" />
         </el-tooltip>
+        <el-divider direction="vertical" />
+        <el-tooltip :content="actionTooltip('转换大写', 'editor.uppercase')" placement="bottom">
+          <el-button text :icon="Top" aria-label="转换大写" :disabled="!canEditSelection"
+                     @click="runEditorSelectionAction('uppercase')" />
+        </el-tooltip>
+        <el-tooltip :content="actionTooltip('转换小写', 'editor.lowercase')" placement="bottom">
+          <el-button text :icon="Bottom" aria-label="转换小写" :disabled="!canEditSelection"
+                     @click="runEditorSelectionAction('lowercase')" />
+        </el-tooltip>
+        <el-divider direction="vertical" />
+        <el-tooltip :content="actionTooltip('单行注释', 'editor.toggleLineComment')" placement="bottom">
+          <el-button text :icon="ChatDotSquare" aria-label="单行注释" :disabled="!canEditSelection"
+                     @click="runEditorSelectionAction('lineComment')" />
+        </el-tooltip>
+        <el-tooltip :content="actionTooltip('全部注释', 'editor.toggleBlockComment')" placement="bottom">
+          <el-button text :icon="ChatLineSquare" aria-label="全部注释" :disabled="!canEditSelection"
+                     @click="runEditorSelectionAction('blockComment')" />
+        </el-tooltip>
       </div>
 
       <el-tooltip v-if="activeExecutionRunning" :content="cancelExecutionTooltip" placement="bottom">
@@ -145,7 +163,8 @@
                                 :completion-snippets="settings.completionSnippets"
                                 :minimap-enabled="settings.minimapEnabled"
                                 :word-wrap-enabled="settings.wordWrapEnabled"
-                                @dirty="markActiveDirty" @execute="executeFromEditor" />
+                                @dirty="markActiveDirty" @execute="executeFromEditor"
+                                @selection-change="editorHasSelection = $event" />
                   <el-empty v-else class="workspace-empty" description="新建 SQL 标签开始查询">
                     <template #image><el-icon><Document /></el-icon></template>
                     <el-button round @click="newEditor()">新建查询</el-button>
@@ -231,9 +250,12 @@ import { ElMessage, ElMessageBox, ElNotification } from "element-plus";
 import type { CascaderProps } from "element-plus";
 import {
   ArrowDown,
+  Bottom, ChatDotSquare,
+  ChatLineRound, ChatLineSquare,
   Clock,
   Close,
   Coin,
+  Comment,
   Connection,
   Document,
   DocumentChecked,
@@ -248,6 +270,7 @@ import {
   Setting,
   Sunny,
   SwitchButton,
+  Top,
   Upload,
   VideoPlay
 } from "@element-plus/icons-vue";
@@ -291,7 +314,7 @@ import {
   type ShortcutBinding,
   type ShortcutBindings,
 } from "./shortcuts";
-import type { BootstrapResponse, CompletionCache, CompletionNamespaceDescriptor, CompletionNamespacesResponse, CompletionProgress, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryResult, RecoveredEditor, SavedProfile, SelectedResultColumn, SqlCompletionSnippet, SqlTransformApplyResult, SqlTransformTarget, StatusBarSystemItem, ThemePreference, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "./types";
+import type { BootstrapResponse, CompletionCache, CompletionNamespaceDescriptor, CompletionNamespacesResponse, CompletionProgress, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryResult, RecoveredEditor, SavedProfile, SelectedResultColumn, SqlCompletionSnippet, SqlEditorSelectionAction, SqlTransformApplyResult, SqlTransformTarget, StatusBarSystemItem, ThemePreference, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "./types";
 
 const app = useAppStore(); const connections = useConnectionStore(); const metadata = useMetadataStore();
 const editors = useEditorStore(); const queries = useQueryStore(); const settings = useSettingsStore();
@@ -310,9 +333,11 @@ const monacoEditor = ref<{
   setValue(value: string, key?: string): void;
   triggerExecute(scope: "current" | "script"): void;
   triggerCompletion(): void;
+  runSelectionAction(action: SqlEditorSelectionAction): boolean;
   captureSqlTransformTarget(key?: string): SqlTransformTarget | undefined;
   applySqlTransform(target: SqlTransformTarget, replacement: string): SqlTransformApplyResult;
 }>();
+const editorHasSelection = ref(false);
 const resultPanel = ref<{
   restoreLayout(): void;
   copyCurrentSelection(): Promise<void>;
@@ -386,6 +411,7 @@ const canExecute = computed(() => Boolean(activeConnected.value && !activeDataba
   && app.transportState === "ready"));
 const canTransformSql = computed(() => Boolean(activeConnected.value && !activeDatabaseBusy.value
   && app.transportState === "ready"));
+const canEditSelection = computed(() => Boolean(editors.active && editorHasSelection.value));
 const activeExecutionRunning = computed(() => Boolean(activeDatabaseBusy.value
   || (editors.active?.executionPhase && editors.active.executionPhase !== "idle")));
 const activeCancellationPhase = computed(() => activeResultLoading.value?.phase
@@ -525,6 +551,7 @@ watch(() => [editors.activeId, activeConnectionKey.value, activeCompletionKey.va
   metadata.activate(activeConnectionKey.value, activeCompletionKey.value);
 });
 watch(() => editors.activeId, (current, previous) => {
+  editorHasSelection.value = false;
   selectedResultColumn.value = undefined;
   selectedResultRowCount.value = 0;
   if (previous) void persistDraftById(previous, true);
@@ -876,6 +903,10 @@ async function newEditor(content = "", filePath?: string, title?: string, fileHa
 function markActiveDirty(): void {
   if (!editors.active) return;
   editors.patch(editors.active.id, { dirty: true }); scheduleDraft(editors.active.id);
+}
+function runEditorSelectionAction(action: SqlEditorSelectionAction): void {
+  if (!canEditSelection.value) return;
+  monacoEditor.value?.runSelectionAction(action);
 }
 function requestSqlTransform(mode: "format" | "compact"): void {
   if (!canTransformSql.value) return;
@@ -1397,6 +1428,22 @@ function runShortcutAction(actionId: ShortcutActionId): void {
   }
   if (actionId === "editor.compact") {
     requestSqlTransform("compact");
+    return;
+  }
+  if (actionId === "editor.uppercase") {
+    runEditorSelectionAction("uppercase");
+    return;
+  }
+  if (actionId === "editor.lowercase") {
+    runEditorSelectionAction("lowercase");
+    return;
+  }
+  if (actionId === "editor.toggleLineComment") {
+    runEditorSelectionAction("lineComment");
+    return;
+  }
+  if (actionId === "editor.toggleBlockComment") {
+    runEditorSelectionAction("blockComment");
     return;
   }
   if (actionId === "editor.complete") {

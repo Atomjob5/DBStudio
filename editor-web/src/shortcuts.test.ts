@@ -31,6 +31,10 @@ describe("shortcuts", () => {
     expect(DEFAULT_SHORTCUT_BINDINGS["editor.toggleWordWrap"]).toBeNull();
     expect(DEFAULT_SHORTCUT_BINDINGS["editor.format"]).toBeNull();
     expect(DEFAULT_SHORTCUT_BINDINGS["editor.compact"]).toBeNull();
+    expect(DEFAULT_SHORTCUT_BINDINGS["editor.uppercase"]).toBeNull();
+    expect(DEFAULT_SHORTCUT_BINDINGS["editor.lowercase"]).toBeNull();
+    expect(DEFAULT_SHORTCUT_BINDINGS["editor.toggleLineComment"]).toBeNull();
+    expect(DEFAULT_SHORTCUT_BINDINGS["editor.toggleBlockComment"]).toBeNull();
     expect(Object.values(DEFAULT_SHORTCUT_BINDINGS).filter(Boolean)).toHaveLength(3);
   });
 
@@ -76,6 +80,10 @@ describe("shortcuts", () => {
     expect(parsed["query.executeAll"]).toBe("Mod+7");
     expect(parsed["query.cancel"]).toBe("Shift+Escape");
     expect(parsed["file.newQuery"]).toBeNull();
+    expect(parsed["editor.uppercase"]).toBeNull();
+    expect(parsed["editor.lowercase"]).toBeNull();
+    expect(parsed["editor.toggleLineComment"]).toBeNull();
+    expect(parsed["editor.toggleBlockComment"]).toBeNull();
     expect(parseShortcutBindings("{broken")).toEqual(DEFAULT_SHORTCUT_BINDINGS);
     expect(JSON.parse(serializeShortcutBindings(parsed))["query.executeCurrent"]).toBeNull();
   });

@@ -19,6 +19,7 @@ export interface SqlTransformTarget {
 }
 
 export type SqlTransformApplyResult = "applied" | "unchanged" | "stale" | "missing";
+export type SqlEditorSelectionAction = "uppercase" | "lowercase" | "lineComment" | "blockComment";
 
 export interface ConnectionField {
   key: string;

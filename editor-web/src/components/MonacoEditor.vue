@@ -7,6 +7,7 @@ import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import type {
   CompletionCandidate,
   CompletionResult,
+  SqlEditorSelectionAction,
   SqlTransformApplyResult,
   SqlTransformTarget,
 } from "../types";
@@ -25,6 +26,7 @@ const props = defineProps<{ modelKey: string; initialValue: string; theme: "dark
 const emit = defineEmits<{
   dirty: [];
   execute: [scope: "current" | "script", selection: string, cursorOffset: number];
+  "selection-change": [selected: boolean];
 }>();
 const container = ref<HTMLElement>();
 const instance = shallowRef<monaco.editor.IStandaloneCodeEditor>();
@@ -34,6 +36,7 @@ const mirrorListeners = new Map<string, monaco.IDisposable>();
 const modelSynchronizer = new CompletionModelSynchronizer(completionClient);
 let contentListener: monaco.IDisposable | undefined;
 let completionProvider: monaco.IDisposable | undefined;
+let selectionListener: monaco.IDisposable | undefined;
 let changingModel = false;
 
 monaco.editor.defineTheme("dbstudio-apple-light", {
@@ -95,6 +98,12 @@ if (!monaco.languages.getLanguages().some((item) => item.id === "dbstudio-mysql"
     keywords: ["select", "from", "where", "insert", "into", "values", "update", "set", "delete", "create", "alter", "drop", "table", "view", "index", "join", "left", "right", "inner", "on", "group", "by", "order", "having", "limit", "union", "all", "distinct", "as", "and", "or", "not", "null", "is", "in", "exists", "between", "like", "case", "when", "then", "else", "end", "with", "procedure", "function", "trigger", "begin", "commit", "rollback", "explain", "show", "describe"],
     tokenizer: { root: [[/[a-zA-Z_$][\w$]*/, { cases: { "@keywords": "keyword", "@default": "identifier" } }], [/`([^`]|``)*`/, "identifier.quote"], [/--.*$/, "comment"], [/#.*$/, "comment"], [/\/\*/, "comment", "@comment"], [/'([^'\\]|\\.)*'/, "string"], [/"([^"\\]|\\.)*"/, "string"], [/\d+(\.\d+)?/, "number"]], comment: [[/[^/*]+/, "comment"], [/\*\//, "comment", "@pop"], [/[/*]/, "comment"]] }
   });
+  monaco.languages.setLanguageConfiguration("dbstudio-mysql", {
+    comments: {
+      lineComment: "--",
+      blockComment: ["/*", "*/"],
+    },
+  });
 }
 
 onMounted(() => {
@@ -115,8 +124,13 @@ onMounted(() => {
     cursorBlinking: "smooth",
     cursorSmoothCaretAnimation: "on",
     padding: { top: 10, bottom: 10 },
-    tabSize: 2
+    tabSize: 2,
+    comments: {
+      insertSpace: true,
+      ignoreEmptyLines: true,
+    },
   });
+  selectionListener = instance.value.onDidChangeCursorSelection(emitSelectionState);
   completionProvider = monaco.languages.registerCompletionItemProvider("dbstudio-mysql", {
     triggerCharacters: [".", "`", "\"", " "],
     async provideCompletionItems(model, position, _context, token) {
@@ -249,6 +263,7 @@ function switchModel(key: string, value: string): void {
   contentListener = model.onDidChangeContent(() => { if (!changingModel) emit("dirty"); });
   changingModel = false;
   if (isCompletionBound()) synchronizeInBackground(key, model);
+  emitSelectionState();
   instance.value.focus();
 }
 
@@ -283,6 +298,37 @@ function trigger(scope: "current" | "script"): void {
 function triggerCompletion(): void {
   instance.value?.focus();
   void instance.value?.trigger("shortcut", "editor.action.triggerSuggest", {});
+}
+
+const selectionActionCommands: Record<SqlEditorSelectionAction, string> = {
+  uppercase: "editor.action.transformToUppercase",
+  lowercase: "editor.action.transformToLowercase",
+  lineComment: "editor.action.commentLine",
+  blockComment: "editor.action.blockComment",
+};
+
+function emitSelectionState(): void {
+  const selection = instance.value?.getSelection();
+  emit("selection-change", Boolean(selection && !selection.isEmpty()));
+}
+
+function runSelectionAction(action: SqlEditorSelectionAction): boolean {
+  const editor = instance.value;
+  const model = editor?.getModel();
+  const selection = editor?.getSelection();
+  if (!editor || !model || !selection || selection.isEmpty()) {
+    emitSelectionState();
+    return false;
+  }
+  const selectedText = model.getValueInRange(selection);
+  if ((action === "uppercase" && selectedText === selectedText.toLocaleUpperCase())
+      || (action === "lowercase" && selectedText === selectedText.toLocaleLowerCase())) {
+    editor.focus();
+    return false;
+  }
+  editor.focus();
+  editor.trigger("dbstudio.selectionAction", selectionActionCommands[action], null);
+  return true;
 }
 
 function getValue(key = props.modelKey): string {
@@ -372,6 +418,7 @@ defineExpose({
   setValue,
   triggerExecute: trigger,
   triggerCompletion,
+  runSelectionAction,
   captureSqlTransformTarget,
   applySqlTransform,
 });
@@ -379,6 +426,7 @@ defineExpose({
 onBeforeUnmount(() => {
   contentListener?.dispose();
   completionProvider?.dispose();
+  selectionListener?.dispose();
   mirrorListeners.forEach((listener) => listener.dispose());
   mirrorListeners.clear();
   modelSynchronizer.releaseAll();

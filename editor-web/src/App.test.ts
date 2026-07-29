@@ -13,6 +13,7 @@ import type {
   CompletionCacheSummary,
   CompletionNamespaceDescriptor,
   SavedProfile,
+  SqlEditorSelectionAction,
   SqlTransformTarget,
 } from "./types";
 
@@ -58,10 +59,11 @@ vi.mock("./completion/client", () => ({ completionClient: completionMock }));
 
 const captureSqlTransformTarget = vi.fn<(key?: string) => SqlTransformTarget | undefined>();
 const applySqlTransform = vi.fn();
+const runSelectionAction = vi.fn<(action: SqlEditorSelectionAction) => boolean>();
 const MonacoEditorStub = defineComponent({
   name: "MonacoEditor",
   props: { initialValue: { type: String, default: "" } },
-  emits: ["execute"],
+  emits: ["execute", "selection-change"],
   setup(props, { emit, expose }) {
     expose({
       getValue: () => props.initialValue,
@@ -70,6 +72,7 @@ const MonacoEditorStub = defineComponent({
       triggerCompletion: () => undefined,
       captureSqlTransformTarget,
       applySqlTransform,
+      runSelectionAction,
     });
     return () => h("div", { class: "monaco-editor-stub" });
   },
@@ -83,6 +86,7 @@ describe("App result loading status toolbar", () => {
     rpcRequest.mockReset();
     captureSqlTransformTarget.mockReset();
     applySqlTransform.mockReset().mockReturnValue("applied");
+    runSelectionAction.mockReset().mockReturnValue(true);
     completionMock.inspect.mockReset().mockResolvedValue(undefined);
     completionMock.refresh.mockReset().mockResolvedValue(completionSummary("profile-completion"));
     completionMock.stats.mockReset().mockResolvedValue({ environmentCount: 0, suggestionCount: 0, estimatedBytes: 0 });
@@ -267,6 +271,47 @@ describe("App result loading status toolbar", () => {
     expect(applySqlTransform).toHaveBeenLastCalledWith(documentTarget, "SELECT * FROM orders");
   });
 
+  it("enables selection-only editor actions locally and keeps their toolbar order", async () => {
+    const actionButtons = wrapper.findAll(".editor-actions button");
+    expect(actionButtons.map((button) => button.attributes("aria-label"))).toEqual([
+      "格式化 SQL",
+      "压缩 SQL",
+      "转换大写",
+      "转换小写",
+      "单行注释",
+      "全部注释",
+    ]);
+    expect(wrapper.findAll(".editor-actions .el-divider--vertical")).toHaveLength(2);
+
+    const localActionLabels = ["转换大写", "转换小写", "单行注释", "全部注释"];
+    for (const label of localActionLabels) {
+      expect(wrapper.get(`button[aria-label="${label}"]`).attributes("disabled")).toBeDefined();
+    }
+
+    wrapper.getComponent(MonacoEditorStub).vm.$emit("selection-change", true);
+    await nextTick();
+    expect(wrapper.get('button[aria-label="格式化 SQL"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.get('button[aria-label="压缩 SQL"]').attributes("disabled")).toBeDefined();
+    for (const label of localActionLabels) {
+      expect(wrapper.get(`button[aria-label="${label}"]`).attributes("disabled")).toBeUndefined();
+      expect(wrapper.get(`button[aria-label="${label}"]`).find("svg").exists()).toBe(true);
+      await wrapper.get(`button[aria-label="${label}"]`).trigger("click");
+    }
+    expect(runSelectionAction.mock.calls.map(([action]) => action)).toEqual([
+      "uppercase",
+      "lowercase",
+      "lineComment",
+      "blockComment",
+    ]);
+    expect(rpcRequest.mock.calls.some(([type]) => type === "sql.format" || type === "sql.compact")).toBe(false);
+
+    wrapper.getComponent(MonacoEditorStub).vm.$emit("selection-change", false);
+    await nextTick();
+    for (const label of localActionLabels) {
+      expect(wrapper.get(`button[aria-label="${label}"]`).attributes("disabled")).toBeDefined();
+    }
+  });
+
   it("runs editor display and compact actions through configurable shortcuts", async () => {
     const settings = useSettingsStore();
     const editors = useEditorStore();
@@ -313,6 +358,48 @@ describe("App result loading status toolbar", () => {
     expect(rpcRequest).toHaveBeenCalledWith("sql.compact", {
       editorId: "bootstrap-editor", text: "SELECT\n1"
     });
+  });
+
+  it("runs configurable selection actions only while SQL text is selected", async () => {
+    const settings = useSettingsStore();
+    settings.setShortcut("editor.uppercase", "F2");
+    settings.setShortcut("editor.lowercase", "F3");
+    settings.setShortcut("editor.toggleLineComment", "F4");
+    settings.setShortcut("editor.toggleBlockComment", "F6");
+    await nextTick();
+    const tooltips = wrapper.findAllComponents({ name: "ElTooltip" })
+      .map((tooltip) => String(tooltip.props("content")));
+    expect(tooltips).toContain("转换大写 · F2");
+    expect(tooltips).toContain("转换小写 · F3");
+    expect(tooltips).toContain("单行注释 · F4");
+    expect(tooltips).toContain("全部注释 · F6");
+
+    document.body.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "F2", code: "F2", bubbles: true, cancelable: true,
+    }));
+    expect(runSelectionAction).not.toHaveBeenCalled();
+
+    wrapper.getComponent(MonacoEditorStub).vm.$emit("selection-change", true);
+    await nextTick();
+    for (const key of ["F2", "F3", "F4", "F6"]) {
+      document.body.dispatchEvent(new KeyboardEvent("keydown", {
+        key, code: key, bubbles: true, cancelable: true,
+      }));
+    }
+    await nextTick();
+    expect(runSelectionAction.mock.calls.map(([action]) => action)).toEqual([
+      "uppercase",
+      "lowercase",
+      "lineComment",
+      "blockComment",
+    ]);
+
+    wrapper.getComponent(MonacoEditorStub).vm.$emit("selection-change", false);
+    await nextTick();
+    document.body.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "F2", code: "F2", bubbles: true, cancelable: true,
+    }));
+    expect(runSelectionAction).toHaveBeenCalledTimes(4);
   });
 
   it("does not overwrite or dirty an editor after a stale transform response", async () => {

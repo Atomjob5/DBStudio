@@ -111,6 +111,7 @@ public final class DbStudioApiController {
             "settings.open", "ui.toggleTheme", "app.exit",
             "workspace.objects", "workspace.connections", "workspace.refreshObjects",
             "editor.toggleMinimap", "editor.toggleWordWrap", "editor.format", "editor.compact",
+            "editor.uppercase", "editor.lowercase", "editor.toggleLineComment", "editor.toggleBlockComment",
             "editor.complete",
             "result.restoreLayout", "result.copySelection", "result.exportLoaded", "result.exportFull",
             "result.loadNext", "result.loadAll"));
@@ -128,7 +129,9 @@ public final class DbStudioApiController {
             + "\"history.open\":null,\"settings.open\":null,\"ui.toggleTheme\":null,\"app.exit\":null,"
             + "\"workspace.objects\":null,\"workspace.connections\":null,\"workspace.refreshObjects\":null,"
             + "\"editor.toggleMinimap\":null,\"editor.toggleWordWrap\":null,"
-            + "\"editor.format\":null,\"editor.compact\":null,\"editor.complete\":null,"
+            + "\"editor.format\":null,\"editor.compact\":null,\"editor.uppercase\":null,"
+            + "\"editor.lowercase\":null,\"editor.toggleLineComment\":null,\"editor.toggleBlockComment\":null,"
+            + "\"editor.complete\":null,"
             + "\"result.restoreLayout\":null,"
             + "\"result.copySelection\":null,\"result.exportLoaded\":null,\"result.exportFull\":null,"
             + "\"result.loadNext\":null,\"result.loadAll\":null}";
