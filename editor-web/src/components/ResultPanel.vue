@@ -57,16 +57,26 @@
       <div v-else-if="activeResult?.columns.length" ref="tableHost" class="table-host" tabindex="0"
            @keydown="tableKeydown" @pointermove="autoScrollSelection">
         <ResultSingleRecordView v-if="singleRecordMode && selectedRecordRow"
-                                :columns="columnOptions" :row="selectedRecordRow" />
+                                :columns="columnOptions" :row="selectedRecordRow"
+                                :editing-column-index="editingCell?.rowIndex === selectedRecordRow.sourceIndex
+                                  ? editingCell.columnIndex : undefined"
+                                :editing-value="editingCell?.value" :cell-states="resultCellStates"
+                                @cell-dblclick="handleSingleRecordDoubleClick(selectedRecordRow, $event)"
+                                @update:editing-value="updateEditingValue"
+                                @commit-edit="commitCellEdit" @cancel-edit="cancelCellEdit" />
         <ResultVirtualGrid v-else-if="settings.scrollOptimizationEnabled" ref="virtualGrid"
                            :rows="displayRows" :columns="virtualColumns" :header-height="headerHeight"
                            :buffer-screens="settings.scrollOptimizationBufferScreens"
                            :selection-mode="selectionMode" :cell-range="cellRange"
                            :selected-cell-keys="selectedCellKeys"
                            :selected-row-sources="selectedRowSources"
+                           :editing-cell="editingCell" :editing-value="editingCell?.value"
+                           :cell-states="resultCellStates"
                            :has-footer="!!sumSummary"
                            @cell-pointerdown="startCellSelection" @cell-pointerenter="extendCellSelection"
-                           @cell-contextmenu="openCellMenu" @cell-dblclick="openCellValue"
+                           @cell-contextmenu="openCellMenu" @cell-dblclick="handleCellDoubleClick"
+                           @update:editing-value="updateEditingValue"
+                           @commit-edit="commitCellEdit" @cancel-edit="cancelCellEdit"
                            @row-pointerdown="selectResultRow" @row-pointerenter="extendRowSelection"
                            @row-contextmenu="openRowMenu">
           <template #footer>
@@ -100,6 +110,7 @@
     <ResultDataContextMenu :visible="dataMenu.visible" :x="dataMenu.x" :y="dataMenu.y" :mode="dataMenu.mode"
                            :can-in="canCopyIn" :can-insert="canCopyInsert" :can-update="canCopyUpdate"
                            :can-delete="canCopyDelete" :can-compare="canCompareCells" :can-sum="canSumCells"
+                           :can-set-null="canSetSelectedCellNull"
                            @close="closeDataMenu" @command="dataMenuCommand" />
     <ResultValueDialog v-model="valueDialog.visible" :value="valueDialog.value" />
     <ResultValueCompareDialog v-model="compareDialog" :left="compareValues.left" :right="compareValues.right"
@@ -119,6 +130,8 @@ import { autoColumnWidth, clampColumnWidth, columnIdentityKeys, defaultColumnWid
 import { useColumnLayoutStore } from "../stores/columnLayout";
 import { useSettingsStore } from "../stores/settings";
 import { useAppStore } from "../stores/app";
+import { useQueryStore } from "../stores/query";
+import { useResultEditStore } from "../stores/resultEdits";
 import { resultColumnRemarksText, resultCopyText, type ResultCopyMode } from "../resultCopy";
 import { writeClipboardText } from "../clipboard";
 import { cellSelectionKey, copyGrid, copyInPredicate, copyRowSql, normalizeRange, selectRows,
@@ -150,6 +163,8 @@ const emit = defineEmits<{
 const columnLayouts = useColumnLayoutStore();
 const settings = useSettingsStore();
 const app = useAppStore();
+const queries = useQueryStore();
+const resultEdits = useResultEditStore();
 const tableHost = ref<HTMLElement>();
 const virtualGrid = ref<{
   getScrollPosition: () => ResultGridScrollPosition;
@@ -191,6 +206,12 @@ const selectionMode = ref<"cells" | "rows">("cells");
 const singleRecordMode = ref(false);
 const valueDialog = ref<{ visible: boolean; value: string | null }>({ visible: false, value: null });
 const compareDialog = ref(false);
+const editingCell = ref<{
+  rowIndex: number;
+  columnIndex: number;
+  value: string | null;
+  valueAtOpen: string | null;
+}>();
 const sumSummary = ref<{ total: string; count: number }>();
 const executionLoadingImage = computed(() => app.theme === "dark"
   ? "/assets/branding/dbstudio-sql-loading-v4-dark.webp"
@@ -198,6 +219,26 @@ const executionLoadingImage = computed(() => app.theme === "dark"
 const showExecutionLoading = computed(() => props.executing
   && (!props.execution?.busy || props.execution.results.length === 0));
 const activeResult = computed(() => props.execution?.results.find((item) => item.resultIndex === activeIndex.value) ?? props.execution?.results[0]);
+const activeEditSession = computed(() => {
+  const execution = props.execution;
+  const result = activeResult.value;
+  return execution && result
+    ? resultEdits.session(execution.editorId, execution.executionId, result.resultIndex)
+    : undefined;
+});
+const resultEditUnlocked = computed(() => activeEditSession.value?.unlocked === true);
+const resultCellStates = computed<Record<string, "pending" | "posted">>(() => {
+  const execution = props.execution;
+  const result = activeResult.value;
+  if (!execution || !result) return {};
+  const values: Record<string, "pending" | "posted"> = {};
+  for (const cell of activeEditSession.value?.cells ?? []) {
+    const state = resultEdits.cellState(execution.editorId, execution.executionId,
+      result.resultIndex, cell.rowIndex, cell.columnIndex);
+    if (state) values[`${cell.rowIndex}:${cell.columnIndex}`] = state;
+  }
+  return values;
+});
 const headerHeight = computed(() => settings.showColumnRemarksInHeader ? 48 : 32);
 const resultKey = computed(() => String(activeResult.value?.resultIndex ?? 0));
 const activeSort = computed(() => sorts.value[resultKey.value]);
@@ -234,6 +275,7 @@ const summary = computed(() => {
 });
 
 watch(() => props.execution?.executionId, () => {
+  editingCell.value = undefined;
   clearSelection();
   sumSummary.value = undefined;
   compareDialog.value = false;
@@ -244,6 +286,7 @@ watch(() => props.execution?.executionId, () => {
   closeHeaderMenu(); closeDataMenu();
 });
 watch(activeIndex, () => {
+  editingCell.value = undefined;
   clearSelection(); sumSummary.value = undefined; compareDialog.value = false; valueDialog.value.visible = false;
   columnQuery.value = ""; closeHeaderMenu(); closeDataMenu();
 });
@@ -321,14 +364,36 @@ function columnDefinition(column: ColumnOption, visiblePosition: number): Column
   cellRenderer: ({ rowData, rowIndex }: { rowData: ViewRow; rowIndex: number }) => {
     const cellData = rowData.cells[column.index] ?? null;
     const selected = selectedCellKeySet.value.has(cellSelectionKey(rowData.sourceIndex, column.index));
+    if (editingCell.value?.rowIndex === rowData.sourceIndex
+        && editingCell.value.columnIndex === column.index) {
+      return h("input", {
+        class: "result-cell-editor",
+        value: editingCell.value.value ?? "",
+        "aria-label": "编辑结果值",
+        autofocus: true,
+        onInput: (event: Event) => updateEditingValue((event.target as HTMLInputElement).value),
+        onKeydown: (event: KeyboardEvent) => {
+          if (event.key === "Enter") { event.preventDefault(); commitCellEdit(); }
+          else if (event.key === "Escape") { event.preventDefault(); cancelCellEdit(); }
+        },
+        onBlur: commitCellEdit,
+        onVnodeMounted: (vnode) => {
+          const element = vnode.el as HTMLInputElement | null;
+          element?.focus(); element?.select();
+        }
+      });
+    }
+    const editState = resultCellStates.value[`${rowData.sourceIndex}:${column.index}`];
     return h("span", {
       class: ["result-cell", cellData === null ? "null-value" : cellData.startsWith?.("0x") ? "binary-value" : "",
-        selectionMode.value === "cells" && selected ? "selected" : ""],
+        selectionMode.value === "cells" && selected ? "selected" : "",
+        editState === "pending" ? "result-cell-pending" : "",
+        editState === "posted" ? "result-cell-posted" : ""],
       title: cellData !== null && cellData.length >= 40 ? cellData : undefined,
       onPointerdown: (event: PointerEvent) => startCellSelection(event, rowIndex, visiblePosition),
       onPointerenter: () => extendCellSelection(rowIndex, visiblePosition),
       onContextmenu: (event: MouseEvent) => openCellMenu(event, rowIndex, visiblePosition, rowData),
-      onDblclick: () => openCellValue(rowIndex, visiblePosition, rowData)
+      onDblclick: () => handleCellDoubleClick(rowIndex, visiblePosition, rowData)
     }, cellData === null ? "NULL" : cellData);
   }
   };
@@ -1002,12 +1067,19 @@ const cellSumResult = computed(() =>
 const canSumCells = computed(() => selectionMode.value === "cells"
   && selectedCellsInView.value.length >= 2
   && cellSumResult.value.valid && cellSumResult.value.count > 0);
+const canSetSelectedCellNull = computed(() => resultEditUnlocked.value
+  && selectedCellsInView.value.length > 0
+  && selectedCellsInView.value.every((cell) => isCellEditable(cell.sourceRow, cell.sourceColumn)));
 const headerSumResult = computed(() => sumDecimalValues(selectedOrderedColumns().flatMap((column) =>
   displayRows.value.map((row) => row.cells[column.index] ?? null))));
 const canSumHeaderData = computed(() => selectedOrderedColumns().length > 0
   && headerSumResult.value.valid && headerSumResult.value.count > 0);
 
 function dataMenuCommand(command: DataMenuCommand): void {
+  if (command === "set-null") {
+    setSelectedCellsNull();
+    return;
+  }
   if (command === "compare") {
     if (canCompareCells.value) compareDialog.value = true;
     return;
@@ -1044,10 +1116,97 @@ function openCellValue(_row: number, column: number, rowData: ViewRow): void {
   valueDialog.value = { visible: true, value: rowData.cells[sourceColumn] ?? null };
 }
 
+function handleCellDoubleClick(row: number, column: number, rowData: ViewRow): void {
+  const sourceColumn = visibleColumnOptions.value[column]?.index;
+  if (sourceColumn === undefined) return;
+  if (resultEditUnlocked.value) {
+    startEditCell(rowData.sourceIndex, sourceColumn);
+    return;
+  }
+  openCellValue(row, column, rowData);
+}
+
+function handleSingleRecordDoubleClick(row: ViewRow, columnIndex: number): void {
+  if (resultEditUnlocked.value) {
+    startEditCell(row.sourceIndex, columnIndex);
+    return;
+  }
+  valueDialog.value = { visible: true, value: row.cells[columnIndex] ?? null };
+}
+
+function startEditCell(rowIndex: number, columnIndex: number): void {
+  const result = activeResult.value;
+  if (!resultEditUnlocked.value || !result) return;
+  if (!isCellEditable(rowIndex, columnIndex)) {
+    ElMessage.warning("该字段类型或行唯一键不支持直接修改");
+    return;
+  }
+  const value = result.rows[rowIndex]?.[columnIndex] ?? null;
+  editingCell.value = { rowIndex, columnIndex, value, valueAtOpen: value };
+}
+
+function updateEditingValue(value: string): void {
+  if (editingCell.value) editingCell.value.value = value;
+}
+
+function commitCellEdit(): void {
+  const edit = editingCell.value;
+  const execution = props.execution;
+  const result = activeResult.value;
+  if (!edit || !execution || !result) return;
+  editingCell.value = undefined;
+  if (edit.value === edit.valueAtOpen) return;
+  resultEdits.stage(execution.editorId, execution.executionId, result.resultIndex,
+    edit.rowIndex, edit.columnIndex, edit.valueAtOpen, edit.value);
+  queries.updateCells(execution.editorId, result.resultIndex, [{
+    rowIndex: edit.rowIndex, columnIndex: edit.columnIndex, value: edit.value
+  }]);
+}
+
+function cancelCellEdit(): void { editingCell.value = undefined; }
+
+function setSelectedCellsNull(): void {
+  const execution = props.execution;
+  const result = activeResult.value;
+  if (!execution || !result || !canSetSelectedCellNull.value) return;
+  const updates: Array<{ rowIndex: number; columnIndex: number; value: null }> = [];
+  for (const cell of selectedCellsInView.value) {
+    const current = result.rows[cell.sourceRow]?.[cell.sourceColumn] ?? null;
+    if (current === null) continue;
+    resultEdits.stage(execution.editorId, execution.executionId, result.resultIndex,
+      cell.sourceRow, cell.sourceColumn, current, null);
+    updates.push({ rowIndex: cell.sourceRow, columnIndex: cell.sourceColumn, value: null });
+  }
+  queries.updateCells(execution.editorId, result.resultIndex, updates);
+}
+
+function isCellEditable(rowIndex: number, columnIndex: number): boolean {
+  const result = activeResult.value;
+  const target = result?.mutationTarget;
+  const row = result?.rows[rowIndex];
+  const column = target?.columns.find((item) => item.resultIndex === columnIndex);
+  if (!target?.editableForUpdate || !row || !column || !editableJdbcType(column.jdbcType)) return false;
+  return target.uniqueKeys.some((key) => key.resultColumnIndices.length > 0
+    && key.resultColumnIndices.every((index) => row[index] !== null && row[index] !== undefined));
+}
+
+function editableJdbcType(jdbcType: number): boolean {
+  return !new Set([-4, -3, -2, -8, 1111, 2000, 2002, 2003, 2004, 2005, 2006, 2009, 2011])
+    .has(jdbcType);
+}
+
 function tableKeydown(event: KeyboardEvent): void {
   const target = event.target as HTMLElement | null;
   if (target?.matches("input, textarea, select, [contenteditable='true']")) return;
   if (event.key === "Escape") { clearSelection(); closeDataMenu(); return; }
+  if ((event.key === "Enter" || event.key === "F2") && resultEditUnlocked.value) {
+    const selected = selectedCellsInView.value[0];
+    if (selected) {
+      event.preventDefault();
+      startEditCell(selected.sourceRow, selected.sourceColumn);
+    }
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "c" && hasDataSelection.value) {
     event.preventDefault(); void copyCurrentSelection();
   }
@@ -1203,6 +1362,25 @@ onBeforeUnmount(() => {
   font-variant-numeric: tabular-nums;
 }
 .table-host:focus-visible { box-shadow: inset 0 0 0 1px var(--db-accent); }
+:deep(.result-cell-pending) {
+  background: color-mix(in srgb, var(--db-warning) 20%, transparent);
+  box-shadow: inset 3px 0 0 var(--db-warning);
+}
+:deep(.result-cell-posted) {
+  background: color-mix(in srgb, var(--db-accent) 14%, transparent);
+  box-shadow: inset 3px 0 0 var(--db-accent);
+}
+:deep(.result-cell-editor) {
+  box-sizing: border-box;
+  width: 100%;
+  height: 26px;
+  border: 1px solid var(--db-accent);
+  border-radius: 3px;
+  outline: 0;
+  background: var(--db-content);
+  color: var(--db-text);
+  font: inherit;
+}
 :deep(.el-table-v2),
 :deep(.result-virtual-grid__viewport) {
   font-family: inherit;

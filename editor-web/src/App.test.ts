@@ -2,12 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defineComponent, h, nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
-import ElementPlus, { ElMessageBox } from "element-plus";
+import ElementPlus, { ElMessage, ElMessageBox } from "element-plus";
 import App from "./App.vue";
 import { useConnectionStore } from "./stores/connection";
 import { useEditorStore } from "./stores/editor";
 import { useMetadataStore } from "./stores/metadata";
 import { useQueryStore } from "./stores/query";
+import { useResultEditStore } from "./stores/resultEdits";
 import { useSettingsStore } from "./stores/settings";
 import type {
   CompletionCacheSummary,
@@ -159,6 +160,49 @@ describe("App result loading status toolbar", () => {
       executionId: expect.any(String)
     }), 120_000);
     expect(wrapper.find(".result-data-toolbar").exists()).toBe(false);
+  });
+
+  it("shows result post errors and retains the local draft for correction", async () => {
+    const editors = useEditorStore();
+    const queries = useQueryStore();
+    const edits = useResultEditStore();
+    editors.patch("bootstrap-editor", {
+      connection: completionProfile(), connectionState: "active",
+      transactionDirty: true, transactionState: "active"
+    });
+    queries.start("bootstrap-editor", "execution-edit");
+    queries.addResult("bootstrap-editor", {
+      resultIndex: 0, sql: "select id, order_status from orders for update", type: "QUERY",
+      columns: ["id", "order_status"], rows: [["1", "NEW"]],
+      mutationTarget: {
+        qualifiedName: "`orders`", editableForUpdate: true,
+        columns: [
+          { resultIndex: 0, name: "id", quotedName: "`id`", jdbcType: -5 },
+          { resultIndex: 1, name: "order_status", quotedName: "`order_status`", jdbcType: 12 }
+        ],
+        uniqueKeys: [{ name: "PRIMARY", primary: true, resultColumnIndices: [0] }]
+      },
+      updateCount: -1, truncated: false, durationMs: 3, complete: true
+    });
+    queries.complete("bootstrap-editor", { durationMs: 3 });
+    edits.setUnlocked("bootstrap-editor", "execution-edit", 0, true);
+    edits.stage("bootstrap-editor", "execution-edit", 0, 0, 1, "NEW", "UNKNOWN");
+    const errorMessage = "确认结果修改失败：order_status 不在允许的枚举值中";
+    rpcRequest.mockRejectedValueOnce(new Error(errorMessage));
+    const error = vi.spyOn(ElMessage, "error").mockImplementation(() => undefined as never);
+    await nextTick();
+
+    const post = wrapper.get('button[aria-label="确认结果修改"]');
+    expect(post.classes()).toContain("el-button--success");
+    await post.trigger("click");
+    await flushPromises();
+
+    expect(error).toHaveBeenCalledWith(errorMessage);
+    expect(edits.hasPending("bootstrap-editor")).toBe(true);
+    expect(rpcRequest).toHaveBeenCalledWith("query.applyChanges", {
+      editorId: "bootstrap-editor", executionId: "execution-edit", resultIndex: 0,
+      rows: [{ rowIndex: 0, cells: [{ columnIndex: 1, value: "UNKNOWN" }] }]
+    }, 30_000);
   });
 
   it("persists scroll optimization and rolls the switch back when saving fails", async () => {

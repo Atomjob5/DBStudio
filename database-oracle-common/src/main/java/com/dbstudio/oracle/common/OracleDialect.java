@@ -212,7 +212,7 @@ public class OracleDialect implements SqlDialect {
             String table = normalize(source.getTableName());
             String schema = normalize(source.getSchema());
             return table.isEmpty() ? Optional.<ResultMutationSource>empty()
-                    : Optional.of(new ResultMutationSource("", schema, table));
+                    : Optional.of(new ResultMutationSource("", schema, table, block.isForUpdate()));
         } catch (RuntimeException ignored) { return Optional.empty(); }
     }
 

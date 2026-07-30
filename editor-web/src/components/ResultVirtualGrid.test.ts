@@ -83,6 +83,34 @@ describe("ResultVirtualGrid", () => {
     wrapper.unmount();
   });
 
+  it("edits a virtualized cell and distinguishes pending from posted values", async () => {
+    const wrapper = mount(ResultVirtualGrid, {
+      props: {
+        rows: rows.slice(0, 2), columns: columns.slice(0, 2), headerHeight: 32,
+        bufferScreens: 1, selectionMode: "cells", selectedRowSources: [],
+        editingCell: { rowIndex: 0, columnIndex: 0 }, editingValue: "changed",
+        cellStates: { "0:1": "pending", "1:1": "posted" }
+      }
+    });
+    const viewport = wrapper.get(".result-virtual-grid__viewport").element as HTMLElement;
+    Object.defineProperties(viewport, {
+      clientWidth: { configurable: true, value: 320 },
+      clientHeight: { configurable: true, value: 160 }
+    });
+    wrapper.vm.setScrollPosition({ left: 0, top: 0 });
+    await nextTick();
+
+    const input = wrapper.get('[aria-label="编辑结果值"]');
+    expect((input.element as HTMLInputElement).value).toBe("changed");
+    await input.setValue("next");
+    await input.trigger("keydown", { key: "Enter" });
+    expect(wrapper.emitted("update:editing-value")?.at(-1)).toEqual(["next"]);
+    expect(wrapper.emitted("commit-edit")).toHaveLength(1);
+    expect(wrapper.get('[data-grid-row="0"][data-grid-column="1"]').classes()).toContain("result-cell-pending");
+    expect(wrapper.get('[data-grid-row="1"][data-grid-column="1"]').classes()).toContain("result-cell-posted");
+    wrapper.unmount();
+  });
+
   it("keeps mixed database values compact, classed and safely truncated", async () => {
     const longJson = '{"订单序号":1,"商品名称":"适合验证长文本省略与完整内容提示的测试商品"}';
     const mixedRows = [{

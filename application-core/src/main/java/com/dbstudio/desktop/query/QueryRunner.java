@@ -10,10 +10,16 @@ import java.io.IOException;
 import java.io.Reader;
 import java.sql.Blob;
 import java.sql.Clob;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
+import java.sql.Savepoint;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
+import java.sql.Types;
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -160,6 +166,235 @@ public final class QueryRunner implements AutoCloseable {
             }
             return null;
         }), executor);
+    }
+
+    /**
+     * 在当前编辑器固定的 JDBC 会话上提交一批结果集单元格变更，但不提交事务。
+     * 表名、列名和唯一键全部来自服务端解析出的结果元数据。
+     */
+    public CompletableFuture<List<RowChange>> applyResultChanges(final ResultMutationTarget target,
+                                                                 final List<List<String>> rows,
+                                                                 final List<RowChange> changes) {
+        if (!executionActive.compareAndSet(false, true)) {
+            throw new QueryExecutionException("当前已有数据库操作正在执行", null);
+        }
+        final Map<String, String> loggingContext = MDC.getCopyOfContextMap();
+        return CompletableFuture.supplyAsync(() -> withLoggingContext(loggingContext,
+                () -> applyResultChangesBlocking(target, rows, changes)), executor)
+                .whenComplete((ignored, failure) -> executionActive.set(false));
+    }
+
+    private List<RowChange> applyResultChangesBlocking(ResultMutationTarget target,
+                                                       List<List<String>> rows,
+                                                       List<RowChange> changes) {
+        if (target == null || !target.editableForUpdate()) {
+            throw new QueryExecutionException("当前结果不支持直接修改", null);
+        }
+        Connection connection = session.jdbcConnection();
+        Savepoint savepoint = null;
+        try {
+            if (connection.getAutoCommit()) {
+                throw new QueryExecutionException("请关闭自动提交后重新执行 FOR UPDATE", null);
+            }
+            savepoint = connection.setSavepoint();
+            List<RowChange> applied = new ArrayList<RowChange>();
+            for (RowChange change : changes) {
+                if (change.rowIndex() < 0 || change.rowIndex() >= rows.size()) {
+                    throw new QueryExecutionException("结果行已经过期，请重新执行查询", null);
+                }
+                List<String> row = rows.get(change.rowIndex());
+                List<CellChange> effective = effectiveCells(target, row, change.cells());
+                if (effective.isEmpty()) continue;
+                ResultMutationTarget.Key key = mutationKey(target, row);
+                if (key == null) {
+                    throw new QueryExecutionException("该行没有可用的非空唯一键，无法安全修改", null);
+                }
+                String sql = updateSql(target, key, effective);
+                try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                    int parameter = 1;
+                    for (CellChange cell : effective) {
+                        bind(statement, parameter++, cell.value(), targetColumn(target, cell.columnIndex()).jdbcType());
+                    }
+                    for (Integer columnIndex : key.resultColumnIndices()) {
+                        ResultMutationTarget.Column column = targetColumn(target, columnIndex);
+                        bind(statement, parameter++, row.get(columnIndex), column.jdbcType());
+                    }
+                    int affected = statement.executeUpdate();
+                    if (affected != 1) {
+                        throw new QueryExecutionException("修改结果不唯一，已取消本批次修改", null);
+                    }
+                }
+                applied.add(new RowChange(change.rowIndex(), effective));
+            }
+            releaseSavepoint(connection, savepoint);
+            if (!applied.isEmpty()) transactionDirty.set(true);
+            return Collections.unmodifiableList(applied);
+        } catch (Exception exception) {
+            if (savepoint != null) try { connection.rollback(savepoint); } catch (SQLException ignored) { }
+            if (exception instanceof QueryExecutionException) throw (QueryExecutionException) exception;
+            String detail = resultChangeFailureDetail(exception);
+            throw new QueryExecutionException("确认结果修改失败：" + detail, exception);
+        }
+    }
+
+    private static String resultChangeFailureDetail(Exception exception) {
+        SQLException sqlException = exception instanceof SQLException
+                ? (SQLException) exception : new SQLException(exception.getMessage(), exception);
+        String detail = exception.getMessage() == null ? exception.getClass().getSimpleName()
+                : sanitize(sqlException);
+        String lower = detail.toLowerCase(java.util.Locale.ROOT);
+        String state = sqlException.getSQLState();
+        if (sqlException.getErrorCode() == 1265 || lower.contains("data truncated")) {
+            return "字段值不符合数据库定义，请检查枚举可选值、长度或精度（" + detail + "）";
+        }
+        if (state != null && state.startsWith("22")) {
+            return "字段值的格式或范围不符合数据库定义（" + detail + "）";
+        }
+        if (state != null && state.startsWith("23")) {
+            return "字段值违反数据库约束（" + detail + "）";
+        }
+        return detail;
+    }
+
+    private static void releaseSavepoint(Connection connection, Savepoint savepoint) throws SQLException {
+        if (savepoint == null) return;
+        try {
+            connection.releaseSavepoint(savepoint);
+        } catch (SQLFeatureNotSupportedException unsupported) {
+            // Oracle JDBC keeps the savepoint until transaction end but does not implement releaseSavepoint.
+            LOG.debug("JDBC 驱动不支持主动释放保存点，将由事务结束时清理");
+        }
+    }
+
+    private static List<CellChange> effectiveCells(ResultMutationTarget target, List<String> row,
+                                                   List<CellChange> cells) {
+        List<CellChange> result = new ArrayList<CellChange>();
+        java.util.Set<Integer> seen = new java.util.HashSet<Integer>();
+        for (CellChange cell : cells) {
+            ResultMutationTarget.Column column = targetColumn(target, cell.columnIndex());
+            if (!seen.add(cell.columnIndex())) throw new QueryExecutionException("结果修改包含重复字段", null);
+            if (!editableJdbcType(column.jdbcType())) {
+                throw new QueryExecutionException("字段 " + column.name() + " 的类型不支持直接修改", null);
+            }
+            if (!Objects.equals(row.get(cell.columnIndex()), cell.value())) result.add(cell);
+        }
+        return result;
+    }
+
+    private static ResultMutationTarget.Column targetColumn(ResultMutationTarget target, int resultIndex) {
+        for (ResultMutationTarget.Column column : target.columns()) {
+            if (column.resultIndex() == resultIndex) return column;
+        }
+        throw new QueryExecutionException("结果字段不可修改或已经过期", null);
+    }
+
+    private static ResultMutationTarget.Key mutationKey(ResultMutationTarget target, List<String> row) {
+        List<ResultMutationTarget.Key> keys = new ArrayList<ResultMutationTarget.Key>(target.uniqueKeys());
+        Collections.sort(keys, (left, right) -> Boolean.compare(right.primary(), left.primary()));
+        for (ResultMutationTarget.Key key : keys) {
+            boolean usable = !key.resultColumnIndices().isEmpty();
+            for (Integer index : key.resultColumnIndices()) {
+                if (index < 0 || index >= row.size() || row.get(index) == null) { usable = false; break; }
+            }
+            if (usable) return key;
+        }
+        return null;
+    }
+
+    private static String updateSql(ResultMutationTarget target, ResultMutationTarget.Key key,
+                                    List<CellChange> cells) {
+        StringBuilder sql = new StringBuilder("UPDATE ").append(target.qualifiedName()).append(" SET ");
+        for (int index = 0; index < cells.size(); index++) {
+            if (index > 0) sql.append(", ");
+            sql.append(targetColumn(target, cells.get(index).columnIndex()).quotedName()).append(" = ?");
+        }
+        sql.append(" WHERE ");
+        for (int index = 0; index < key.resultColumnIndices().size(); index++) {
+            if (index > 0) sql.append(" AND ");
+            sql.append(targetColumn(target, key.resultColumnIndices().get(index)).quotedName()).append(" = ?");
+        }
+        return sql.toString();
+    }
+
+    public static boolean editableJdbcType(int jdbcType) {
+        switch (jdbcType) {
+            case Types.BINARY:
+            case Types.VARBINARY:
+            case Types.LONGVARBINARY:
+            case Types.BLOB:
+            case Types.CLOB:
+            case Types.NCLOB:
+            case Types.ARRAY:
+            case Types.STRUCT:
+            case Types.REF:
+            case Types.ROWID:
+            case Types.SQLXML:
+            case Types.JAVA_OBJECT:
+            case Types.OTHER:
+                return false;
+            default:
+                return true;
+        }
+    }
+
+    private static void bind(PreparedStatement statement, int index, String value, int jdbcType)
+            throws SQLException {
+        if (value == null) { statement.setNull(index, jdbcType); return; }
+        try {
+            switch (jdbcType) {
+                case Types.TINYINT:
+                case Types.SMALLINT:
+                case Types.INTEGER:
+                case Types.BIGINT:
+                case Types.FLOAT:
+                case Types.REAL:
+                case Types.DOUBLE:
+                case Types.NUMERIC:
+                case Types.DECIMAL:
+                    statement.setBigDecimal(index, new BigDecimal(value)); return;
+                case Types.BOOLEAN:
+                case Types.BIT:
+                    if (!"true".equalsIgnoreCase(value) && !"false".equalsIgnoreCase(value)
+                            && !"1".equals(value) && !"0".equals(value)) {
+                        throw new IllegalArgumentException("布尔值必须为 true、false、1 或 0");
+                    }
+                    statement.setBoolean(index, "true".equalsIgnoreCase(value) || "1".equals(value)); return;
+                case Types.DATE:
+                    statement.setDate(index, java.sql.Date.valueOf(value)); return;
+                case Types.TIME:
+                case Types.TIME_WITH_TIMEZONE:
+                    statement.setTime(index, java.sql.Time.valueOf(value)); return;
+                case Types.TIMESTAMP:
+                case Types.TIMESTAMP_WITH_TIMEZONE:
+                    statement.setTimestamp(index, java.sql.Timestamp.valueOf(value.replace('T', ' '))); return;
+                default:
+                    statement.setObject(index, value, jdbcType);
+            }
+        } catch (IllegalArgumentException exception) {
+            throw new SQLException("值格式与字段类型不匹配：" + exception.getMessage(), exception);
+        }
+    }
+
+    public static final class CellChange {
+        private final int columnIndex;
+        private final String value;
+        public CellChange(int columnIndex, String value) {
+            this.columnIndex = columnIndex;
+            this.value = value;
+        }
+        public int columnIndex() { return columnIndex; }
+        public String value() { return value; }
+    }
+
+    public static final class RowChange {
+        private final int rowIndex;
+        private final List<CellChange> cells;
+        public RowChange(int rowIndex, List<CellChange> cells) {
+            this.rowIndex = rowIndex;
+            this.cells = Collections.unmodifiableList(new ArrayList<CellChange>(cells));
+        }
+        public int rowIndex() { return rowIndex; }
+        public List<CellChange> cells() { return cells; }
     }
 
     /**

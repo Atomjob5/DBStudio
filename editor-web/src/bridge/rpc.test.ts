@@ -147,6 +147,26 @@ describe("RpcClient websocket recovery", () => {
     client.dispose();
   });
 
+  it("routes result changes with the server-owned result index", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).includes("/open")
+      ? jsonResponse({ workspaceId: "workspace", recoveryDecisionRequired: false, editors: [] })
+      : jsonResponse({ resultChangesDirty: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new RpcClient();
+    await open(client);
+
+    const body = {
+      editorId: "editor-1", executionId: "execution-1", resultIndex: 3,
+      rows: [{ rowIndex: 2, cells: [{ columnIndex: 1, value: "changed" }] }]
+    };
+    await expect(client.request("query.applyChanges", body))
+      .resolves.toEqual({ resultChangesDirty: true });
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/editors/editor-1/results/3/changes"),
+      expect.objectContaining({ method: "POST", body: JSON.stringify(body) }));
+    client.dispose();
+  });
+
   it("rejects a socket closed before opening and reconnects with exponential backoff", async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).includes("/workspaces/")

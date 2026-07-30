@@ -268,7 +268,7 @@ public final class MySqlDialect implements SqlDialect {
             // Druid 会通过 getSchema() 暴露两段式名称，这里统一归一化差异。
             String catalog = normalizedIdentifier(source.getCatalog());
             if (catalog.isEmpty()) catalog = normalizedIdentifier(source.getSchema());
-            return Optional.of(new ResultMutationSource(catalog, "", table));
+            return Optional.of(new ResultMutationSource(catalog, "", table, block.isForUpdate()));
         } catch (RuntimeException ignored) {
             return Optional.empty();
         }

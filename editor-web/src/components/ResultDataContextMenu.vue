@@ -20,6 +20,7 @@
           </template>
         </el-sub-menu>
         <template v-if="mode === 'cells'">
+          <el-menu-item index="set-null" :disabled="!canSetNull">设置为 NULL</el-menu-item>
           <el-menu-item index="compare" :disabled="!canCompare">比较</el-menu-item>
           <el-menu-item index="sum" :disabled="!canSum">求和</el-menu-item>
         </template>
@@ -33,10 +34,10 @@ import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { fitContextMenuPosition } from "../contextMenuPosition";
 
 export type DataMenuCommand = "copy-data" | "copy-in" | "copy-all" | "copy-insert" | "copy-update" | "copy-delete"
-  | "compare" | "sum";
+  | "set-null" | "compare" | "sum";
 const props = defineProps<{ visible: boolean; x: number; y: number; mode: "cells" | "rows";
   canIn: boolean; canInsert: boolean; canUpdate: boolean; canDelete: boolean;
-  canCompare: boolean; canSum: boolean }>();
+  canCompare: boolean; canSum: boolean; canSetNull?: boolean }>();
 const emit = defineEmits<{ close: []; command: [command: DataMenuCommand] }>();
 const menuHost = ref<HTMLElement>();
 const position = ref({ x: 0, y: 0, ready: false });
@@ -69,7 +70,7 @@ watch([() => props.visible, () => props.x, () => props.y], async ([visible], pre
 });
 function selectCommand(index: string): void {
   if (["copy-data", "copy-in", "copy-all", "copy-insert", "copy-update", "copy-delete",
-    "compare", "sum"].includes(index)) {
+    "set-null", "compare", "sum"].includes(index)) {
     emit("command", index as DataMenuCommand); emit("close");
   }
 }

@@ -12,7 +12,9 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -158,6 +160,7 @@ public final class EditorSessionRegistry implements AutoCloseable {
         private volatile QueryExecution lastExecution;
         private volatile String lastSql;
         private final AtomicBoolean transactionOperation = new AtomicBoolean();
+        private final Map<String, String> originalResultValues = new HashMap<String, String>();
 
         private EditorSession(UUID id, String title) { this.id = id; this.title = title; }
         public UUID id() { return id; }
@@ -181,6 +184,7 @@ public final class EditorSessionRegistry implements AutoCloseable {
         public String lastSql() { return lastSql; }
         public long lastTouched() { return lastTouched; }
         public boolean transactionOperationActive() { return transactionOperation.get(); }
+        public synchronized boolean resultChangesDirty() { return !originalResultValues.isEmpty(); }
         public synchronized boolean beginTransactionOperation() {
             if (activeExecutionId != null || transactionOperation.get()) return false;
             transactionOperation.set(true);
@@ -296,6 +300,86 @@ public final class EditorSessionRegistry implements AutoCloseable {
             touch();
         }
 
+        public synchronized void recordResultChanges(UUID executionId, int resultIndex,
+                                                     List<QueryRunner.RowChange> changes) {
+            if (executionId == null || !executionId.equals(lastExecutionId) || lastExecution == null
+                    || resultIndex < 0 || resultIndex >= lastExecution.results().size()) {
+                throw new RpcException("STALE_RESULT", "查询结果已经过期，请重新执行");
+            }
+            List<StatementResult> results = new ArrayList<StatementResult>(lastExecution.results());
+            StatementResult source = results.get(resultIndex);
+            List<List<String>> rows = mutableRows(source.rows());
+            for (QueryRunner.RowChange rowChange : changes) {
+                if (rowChange.rowIndex() < 0 || rowChange.rowIndex() >= rows.size()) {
+                    throw new RpcException("STALE_RESULT", "查询结果行已经过期，请重新执行");
+                }
+                List<String> row = rows.get(rowChange.rowIndex());
+                for (QueryRunner.CellChange cell : rowChange.cells()) {
+                    if (cell.columnIndex() < 0 || cell.columnIndex() >= row.size()) {
+                        throw new RpcException("STALE_RESULT", "查询结果字段已经过期，请重新执行");
+                    }
+                    String key = resultCellKey(resultIndex, rowChange.rowIndex(), cell.columnIndex());
+                    if (!originalResultValues.containsKey(key)) {
+                        originalResultValues.put(key, row.get(cell.columnIndex()));
+                    }
+                    row.set(cell.columnIndex(), cell.value());
+                }
+            }
+            results.set(resultIndex, resultWithRows(source, rows));
+            lastExecution = new QueryExecution(results, lastExecution.duration(), lastExecution.cancelled());
+            touch();
+        }
+
+        public synchronized void commitResultChanges() {
+            originalResultValues.clear();
+            touch();
+        }
+
+        public synchronized void rollbackResultChanges() {
+            if (originalResultValues.isEmpty() || lastExecution == null) return;
+            List<StatementResult> results = new ArrayList<StatementResult>(lastExecution.results());
+            Map<Integer, List<List<String>>> rowsByResult = new HashMap<Integer, List<List<String>>>();
+            for (Map.Entry<String, String> entry : originalResultValues.entrySet()) {
+                String[] parts = entry.getKey().split(":", 3);
+                int resultIndex = Integer.parseInt(parts[0]);
+                int rowIndex = Integer.parseInt(parts[1]);
+                int columnIndex = Integer.parseInt(parts[2]);
+                if (resultIndex < 0 || resultIndex >= results.size()) continue;
+                List<List<String>> rows = rowsByResult.get(resultIndex);
+                if (rows == null) {
+                    rows = mutableRows(results.get(resultIndex).rows());
+                    rowsByResult.put(resultIndex, rows);
+                }
+                if (rowIndex >= 0 && rowIndex < rows.size()
+                        && columnIndex >= 0 && columnIndex < rows.get(rowIndex).size()) {
+                    rows.get(rowIndex).set(columnIndex, entry.getValue());
+                }
+            }
+            for (Map.Entry<Integer, List<List<String>>> entry : rowsByResult.entrySet()) {
+                StatementResult source = results.get(entry.getKey());
+                results.set(entry.getKey(), resultWithRows(source, entry.getValue()));
+            }
+            lastExecution = new QueryExecution(results, lastExecution.duration(), lastExecution.cancelled());
+            originalResultValues.clear();
+            touch();
+        }
+
+        private static List<List<String>> mutableRows(List<List<String>> source) {
+            List<List<String>> result = new ArrayList<List<String>>(source.size());
+            for (List<String> row : source) result.add(new ArrayList<String>(row));
+            return result;
+        }
+
+        private static StatementResult resultWithRows(StatementResult source, List<List<String>> rows) {
+            return new StatementResult(source.sql(), source.type(), source.columns(), source.columnDetails(),
+                    source.mutationTarget(), rows, source.updateCount(), source.truncated(),
+                    source.duration(), source.errorMessage());
+        }
+
+        private static String resultCellKey(int resultIndex, int rowIndex, int columnIndex) {
+            return resultIndex + ":" + rowIndex + ":" + columnIndex;
+        }
+
         private void closeRunner() {
             QueryRunner current = runner;
             runner = null;
@@ -303,7 +387,7 @@ public final class EditorSessionRegistry implements AutoCloseable {
         }
 
         @Override public synchronized void close() {
-            closeRunner(); context = null; bindingKey = null;
+            closeRunner(); context = null; bindingKey = null; originalResultValues.clear();
         }
     }
 

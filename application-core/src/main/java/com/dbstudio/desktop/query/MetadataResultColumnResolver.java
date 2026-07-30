@@ -45,18 +45,21 @@ public final class MetadataResultColumnResolver implements ResultColumnResolver 
         if (!parsed.isPresent() || columns.isEmpty()) return null;
         ResultMutationSource source = parsed.get();
         ResultColumn first = columns.get(0);
-        String table = first.table();
-        if (table.isEmpty() || !source.table().equalsIgnoreCase(table)) return null;
-        String catalog = first.catalog().isEmpty() ? source.catalog() : first.catalog();
-        String schema = first.schema().isEmpty() ? source.schema() : first.schema();
+        String table = source.table();
+        String catalog = source.catalog().isEmpty() ? first.catalog() : source.catalog();
+        String schema = source.schema().isEmpty() ? first.schema() : source.schema();
         Set<String> names = new HashSet<String>();
         Map<String, Integer> indexByName = new HashMap<String, Integer>();
         List<ResultMutationTarget.Column> targetColumns = new ArrayList<ResultMutationTarget.Column>();
         for (int index = 0; index < columns.size(); index++) {
             ResultColumn column = columns.get(index);
             String name = normalized(column.name());
-            if (name.isEmpty() || column.table().isEmpty() || !table.equalsIgnoreCase(column.table())
-                    || (!column.catalog().isEmpty() && !catalog.equalsIgnoreCase(column.catalog()))
+            if (name.isEmpty()
+                    || (!column.table().isEmpty() && !table.equalsIgnoreCase(column.table()))
+                    || (!column.catalog().isEmpty() && !catalog.isEmpty()
+                        && !catalog.equalsIgnoreCase(column.catalog()))
+                    || (!column.schema().isEmpty() && !schema.isEmpty()
+                        && !schema.equalsIgnoreCase(column.schema()))
                     || !names.add(name)) return null;
             indexByName.put(name, index);
             targetColumns.add(new ResultMutationTarget.Column(index, column.name(),
@@ -76,7 +79,8 @@ public final class MetadataResultColumnResolver implements ResultColumnResolver 
                     if (!indices.isEmpty()) keys.add(new ResultMutationTarget.Key(
                             key.name(), key.primary(), indices));
                 }
-                return new ResultMutationTarget(qualified(catalog, schema, table), targetColumns, keys);
+                return new ResultMutationTarget(qualified(catalog, schema, table), targetColumns, keys,
+                        source.editableForUpdate());
             } catch (SQLException ignored) {
                 return null;
             }

@@ -20,7 +20,9 @@ import com.dbstudio.desktop.persistence.SettingsRepository;
 import com.dbstudio.desktop.persistence.WorkspaceRepository;
 import com.dbstudio.desktop.query.QueryExecution;
 import com.dbstudio.desktop.query.QueryResultListener;
+import com.dbstudio.desktop.query.QueryRunner;
 import com.dbstudio.desktop.query.QueryRunner.PageResult;
+import com.dbstudio.desktop.query.QueryRunner.QueryExecutionException;
 import com.dbstudio.desktop.query.ResultColumn;
 import com.dbstudio.desktop.query.ResultMutationTarget;
 import com.dbstudio.desktop.query.StatementResult;
@@ -59,6 +61,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.context.ConfigurableApplicationContext;
@@ -683,7 +686,7 @@ public final class DbStudioApiController {
     @PostMapping("/workspaces/{workspaceId}/editors/{editorId}/executions")
     public Map<String, Object> execute(@PathVariable final String workspaceId,
                                        @PathVariable final String editorId,
-                                       @RequestBody Map<String, Object> body) {
+                                       @RequestBody Map<String, Object> body) throws Exception {
         final Workspace workspace = workspaces.require(workspaceId);
         final EditorSession editor = workspace.editors().require(editorId);
         if (!workspace.events().connected()) throw new ApiException(
@@ -691,6 +694,8 @@ public final class DbStudioApiController {
         ensureEditorContext(workspace, editor);
         final DatabaseContext context = workspace.requireEditorDatabase(editor);
         final List<SqlStatement> statements = selectStatements(context.provider(), body);
+        resolveResultChangesBeforeExecution(workspace, editor,
+                ApiPayloads.text(body, "resultTransactionAction"));
         boolean stopOnError = ApiPayloads.bool(body, "stopOnError", true);
         LOG.info("SQL执行请求开始 workspace={} editor={} statements={} stopOnError={}",
                 workspaceId, editorId, statements.size(), stopOnError);
@@ -768,7 +773,7 @@ public final class DbStudioApiController {
                     "resultColumnIndices", key.resultColumnIndices()));
         }
         return ApiPayloads.map("qualifiedName", target.qualifiedName(), "columns", columns,
-                "uniqueKeys", keys);
+                "uniqueKeys", keys, "editableForUpdate", target.editableForUpdate());
     }
 
     @DeleteMapping("/workspaces/{workspaceId}/executions/{executionId}")
@@ -795,6 +800,10 @@ public final class DbStudioApiController {
         if (!workspace.events().connected()) throw new ApiException(
                 "EVENT_CHANNEL_REQUIRED", "事件通道尚未连接，请等待重连后再加载结果");
         ensureEditorContext(workspace, editor);
+        if (editor.resultChangesDirty()) {
+            throw new ApiException("RESULT_CHANGES_PENDING",
+                    "请先提交或回滚结果修改后再继续加载数据");
+        }
         StatementResult source = result(editor, resultIndex);
         if (!source.hasRows() || source.type() != StatementType.QUERY) {
             throw new ApiException("RESULT_NOT_PAGEABLE", "只有只读查询结果支持继续加载数据");
@@ -828,6 +837,55 @@ public final class DbStudioApiController {
                 "nextOffset", offset + page.rows().size(), "cancelled", page.cancelled());
     }
 
+    @PostMapping("/workspaces/{workspaceId}/editors/{editorId}/results/{resultIndex}/changes")
+    public Map<String, Object> applyResultChanges(@PathVariable String workspaceId,
+                                                   @PathVariable String editorId,
+                                                   @PathVariable int resultIndex,
+                                                   @RequestBody Map<String, Object> body) throws Exception {
+        Workspace workspace = workspaces.require(workspaceId);
+        EditorSession editor = workspace.editors().require(editorId);
+        ensureEditorContext(workspace, editor);
+        UUID executionId;
+        try { executionId = UUID.fromString(ApiPayloads.required(body, "executionId")); }
+        catch (IllegalArgumentException exception) {
+            throw new ApiException("INVALID_EXECUTION_ID", "结果执行编号无效");
+        }
+        if (!executionId.equals(editor.lastExecutionId())) {
+            throw new ApiException("STALE_RESULT", "查询结果已经过期，请重新执行");
+        }
+        StatementResult source = result(editor, resultIndex);
+        ResultMutationTarget target = source.mutationTarget();
+        if (target == null || !target.editableForUpdate()) {
+            throw new ApiException("RESULT_NOT_EDITABLE", "只有单表 FOR UPDATE 查询结果支持直接修改");
+        }
+        List<QueryRunner.RowChange> requested = resultRowChanges(body.get("rows"));
+        List<QueryRunner.RowChange> applied;
+        try {
+            applied = workspace.applyResultChanges(
+                    editor, target, source.rows(), requested).get(30, TimeUnit.SECONDS);
+        } catch (ExecutionException exception) {
+            Throwable cause = exception.getCause();
+            if (cause instanceof QueryExecutionException) {
+                throw new ApiException("RESULT_CHANGE_REJECTED", cause.getMessage(), cause);
+            }
+            throw exception;
+        }
+        editor.recordResultChanges(executionId, resultIndex, applied);
+        List<Map<String, Object>> rows = new ArrayList<Map<String, Object>>(applied.size());
+        for (QueryRunner.RowChange row : applied) {
+            List<Map<String, Object>> cells = new ArrayList<Map<String, Object>>(row.cells().size());
+            for (QueryRunner.CellChange cell : row.cells()) {
+                cells.add(ApiPayloads.map("columnIndex", cell.columnIndex(), "value", cell.value()));
+            }
+            rows.add(ApiPayloads.map("rowIndex", row.rowIndex(), "cells", cells));
+        }
+        workspace.events().emit("transaction.status", ApiPayloads.map(
+                "editorId", editorId, "dirty", true, "state", "active",
+                "resultChangesDirty", editor.resultChangesDirty(), "message", "结果修改已确认，等待提交事务"));
+        return ApiPayloads.map("rows", rows, "transactionDirty", true,
+                "resultChangesDirty", editor.resultChangesDirty());
+    }
+
     @PostMapping("/workspaces/{workspaceId}/editors/{editorId}/transaction/{action}")
     public Map<String, Object> transaction(@PathVariable String workspaceId, @PathVariable String editorId,
                                             @PathVariable String action) throws Exception {
@@ -839,10 +897,11 @@ public final class DbStudioApiController {
         else throw new ApiException("INVALID_TRANSACTION_ACTION", "事务操作无效");
         String message = "commit".equals(action) ? "事务已提交" : "事务已回滚";
         workspace.events().emit("transaction.status", ApiPayloads.map(
-                "editorId", editorId, "dirty", false, "state", "none", "message", message));
+                "editorId", editorId, "dirty", false, "state", "none",
+                "resultChangesDirty", false, "message", message));
         workspaceRepository.updateTransactionState(workspaceId, editorId, "none");
         LOG.info("事务操作完成 workspace={} editor={} action={}", workspaceId, editorId, action);
-        return ApiPayloads.map("dirty", false, "message", message);
+        return ApiPayloads.map("dirty", false, "resultChangesDirty", false, "message", message);
     }
 
     @PostMapping("/workspaces/{workspaceId}/sql/format")
@@ -1216,7 +1275,9 @@ public final class DbStudioApiController {
                                                                @RequestParam String editorId,
                                                                @RequestParam int resultIndex) {
         Workspace workspace = workspaces.require(workspaceId);
-        StatementResult result = result(workspace.editors().require(editorId), resultIndex);
+        EditorSession editor = workspace.editors().require(editorId);
+        rejectPendingResultChanges(editor, "导出");
+        StatementResult result = result(editor, resultIndex);
         StreamingResponseBody body = output -> csv.exportLoadedResult(result,
                 new OutputStreamWriter(output, StandardCharsets.UTF_8), ',');
         return csvResponse("dbstudio-result.csv", body);
@@ -1228,6 +1289,7 @@ public final class DbStudioApiController {
                                                              @RequestParam int resultIndex) {
         final Workspace workspace = workspaces.require(workspaceId);
         final EditorSession editor = workspace.editors().require(editorId);
+        rejectPendingResultChanges(editor, "导出");
         final String sql = result(editor, resultIndex).sql();
         StreamingResponseBody body = output -> {
             DatabaseContext context = workspace.requireEditorDatabase(editor);
@@ -1264,7 +1326,8 @@ public final class DbStudioApiController {
         EditorSession editor = workspace.editors().require(editorId);
         workspace.events().emit("query.executionComplete", ApiPayloads.map("editorId", editorId,
                 "executionId", executionId.toString(), "cancelled", cancelled, "failed", failed,
-                "durationMs", duration, "transactionDirty", editor.transactionDirty()));
+                "durationMs", duration, "transactionDirty", editor.transactionDirty(),
+                "resultChangesDirty", editor.resultChangesDirty()));
         LOG.info("SQL执行完成 workspace={} editor={} execution={} failed={} cancelled={} durationMs={} results={}",
                 workspace.id(), editorId, executionId, failed, cancelled, duration,
                 execution == null ? 0 : execution.results().size());
@@ -1407,6 +1470,57 @@ public final class DbStudioApiController {
         if ("commit".equals(action)) workspace.commit(editor).get(30, TimeUnit.SECONDS);
         else if ("rollback".equals(action)) workspace.rollback(editor).get(30, TimeUnit.SECONDS);
         else throw new ApiException("TRANSACTION_DECISION_REQUIRED", "切换链接前必须提交或回滚事务");
+    }
+
+    private void resolveResultChangesBeforeExecution(Workspace workspace, EditorSession editor, String action)
+            throws Exception {
+        if (editor.resultChangesDirty() && !"commit".equals(action) && !"rollback".equals(action)) {
+            throw new ApiException("RESULT_CHANGES_DECISION_REQUIRED",
+                    "当前数据已被修改，请先提交或回滚事务");
+        }
+        if (!"commit".equals(action) && !"rollback".equals(action)) return;
+        if (!editor.transactionDirty()) return;
+        if ("commit".equals(action)) workspace.commit(editor).get(30, TimeUnit.SECONDS);
+        else workspace.rollback(editor).get(30, TimeUnit.SECONDS);
+    }
+
+    private static List<QueryRunner.RowChange> resultRowChanges(Object rawRows) {
+        if (!(rawRows instanceof List)) throw new ApiException("INVALID_RESULT_CHANGES", "rows 必须是数组");
+        List<QueryRunner.RowChange> result = new ArrayList<QueryRunner.RowChange>();
+        java.util.Set<Integer> rowIndices = new java.util.HashSet<Integer>();
+        for (Object rawRow : (List<?>) rawRows) {
+            if (!(rawRow instanceof Map)) throw new ApiException("INVALID_RESULT_CHANGES", "结果行修改格式无效");
+            @SuppressWarnings("unchecked") Map<String, Object> row = (Map<String, Object>) rawRow;
+            int rowIndex = integer(row, "rowIndex", -1);
+            if (!rowIndices.add(rowIndex)) {
+                throw new ApiException("INVALID_RESULT_CHANGES", "结果修改包含重复行");
+            }
+            Object rawCells = row.get("cells");
+            if (!(rawCells instanceof List)) throw new ApiException("INVALID_RESULT_CHANGES", "cells 必须是数组");
+            List<QueryRunner.CellChange> cells = new ArrayList<QueryRunner.CellChange>();
+            for (Object rawCell : (List<?>) rawCells) {
+                if (!(rawCell instanceof Map)) {
+                    throw new ApiException("INVALID_RESULT_CHANGES", "结果字段修改格式无效");
+                }
+                @SuppressWarnings("unchecked") Map<String, Object> cell = (Map<String, Object>) rawCell;
+                int columnIndex = integer(cell, "columnIndex", -1);
+                Object value = cell.get("value");
+                if (value != null && !(value instanceof String)) {
+                    throw new ApiException("INVALID_RESULT_CHANGES", "结果字段值必须是字符串或 null");
+                }
+                cells.add(new QueryRunner.CellChange(columnIndex, (String) value));
+            }
+            if (!cells.isEmpty()) result.add(new QueryRunner.RowChange(rowIndex, cells));
+        }
+        if (result.isEmpty()) throw new ApiException("INVALID_RESULT_CHANGES", "没有需要确认的结果修改");
+        return result;
+    }
+
+    private static void rejectPendingResultChanges(EditorSession editor, String operation) {
+        if (editor.resultChangesDirty()) {
+            throw new ApiException("RESULT_CHANGES_PENDING",
+                    "请先提交或回滚结果修改后再" + operation);
+        }
     }
 
     private DatabaseContext databaseFor(Workspace workspace, Map<String, Object> body) {

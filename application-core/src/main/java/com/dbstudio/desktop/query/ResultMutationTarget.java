@@ -9,16 +9,24 @@ public final class ResultMutationTarget {
     private final String qualifiedName;
     private final List<Column> columns;
     private final List<Key> uniqueKeys;
+    private final boolean editableForUpdate;
 
     public ResultMutationTarget(String qualifiedName, List<Column> columns, List<Key> uniqueKeys) {
+        this(qualifiedName, columns, uniqueKeys, false);
+    }
+
+    public ResultMutationTarget(String qualifiedName, List<Column> columns, List<Key> uniqueKeys,
+                                boolean editableForUpdate) {
         this.qualifiedName = qualifiedName == null ? "" : qualifiedName;
         this.columns = immutable(columns);
         this.uniqueKeys = immutable(uniqueKeys);
+        this.editableForUpdate = editableForUpdate;
     }
 
     public String qualifiedName() { return qualifiedName; }
     public List<Column> columns() { return columns; }
     public List<Key> uniqueKeys() { return uniqueKeys; }
+    public boolean editableForUpdate() { return editableForUpdate; }
 
     private static <T> List<T> immutable(List<T> values) {
         return values == null ? Collections.<T>emptyList()

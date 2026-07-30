@@ -190,6 +190,13 @@
                   :show-selected-column-remarks="settings.showSelectedColumnRemarks" :system-items="systemStatusItems"
                   :can-load-more="canLoadMore" :loading-mode="activeResultLoading?.mode"
                   :next-page-tooltip="nextPageTooltip" :all-rows-tooltip="allRowsTooltip"
+                  :show-result-edit-actions="showResultEditActions"
+                  :result-edit-unlocked="resultEditUnlocked"
+                  :can-toggle-result-edit="canToggleResultEdit"
+                  :result-edit-tooltip="resultEditTooltip"
+                  :can-post-changes="canPostResultChanges"
+                  :post-changes-tooltip="postResultChangesTooltip"
+                  @toggle-result-edit="toggleResultEdit" @post-result-changes="postActiveResultChanges"
                   @load-next="loadNextResultPage" @load-all="loadAllResultRows" @dismiss-task="dismissStatusTask" />
   </el-container>
 
@@ -245,8 +252,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ElMessage, ElMessageBox, ElNotification } from "element-plus";
+import { computed, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { ElButton, ElMessage, ElMessageBox, ElNotification } from "element-plus";
 import type { CascaderProps } from "element-plus";
 import {
   ArrowDown,
@@ -293,6 +300,7 @@ import { useConnectionStore } from "./stores/connection";
 import { useEditorStore } from "./stores/editor";
 import { formatCompletionBytes, useMetadataStore } from "./stores/metadata";
 import { useQueryStore } from "./stores/query";
+import { useResultEditStore } from "./stores/resultEdits";
 import { useSettingsStore } from "./stores/settings";
 import { useStatusBarStore } from "./stores/statusBar";
 import type { ColumnLayoutScope } from "./columnLayout";
@@ -318,6 +326,7 @@ import type { BootstrapResponse, CompletionCache, CompletionNamespaceDescriptor,
 
 const app = useAppStore(); const connections = useConnectionStore(); const metadata = useMetadataStore();
 const editors = useEditorStore(); const queries = useQueryStore(); const settings = useSettingsStore();
+const resultEdits = useResultEditStore();
 const statusBar = useStatusBarStore();
 const connectionDialog = ref(false); const historyDrawer = ref(false); const settingsDrawer = ref(false);
 const shortcutDrawer = ref(false); const shortcutSaving = ref(false); const csvDialog = ref(false);
@@ -386,7 +395,9 @@ const activeResultLoading = computed(() => {
 });
 const canLoadMore = computed(() => Boolean(activeResult.value?.columns.length && activeResult.value.complete
   && activeResult.value.truncated && !activeExecution.value?.busy && !activeExecution.value?.historical
-  && !resultLoading.value && app.transportState === "ready"));
+  && !resultLoading.value && app.transportState === "ready"
+  && !(editors.active && (resultEdits.hasChanges(editors.active.id)
+    || editors.active.resultChangesDirty))));
 const nextPageTooltip = computed(() => actionTooltip(resultLoadTooltip("next"), "result.loadNext"));
 const allRowsTooltip = computed(() => actionTooltip(resultLoadTooltip("all"), "result.loadAll"));
 const activeConnected = computed(() => Boolean(editors.active?.connection && editors.active.connectionState !== "unbound"));
@@ -430,6 +441,36 @@ const hasActiveTransaction = computed(() => Boolean(editors.active?.transactionD
 const canOperateTransaction = computed(() => Boolean(hasActiveTransaction.value && !activeDatabaseBusy.value
   && editors.active?.executionPhase === "idle" && editors.active.transactionOperation === "idle"
   && activeConnected.value && app.transportState === "ready"));
+const showResultEditActions = computed(() => activeResult.value?.mutationTarget?.editableForUpdate === true);
+const activeResultEditSession = computed(() => {
+  const tab = editors.active;
+  const execution = activeExecution.value;
+  const result = activeResult.value;
+  return tab && execution && result
+    ? resultEdits.session(tab.id, execution.executionId, result.resultIndex)
+    : undefined;
+});
+const resultEditUnlocked = computed(() => activeResultEditSession.value?.unlocked === true);
+const resultHasUsableKey = computed(() => {
+  const target = activeResult.value?.mutationTarget;
+  const rows = activeResult.value?.rows ?? [];
+  return Boolean(target?.uniqueKeys.some((key) => key.resultColumnIndices.length > 0
+    && rows.some((row) => key.resultColumnIndices.every((index) => row[index] !== null
+      && row[index] !== undefined))));
+});
+const canToggleResultEdit = computed(() => Boolean(showResultEditActions.value
+  && !settings.autoCommit && resultHasUsableKey.value && canOperateTransaction.value
+  && !activeExecution.value?.historical));
+const resultEditTooltip = computed(() => settings.autoCommit
+  ? "请关闭自动提交后重新执行 FOR UPDATE"
+  : activeExecution.value?.historical ? "断线前结果不可编辑"
+    : !resultHasUsableKey.value ? "结果中没有可用的非空唯一键"
+      : !hasActiveTransaction.value ? "事务已结束，请重新执行 FOR UPDATE"
+        : resultEditUnlocked.value ? "锁定结果编辑（不会提交或释放数据库锁）" : "解锁并编辑结果");
+const canPostResultChanges = computed(() => Boolean(editors.active && canOperateTransaction.value
+  && resultEdits.pending(editors.active.id).some((cell) => activeResultEditSession.value?.cells.includes(cell))));
+const postResultChangesTooltip = computed(() => canPostResultChanges.value
+  ? "确认当前结果修改并写入未提交事务" : "没有待确认的结果修改");
 const transportStatusText = computed(() => app.transportState === "recovering" ? "正在恢复浏览器工作区…"
   : app.transportState === "connecting" ? "正在建立事件通道…"
     : app.transportState === "offline" ? "事件通道不可用" : "事件通道重连中…");
@@ -619,12 +660,14 @@ function installEventHandlers(): void {
   }));
   disposers.push(rpc.on("workspace.ready", (raw) => {
     const data = raw as { editors?: Array<{ editorId: string; busy: boolean; transactionDirty: boolean;
+      resultChangesDirty?: boolean;
       transactionState: EditorTab["transactionState"]; connectionState: EditorConnectionState;
       activeExecutionId?: string | null }> };
     for (const state of data.editors ?? []) {
       const tab = editors.tabs.find((item) => item.id === state.editorId); if (!tab) continue;
       if (tab.busy && !state.busy) queries.markHistorical(tab.id);
       editors.patch(tab.id, { busy: state.busy, transactionDirty: state.transactionDirty,
+        resultChangesDirty: state.resultChangesDirty,
         transactionState: state.transactionState, connectionState: state.connectionState,
         activeExecutionId: state.activeExecutionId ?? undefined,
         executionPhase: state.busy && state.activeExecutionId ? "running" : state.busy ? "starting" : "idle",
@@ -660,13 +703,14 @@ function installEventHandlers(): void {
     queries.completeResult(data.editorId, data.resultIndex, data);
   }));
   disposers.push(rpc.on("query.executionComplete", (raw) => {
-    const data = raw as { editorId: string; executionId: string; cancelled: boolean; failed: boolean; durationMs: number; transactionDirty: boolean };
+    const data = raw as { editorId: string; executionId: string; cancelled: boolean; failed: boolean;
+      durationMs: number; transactionDirty: boolean; resultChangesDirty?: boolean };
     const tab = editors.tabs.find((item) => item.id === data.editorId);
     if (!tab || tab.activeExecutionId !== data.executionId) return;
     const completedResults = queries.executions[data.editorId]?.results
       .filter((result) => result.complete && !result.errorMessage) ?? [];
     queries.complete(data.editorId, data); editors.patch(data.editorId, {
-      busy: false, transactionDirty: data.transactionDirty,
+      busy: false, transactionDirty: data.transactionDirty, resultChangesDirty: data.resultChangesDirty,
       transactionState: data.transactionDirty ? "active" : "none",
       activeExecutionId: undefined, executionPhase: "idle"
     });
@@ -677,8 +721,9 @@ function installEventHandlers(): void {
     app.status = `${data.cancelled ? "执行已取消" : data.failed ? "执行失败" : "执行完成"} · ${data.durationMs} ms`;
   }));
   disposers.push(rpc.on("transaction.status", (raw) => {
-    const data = raw as { editorId: string; dirty: boolean; message: string };
-    editors.patch(data.editorId, { transactionDirty: data.dirty, transactionState: data.dirty ? "active" : "none" });
+    const data = raw as { editorId: string; dirty: boolean; resultChangesDirty?: boolean; message: string };
+    editors.patch(data.editorId, { transactionDirty: data.dirty, resultChangesDirty: data.resultChangesDirty,
+      transactionState: data.dirty ? "active" : "none" });
     scheduleDraft(data.editorId); app.status = data.message;
   }));
   disposers.push(rpc.on("task.started", (raw) => {
@@ -798,7 +843,7 @@ async function bootstrapWorkspace(recovered: RecoveredEditor[]): Promise<void> {
     app.applyBootstrap(data);
     leftWidth.value = Number(data.settings["layout.leftWidth"] ?? 248);
     editorHeight.value = data.settings["layout.editorHeight"] ?? "62%";
-    editors.clear(); queries.clear(); statusBar.clear(); resultLoading.value = undefined;
+    editors.clear(); queries.clear(); resultEdits.clear(); statusBar.clear(); resultLoading.value = undefined;
     for (const value of [...recovered].sort((left, right) => left.sortOrder - right.sortOrder)) {
       editors.add({ id: value.id, title: value.title, content: value.content, filePath: value.filePath,
         dirty: value.dirty, transactionDirty: value.transactionState === "active" || value.transactionState === "disconnected-protected",
@@ -931,6 +976,92 @@ async function transformActiveSql(mode: "format" | "compact"): Promise<void> {
   editors.patch(tab.id, { dirty: true });
   scheduleDraft(tab.id);
 }
+function toggleResultEdit(): void {
+  const tab = editors.active;
+  const execution = activeExecution.value;
+  const result = activeResult.value;
+  if (!tab || !execution || !result || !canToggleResultEdit.value) return;
+  resultEdits.setUnlocked(tab.id, execution.executionId, result.resultIndex, !resultEditUnlocked.value);
+}
+async function postActiveResultChanges(): Promise<void> {
+  const session = activeResultEditSession.value;
+  if (!session || !canPostResultChanges.value) return;
+  try {
+    await postResultEditSession(session);
+  } catch (error) {
+    app.status = "确认结果修改失败";
+    ElMessage.error(message(error));
+  }
+}
+async function postResultEditSession(session: {
+  editorId: string; executionId: string; resultIndex: number;
+  cells: Array<{ rowIndex: number; columnIndex: number; confirmedValue: string | null; draftValue: string | null }>;
+}): Promise<void> {
+  const pending = session.cells.filter((cell) => cell.draftValue !== cell.confirmedValue);
+  if (!pending.length) return;
+  const rows = new Map<number, Array<{ columnIndex: number; value: string | null }>>();
+  for (const cell of pending) {
+    const cells = rows.get(cell.rowIndex) ?? [];
+    cells.push({ columnIndex: cell.columnIndex, value: cell.draftValue });
+    rows.set(cell.rowIndex, cells);
+  }
+  await rpc.ensureOperational();
+  await rpc.request("query.applyChanges", {
+    editorId: session.editorId,
+    executionId: session.executionId,
+    resultIndex: session.resultIndex,
+    rows: [...rows].map(([rowIndex, cells]) => ({ rowIndex, cells }))
+  }, 30_000);
+  resultEdits.markPosted(session.editorId, session.executionId, session.resultIndex);
+  editors.patch(session.editorId, {
+    transactionDirty: true, transactionState: "active", resultChangesDirty: true
+  });
+  app.status = "结果修改已确认，等待提交事务";
+}
+async function postEditorPendingChanges(editorId: string): Promise<void> {
+  const sessions = Object.values(resultEdits.sessions)
+    .filter((session) => session.editorId === editorId
+      && session.cells.some((cell) => cell.draftValue !== cell.confirmedValue));
+  for (const session of sessions) await postResultEditSession(session);
+}
+function restoreResultEditValues(editorId: string, mode: "confirmed" | "original"): void {
+  const byResult = new Map<number, Array<{ rowIndex: number; columnIndex: number; value: string | null }>>();
+  for (const cell of resultEdits.restore(editorId, mode)) {
+    const cells = byResult.get(cell.resultIndex) ?? [];
+    cells.push(cell);
+    byResult.set(cell.resultIndex, cells);
+  }
+  for (const [resultIndex, cells] of byResult) queries.updateCells(editorId, resultIndex, cells);
+}
+async function resultChangesActionForExecution(): Promise<"commit" | "rollback" | "cancel"> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const choose = (action: "commit" | "rollback" | "cancel"): void => {
+      if (settled) return;
+      settled = true;
+      resolve(action);
+      ElMessageBox.close();
+    };
+    void ElMessageBox({
+      title: "当前数据已被修改",
+      message: h("div", { class: "result-transaction-decision" }, [
+        h("p", "当前数据已被修改，是否提交事务？"),
+        h("div", { class: "result-transaction-decision__actions" }, [
+          h(ElButton, { type: "primary", onClick: () => choose("commit") },
+            () => "提交并执行"),
+          h(ElButton, { onClick: () => choose("rollback") }, () => "回滚并执行"),
+          h(ElButton, { onClick: () => choose("cancel") }, () => "取消")
+        ])
+      ]),
+      type: "warning",
+      showConfirmButton: false,
+      showCancelButton: false,
+      showClose: false,
+      closeOnClickModal: false,
+      closeOnPressEscape: false
+    }).catch(() => choose("cancel"));
+  });
+}
 function executeFromEditor(scope: "current" | "script", selectedText: string, cursorOffset: number): void { void executeActive(scope, selectedText, cursorOffset); }
 function triggerEditorExecution(scope: "current" | "script"): void {
   if (!canExecute.value) return;
@@ -954,8 +1085,23 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
   try {
     await rpc.ensureOperational();
     if (!await ensureEditorCredentials(tab)) return;
+    let resultTransactionAction = "";
+    if (resultEdits.hasChanges(tab.id) || tab.resultChangesDirty) {
+      const action = await resultChangesActionForExecution();
+      if (action === "cancel") return;
+      if (action === "commit") await postEditorPendingChanges(tab.id);
+      resultTransactionAction = action;
+    }
     editors.patch(tab.id, { busy: true, activeExecutionId: undefined, executionPhase: "starting" }); app.status = "正在执行…";
-    const response = await rpc.request<{ executionId: string }>("query.execute", { editorId: tab.id, text: monacoEditor.value?.getValue(tab.id) ?? tab.content, selectedText, cursorOffset, scope, stopOnError: true });
+    const response = await rpc.request<{ executionId: string }>("query.execute", {
+      editorId: tab.id, text: monacoEditor.value?.getValue(tab.id) ?? tab.content,
+      selectedText, cursorOffset, scope, stopOnError: true, resultTransactionAction
+    });
+    if (resultTransactionAction) {
+      if (resultTransactionAction === "rollback") restoreResultEditValues(tab.id, "original");
+      resultEdits.finishEditor(tab.id);
+      editors.patch(tab.id, { resultChangesDirty: false });
+    }
     queries.start(tab.id, response.executionId);
     const current = editors.tabs.find((item) => item.id === tab.id);
     if (current?.busy && current.executionPhase !== "cancelling") {
@@ -1021,11 +1167,17 @@ async function cancelActive(): Promise<void> {
 async function commitActive(): Promise<void> {
   const tab = editors.active;
   if (!tab?.connection || !canOperateTransaction.value) return;
+  if (resultEdits.hasPending(tab.id)) {
+    ElMessage.warning("结果中有尚未确认的修改，请先点击“确认修改”");
+    return;
+  }
   editors.patch(tab.id, { transactionOperation: "committing" });
   try {
     await rpc.ensureOperational();
     const response = await rpc.request<{ dirty: boolean; message: string }>("transaction.commit", { editorId: tab.id });
-    editors.patch(tab.id, { transactionDirty: response.dirty, transactionState: response.dirty ? "active" : "none" });
+    resultEdits.finishEditor(tab.id);
+    editors.patch(tab.id, { transactionDirty: response.dirty, resultChangesDirty: false,
+      transactionState: response.dirty ? "active" : "none" });
     app.status = response.message;
   } catch (error) {
     ElMessage.error(message(error));
@@ -1040,7 +1192,10 @@ async function rollbackActive(): Promise<void> {
   try {
     await rpc.ensureOperational();
     const response = await rpc.request<{ dirty: boolean; message: string }>("transaction.rollback", { editorId: tab.id });
-    editors.patch(tab.id, { transactionDirty: response.dirty, transactionState: response.dirty ? "active" : "none" });
+    restoreResultEditValues(tab.id, "original");
+    resultEdits.finishEditor(tab.id);
+    editors.patch(tab.id, { transactionDirty: response.dirty, resultChangesDirty: false,
+      transactionState: response.dirty ? "active" : "none" });
     app.status = response.message;
   } catch (error) {
     ElMessage.error(message(error));
@@ -1325,6 +1480,9 @@ async function connectionSelectionChanged(value: unknown): Promise<void> {
       app.status = `已绑定 ${response.connection.name}`;
       void ensureCompletionForEditor({ ...tab, connection: response.connection, connectionState: response.connectionState });
     }
+    if (transactionAction === "rollback") restoreResultEditValues(tab.id, "original");
+    if (transactionAction) resultEdits.finishEditor(tab.id);
+    editors.patch(tab.id, { resultChangesDirty: false });
     queries.clearEditor(tab.id);
     scheduleDraft(tab.id);
     metadata.activate(activeConnectionKey.value, activeCompletionKey.value);
@@ -1338,6 +1496,7 @@ async function transactionActionForSwitch(tab: EditorTab): Promise<"commit" | "r
     await ElMessageBox({ title: "未提交事务", message: "切换数据库链接前请选择提交或回滚。", type: "warning",
       showCancelButton: true, showClose: true, distinguishCancelAndClose: true,
       confirmButtonText: "提交并切换", cancelButtonText: "回滚并切换" });
+    if (resultEdits.hasPending(tab.id)) await postEditorPendingChanges(tab.id);
     return "commit";
   } catch (choice) { return choice === "cancel" ? "rollback" : "cancel"; }
 }
@@ -1516,9 +1675,10 @@ async function closeTab(id: string): Promise<boolean> {
         showClose: true, distinguishCancelAndClose: true, confirmButtonText: "提交", cancelButtonText: "回滚" });
       action = "commit";
     } catch (choice) { if (choice !== "cancel") return false; action = "rollback"; }
+    if (action === "commit" && resultEdits.hasPending(id)) await postEditorPendingChanges(id);
     await rpc.request("editor.close", { editorId: id, action });
   } else await rpc.request("editor.close", { editorId: id, action: "close" });
-  queries.clearEditor(id); editors.remove(id); return true;
+  resultEdits.finishEditor(id); queries.clearEditor(id); editors.remove(id); return true;
 }
 
 async function closeApplication(activeTasks = 0): Promise<void> {
@@ -1552,6 +1712,7 @@ async function closeApplication(activeTasks = 0): Promise<void> {
           await ElMessageBox({ title: "未提交事务", message: `${tab.title} 仍有未提交事务。`, type: "warning",
             showCancelButton: true, showClose: true, distinguishCancelAndClose: true,
             confirmButtonText: "提交", cancelButtonText: "回滚" });
+          if (resultEdits.hasPending(tab.id)) await postEditorPendingChanges(tab.id);
           await commitActive();
         } catch (choice) {
           if (choice !== "cancel") { await rpc.request("app.closeDecision", { allow: false }); return; }
@@ -1803,12 +1964,20 @@ async function exportLoaded(resultIndex: number): Promise<void> {
     ElMessage.warning("断线前快照不能通过服务端导出，可继续复制已加载内容");
     return;
   }
+  if (resultEdits.hasChanges(editors.active.id) || editors.active.resultChangesDirty) {
+    ElMessage.warning("请先确认并提交或回滚结果修改后再导出");
+    return;
+  }
   await rpc.downloadCsv("loaded", editors.active.id, resultIndex);
   ElMessage.success("已开始下载当前已加载结果");
 }
 async function exportFull(resultIndex: number): Promise<void> {
   if (!editors.active || activeExecution.value?.historical) {
     ElMessage.warning("断线前快照不能重新执行完整导出");
+    return;
+  }
+  if (resultEdits.hasChanges(editors.active.id) || editors.active.resultChangesDirty) {
+    ElMessage.warning("请先确认并提交或回滚结果修改后再导出");
     return;
   }
   await rpc.downloadCsv("full", editors.active.id, resultIndex);
@@ -2084,6 +2253,13 @@ function message(error: unknown): string { return error instanceof Error ? error
 .editor-tab-label { display: inline-flex; align-items: center; gap: 6px; max-width: 180px; }
 .dirty-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--db-accent); }
 .editor-widget { flex: 1; min-height: 0; }
+:global(.result-transaction-decision p) { margin: 0 0 16px; }
+:global(.result-transaction-decision__actions) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+:global(.result-transaction-decision__actions .el-button) { margin-left: 0; }
 .workspace-empty { height: 100%; background: var(--db-panel-soft); }
 .workspace-empty :deep(.el-empty__image) { width: auto; height: auto; }
 .workspace-empty :deep(.el-empty__image .el-icon) {

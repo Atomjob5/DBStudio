@@ -453,6 +453,39 @@ test("shares completion cache across editors and refreshes it only from the obje
   await expect(page.locator(".completion-status")).toContainText("补全已更新");
 });
 
+test("edits a FOR UPDATE result in two stages before committing", async ({ page }) => {
+  await connectMock(page);
+  await dismissCompletionSchemaDialog(page);
+  const editor = page.locator(".monaco-editor .view-lines");
+  await editor.click();
+  await page.keyboard.press("ControlOrMeta+A");
+  await page.keyboard.insertText("select id, name from sample for update");
+  await page.getByRole("button", { name: "执行", exact: true }).click();
+  await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
+
+  const unlock = page.getByRole("button", { name: "解锁结果编辑", exact: true });
+  const post = page.getByRole("button", { name: "确认结果修改", exact: true });
+  await expect(unlock).toBeEnabled();
+  await expect(post).toBeDisabled();
+  await unlock.click();
+  await expect(page.getByRole("button", { name: "锁定结果编辑", exact: true })).toBeVisible();
+
+  await page.locator(".result-cell").filter({ hasText: /^Apple Studio 1 ✨$/ }).first().dblclick();
+  const cellEditor = page.getByRole("textbox", { name: "编辑结果值", exact: true });
+  await expect(cellEditor).toBeVisible();
+  await cellEditor.fill("Edited locally");
+  await cellEditor.press("Enter");
+  await expect(page.locator(".result-cell-pending").filter({ hasText: "Edited locally" })).toBeVisible();
+  await expect(post).toBeEnabled();
+
+  await post.click();
+  await expect(page.locator(".result-cell-posted").filter({ hasText: "Edited locally" })).toBeVisible();
+  await expect(post).toBeDisabled();
+  await page.getByRole("button", { name: "提交事务", exact: true }).click();
+  await expect(page.locator(".result-cell-pending, .result-cell-posted")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "解锁结果编辑", exact: true })).toBeDisabled();
+});
+
 test("filters duplicate column names by the SQL alias at the cursor", async ({ page }) => {
   await connectMock(page);
   await expect(page.locator(".completion-status")).toContainText("补全已更新");

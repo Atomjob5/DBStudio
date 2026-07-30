@@ -67,6 +67,17 @@ class MySqlDialectTest {
                 "SELECT o.id AS order_id, o.amount FROM `eastwealthcrawler`.`orders` o WHERE o.id > 0").get();
         assertEquals("eastwealthcrawler", source.catalog());
         assertEquals("orders", source.table());
+        assertFalse(source.editableForUpdate());
+        assertTrue(dialect.resultMutationSource(
+                "SELECT o.id, o.amount FROM orders o FOR UPDATE").get().editableForUpdate());
+        assertTrue(dialect.resultMutationSource(
+                "SELECT o.id FROM orders o FOR UPDATE NOWAIT").get().editableForUpdate());
+        assertTrue(dialect.resultMutationSource(
+                "SELECT o.id FROM orders o FOR UPDATE SKIP LOCKED").get().editableForUpdate());
+        assertFalse(dialect.resultMutationSource(
+                "SELECT id FROM orders FOR SHARE").get().editableForUpdate());
+        assertFalse(dialect.resultMutationSource(
+                "SELECT id FROM orders /* FOR UPDATE */").get().editableForUpdate());
         assertFalse(dialect.resultMutationSource("SELECT a.id FROM orders a JOIN items b ON b.order_id=a.id").isPresent());
         assertFalse(dialect.resultMutationSource("SELECT id, amount + 1 FROM orders").isPresent());
         assertFalse(dialect.resultMutationSource("WITH data AS (SELECT * FROM orders) SELECT * FROM data").isPresent());

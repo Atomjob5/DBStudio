@@ -40,6 +40,27 @@ describe("AppStatusBar", () => {
     wrapper.unmount();
   });
 
+  it("shows lock and post icons only for editable FOR UPDATE results", async () => {
+    const wrapper = mount(AppStatusBar, {
+      props: { ...baseProps, showResultEditActions: true, resultEditUnlocked: false,
+        canToggleResultEdit: true, resultEditTooltip: "解锁并编辑结果",
+        canPostChanges: false, postChangesTooltip: "没有待确认的结果修改" },
+      global: { plugins: [ElementPlus], stubs: { teleport: true } }
+    });
+    const lock = wrapper.get('[aria-label="解锁结果编辑"]');
+    expect(lock.attributes("aria-pressed")).toBe("false");
+    expect(wrapper.get('[aria-label="确认结果修改"]').attributes()).toHaveProperty("disabled");
+    await lock.trigger("click");
+    expect(wrapper.emitted("toggle-result-edit")).toHaveLength(1);
+
+    await wrapper.setProps({ resultEditUnlocked: true, canPostChanges: true });
+    expect(wrapper.get('[aria-label="锁定结果编辑"]').attributes("aria-pressed")).toBe("true");
+    const post = wrapper.get('[aria-label="确认结果修改"]');
+    expect(post.classes()).toContain("el-button--success");
+    await post.trigger("click");
+    expect(wrapper.emitted("post-result-changes")).toHaveLength(1);
+  });
+
   it("shows an ellipsized remark without hover metadata and opens the full dialog only on explicit activation", async () => {
     const remarks = "很长的字段备注".repeat(30);
     const wrapper = mount(AppStatusBar, { props: { ...baseProps, selectedColumn: {

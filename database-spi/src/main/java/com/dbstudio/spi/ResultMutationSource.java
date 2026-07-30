@@ -7,14 +7,21 @@ public final class ResultMutationSource {
     private final String catalog;
     private final String schema;
     private final String table;
+    private final boolean editableForUpdate;
 
     public ResultMutationSource(String catalog, String schema, String table) {
+        this(catalog, schema, table, false);
+    }
+
+    public ResultMutationSource(String catalog, String schema, String table, boolean editableForUpdate) {
         this.catalog = catalog == null ? "" : catalog;
         this.schema = schema == null ? "" : schema;
         this.table = Objects.requireNonNull(table, "table");
+        this.editableForUpdate = editableForUpdate;
     }
 
     public String catalog() { return catalog; }
     public String schema() { return schema; }
     public String table() { return table; }
+    public boolean editableForUpdate() { return editableForUpdate; }
 }

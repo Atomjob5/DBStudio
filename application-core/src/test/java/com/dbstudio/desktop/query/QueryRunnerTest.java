@@ -7,12 +7,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.dbstudio.spi.DatabaseSession;
 import com.dbstudio.spi.SqlStatement;
 import com.dbstudio.spi.StatementType;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.SQLFeatureNotSupportedException;
+import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 class QueryRunnerTest {
@@ -157,6 +163,109 @@ class QueryRunnerTest {
     }
 
     @Test
+    void appliesEditableResultChangesInsideTheCurrentTransactionAndRollsBack() throws Exception {
+        final Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
+        connection.setAutoCommit(false);
+        try (QueryRunner runner = new QueryRunner(session(connection), 10, 10)) {
+            runner.execute(Arrays.asList(
+                    sql("CREATE TABLE editable_sample(id INTEGER PRIMARY KEY, name TEXT)", StatementType.DDL),
+                    sql("INSERT INTO editable_sample VALUES (1, 'before')", StatementType.INSERT)), true).join();
+            runner.commit().join();
+            StatementResult result = runner.execute(Collections.singletonList(
+                    sql("SELECT id, name FROM editable_sample", StatementType.QUERY)), true).join().results().get(0);
+            ResultMutationTarget target = new ResultMutationTarget("\"editable_sample\"", Arrays.asList(
+                    new ResultMutationTarget.Column(0, "id", "\"id\"", Types.INTEGER),
+                    new ResultMutationTarget.Column(1, "name", "\"name\"", Types.VARCHAR)),
+                    Collections.singletonList(new ResultMutationTarget.Key(
+                            "pk", true, Collections.singletonList(0))), true);
+
+            runner.applyResultChanges(target, result.rows(), Collections.singletonList(
+                    new QueryRunner.RowChange(0, Collections.singletonList(
+                            new QueryRunner.CellChange(1, "after"))))).join();
+
+            assertTrue(runner.isTransactionDirty());
+            assertEquals("after", runner.execute(Collections.singletonList(
+                    sql("SELECT name FROM editable_sample", StatementType.QUERY)), true)
+                    .join().results().get(0).rows().get(0).get(0));
+            runner.rollback().join();
+            assertEquals("before", runner.execute(Collections.singletonList(
+                    sql("SELECT name FROM editable_sample", StatementType.QUERY)), true)
+                    .join().results().get(0).rows().get(0).get(0));
+        }
+    }
+
+    @Test
+    void acceptsDriversThatDoNotSupportReleasingSavepoints() throws Exception {
+        final Connection physical = DriverManager.getConnection("jdbc:sqlite::memory:");
+        physical.setAutoCommit(false);
+        AtomicInteger releaseAttempts = new AtomicInteger();
+        Connection connection = connectionWithoutSavepointRelease(physical, releaseAttempts);
+        try (QueryRunner runner = new QueryRunner(session(connection), 10, 10)) {
+            runner.execute(Arrays.asList(
+                    sql("CREATE TABLE oracle_editable(id INTEGER PRIMARY KEY, name TEXT)", StatementType.DDL),
+                    sql("INSERT INTO oracle_editable VALUES (1, 'before')", StatementType.INSERT)), true).join();
+            runner.commit().join();
+            StatementResult result = runner.execute(Collections.singletonList(
+                    sql("SELECT id, name FROM oracle_editable", StatementType.QUERY)), true)
+                    .join().results().get(0);
+            ResultMutationTarget target = new ResultMutationTarget("\"oracle_editable\"", Arrays.asList(
+                    new ResultMutationTarget.Column(0, "id", "\"id\"", Types.INTEGER),
+                    new ResultMutationTarget.Column(1, "name", "\"name\"", Types.VARCHAR)),
+                    Collections.singletonList(new ResultMutationTarget.Key(
+                            "pk", true, Collections.singletonList(0))), true);
+
+            runner.applyResultChanges(target, result.rows(), Collections.singletonList(
+                    new QueryRunner.RowChange(0, Collections.singletonList(
+                            new QueryRunner.CellChange(1, "after"))))).join();
+
+            assertEquals(1, releaseAttempts.get());
+            assertTrue(runner.isTransactionDirty());
+            assertEquals("after", runner.execute(Collections.singletonList(
+                    sql("SELECT name FROM oracle_editable", StatementType.QUERY)), true)
+                    .join().results().get(0).rows().get(0).get(0));
+            runner.rollback().join();
+            assertEquals("before", runner.execute(Collections.singletonList(
+                    sql("SELECT name FROM oracle_editable", StatementType.QUERY)), true)
+                    .join().results().get(0).rows().get(0).get(0));
+        }
+    }
+
+    @Test
+    void rollsBackTheWholeResultChangeBatchWhenOneRowCannotBeLocated() throws Exception {
+        final Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
+        connection.setAutoCommit(false);
+        try (QueryRunner runner = new QueryRunner(session(connection), 10, 10)) {
+            runner.execute(Arrays.asList(
+                    sql("CREATE TABLE editable_batch(id INTEGER PRIMARY KEY, name TEXT)", StatementType.DDL),
+                    sql("INSERT INTO editable_batch VALUES (1, 'one'), (2, 'two')", StatementType.INSERT)), true)
+                    .join();
+            runner.commit().join();
+            ResultMutationTarget target = new ResultMutationTarget("\"editable_batch\"", Arrays.asList(
+                    new ResultMutationTarget.Column(0, "id", "\"id\"", Types.INTEGER),
+                    new ResultMutationTarget.Column(1, "name", "\"name\"", Types.LONGVARCHAR)),
+                    Collections.singletonList(new ResultMutationTarget.Key(
+                            "pk", true, Collections.singletonList(0))), true);
+            List<List<String>> staleRows = Arrays.asList(
+                    Arrays.asList("1", "one"), Arrays.asList("99", "missing"));
+
+            try {
+                runner.applyResultChanges(target, staleRows, Arrays.asList(
+                        new QueryRunner.RowChange(0, Collections.singletonList(
+                                new QueryRunner.CellChange(1, "changed"))),
+                        new QueryRunner.RowChange(1, Collections.singletonList(
+                                new QueryRunner.CellChange(1, "never"))))).join();
+                throw new AssertionError("expected the batch to fail");
+            } catch (CompletionException expected) {
+                assertTrue(expected.getCause() instanceof QueryRunner.QueryExecutionException);
+            }
+
+            assertEquals("one", runner.execute(Collections.singletonList(
+                    sql("SELECT name FROM editable_batch WHERE id = 1", StatementType.QUERY)), true)
+                    .join().results().get(0).rows().get(0).get(0));
+        }
+    }
+
+    @Test
     void acceptsCancellationBeforeStatementCreationAndResetsForTheNextExecution() throws Exception {
         final Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
         connection.setAutoCommit(false);
@@ -202,6 +311,24 @@ class QueryRunnerTest {
             assertFalse(next.hasMore());
             assertEquals("2", next.rows().get(0).get(0));
         }
+    }
+
+    private static Connection connectionWithoutSavepointRelease(final Connection delegate,
+                                                                final AtomicInteger attempts) {
+        return (Connection) Proxy.newProxyInstance(
+                QueryRunnerTest.class.getClassLoader(),
+                new Class<?>[] { Connection.class },
+                (proxy, method, arguments) -> {
+                    if ("releaseSavepoint".equals(method.getName())) {
+                        attempts.incrementAndGet();
+                        throw new SQLFeatureNotSupportedException("不支持的特性: releaseSavepoint");
+                    }
+                    try {
+                        return method.invoke(delegate, arguments);
+                    } catch (InvocationTargetException exception) {
+                        throw exception.getCause();
+                    }
+                });
     }
 
     private StatementResult query(QueryRunner runner, int rows, final List<Integer> batches,

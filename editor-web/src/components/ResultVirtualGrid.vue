@@ -36,7 +36,15 @@
               :data-grid-column="columnEntry.column.visibleIndex"
               :style="cellStyle(columnEntry.index)"
               :title="cellTitle(entry.row, columnEntry.column)">
-          {{ cellText(entry.row, columnEntry.column) }}
+          <input v-if="isEditing(entry.row, columnEntry.column)" v-focus
+                 class="result-cell-editor" :value="editingValue ?? ''"
+                 aria-label="编辑结果值"
+                 @pointerdown.stop @dblclick.stop
+                 @input="$emit('update:editing-value', ($event.target as HTMLInputElement).value)"
+                 @keydown.enter.prevent.stop="$emit('commit-edit')"
+                 @keydown.esc.prevent.stop="$emit('cancel-edit')"
+                 @blur="$emit('commit-edit')" />
+          <template v-else>{{ cellText(entry.row, columnEntry.column) }}</template>
         </span>
         </div>
       </div>
@@ -67,6 +75,9 @@ const props = defineProps<{
   selectedCellKeys?: string[];
   selectedRowSources: number[];
   hasFooter?: boolean;
+  editingCell?: { rowIndex: number; columnIndex: number };
+  editingValue?: string | null;
+  cellStates?: Record<string, "pending" | "posted">;
 }>();
 
 const emit = defineEmits<{
@@ -74,6 +85,9 @@ const emit = defineEmits<{
   "cell-pointerenter": [rowIndex: number, columnIndex: number];
   "cell-contextmenu": [event: MouseEvent, rowIndex: number, columnIndex: number, row: ViewRow];
   "cell-dblclick": [rowIndex: number, columnIndex: number, row: ViewRow];
+  "update:editing-value": [value: string];
+  "commit-edit": [];
+  "cancel-edit": [];
   "row-pointerdown": [event: PointerEvent, sourceIndex: number];
   "row-pointerenter": [sourceIndex: number];
   "row-contextmenu": [event: MouseEvent, sourceIndex: number];
@@ -245,8 +259,20 @@ function cellClasses(rowIndex: number, column: ResultVirtualColumn): Array<strin
     && rowIndex >= range.start.row && rowIndex <= range.end.row
     && column.visibleIndex >= range.start.column && column.visibleIndex <= range.end.column;
   const selected = props.selectionMode === "cells" && (selectedByIdentity || selectedByRange);
-  return [value === null ? "null-value" : "", value?.startsWith("0x") ? "binary-value" : "", selected && "selected"];
+  const state = row ? props.cellStates?.[`${row.sourceIndex}:${column.sourceIndex}`] : undefined;
+  return [value === null ? "null-value" : "", value?.startsWith("0x") ? "binary-value" : "",
+    selected && "selected", state === "pending" && "result-cell-pending",
+    state === "posted" && "result-cell-posted"];
 }
+
+function isEditing(row: ViewRow, column: ResultVirtualColumn): boolean {
+  return props.editingCell?.rowIndex === row.sourceIndex
+    && props.editingCell?.columnIndex === column.sourceIndex;
+}
+
+const vFocus = {
+  mounted(element: HTMLInputElement) { element.focus(); element.select(); }
+};
 
 function delegatedTarget(event: Event): HTMLElement | undefined {
   const target = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-grid-kind]") : null;
@@ -410,6 +436,25 @@ defineExpose({ getScrollPosition, setScrollPosition });
 .result-virtual-grid__cell {
   position: absolute;
   top: 2px;
+}
+.result-cell-editor {
+  box-sizing: border-box;
+  width: 100%;
+  height: 26px;
+  border: 1px solid var(--db-accent);
+  border-radius: 3px;
+  outline: 0;
+  background: var(--db-content);
+  color: var(--db-text);
+  font: inherit;
+}
+.result-cell-pending {
+  background: color-mix(in srgb, var(--db-warning) 20%, transparent);
+  box-shadow: inset 3px 0 0 var(--db-warning);
+}
+.result-cell-posted {
+  background: color-mix(in srgb, var(--db-accent) 14%, transparent);
+  box-shadow: inset 3px 0 0 var(--db-accent);
 }
 .result-virtual-grid__footer { flex: none; }
 .result-virtual-grid__viewport::-webkit-scrollbar { width: 8px; height: 8px; }

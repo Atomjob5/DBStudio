@@ -7,6 +7,7 @@ import com.dbstudio.desktop.query.QueryResultListener;
 import com.dbstudio.desktop.query.QueryRunner;
 import com.dbstudio.desktop.logging.SqlLogSupport;
 import com.dbstudio.desktop.query.QueryRunner.PageResult;
+import com.dbstudio.desktop.query.ResultMutationTarget;
 import com.dbstudio.desktop.web.EditorSessionRegistry;
 import com.dbstudio.desktop.web.EditorSessionRegistry.EditorSession;
 import com.dbstudio.spi.SqlStatement;
@@ -90,6 +91,7 @@ final class Workspace implements AutoCloseable {
                     "activeExecutionId", editor.activeExecutionId() == null
                             ? null : editor.activeExecutionId().toString(),
                     "transactionDirty", transaction,
+                    "resultChangesDirty", editor.resultChangesDirty(),
                     "transactionState", transaction ? (disconnected ? "disconnected-protected" : "active") : "none",
                     "connectionState", !editor.bound() ? "unbound" : editor.hasContext() ? "ready" : "credentials-required"));
         }
@@ -242,13 +244,35 @@ final class Workspace implements AutoCloseable {
         }
     }
 
+    CompletableFuture<List<QueryRunner.RowChange>> applyResultChanges(final EditorSession editor,
+                                                                      final ResultMutationTarget target,
+                                                                      final List<List<String>> rows,
+                                                                      final List<QueryRunner.RowChange> changes) {
+        ensureBound(editor);
+        if (editor.activeExecutionId() != null) throw new ApiException("QUERY_BUSY", "当前标签已有查询正在执行");
+        if (editor.transactionOperationActive()) {
+            throw new ApiException("TRANSACTION_BUSY", "当前标签正在提交或回滚事务");
+        }
+        final ActiveLease active;
+        synchronized (this) {
+            active = activeLeases.get(editor.id().toString());
+        }
+        if (active == null || !active.runner.isTransactionDirty()) {
+            throw new ApiException("RESULT_EDIT_TRANSACTION_ENDED", "事务已经结束，请重新执行 FOR UPDATE");
+        }
+        return active.runner.applyResultChanges(target, rows, changes);
+    }
+
     CompletableFuture<Void> commit(final EditorSession editor) {
         final ActiveLease active = beginTransactionOperation(editor);
         if (active == null) return CompletableFuture.completedFuture(null);
         try {
             return active.runner.commit().whenComplete((ignored, failure) -> {
                 editor.endTransactionOperation();
-                if (failure == null) releasePinned(editor, active);
+                if (failure == null) {
+                    editor.commitResultChanges();
+                    releasePinned(editor, active);
+                }
                 if (failure != null) LOG.warn("Workspace事务提交失败 workspaceId={} editorId={}", id, editor.id(), failure);
                 else LOG.info("Workspace事务提交完成 workspaceId={} editorId={}", id, editor.id());
             });
@@ -265,6 +289,7 @@ final class Workspace implements AutoCloseable {
             return active.runner.rollback().whenComplete((ignored, failure) -> {
                 editor.endTransactionOperation();
                 if (failure == null) {
+                    editor.rollbackResultChanges();
                     releasePinned(editor, active);
                     LOG.info("Workspace事务回滚完成 workspaceId={} editorId={}", id, editor.id());
                 } else {

@@ -33,4 +33,32 @@ describe("ResultSingleRecordView", () => {
     await nextTick();
     expect(wrapper.findComponent({ name: "ElTable" }).props("data")[0]).toMatchObject({ remarks: "客户主键" });
   });
+
+  it("emits editing actions and marks pending and posted cells", async () => {
+    const columns: ColumnOption[] = [{
+      index: 0, label: "NAME", name: "NAME", remarks: "", catalog: "", schema: "",
+      table: "CUSTOMERS", typeName: "VARCHAR2", jdbcType: 12, quotedLabel: '"NAME"'
+    }];
+    const wrapper = mount(ResultSingleRecordView, {
+      props: {
+        columns, row: { sourceIndex: 3, cells: ["before"] },
+        cellStates: { "3:0": "pending" }
+      },
+      global: { plugins: [ElementPlus] }
+    });
+    const valueColumn = wrapper.findAllComponents({ name: "ElTableColumn" })[1];
+    const slot = valueColumn.vm.$slots.default?.({ row: {
+      index: 0, label: "NAME", value: "before", remarks: "", typeName: "VARCHAR2"
+    } })[0];
+    (slot as { props?: { onDblclick?: () => void } }).props?.onDblclick?.();
+    expect(wrapper.emitted("cell-dblclick")).toEqual([[0]]);
+
+    await wrapper.setProps({ editingColumnIndex: 0, editingValue: "after" });
+    await nextTick();
+    const editingSlot = valueColumn.vm.$slots.default?.({ row: {
+      index: 0, label: "NAME", value: "before", remarks: "", typeName: "VARCHAR2"
+    } })[0] as { type?: string; props?: Record<string, unknown> };
+    expect(editingSlot.type).toBe("input");
+    expect(editingSlot.props).toMatchObject({ value: "after", "aria-label": "编辑结果值" });
+  });
 });

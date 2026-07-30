@@ -153,11 +153,13 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
     window.setTimeout(() => {
       emit("editor.connectionState", { editorId, state: "active" });
       emit("query.started", { editorId, executionId });
+      const editableForUpdate = /\bfor\s+update\b/i.test(String(payload.text ?? ""));
       emit("query.resultMeta", { editorId, resultIndex: 0, sql: payload.text, type: "QUERY", columns: resultColumns,
         columnDetails: resultDetails, mutationTarget: { qualifiedName: "`demo`.`sample`", columns: [
           { resultIndex: 0, name: "id", quotedName: "`id`", jdbcType: -5 },
           { resultIndex: 1, name: "name", quotedName: "`name`", jdbcType: 12 }
-        ], uniqueKeys: [{ name: "PRIMARY", primary: true, resultColumnIndices: [0] }] },
+        ], uniqueKeys: [{ name: "PRIMARY", primary: true, resultColumnIndices: [0] }],
+          editableForUpdate },
         updateCount: -1, truncated: false, durationMs: 0 });
       const rows = Array.from({ length: 200 }, (_, index) => wideResult
         ? resultColumns.map((_, column) => column === 0 ? String(index + 1) : `R${index + 1} C${column + 1}`)
@@ -165,7 +167,8 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
       emit("query.rows", { editorId, resultIndex: 0, rows: rows.slice(0, 100) });
       emit("query.rows", { editorId, resultIndex: 0, rows: rows.slice(100) });
       emit("query.resultComplete", { editorId, resultIndex: 0, durationMs: 38, truncated: true });
-      emit("query.executionComplete", { editorId, executionId, cancelled: false, failed: false, durationMs: 38, transactionDirty: false });
+      emit("query.executionComplete", { editorId, executionId, cancelled: false, failed: false, durationMs: 38,
+        transactionDirty: editableForUpdate, resultChangesDirty: false });
     }, 0);
     return { executionId };
   }
@@ -182,6 +185,15 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
     });
     return { executionId, resultIndex: Number(payload.resultIndex ?? 0), offset, rows,
       hasMore: end < total, nextOffset: end, cancelled: false };
+  }
+  if (type === "query.applyChanges") {
+    return { rows: payload.rows, transactionDirty: true, resultChangesDirty: true };
+  }
+  if (type === "transaction.commit" || type === "transaction.rollback") {
+    const message = type === "transaction.commit" ? "事务已提交" : "事务已回滚";
+    emit("transaction.status", { editorId: payload.editorId, dirty: false,
+      resultChangesDirty: false, message });
+    return { dirty: false, resultChangesDirty: false, message };
   }
   if (type === "query.cancel") return { cancelled: true };
   return {};

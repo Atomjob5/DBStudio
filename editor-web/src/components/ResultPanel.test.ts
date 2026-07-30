@@ -6,6 +6,7 @@ import ElementPlus from "element-plus";
 import ResultPanel from "./ResultPanel.vue";
 import { useAppStore } from "../stores/app";
 import { useQueryStore } from "../stores/query";
+import { useResultEditStore } from "../stores/resultEdits";
 import { useSettingsStore } from "../stores/settings";
 import type { Column } from "element-plus";
 import type { VNode } from "vue";
@@ -139,6 +140,57 @@ describe("ResultPanel streaming rendering", () => {
     expect(wrapper.findComponent({ name: "ElTableV2" }).exists()).toBe(true);
     expect(wrapper.text()).toContain("2 行 · 7 ms");
     wrapper.unmount();
+  });
+
+  it("edits a source cell in the legacy grid and records a pending change", async () => {
+    const execution = {
+      executionId: "execution-edit", editorId: "editor-1", busy: false, cancelled: false,
+      failed: false, durationMs: 8,
+      results: [{
+        resultIndex: 0, sql: "select id, name from sample for update", type: "QUERY",
+        columns: ["id", "name"], rows: [["1", "before"]],
+        columnDetails: [
+          { label: "id", name: "id", remarks: "", catalog: "db", schema: "", table: "sample",
+            typeName: "BIGINT", jdbcType: -5 },
+          { label: "name", name: "name", remarks: "", catalog: "db", schema: "", table: "sample",
+            typeName: "VARCHAR", jdbcType: 12 }
+        ],
+        mutationTarget: {
+          qualifiedName: "`db`.`sample`", editableForUpdate: true,
+          columns: [
+            { resultIndex: 0, name: "id", quotedName: "`id`", jdbcType: -5 },
+            { resultIndex: 1, name: "name", quotedName: "`name`", jdbcType: 12 }
+          ],
+          uniqueKeys: [{ name: "PRIMARY", primary: true, resultColumnIndices: [0] }]
+        },
+        updateCount: -1, truncated: false, durationMs: 7, complete: true
+      }]
+    };
+    const edits = useResultEditStore();
+    edits.setUnlocked("editor-1", "execution-edit", 0, true);
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: 0, execution }, global: { plugins: [ElementPlus] }
+    });
+    const table = wrapper.findComponent({ name: "ElTableV2" });
+    const columns = table.props("columns") as Column[];
+    const row = (table.props("data") as Array<{ sourceIndex: number; cells: string[] }>)[0];
+    const valueCell = columns[2].cellRenderer?.({ rowData: row, rowIndex: 0 } as never) as VNode;
+
+    valueCell.props?.onDblclick();
+    await nextTick();
+    const editor = (wrapper.findComponent({ name: "ElTableV2" }).props("columns") as Column[])[2]
+      .cellRenderer?.({ rowData: row, rowIndex: 0 } as never) as VNode;
+    expect(editor.type).toBe("input");
+    editor.props?.onInput({ target: { value: "after" } });
+    editor.props?.onBlur();
+    await nextTick();
+
+    expect(edits.session("editor-1", "execution-edit", 0)?.cells[0]).toMatchObject({
+      rowIndex: 0, columnIndex: 1, originalValue: "before", draftValue: "after"
+    });
+    const pending = (wrapper.findComponent({ name: "ElTableV2" }).props("columns") as Column[])[2]
+      .cellRenderer?.({ rowData: row, rowIndex: 0 } as never) as VNode;
+    expect(pending.props?.class).toContain("result-cell-pending");
   });
 
   it("removes the local data toolbar and synchronizes the active result", async () => {

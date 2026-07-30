@@ -269,6 +269,105 @@ class QueryWebSocketIntegrationTest {
         }
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void editsForUpdateResultsAndRequiresACommitOrRollbackDecisionBeforeExecutingAgain() throws Exception {
+        String cookie = authenticate();
+        String workspaceId = UUID.randomUUID().toString();
+        exchange(HttpMethod.PUT, "/api/v1/workspaces/" + workspaceId, new HashMap<String, Object>(), cookie);
+        openWorkspace(workspaceId, cookie);
+        updateSetting(cookie, "connection.autoCommit", "false");
+        String profileId = createProfile(workspaceId, cookie);
+        Map<String, Object> editorBody = new HashMap<String, Object>();
+        editorBody.put("profileId", profileId);
+        String editorId = String.valueOf(exchange(HttpMethod.POST,
+                "/api/v1/workspaces/" + workspaceId + "/editors", editorBody, cookie).get("id"));
+        String table = "editable_result_" + UUID.randomUUID().toString().replace("-", "");
+
+        final BlockingQueue<Map<String, Object>> events = new LinkedBlockingQueue<Map<String, Object>>();
+        WebSocketHttpHeaders socketHeaders = new WebSocketHttpHeaders();
+        socketHeaders.setOrigin(origin()); socketHeaders.add(HttpHeaders.COOKIE, cookie);
+        WebSocketSession socket = new StandardWebSocketClient().doHandshake(new TextWebSocketHandler() {
+            @Override protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
+                events.add(mapper.readValue(message.getPayload(), new TypeReference<Map<String, Object>>() { }));
+            }
+        }, socketHeaders, URI.create("ws://127.0.0.1:" + port + "/api/v1/events?workspaceId=" + workspaceId
+                + "&clientId=" + clientId)).get(10, TimeUnit.SECONDS);
+        try {
+            awaitType(events, "workspace.ready", 10);
+            try (Connection connection = MYSQL.createConnection(""); Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE " + table
+                        + "(id BIGINT PRIMARY KEY, name VARCHAR(100) NOT NULL,"
+                        + " order_status ENUM('NEW', 'DONE') NOT NULL)");
+                statement.execute("INSERT INTO " + table + " VALUES (1, 'before', 'NEW')");
+            }
+
+            List<Map<String, Object>> locked = executeSql(editorId, workspaceId, cookie, events,
+                    "SELECT id, name, order_status FROM " + table + " FOR UPDATE");
+            Map<String, Object> complete = executionComplete(locked);
+            Map<String, Object> target = mutationTarget(locked);
+            assertEquals(Boolean.TRUE, target.get("editableForUpdate"));
+
+            Map<String, Object> changeBody = new HashMap<String, Object>();
+            changeBody.put("executionId", complete.get("executionId"));
+            Map<String, Object> rowChange = new HashMap<String, Object>();
+            rowChange.put("rowIndex", 0);
+            Map<String, Object> cellChange = new HashMap<String, Object>();
+            cellChange.put("columnIndex", 1); cellChange.put("value", "pending");
+            rowChange.put("cells", Collections.singletonList(cellChange));
+            changeBody.put("rows", Collections.singletonList(rowChange));
+            Map<String, Object> changed = exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId
+                    + "/editors/" + editorId + "/results/0/changes", changeBody, cookie);
+            assertEquals(Boolean.TRUE, changed.get("resultChangesDirty"));
+            assertDatabaseValue(table, "before");
+
+            Map<String, Object> rejectedBody = new HashMap<String, Object>();
+            rejectedBody.put("editorId", editorId); rejectedBody.put("scope", "script");
+            rejectedBody.put("stopOnError", true); rejectedBody.put("text", "SELECT 1");
+            ResponseEntity<Map> rejected = http.exchange(url("/api/v1/workspaces/" + workspaceId
+                    + "/editors/" + editorId + "/executions"), HttpMethod.POST,
+                    new HttpEntity<Map<String, Object>>(rejectedBody, authenticatedJsonHeaders(cookie)), Map.class);
+            assertEquals(org.springframework.http.HttpStatus.BAD_REQUEST, rejected.getStatusCode());
+            assertEquals("RESULT_CHANGES_DECISION_REQUIRED", rejected.getBody().get("code"));
+
+            executeSql(editorId, workspaceId, cookie, events, "SELECT 1", "rollback");
+            assertDatabaseValue(table, "before");
+
+            locked = executeSql(editorId, workspaceId, cookie, events,
+                    "SELECT id, name, order_status FROM " + table + " FOR UPDATE");
+            complete = executionComplete(locked);
+            changeBody.put("executionId", complete.get("executionId"));
+            cellChange.put("columnIndex", 2);
+            cellChange.put("value", "UNKNOWN");
+            ResponseEntity<Map> invalidChange = http.exchange(url("/api/v1/workspaces/" + workspaceId
+                            + "/editors/" + editorId + "/results/0/changes"), HttpMethod.POST,
+                    new HttpEntity<Map<String, Object>>(changeBody, authenticatedJsonHeaders(cookie)), Map.class);
+            assertEquals(org.springframework.http.HttpStatus.BAD_REQUEST, invalidChange.getStatusCode());
+            assertEquals("RESULT_CHANGE_REJECTED", invalidChange.getBody().get("code"));
+            assertTrue(String.valueOf(invalidChange.getBody().get("message")).contains("枚举可选值"));
+            assertTrue(String.valueOf(invalidChange.getBody().get("message")).contains("order_status"));
+            exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId + "/editors/" + editorId
+                    + "/transaction/rollback", Collections.<String, Object>emptyMap(), cookie);
+
+            locked = executeSql(editorId, workspaceId, cookie, events,
+                    "SELECT id, name, order_status FROM " + table + " FOR UPDATE");
+            complete = executionComplete(locked);
+            changeBody.put("executionId", complete.get("executionId"));
+            cellChange.put("columnIndex", 1);
+            cellChange.put("value", "committed");
+            exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId
+                    + "/editors/" + editorId + "/results/0/changes", changeBody, cookie);
+            executeSql(editorId, workspaceId, cookie, events, "SELECT 1", "commit");
+            assertDatabaseValue(table, "committed");
+        } finally {
+            try (Connection connection = MYSQL.createConnection(""); Statement statement = connection.createStatement()) {
+                statement.execute("DROP TABLE IF EXISTS " + table);
+            }
+            socket.close();
+            workspaces.expireNow(workspaceId);
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private void assertCompletionSnapshot(String editorId, String workspaceId, String cookie,
                                           BlockingQueue<Map<String, Object>> events) throws Exception {
@@ -327,12 +426,21 @@ class QueryWebSocketIntegrationTest {
 
     private List<Map<String, Object>> executeSql(String editorId, String workspaceId, String cookie,
                                                   BlockingQueue<Map<String, Object>> events, String sql) throws Exception {
+        return executeSql(editorId, workspaceId, cookie, events, sql, "");
+    }
+
+    private List<Map<String, Object>> executeSql(String editorId, String workspaceId, String cookie,
+                                                  BlockingQueue<Map<String, Object>> events, String sql,
+                                                  String resultTransactionAction) throws Exception {
         events.clear();
         Map<String, Object> body = new HashMap<String, Object>();
         body.put("editorId", editorId);
         body.put("scope", "script");
         body.put("stopOnError", true);
         body.put("text", sql);
+        if (!resultTransactionAction.isEmpty()) {
+            body.put("resultTransactionAction", resultTransactionAction);
+        }
         exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId + "/editors/" + editorId
                 + "/executions", body, cookie);
         List<Map<String, Object>> collected = new ArrayList<Map<String, Object>>();
@@ -363,17 +471,31 @@ class QueryWebSocketIntegrationTest {
 
     @SuppressWarnings("unchecked")
     private void assertMutationTarget(List<Map<String, Object>> events) {
+        Map<String, Object> target = mutationTarget(events);
+        assertEquals("`dbstudio`.`result_column_comment`", target.get("qualifiedName"));
+        List<Map<String, Object>> keys = (List<Map<String, Object>>) target.get("uniqueKeys");
+        assertEquals(Boolean.TRUE, keys.get(0).get("primary"));
+        assertEquals(Arrays.asList(0), keys.get(0).get("resultColumnIndices"));
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> mutationTarget(List<Map<String, Object>> events) {
         for (Map<String, Object> event : events) if ("query.resultMeta".equals(event.get("type"))) {
             Map<String, Object> payload = (Map<String, Object>) event.get("payload");
             Map<String, Object> target = (Map<String, Object>) payload.get("mutationTarget");
             assertTrue(target != null, "simple base-table query should expose a safe mutation target");
-            assertEquals("`dbstudio`.`result_column_comment`", target.get("qualifiedName"));
-            List<Map<String, Object>> keys = (List<Map<String, Object>>) target.get("uniqueKeys");
-            assertEquals(Boolean.TRUE, keys.get(0).get("primary"));
-            assertEquals(Arrays.asList(0), keys.get(0).get("resultColumnIndices"));
-            return;
+            return target;
         }
         throw new AssertionError("Missing query.resultMeta mutationTarget");
+    }
+
+    private void assertDatabaseValue(String table, String expected) throws Exception {
+        try (Connection connection = MYSQL.createConnection("");
+             Statement statement = connection.createStatement();
+             ResultSet rows = statement.executeQuery("SELECT name FROM " + table + " WHERE id = 1")) {
+            assertTrue(rows.next());
+            assertEquals(expected, rows.getString(1));
+        }
     }
 
     @SuppressWarnings("unchecked")

@@ -282,6 +282,7 @@ export interface EditorTab {
   fileHandle?: FileSystemFileHandle;
   dirty: boolean;
   transactionDirty: boolean;
+  resultChangesDirty?: boolean;
   transactionState?: TransactionState;
   busy: boolean;
   activeExecutionId?: string;
@@ -368,6 +369,7 @@ export interface QueryMutationTarget {
   qualifiedName: string;
   columns: QueryMutationColumn[];
   uniqueKeys: QueryMutationKey[];
+  editableForUpdate?: boolean;
 }
 
 export interface QueryExecutionState {

@@ -62,6 +62,24 @@ class OracleDialectTest {
                 "SELECT a.id, a.name FROM sales.orders a").orElseThrow(AssertionError::new);
         assertEquals("SALES", source.schema().toUpperCase());
         assertEquals("ORDERS", source.table().toUpperCase());
+        assertFalse(source.editableForUpdate());
+        assertTrue(dialect.resultMutationSource(
+                "SELECT a.id, a.name FROM sales.orders a FOR UPDATE").get().editableForUpdate());
+        assertTrue(dialect.resultMutationSource(
+                "SELECT a.id, a.name FROM sales.orders a FOR UPDATE OF a.name NOWAIT")
+                .get().editableForUpdate());
+        assertTrue(dialect.resultMutationSource(
+                "SELECT a.id FROM sales.orders a FOR UPDATE SKIP LOCKED").get().editableForUpdate());
+        assertFalse(dialect.resultMutationSource(
+                "SELECT a.id FROM sales.orders a /* FOR UPDATE */").get().editableForUpdate());
+        assertFalse(dialect.resultMutationSource(
+                "SELECT 'FOR UPDATE' AS value FROM sales.orders").isPresent());
         assertFalse(dialect.resultMutationSource("SELECT a.id FROM a JOIN b ON b.id=a.id").isPresent());
+        assertFalse(dialect.resultMutationSource(
+                "WITH data AS (SELECT id FROM sales.orders) SELECT id FROM data FOR UPDATE").isPresent());
+        assertFalse(dialect.resultMutationSource(
+                "SELECT id FROM sales.orders UNION SELECT id FROM sales.archive_orders").isPresent());
+        assertFalse(dialect.resultMutationSource(
+                "SELECT id, amount + 1 FROM sales.orders FOR UPDATE").isPresent());
     }
 }

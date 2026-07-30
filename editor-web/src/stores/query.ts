@@ -38,6 +38,29 @@ export const useQueryStore = defineStore("query", () => {
     replaceExecution(editorId, { ...execution, results: execution.results.map((item) => item === result ? updated : item) });
   }
 
+  function updateCells(editorId: string, resultIndex: number,
+                       cells: Array<{ rowIndex: number; columnIndex: number; value: string | null }>): void {
+    const execution = executions.value[editorId];
+    const result = execution?.results.find((item) => item.resultIndex === resultIndex);
+    if (!execution || !result || !cells.length) return;
+    const rows = [...result.rows];
+    const copied = new Map<number, Array<string | null>>();
+    for (const cell of cells) {
+      if (cell.rowIndex < 0 || cell.rowIndex >= rows.length
+          || cell.columnIndex < 0 || cell.columnIndex >= rows[cell.rowIndex].length) continue;
+      let row = copied.get(cell.rowIndex);
+      if (!row) {
+        row = [...rows[cell.rowIndex]];
+        copied.set(cell.rowIndex, row);
+        rows[cell.rowIndex] = row;
+      }
+      row[cell.columnIndex] = cell.value;
+    }
+    const updated = { ...result, rows };
+    replaceExecution(editorId, { ...execution,
+      results: execution.results.map((item) => item === result ? updated : item) });
+  }
+
   function applyColumnRemarks(editorId: string, executionId: string, resultIndex: number,
                               remarks: Array<{ index: number; remarks: string }>): void {
     const execution = executions.value[editorId];
@@ -77,6 +100,6 @@ export const useQueryStore = defineStore("query", () => {
   }
 
   function clear(): void { executions.value = {}; }
-  return { executions, start, addResult, appendRows, completeResult, applyColumnRemarks,
+  return { executions, start, addResult, appendRows, completeResult, updateCells, applyColumnRemarks,
     complete, markHistorical, clearEditor, clear };
 });

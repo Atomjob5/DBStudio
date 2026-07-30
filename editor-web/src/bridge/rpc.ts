@@ -327,6 +327,10 @@ export class RpcClient {
       case "editor.draft": return { path: `${ws}/editors/${editorId}/draft`, method: "PUT", body };
       case "query.execute": return { path: `${ws}/editors/${editorId}/executions`, method: "POST", body };
       case "query.fetchRows": return { path: `${ws}/editors/${editorId}/results/${encodeURIComponent(String(body.resultIndex ?? 0))}/page`, method: "POST", body };
+      case "query.applyChanges": return {
+        path: `${ws}/editors/${editorId}/results/${encodeURIComponent(String(body.resultIndex ?? 0))}/changes`,
+        method: "POST", body
+      };
       case "query.cancel": {
         const executionId = String(body.executionId ?? "");
         if (!executionId) throw new Error("尚未取得当前执行编号");

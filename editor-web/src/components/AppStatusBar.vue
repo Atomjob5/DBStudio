@@ -12,7 +12,20 @@
     </div>
 
     <div class="status-result-zone">
-      <div class="status-result-actions" role="toolbar" aria-label="结果数据加载工具栏">
+      <div class="status-result-actions" role="toolbar" aria-label="结果操作工具栏">
+        <el-tooltip v-if="showResultEditActions" :content="resultEditTooltip" placement="top">
+          <el-button text :icon="resultEditUnlocked ? Unlock : Lock"
+                     :type="resultEditUnlocked ? 'primary' : 'default'"
+                     :aria-label="resultEditUnlocked ? '锁定结果编辑' : '解锁结果编辑'"
+                     :aria-pressed="resultEditUnlocked" :disabled="!canToggleResultEdit"
+                     @click="$emit('toggle-result-edit')" />
+        </el-tooltip>
+        <el-tooltip v-if="showResultEditActions" :content="postChangesTooltip" placement="top">
+          <el-button text :icon="CircleCheck" aria-label="确认结果修改"
+                     :type="canPostChanges ? 'success' : 'default'"
+                     :disabled="!canPostChanges" @click="$emit('post-result-changes')" />
+        </el-tooltip>
+        <span v-if="showResultEditActions" class="result-action-divider" aria-hidden="true" />
         <el-tooltip :content="nextPageTooltip" placement="top">
           <el-button text :icon="ArrowDown" aria-label="下一页数据" :disabled="!canLoadMore"
                      :loading="loadingMode === 'next'" @click="$emit('load-next')" />
@@ -76,16 +89,19 @@ import { ElMessage } from "element-plus";
 import {
   ArrowDown,
   CircleCheckFilled,
+  CircleCheck,
   CopyDocument,
   DArrowRight,
   InfoFilled,
   Loading,
+  Lock,
+  Unlock,
   WarningFilled
 } from "@element-plus/icons-vue";
 import { writeClipboardText } from "../clipboard";
 import type { SelectedResultColumn, StatusBarSystemItem } from "../types";
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   executionText: string;
   busy: boolean;
   selectedRowCount: number;
@@ -97,8 +113,22 @@ const props = defineProps<{
   loadingMode?: "next" | "all";
   nextPageTooltip: string;
   allRowsTooltip: string;
-}>();
-defineEmits<{ "load-next": []; "load-all": []; "dismiss-task": [id: string] }>();
+  showResultEditActions?: boolean;
+  resultEditUnlocked?: boolean;
+  canToggleResultEdit?: boolean;
+  resultEditTooltip?: string;
+  canPostChanges?: boolean;
+  postChangesTooltip?: string;
+}>(), {
+  showResultEditActions: false,
+  resultEditUnlocked: false,
+  canToggleResultEdit: false,
+  resultEditTooltip: "当前结果不可编辑",
+  canPostChanges: false,
+  postChangesTooltip: "没有待确认的修改"
+});
+defineEmits<{ "load-next": []; "load-all": []; "dismiss-task": [id: string];
+  "toggle-result-edit": []; "post-result-changes": [] }>();
 
 const remarksDialog = ref(false);
 const systemPopoverVisible = ref(false);
@@ -289,6 +319,12 @@ async function copyRemarks(): Promise<void> {
   border-radius: 5px;
 }
 .status-result-actions :deep(.el-button .el-icon) { width: 12px; height: 12px; }
+.result-action-divider {
+  width: 1px;
+  height: 12px;
+  margin: 0 3px;
+  background: var(--db-border-soft);
+}
 .column-remarks-detail {
   display: grid;
   grid-template-columns: 72px minmax(0, 1fr);
