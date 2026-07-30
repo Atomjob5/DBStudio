@@ -39,6 +39,12 @@ public class AppConfiguration {
     @Bean public ConnectionCatalogRepository connectionCatalog(AppDatabase database) {
         return new ConnectionCatalogRepository(database);
     }
+    @Bean public ConnectionWorkbookService connectionWorkbookService(
+            AppDatabase database, ProviderRegistry providers,
+            ConnectionProfileRepository profiles, ConnectionCatalogRepository catalog,
+            SecretStore secrets) {
+        return new ConnectionWorkbookService(database, providers, profiles, catalog, secrets);
+    }
     @Bean public QueryHistoryRepository queryHistory(AppDatabase database) {
         return new QueryHistoryRepository(database);
     }

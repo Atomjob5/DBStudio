@@ -96,6 +96,37 @@ test("keeps the activity bar flush, restores a collapsed panel and renders a com
   expect(pillParts!.cascaderWidth).toBeCloseTo(pillParts!.pillWidth, 1);
 });
 
+test("previews connection workbook imports in a responsive confirmation dialog", async ({ page }) => {
+  await page.getByRole("button", { name: "新增或批量管理数据库链接" }).click();
+  await page.getByRole("menuitem", { name: "批量导入链接" }).click();
+  const dialog = page.getByRole("dialog", { name: "批量导入数据库链接" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "下载导入模板" })).toBeVisible();
+  await dialog.locator('input[type="file"]').setInputFiles({
+    name: "connections.xlsx",
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    buffer: Buffer.from("mock workbook")
+  });
+  await expect(dialog.getByText("文件上传成功", { exact: true })).toBeVisible();
+  await expect(dialog.getByText(/connections\.xlsx/)).toBeVisible();
+  await dialog.getByRole("button", { name: "导入并预览" }).click();
+  await expect(dialog.getByText("导入示例系统", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("新建系统 · 新建环境", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("新增", { exact: true })).toBeVisible();
+  await expect(dialog.getByLabel("导入链接密码")).toBeVisible();
+  expect(await dialog.locator(".row-actions").evaluate((element) => getComputedStyle(element).flexWrap)).toBe("nowrap");
+  const bounds = await dialog.boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(1440);
+
+  await dialog.getByRole("button", { name: "编辑导入信息" }).click();
+  const drawer = page.getByRole("dialog", { name: "修改待导入链接" });
+  await expect(drawer.getByText("密码", { exact: true })).toBeVisible();
+  await expect(drawer.getByPlaceholder("输入密码")).toBeVisible();
+  await expect(drawer.getByText("使用系统密钥库记住密码", { exact: true })).toBeVisible();
+});
+
 test("connects and renders a streamed query result with the development bridge", async ({ page }) => {
   await connectMock(page);
   await expect(page.locator('.connection-pill input')).toHaveValue("DEV / 本地开发库");

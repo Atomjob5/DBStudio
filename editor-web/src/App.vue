@@ -138,7 +138,7 @@
             <template #image><el-icon><Coin /></el-icon></template>
             <el-button type="primary" round @click="openConnectionManager">打开连接管理</el-button>
           </el-empty>
-          <ConnectionManagerPanel v-else :systems="connections.systems" :environments="connections.environments"
+          <ConnectionManagerPanel v-else :providers="connections.providers" :systems="connections.systems" :environments="connections.environments"
                                   :profiles="connections.profiles" @changed="refreshConnectionCatalog"
                                   @create-profile="openCreateProfile" @edit-profile="openEditProfile" />
         </el-splitter-panel>

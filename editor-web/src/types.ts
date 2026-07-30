@@ -124,6 +124,58 @@ export interface ConnectionInput {
   rememberPassword: boolean;
 }
 
+export type ConnectionImportOperation = "create" | "update";
+export type ConnectionImportTestStatus = "untested" | "testing" | "success" | "failed";
+
+export interface ConnectionImportRow {
+  rowId: string;
+  sourceRow: number;
+  profileId: string;
+  systemName: string;
+  environmentName: string;
+  name: string;
+  providerId: string;
+  settings: Record<string, string>;
+  createsSystem: boolean;
+  createsEnvironment: boolean;
+  operation: ConnectionImportOperation;
+  matchedProfileId: string;
+  matchedRevision: string;
+  errors: string[];
+  warnings: string[];
+  testStatus?: ConnectionImportTestStatus;
+  testMessage?: string;
+  password?: string;
+  rememberPassword: boolean;
+}
+
+export interface ConnectionImportPreview {
+  filename: string;
+  rows: ConnectionImportRow[];
+  summary: {
+    total: number;
+    created: number;
+    updated: number;
+    invalid: number;
+    newSystems: number;
+    newEnvironments: number;
+  };
+}
+
+export interface ConnectionImportResult {
+  createdSystems: number;
+  createdEnvironments: number;
+  createdProfiles: number;
+  updatedProfiles: number;
+  rows: Array<{
+    rowId: string;
+    sourceRow: number;
+    profileId: string;
+    operation: ConnectionImportOperation;
+    name: string;
+  }>;
+}
+
 export interface MetadataNode {
   id: string;
   label: string;

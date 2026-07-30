@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
-import ElementPlus, { ElTree } from "element-plus";
+import ElementPlus, { ElDropdown, ElDropdownItem, ElTree } from "element-plus";
 import ConnectionManagerPanel from "./ConnectionManagerPanel.vue";
 
 const rpcRequest = vi.hoisted(() => vi.fn());
-vi.mock("../bridge/rpc", () => ({ rpc: { request: rpcRequest } }));
+const exportConnections = vi.hoisted(() => vi.fn());
+vi.mock("../bridge/rpc", () => ({ rpc: { request: rpcRequest, exportConnections } }));
+
+const providers = [{ id: "mysql", displayName: "MySQL", fields: [], capabilities: [] }];
 
 const systems = [
   { id: "system-a", name: "订单系统", revision: "1" },
@@ -28,10 +31,12 @@ describe("ConnectionManagerPanel", () => {
 
   beforeEach(() => {
     rpcRequest.mockReset();
+    exportConnections.mockReset();
     rpcRequest.mockResolvedValue({});
+    exportConnections.mockResolvedValue(undefined);
     wrapper = mount(ConnectionManagerPanel, {
       attachTo: document.body,
-      props: { systems, environments, profiles },
+      props: { providers, systems, environments, profiles },
       global: { plugins: [ElementPlus] }
     });
   });
@@ -74,5 +79,33 @@ describe("ConnectionManagerPanel", () => {
     await flushPromises();
     expect(document.body.textContent).toContain("新增环境");
     expect(document.body.textContent).toContain("重命名");
+  });
+
+  it("将新增、批量导入和批量导出统一放在原下拉菜单", async () => {
+    expect(wrapper.find('button[aria-label="批量导入数据库链接"]').exists()).toBe(false);
+    expect(wrapper.find('button[aria-label="批量导出数据库链接"]').exists()).toBe(false);
+    const managerDropdown = wrapper.findAllComponents(ElDropdown)[0];
+    (managerDropdown.vm as { $emit: (event: string, value: string) => void }).$emit("command", "import");
+    await flushPromises();
+    expect(document.body.textContent).toContain("批量导入数据库链接");
+  });
+
+  it("supports selecting individual profiles for export", async () => {
+    const exportDropdown = wrapper.findAllComponents(ElDropdown)[0];
+    (exportDropdown.vm as { $emit: (event: string, value: string) => void }).$emit("command", "export-select");
+    await flushPromises();
+    expect(wrapper.findComponent(ElTree).props("showCheckbox")).toBe(true);
+    const batchItems = wrapper.findAllComponents(ElDropdownItem)
+      .filter((item) => ["import", "export-select", "export-all"].includes(String(item.props("command"))));
+    expect(batchItems).toHaveLength(3);
+    expect(batchItems.every((item) => item.props("disabled"))).toBe(true);
+    (wrapper.findComponent(ElTree).vm as { $emit: (...args: unknown[]) => void }).$emit("check", {}, {
+      checkedNodes: [{ kind: "profile", id: "profile-a" }]
+    });
+    await flushPromises();
+    const action = wrapper.findAll("button").find((button) => button.text().includes("导出选中"));
+    await action?.trigger("click");
+    await flushPromises();
+    expect(exportConnections).toHaveBeenCalledWith("selected", ["profile-a"]);
   });
 });

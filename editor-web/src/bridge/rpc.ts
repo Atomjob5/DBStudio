@@ -1,4 +1,4 @@
-import type { TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "../types";
+import type { ConnectionImportPreview, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "../types";
 
 export interface RpcError { code: string; message: string; details?: unknown; requestId?: string; }
 type EventListener = (payload: unknown) => void;
@@ -154,6 +154,35 @@ export class RpcClient {
     await this.ensureOperational();
     const data = new FormData(); data.append("file", file, file.name);
     return this.fetchJson(`/api/v1/workspaces/${this.workspaceId}/csv/uploads`, "POST", data, 120_000);
+  }
+
+  async previewConnectionWorkbook(file: File): Promise<ConnectionImportPreview> {
+    await this.ensureOperational();
+    if (this.mock) {
+      return await this.mock("connection.import.preview", { file }, this.emitBound) as ConnectionImportPreview;
+    }
+    const data = new FormData(); data.append("file", file, file.name);
+    return this.fetchJson(`/api/v1/workspaces/${this.workspaceId}/connection-imports/preview`,
+      "POST", data, 120_000);
+  }
+
+  async downloadConnectionTemplate(): Promise<void> {
+    await this.ensureOperational();
+    if (this.mock) {
+      await this.mock("connection.import.template", {}, this.emitBound); return;
+    }
+    const blob = await this.fetchBlob("/api/v1/connections/import-template", "GET");
+    downloadBlob(blob, "dbstudio-connection-template.xlsx");
+  }
+
+  async exportConnections(scope: "all" | "selected", profileIds: string[]): Promise<void> {
+    await this.ensureOperational();
+    if (this.mock) {
+      await this.mock("connection.export", { scope, profileIds }, this.emitBound); return;
+    }
+    const blob = await this.fetchBlob(`/api/v1/workspaces/${this.workspaceId}/connection-exports`,
+      "POST", { scope, profileIds }, 120_000);
+    downloadBlob(blob, `dbstudio-connections-${new Date().toISOString().slice(0, 10)}.xlsx`);
   }
 
   async saveEditorDraft(editorId: string, payload: Record<string, unknown>, keepalive = false): Promise<void> {
@@ -315,6 +344,7 @@ export class RpcClient {
       case "connection.profile.update": return { path: `${ws}/connection-profiles/${encodeURIComponent(String(body.id ?? ""))}`, method: "PUT", body };
       case "connection.profile.move": return { path: `${ws}/connection-profiles/${encodeURIComponent(String(body.id ?? ""))}/location`, method: "PUT", body };
       case "connection.profile.delete": return { path: `${ws}/connection-profiles/${encodeURIComponent(String(body.id ?? ""))}`, method: "DELETE" };
+      case "connection.import.commit": return { path: `${ws}/connection-imports`, method: "POST", body };
       case "metadata.children": return { path: `${ws}/metadata/children`, method: "POST", body };
       case "metadata.completionNamespaces": return { path: `${ws}/metadata/completion-namespaces`, method: "POST", body };
       case "metadata.completionSnapshot": return { path: `${ws}/metadata/completion-snapshot`, method: "POST", body };
@@ -375,6 +405,35 @@ export class RpcClient {
       throw error;
     } finally { window.clearTimeout(timer); }
   }
+
+  private async fetchBlob(path: string, method: string, body?: unknown, timeoutMs = 30_000): Promise<Blob> {
+    const controller = new AbortController(); const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const headers: Record<string, string> = {};
+      if (body !== undefined) headers["Content-Type"] = "application/json";
+      if (this.workspaceId) headers["X-DBStudio-Client-Id"] = this.browserClientId;
+      const response = await fetch(path, { method, credentials: "same-origin", cache: "no-store", headers,
+        body: method === "GET" || body === undefined ? undefined : JSON.stringify(body), signal: controller.signal });
+      if (!response.ok) {
+        const failure = await response.json().catch(() => ({})) as RpcError;
+        const error = new Error(failure.message || `本地 API 请求失败（${response.status}）`);
+        Object.assign(error, { code: failure.code, details: failure.details, requestId: failure.requestId });
+        throw error;
+      }
+      return response.blob();
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") throw new Error(`请求超时：${path}`);
+      throw error;
+    } finally { window.clearTimeout(timer); }
+  }
+}
+
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url; anchor.download = filename; anchor.style.display = "none";
+  document.body.append(anchor); anchor.click(); anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 let mockHandler: MockRequestHandler | undefined;

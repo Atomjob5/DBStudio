@@ -167,6 +167,23 @@ describe("RpcClient websocket recovery", () => {
     client.dispose();
   });
 
+  it("routes the confirmed connection import through the active workspace", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).includes("/open")
+      ? jsonResponse({ workspaceId: "workspace", recoveryDecisionRequired: false, editors: [] })
+      : jsonResponse({ createdProfiles: 1, updatedProfiles: 0 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new RpcClient();
+    await open(client);
+
+    const body = { rows: [{ rowId: "row-1", operation: "create" }] };
+    await expect(client.request("connection.import.commit", body))
+      .resolves.toEqual({ createdProfiles: 1, updatedProfiles: 0 });
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/workspaces/workspace/connection-imports"),
+      expect.objectContaining({ method: "POST", body: JSON.stringify(body) }));
+    client.dispose();
+  });
+
   it("rejects a socket closed before opening and reconnects with exponential backoff", async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).includes("/workspaces/")

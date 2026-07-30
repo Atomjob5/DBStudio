@@ -151,6 +151,7 @@ public final class DbStudioApiController {
     private final WorkspaceRepository workspaceRepository;
     private final ApplicationRunLifecycle runLifecycle;
     private final ObjectMapper objectMapper;
+    private final ConnectionWorkbookService connectionWorkbooks;
     private final CompletionSnapshotService completionSnapshots = new CompletionSnapshotService();
 
     public DbStudioApiController(ProviderRegistry providers, ConnectionProfileRepository profiles,
@@ -159,12 +160,13 @@ public final class DbStudioApiController {
                                  SecretStore secrets, CsvService csv, WorkspaceRegistry workspaces,
                                  ConfigurableApplicationContext application,
                                  WorkspaceRepository workspaceRepository, ApplicationRunLifecycle runLifecycle,
-                                 ObjectMapper objectMapper) {
+                                 ObjectMapper objectMapper, ConnectionWorkbookService connectionWorkbooks) {
         this.providers = providers; this.profiles = profiles; this.catalog = catalog; this.history = history;
         this.settings = settings; this.secrets = secrets; this.csv = csv;
         this.workspaces = workspaces; this.application = application;
         this.workspaceRepository = workspaceRepository; this.runLifecycle = runLifecycle;
         this.objectMapper = objectMapper;
+        this.connectionWorkbooks = connectionWorkbooks;
     }
 
     @PutMapping("/workspaces/{workspaceId}")
@@ -239,6 +241,44 @@ public final class DbStudioApiController {
         List<Object> profileValues = new ArrayList<Object>();
         for (SavedProfile value : profiles.findAll()) profileValues.add(profileMap(value));
         return ApiPayloads.map("systems", systems, "environments", environments, "profiles", profileValues);
+    }
+
+    @GetMapping("/connections/import-template")
+    public ResponseEntity<byte[]> connectionImportTemplate() {
+        return xlsxResponse("dbstudio-connection-template.xlsx", connectionWorkbooks.template());
+    }
+
+    @PostMapping(value = "/workspaces/{workspaceId}/connection-imports/preview",
+            consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public Map<String, Object> previewConnectionImport(@PathVariable String workspaceId,
+                                                       @RequestPart("file") MultipartFile file) throws Exception {
+        workspaces.require(workspaceId);
+        return connectionWorkbooks.preview(file);
+    }
+
+    @PostMapping("/workspaces/{workspaceId}/connection-imports")
+    public Map<String, Object> importConnections(@PathVariable String workspaceId,
+                                                 @RequestBody Map<String, Object> body) throws Exception {
+        Workspace workspace = workspaces.require(workspaceId);
+        Object rows = body == null ? null : body.get("rows");
+        Map<String, Object> result = connectionWorkbooks.commit(rows);
+        cacheImportedPasswords(workspace, rows, result);
+        connectionsChanged();
+        return result;
+    }
+
+    @PostMapping("/workspaces/{workspaceId}/connection-exports")
+    public ResponseEntity<byte[]> exportConnections(@PathVariable String workspaceId,
+                                                     @RequestBody Map<String, Object> body) throws Exception {
+        workspaces.require(workspaceId);
+        String scope = ApiPayloads.text(body, "scope");
+        List<String> profileIds = new ArrayList<String>();
+        Object rawIds = body == null ? null : body.get("profileIds");
+        if (rawIds instanceof List) {
+            for (Object value : (List<?>) rawIds) profileIds.add(String.valueOf(value));
+        }
+        return xlsxResponse("dbstudio-connections.xlsx",
+                connectionWorkbooks.exportWorkbook(scope, profileIds));
     }
 
     @PostMapping("/connection-systems")
@@ -1853,5 +1893,32 @@ public final class DbStudioApiController {
         return ResponseEntity.ok().contentType(new MediaType("text", "csv", StandardCharsets.UTF_8))
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
                 .header(HttpHeaders.CACHE_CONTROL, "no-store").body(body);
+    }
+
+    private static ResponseEntity<byte[]> xlsxResponse(String filename, byte[] body) {
+        return ResponseEntity.ok().contentType(MediaType.parseMediaType(ConnectionWorkbookService.CONTENT_TYPE))
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                .header(HttpHeaders.CACHE_CONTROL, "no-store").body(body);
+    }
+
+    private static void cacheImportedPasswords(Workspace workspace, Object rawRows,
+                                               Map<String, Object> result) {
+        if (!(rawRows instanceof List) || !(result.get("rows") instanceof List)) return;
+        Map<String, String> profileIds = new LinkedHashMap<String, String>();
+        for (Object raw : (List<?>) result.get("rows")) {
+            if (!(raw instanceof Map)) continue;
+            @SuppressWarnings("unchecked") Map<String, Object> row = (Map<String, Object>) raw;
+            profileIds.put(ApiPayloads.text(row, "rowId"), ApiPayloads.text(row, "profileId"));
+        }
+        for (Object raw : (List<?>) rawRows) {
+            if (!(raw instanceof Map)) continue;
+            @SuppressWarnings("unchecked") Map<String, Object> row = (Map<String, Object>) raw;
+            String password = ApiPayloads.text(row, "password");
+            String profileId = profileIds.get(ApiPayloads.text(row, "rowId"));
+            if (password.isEmpty() || profileId == null || profileId.isEmpty()) continue;
+            char[] value = password.toCharArray();
+            try { workspace.cachePassword(UUID.fromString(profileId), value); }
+            finally { Arrays.fill(value, '\0'); }
+        }
     }
 }

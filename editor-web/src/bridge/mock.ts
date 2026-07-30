@@ -88,6 +88,22 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
     return value;
   }
   if (type === "connection.profile.delete") { const index = profiles.findIndex((item) => item.id === payload.id); if (index >= 0) profiles.splice(index, 1); return { deleted: true }; }
+  if (type === "connection.import.template" || type === "connection.export") return {};
+  if (type === "connection.import.preview") return { filename: (payload.file as File | undefined)?.name ?? "connections.xlsx",
+    summary: { total: 1, created: 1, updated: 0, invalid: 0, newSystems: 1, newEnvironments: 1 },
+    rows: [{ rowId: crypto.randomUUID(), sourceRow: 2, profileId: crypto.randomUUID(),
+      systemName: "导入示例系统", environmentName: "DEV", name: "导入示例库", providerId: "mysql",
+      settings: { host: "127.0.0.1", port: "3306", database: "demo", username: "root", timeoutSeconds: "10" },
+      createsSystem: true, createsEnvironment: true, operation: "create", matchedProfileId: "",
+      matchedRevision: "", errors: [], warnings: [], rememberPassword: false }] };
+  if (type === "connection.import.commit") {
+    const rows = Array.isArray(payload.rows) ? payload.rows as Array<Record<string, unknown>> : [];
+    return { createdSystems: 1, createdEnvironments: 1,
+      createdProfiles: rows.filter((row) => row.operation === "create").length,
+      updatedProfiles: rows.filter((row) => row.operation === "update").length,
+      rows: rows.map((row) => ({ rowId: row.rowId, sourceRow: row.sourceRow, profileId: row.profileId,
+        operation: row.operation, name: row.name })) };
+  }
   if (type === "connection.test") return { success: true, message: "连接成功", serverVersion: "MySQL 8.4.9" };
   if (type === "editor.create") { const profile = profiles.find((item) => item.id === payload.profileId); const id = crypto.randomUUID();
     if (profile) editorProfiles.set(id, profile.id);
