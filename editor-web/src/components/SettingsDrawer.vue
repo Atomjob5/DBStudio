@@ -173,7 +173,7 @@
         <el-form-item v-if="scrollOptimizationEnabled" class="compact-setting-row">
           <template #label>
             <div class="setting-label"><span>预渲染缓冲</span>
-              <el-tooltip content="在可视区域四周额外渲染指定屏数的数据。值越大快速拖动越稳定，但会增加DOM和内存占用。" placement="top">
+              <el-tooltip content="控制可视区域四周最多额外渲染的屏数；宽表会自动收缩缓冲，避免单元格过多导致卡顿。" placement="top">
                 <el-icon class="setting-help" tabindex="0" aria-label="预渲染缓冲说明"><QuestionFilled /></el-icon>
               </el-tooltip>
             </div>

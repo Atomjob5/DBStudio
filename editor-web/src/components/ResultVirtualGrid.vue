@@ -1,60 +1,71 @@
 <template>
-  <div class="result-virtual-grid">
-    <div ref="viewport" class="result-virtual-grid__viewport" role="table"
-         :aria-rowcount="rows.length" :aria-colcount="columns.length + 1"
-         @scroll="handleScroll" @pointerdown="delegatePointerDown"
+  <div class="result-virtual-grid"
+       :class="{ 'is-seeking': seeking, 'is-scrollbar-dragging': scrollbarDragging }"
+       role="table" :aria-rowcount="rows.length" :aria-colcount="columns.length + 1"
+       :aria-busy="seeking">
+    <div class="result-virtual-grid__header" role="row" :style="headerStyle">
+      <span class="result-row-number result-row-number-header result-virtual-grid__gutter"
+            role="columnheader" title="单击或拖动行号选择整行">#</span>
+      <div class="result-virtual-grid__header-viewport" :style="headerViewportStyle">
+        <div class="result-virtual-grid__header-canvas" :style="headerCanvasStyle">
+          <div v-for="entry in visibleColumns" :key="entry.slot"
+               class="result-virtual-grid__header-cell" role="columnheader"
+               :data-grid-column="entry.column.visibleIndex"
+               :style="headerCellStyle(entry.index)">
+            <span v-if="seeking" class="result-virtual-grid__seek-header" :title="entry.column.label">
+              {{ entry.column.label }}
+            </span>
+            <StableHeaderRenderer v-else :renderer="entry.column.headerRenderer" />
+          </div>
+        </div>
+      </div>
+    </div>
+    <div ref="viewport" class="result-virtual-grid__viewport" role="rowgroup"
+         @scroll="handleScroll" @pointerdown.capture="detectScrollbarPointerDown"
+         @pointerdown="delegatePointerDown"
          @pointerover="delegatePointerOver" @dblclick="delegateDoubleClick"
          @contextmenu="delegateContextMenu">
       <div class="result-virtual-grid__canvas" :style="canvasStyle">
-      <div class="result-virtual-grid__header" role="row" :style="headerStyle">
-        <span class="result-row-number result-row-number-header result-virtual-grid__gutter"
-              role="columnheader" title="单击或拖动行号选择整行"
-              style="position: sticky; width: 34px">#</span>
-        <div v-for="entry in visibleColumns" :key="entry.column.key"
-             class="result-virtual-grid__header-cell" role="columnheader"
-             :data-grid-column="entry.column.visibleIndex"
-             :style="headerCellStyle(entry.index)">
-          <component :is="entry.column.headerRenderer" />
-        </div>
-      </div>
-
         <div v-for="entry in visibleRows" :key="entry.slot"
              class="result-virtual-grid__row" role="row"
              :class="{ 'result-row-selected': selectionMode === 'rows' && selectedRowSet.has(entry.row.sourceIndex) }"
              :style="rowStyle(entry.index)">
-        <span class="result-row-number result-virtual-grid__gutter"
-              :class="{ selected: selectionMode === 'rows' && selectedRowSet.has(entry.row.sourceIndex) }"
-              role="rowheader" data-grid-kind="row" :data-grid-source="entry.row.sourceIndex"
-              style="position: sticky; width: 34px"
-              :title="`选择第 ${entry.row.sourceIndex + 1} 行；按住拖动可连续选择多行`">
-          {{ entry.row.sourceIndex + 1 }}
-        </span>
-        <span v-for="columnEntry in visibleColumns" :key="columnEntry.slot"
-              class="result-cell result-virtual-grid__cell"
-              :class="cellClasses(entry.index, columnEntry.column)"
-              role="cell" data-grid-kind="cell" :data-grid-row="entry.index"
-              :data-grid-column="columnEntry.column.visibleIndex"
-              :style="cellStyle(columnEntry.index)"
-              :title="cellTitle(entry.row, columnEntry.column)">
-          <input v-if="isEditing(entry.row, columnEntry.column)" v-focus
-                 class="result-cell-editor" :value="editingValue ?? ''"
-                 aria-label="编辑结果值"
-                 @pointerdown.stop @dblclick.stop
-                 @input="$emit('update:editing-value', ($event.target as HTMLInputElement).value)"
-                 @keydown.enter.prevent.stop="$emit('commit-edit')"
-                 @keydown.esc.prevent.stop="$emit('cancel-edit')"
-                 @blur="$emit('commit-edit')" />
-          <template v-else>{{ cellText(entry.row, columnEntry.column) }}</template>
-        </span>
+          <span class="result-row-number result-virtual-grid__gutter"
+                :class="{ selected: selectionMode === 'rows' && selectedRowSet.has(entry.row.sourceIndex) }"
+                role="rowheader" data-grid-kind="row" :data-grid-source="entry.row.sourceIndex"
+                style="position: sticky; width: 34px"
+                :title="`选择第 ${entry.row.sourceIndex + 1} 行；按住拖动可连续选择多行`">
+            {{ entry.row.sourceIndex + 1 }}
+          </span>
+          <span v-for="columnEntry in visibleColumns" :key="columnEntry.slot"
+                class="result-cell result-virtual-grid__cell"
+                :class="seeking ? 'result-virtual-grid__cell--seeking' : cellClasses(entry.index, columnEntry.column)"
+                role="cell" data-grid-kind="cell" :data-grid-row="entry.index"
+                :data-grid-column="columnEntry.column.visibleIndex"
+                :style="cellStyle(columnEntry.index)"
+                :title="seeking ? undefined : cellTitle(entry.row, columnEntry.column)">
+            <span v-if="seeking" class="result-virtual-grid__seek-bar" aria-hidden="true" />
+            <input v-else-if="isEditing(entry.row, columnEntry.column)" v-focus
+                   class="result-cell-editor" :value="editingValue ?? ''"
+                   aria-label="编辑结果值"
+                   @pointerdown.stop @dblclick.stop
+                   @input="$emit('update:editing-value', ($event.target as HTMLInputElement).value)"
+                   @keydown.enter.prevent.stop="$emit('commit-edit')"
+                   @keydown.esc.prevent.stop="$emit('cancel-edit')"
+                   @blur="$emit('commit-edit')" />
+            <template v-else>{{ cellText(entry.row, columnEntry.column) }}</template>
+          </span>
         </div>
       </div>
     </div>
+    <span v-if="seeking" class="result-virtual-grid__seek-status" role="status">快速定位中…</span>
     <div v-if="hasFooter" class="result-virtual-grid__footer"><slot name="footer" /></div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, defineComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import type { PropType, VNodeChild } from "vue";
 import type { CellRange, ViewRow } from "../resultGrid";
 import { normalizeRange } from "../resultGrid";
 import {
@@ -64,6 +75,18 @@ import {
 
 const ROW_HEIGHT = 32;
 const GUTTER_WIDTH = 34;
+const SCROLLBAR_HIT_SIZE = 8;
+const MAX_RENDERED_CELLS = 800;
+const SEEK_JUMP_VIEWPORT_RATIO = 0.75;
+const SEEK_SETTLE_MS = 80;
+
+const StableHeaderRenderer = defineComponent({
+  name: "StableHeaderRenderer",
+  props: {
+    renderer: { type: Function as PropType<() => VNodeChild>, required: true }
+  },
+  setup(componentProps) { return () => componentProps.renderer(); }
+});
 
 const props = defineProps<{
   rows: ViewRow[];
@@ -98,7 +121,12 @@ const rowRange = ref<VirtualRange>({ start: 0, end: 0 });
 const columnRange = ref<VirtualRange>({ start: 0, end: 0 });
 const rowSlots = ref<RenderSlot[]>([]);
 const columnSlots = ref<RenderSlot[]>([]);
-const metrics = computed(() => columnMetrics(props.columns.map((column) => column.width)));
+const seeking = ref(false);
+const scrollbarDragging = ref(false);
+const scrollLeft = ref(0);
+const verticalScrollbarWidth = ref(0);
+const columnWidths = computed(() => props.columns.map((column) => column.width));
+const metrics = computed(() => columnMetrics(columnWidths.value));
 const selectedRowSet = computed(() => new Set(props.selectedRowSources));
 const selectedCellSet = computed(() => new Set(props.selectedCellKeys ?? []));
 const normalizedSelection = computed(() => props.cellRange ? normalizeRange(props.cellRange) : undefined);
@@ -111,17 +139,25 @@ const visibleColumns = computed(() => columnSlots.value
 const canvasStyle = computed(() => ({
   width: `${GUTTER_WIDTH + metrics.value.totalWidth}px`,
   minWidth: "100%",
-  height: `${props.headerHeight + props.rows.length * ROW_HEIGHT}px`,
+  height: `${props.rows.length * ROW_HEIGHT}px`,
   minHeight: "100%"
 }));
 const headerStyle = computed(() => ({
-  width: `${GUTTER_WIDTH + metrics.value.totalWidth}px`,
   height: `${props.headerHeight}px`
+}));
+const headerViewportStyle = computed(() => ({ right: `${verticalScrollbarWidth.value}px` }));
+const headerCanvasStyle = computed(() => ({
+  width: `${metrics.value.totalWidth}px`,
+  height: `${props.headerHeight}px`,
+  transform: `translate3d(${-scrollLeft.value}px, 0, 0)`
 }));
 
 let refreshFrame = 0;
+let settleTimer = 0;
 let resizeObserver: ResizeObserver | undefined;
 let lastPointerKey = "";
+let lastObservedScrollLeft = 0;
+let editingCommitRequested = false;
 
 interface RenderSlot {
   index: number;
@@ -161,13 +197,44 @@ function rangesFor(element: HTMLElement, bufferScreens: number): {
 } {
   return {
     rows: visibleRowRange(props.rows.length, ROW_HEIGHT, element.scrollTop,
-      element.clientHeight, props.headerHeight, bufferScreens),
-    columns: visibleColumnRange(props.columns.map((column) => column.width), metrics.value,
+      element.clientHeight, 0, bufferScreens),
+    columns: visibleColumnRange(columnWidths.value, metrics.value,
       element.scrollLeft, element.clientWidth, GUTTER_WIDTH, bufferScreens)
   };
 }
 
+function budgetedRangesFor(element: HTMLElement, maximumBufferScreens: number): {
+  rows: VirtualRange;
+  columns: VirtualRange;
+} {
+  const maximum = Math.max(0, maximumBufferScreens);
+  const visible = rangesFor(element, 0);
+  if (maximum === 0) return visible;
+  const requested = rangesFor(element, maximum);
+  if (renderedCellCount(requested) <= MAX_RENDERED_CELLS) return requested;
+  let low = 0;
+  let high = maximum;
+  let best = visible;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const candidateBuffer = (low + high) / 2;
+    const candidate = rangesFor(element, candidateBuffer);
+    if (renderedCellCount(candidate) <= MAX_RENDERED_CELLS) {
+      best = candidate;
+      low = candidateBuffer;
+    } else {
+      high = candidateBuffer;
+    }
+  }
+  return best;
+}
+
+function renderedCellCount(ranges: { rows: VirtualRange; columns: VirtualRange }): number {
+  return Math.max(0, ranges.rows.end - ranges.rows.start)
+    * Math.max(0, ranges.columns.end - ranges.columns.start);
+}
+
 function applyWindow(nextRows: VirtualRange, nextColumns: VirtualRange): void {
+  commitEditingCellOutside(nextRows, nextColumns);
   if (!sameRange(rowRange.value, nextRows)) {
     rowSlots.value = reuseRenderSlots(rowSlots.value, nextRows);
     rowRange.value = nextRows;
@@ -178,21 +245,82 @@ function applyWindow(nextRows: VirtualRange, nextColumns: VirtualRange): void {
   }
 }
 
-function refreshWindow(): void {
+function commitEditingCellOutside(nextRows: VirtualRange, nextColumns: VirtualRange): void {
+  const editing = props.editingCell;
+  if (!editing || editingCommitRequested
+      || nextRows.end <= nextRows.start || nextColumns.end <= nextColumns.start) return;
+  const rowIndex = props.rows.findIndex((row) => row.sourceIndex === editing.rowIndex);
+  const columnIndex = props.columns.findIndex((column) => column.sourceIndex === editing.columnIndex);
+  if (rowIndex >= nextRows.start && rowIndex < nextRows.end
+      && columnIndex >= nextColumns.start && columnIndex < nextColumns.end) return;
+  editingCommitRequested = true;
+  emit("commit-edit");
+}
+
+function refreshWindow(bufferScreens = seeking.value ? 0 : props.bufferScreens): void {
   refreshFrame = 0;
   const element = viewport.value;
   if (!element) return;
-  const next = rangesFor(element, props.bufferScreens);
+  const next = budgetedRangesFor(element, bufferScreens);
   applyWindow(next.rows, next.columns);
 }
 
 function scheduleWindowRefresh(): void {
-  if (!refreshFrame) refreshFrame = requestFrame(refreshWindow);
+  if (!refreshFrame) refreshFrame = requestFrame(() => refreshWindow());
+}
+
+function startOrContinueSeeking(firstJump: boolean): void {
+  if (settleTimer) window.clearTimeout(settleTimer);
+  if (firstJump) {
+    seeking.value = true;
+    if (refreshFrame) {
+      cancelFrame(refreshFrame);
+      refreshFrame = 0;
+    }
+    refreshWindow(0);
+  } else {
+    scheduleWindowRefresh();
+  }
+  settleTimer = window.setTimeout(finishSeeking, SEEK_SETTLE_MS);
+}
+
+function finishSeeking(): void {
+  settleTimer = 0;
+  if (!seeking.value) return;
+  seeking.value = false;
+  const element = viewport.value;
+  if (element) lastObservedScrollLeft = element.scrollLeft;
+  if (refreshFrame) {
+    cancelFrame(refreshFrame);
+    refreshFrame = 0;
+  }
+  refreshWindow(props.bufferScreens);
+}
+
+function cancelSeeking(): void {
+  if (settleTimer) {
+    window.clearTimeout(settleTimer);
+    settleTimer = 0;
+  }
+  if (refreshFrame) {
+    cancelFrame(refreshFrame);
+    refreshFrame = 0;
+  }
+  seeking.value = false;
 }
 
 function handleScroll(): void {
   const element = viewport.value;
   if (!element) return;
+  scrollLeft.value = element.scrollLeft;
+  const horizontalJump = element.clientWidth > 0
+    && Math.abs(element.scrollLeft - lastObservedScrollLeft)
+      >= element.clientWidth * SEEK_JUMP_VIEWPORT_RATIO;
+  lastObservedScrollLeft = element.scrollLeft;
+  if (horizontalJump || seeking.value) {
+    startOrContinueSeeking(horizontalJump && !seeking.value);
+    return;
+  }
   const visible = rangesFor(element, 0);
   if (!containsRange(rowRange.value, visible.rows)
       || !containsRange(columnRange.value, visible.columns)) {
@@ -203,7 +331,7 @@ function handleScroll(): void {
     refreshWindow();
     return;
   }
-  const safe = rangesFor(element, props.bufferScreens / 2);
+  const safe = budgetedRangesFor(element, props.bufferScreens / 2);
   if (!containsRange(rowRange.value, safe.rows)
       || !containsRange(columnRange.value, safe.columns)) {
     scheduleWindowRefresh();
@@ -216,7 +344,7 @@ function sameRange(left: VirtualRange, right: VirtualRange): boolean {
 
 function rowStyle(index: number): Record<string, string> {
   return {
-    top: `${props.headerHeight + index * ROW_HEIGHT}px`,
+    top: `${index * ROW_HEIGHT}px`,
     width: `${GUTTER_WIDTH + metrics.value.totalWidth}px`,
     height: `${ROW_HEIGHT}px`
   };
@@ -224,7 +352,7 @@ function rowStyle(index: number): Record<string, string> {
 
 function headerCellStyle(index: number): Record<string, string> {
   return {
-    left: `${GUTTER_WIDTH + metrics.value.offsets[index]}px`,
+    left: `${metrics.value.offsets[index]}px`,
     width: `${props.columns[index].width}px`,
     height: `${props.headerHeight}px`
   };
@@ -279,7 +407,43 @@ function delegatedTarget(event: Event): HTMLElement | undefined {
   return target && viewport.value?.contains(target) ? target : undefined;
 }
 
+function detectScrollbarPointerDown(event: PointerEvent): void {
+  const element = viewport.value;
+  if (event.button !== 0 || !element || !isScrollbarHit(element, event)) return;
+  scrollbarDragging.value = true;
+  lastPointerKey = "";
+  window.removeEventListener("pointerup", finishScrollbarDrag, true);
+  window.removeEventListener("pointercancel", finishScrollbarDrag, true);
+  window.addEventListener("pointerup", finishScrollbarDrag, { capture: true, once: true });
+  window.addEventListener("pointercancel", finishScrollbarDrag, { capture: true, once: true });
+}
+
+function isScrollbarHit(element: HTMLElement, event: PointerEvent): boolean {
+  const bounds = element.getBoundingClientRect();
+  const nativeVerticalWidth = Math.max(0, element.offsetWidth - element.clientWidth);
+  const nativeHorizontalHeight = Math.max(0, element.offsetHeight - element.clientHeight);
+  const verticalSize = Math.max(SCROLLBAR_HIT_SIZE, nativeVerticalWidth);
+  const horizontalSize = Math.max(SCROLLBAR_HIT_SIZE, nativeHorizontalHeight);
+  const vertical = element.scrollHeight > element.clientHeight
+    && event.clientX >= bounds.right - verticalSize && event.clientX <= bounds.right;
+  const horizontal = element.scrollWidth > element.clientWidth
+    && event.clientY >= bounds.bottom - horizontalSize && event.clientY <= bounds.bottom;
+  return vertical || horizontal;
+}
+
+function finishScrollbarDrag(): void {
+  scrollbarDragging.value = false;
+  lastPointerKey = "";
+  window.removeEventListener("pointerup", finishScrollbarDrag, true);
+  window.removeEventListener("pointercancel", finishScrollbarDrag, true);
+}
+
+function interactionsSuspended(): boolean {
+  return seeking.value || scrollbarDragging.value;
+}
+
 function delegatePointerDown(event: PointerEvent): void {
+  if (interactionsSuspended()) return;
   const target = delegatedTarget(event);
   if (!target) return;
   if (target.dataset.gridKind === "row") {
@@ -290,6 +454,7 @@ function delegatePointerDown(event: PointerEvent): void {
 }
 
 function delegatePointerOver(event: PointerEvent): void {
+  if (interactionsSuspended()) return;
   const target = delegatedTarget(event);
   if (!target) return;
   const key = target.dataset.gridKind === "row"
@@ -305,6 +470,7 @@ function delegatePointerOver(event: PointerEvent): void {
 }
 
 function delegateContextMenu(event: MouseEvent): void {
+  if (interactionsSuspended()) return;
   const target = delegatedTarget(event);
   if (!target) return;
   if (target.dataset.gridKind === "row") {
@@ -316,6 +482,7 @@ function delegateContextMenu(event: MouseEvent): void {
 }
 
 function delegateDoubleClick(event: MouseEvent): void {
+  if (interactionsSuspended()) return;
   const target = delegatedTarget(event);
   if (!target || target.dataset.gridKind !== "cell") return;
   const rowIndex = Number(target.dataset.gridRow);
@@ -329,20 +496,39 @@ function getScrollPosition(): ResultGridScrollPosition {
 function setScrollPosition(position: ResultGridScrollPosition): void {
   const element = viewport.value;
   if (!element) return;
+  cancelSeeking();
   element.scrollLeft = clampScroll(position.left, GUTTER_WIDTH + metrics.value.totalWidth, element.clientWidth);
-  element.scrollTop = clampScroll(position.top,
-    props.headerHeight + props.rows.length * ROW_HEIGHT, element.clientHeight);
+  element.scrollTop = clampScroll(position.top, props.rows.length * ROW_HEIGHT, element.clientHeight);
+  scrollLeft.value = element.scrollLeft;
+  lastObservedScrollLeft = element.scrollLeft;
+  updateViewportMeasurements();
   refreshWindow();
 }
 
 function normalizeScrollPosition(): void {
   const element = viewport.value;
   if (!element) return;
+  cancelSeeking();
   element.scrollLeft = clampScroll(element.scrollLeft,
     GUTTER_WIDTH + metrics.value.totalWidth, element.clientWidth);
-  element.scrollTop = clampScroll(element.scrollTop,
-    props.headerHeight + props.rows.length * ROW_HEIGHT, element.clientHeight);
+  element.scrollTop = clampScroll(element.scrollTop, props.rows.length * ROW_HEIGHT, element.clientHeight);
+  scrollLeft.value = element.scrollLeft;
+  lastObservedScrollLeft = element.scrollLeft;
+  updateViewportMeasurements();
   refreshWindow();
+}
+
+function updateViewportMeasurements(): void {
+  const element = viewport.value;
+  if (!element) return;
+  verticalScrollbarWidth.value = element.offsetWidth > 0
+    ? Math.max(0, element.offsetWidth - element.clientWidth)
+    : 0;
+}
+
+function handleViewportResize(): void {
+  updateViewportMeasurements();
+  scheduleWindowRefresh();
 }
 
 function requestFrame(callback: FrameRequestCallback): number {
@@ -358,19 +544,25 @@ function cancelFrame(frame: number): void {
 
 watch([() => props.rows.length, () => props.columns.map((column) => `${column.key}:${column.width}`).join(","),
   () => props.headerHeight, () => props.bufferScreens], () => void nextTick(normalizeScrollPosition));
+watch(() => props.editingCell, () => { editingCommitRequested = false; });
 
 onMounted(() => {
   const element = viewport.value;
   if (typeof ResizeObserver !== "undefined" && element) {
-    resizeObserver = new ResizeObserver(scheduleWindowRefresh);
+    resizeObserver = new ResizeObserver(handleViewportResize);
     resizeObserver.observe(element);
   }
+  updateViewportMeasurements();
+  scrollLeft.value = element?.scrollLeft ?? 0;
+  lastObservedScrollLeft = element?.scrollLeft ?? 0;
   refreshWindow();
 });
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect();
   if (refreshFrame) cancelFrame(refreshFrame);
+  if (settleTimer) window.clearTimeout(settleTimer);
+  finishScrollbarDrag();
 });
 
 defineExpose({ getScrollPosition, setScrollPosition });
@@ -378,6 +570,7 @@ defineExpose({ getScrollPosition, setScrollPosition });
 
 <style scoped>
 .result-virtual-grid {
+  position: relative;
   display: flex;
   width: 100%;
   height: 100%;
@@ -395,17 +588,45 @@ defineExpose({ getScrollPosition, setScrollPosition });
 }
 .result-virtual-grid__canvas { position: relative; }
 .result-virtual-grid__header {
-  position: sticky;
+  position: relative;
   z-index: 5;
-  top: 0;
+  width: 100%;
+  flex: none;
+  overflow: hidden;
   background: var(--db-table-header);
   color: var(--db-text-secondary);
   font-weight: 600;
+}
+.result-virtual-grid__header-viewport {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 34px;
+  overflow: hidden;
+}
+.result-virtual-grid__header-canvas {
+  position: relative;
+  transform-origin: left top;
+  will-change: transform;
 }
 .result-virtual-grid__header-cell {
   position: absolute;
   top: 0;
   overflow: hidden;
+}
+.result-virtual-grid__seek-header {
+  box-sizing: border-box;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  padding: 0 10px;
+  align-items: center;
+  overflow: hidden;
+  color: var(--db-text-secondary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.2;
 }
 .result-virtual-grid__row {
   position: absolute;
@@ -413,16 +634,39 @@ defineExpose({ getScrollPosition, setScrollPosition });
   border-bottom: 1px solid var(--db-border-soft);
 }
 .result-virtual-grid__row:hover { background: var(--db-accent-soft); }
+.result-virtual-grid.is-seeking .result-virtual-grid__row:hover,
+.result-virtual-grid.is-scrollbar-dragging .result-virtual-grid__row:hover { background: transparent; }
 .result-virtual-grid__row.result-row-selected,
 .result-virtual-grid__row.result-row-selected:hover { background: var(--db-accent-soft); }
-.result-virtual-grid__row.result-row-selected .result-virtual-grid__gutter { background: transparent; }
+.result-virtual-grid.is-scrollbar-dragging .result-virtual-grid__row { pointer-events: none; }
 .result-virtual-grid__gutter {
   position: sticky;
   z-index: 3;
   left: 0;
   width: 34px;
 }
-.result-virtual-grid__header .result-virtual-grid__gutter { z-index: 6; }
+.result-virtual-grid__header .result-virtual-grid__gutter {
+  position: absolute;
+  z-index: 6;
+  top: 0;
+  left: 0;
+  width: 34px;
+  background: color-mix(in srgb, var(--db-content) 94%, var(--db-muted) 6%);
+}
+.result-virtual-grid__row .result-virtual-grid__gutter {
+  position: sticky;
+  z-index: 3;
+  left: 0;
+  background: color-mix(in srgb, var(--db-content) 97%, var(--db-muted) 3%);
+}
+.result-virtual-grid__row:hover .result-virtual-grid__gutter,
+.result-virtual-grid__row.result-row-selected .result-virtual-grid__gutter {
+  background: color-mix(in srgb, var(--db-content) 90%, var(--db-accent) 10%);
+}
+.result-virtual-grid.is-seeking .result-virtual-grid__row:hover .result-virtual-grid__gutter,
+.result-virtual-grid.is-scrollbar-dragging .result-virtual-grid__row:hover .result-virtual-grid__gutter {
+  background: color-mix(in srgb, var(--db-content) 97%, var(--db-muted) 3%);
+}
 .result-virtual-grid__gutter::after {
   position: absolute;
   top: 0;
@@ -436,6 +680,31 @@ defineExpose({ getScrollPosition, setScrollPosition });
 .result-virtual-grid__cell {
   position: absolute;
   top: 2px;
+}
+.result-virtual-grid__cell--seeking {
+  pointer-events: none;
+}
+.result-virtual-grid__seek-bar {
+  display: block;
+  width: min(68%, 92px);
+  height: 8px;
+  margin: 9px 7px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--db-muted) 16%, transparent);
+}
+.result-virtual-grid__seek-status {
+  position: absolute;
+  z-index: 9;
+  right: 14px;
+  bottom: 12px;
+  padding: 4px 9px;
+  border: 1px solid var(--db-border-soft);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--db-content) 92%, transparent);
+  color: var(--db-muted);
+  box-shadow: var(--db-shadow-sm);
+  font-size: 10px;
+  pointer-events: none;
 }
 .result-cell-editor {
   box-sizing: border-box;

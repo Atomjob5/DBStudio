@@ -344,6 +344,7 @@ const virtualColumns = computed<ResultVirtualColumn[]>(() => visibleColumnOption
   const identity = currentIdentities.value[column.index];
   return {
     key: `c${column.index}`,
+    label: column.label,
     sourceIndex: column.index,
     visibleIndex,
     width: resultColumnWidth(column, identity),

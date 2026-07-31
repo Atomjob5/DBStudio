@@ -293,7 +293,8 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
   });
   await page.waitForTimeout(50);
   const rendered = await grid.evaluate((element) => {
-    const headers = [...element.querySelectorAll<HTMLElement>(".result-virtual-grid__header-cell")];
+    const root = element.parentElement!;
+    const headers = [...root.querySelectorAll<HTMLElement>(".result-virtual-grid__header-cell")];
     const widths = headers.map((header) => header.getBoundingClientRect().width);
     return {
       rows: element.querySelectorAll(".result-virtual-grid__row").length,
@@ -301,7 +302,7 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
       cells: element.querySelectorAll(".result-virtual-grid__cell").length,
       renderedWidth: widths.reduce((sum, width) => sum + width, 0),
       maximumColumnWidth: Math.max(0, ...widths),
-      bodyHeight: Math.max(0, element.clientHeight - 32),
+      bodyHeight: element.clientHeight,
       bodyWidth: Math.max(0, element.clientWidth - 34),
       top: element.scrollTop
     };
@@ -310,6 +311,41 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
   expect(rendered.renderedWidth).toBeLessThanOrEqual(
     rendered.bodyWidth * 3 + rendered.maximumColumnWidth * 2 + 1);
   expect(rendered.cells).toBe(rendered.rows * rendered.headers);
+
+  const optimizedGrid = page.locator(".result-virtual-grid");
+  await grid.evaluate(async (element) => {
+    const maximumLeft = Math.max(0, element.scrollWidth - element.clientWidth);
+    element.scrollLeft = 0;
+    element.dispatchEvent(new Event("scroll"));
+    await Promise.resolve();
+    element.scrollLeft = maximumLeft;
+    element.dispatchEvent(new Event("scroll"));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  });
+  await expect(optimizedGrid).toHaveClass(/is-seeking/);
+  const seekState = await grid.evaluate((element) => {
+    const viewport = element.getBoundingClientRect();
+    const visibleCells = [...element.querySelectorAll<HTMLElement>(".result-virtual-grid__cell")]
+      .filter((cell) => {
+        const bounds = cell.getBoundingClientRect();
+        return bounds.bottom > viewport.top && bounds.top < viewport.bottom
+          && bounds.right > viewport.left + 34 && bounds.left < viewport.right;
+      });
+    return {
+      visibleCells: visibleCells.length,
+      placeholders: visibleCells.filter((cell) => cell.querySelector(".result-virtual-grid__seek-bar")).length,
+      populated: visibleCells.filter((cell) => (cell.textContent ?? "").trim().length > 0).length,
+      targetColumnVisible: visibleCells.some((cell) => cell.dataset.gridColumn === "29")
+    };
+  });
+  expect(seekState.visibleCells).toBeGreaterThan(0);
+  expect(seekState.placeholders).toBe(seekState.visibleCells);
+  expect(seekState.populated).toBe(0);
+  expect(seekState.targetColumnVisible).toBe(true);
+  await expect(optimizedGrid).not.toHaveClass(/is-seeking/);
+  await expect.poll(() => grid.evaluate((element) => [...element.querySelectorAll<HTMLElement>(
+    '.result-virtual-grid__cell[data-grid-column="29"]')]
+    .some((cell) => (cell.textContent ?? "").trim().length > 0))).toBe(true);
 
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
@@ -325,42 +361,67 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
       await Promise.resolve();
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       const viewport = element.getBoundingClientRect();
-      const bodyTop = viewport.top + 32;
       samples.push([...element.querySelectorAll(".result-virtual-grid__cell")]
         .map((cell) => cell.getBoundingClientRect())
-        .filter((bounds) => bounds.bottom > bodyTop && bounds.top < viewport.bottom
+        .filter((bounds) => bounds.bottom > viewport.top && bounds.top < viewport.bottom
           && bounds.right > viewport.left + 34 && bounds.left < viewport.right).length);
     }
     return samples;
   });
   await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
   expect(jumpCoverage.every((visibleCells) => visibleCells > 0)).toBe(true);
+  await expect(optimizedGrid).not.toHaveClass(/is-seeking/);
   const alignment = await grid.evaluate((element) => {
+    const root = element.parentElement!;
     const viewport = element.getBoundingClientRect();
-    const header = element.querySelector(".result-virtual-grid__header")!.getBoundingClientRect();
-    const headerCell = element.querySelector(".result-virtual-grid__header-cell")!.getBoundingClientRect();
+    const header = root.querySelector(".result-virtual-grid__header")!.getBoundingClientRect();
+    const headerCell = root.querySelector(".result-virtual-grid__header-cell")!.getBoundingClientRect();
     const cell = element.querySelector(".result-virtual-grid__cell")!.getBoundingClientRect();
-    const gutter = element.querySelector(
-      ".result-virtual-grid__row .result-virtual-grid__gutter")!.getBoundingClientRect();
+    const gutterElement = element.querySelector<HTMLElement>(
+      ".result-virtual-grid__row .result-virtual-grid__gutter")!;
+    const gutter = gutterElement.getBoundingClientRect();
     return {
-      headerTop: Math.round(header.top),
+      headerBottom: Math.round(header.bottom),
       viewportTop: Math.round(viewport.top),
       headerCellLeft: Math.round(headerCell.left),
       cellLeft: Math.round(cell.left),
       gutterLeft: Math.round(gutter.left),
-      viewportLeft: Math.round(viewport.left)
+      viewportLeft: Math.round(viewport.left),
+      gutterBackground: getComputedStyle(gutterElement).backgroundColor
     };
   });
-  expect(alignment.headerTop).toBe(alignment.viewportTop);
+  expect(alignment.headerBottom).toBe(alignment.viewportTop);
   expect(alignment.gutterLeft).toBe(alignment.viewportLeft);
   expect(alignment.cellLeft - alignment.headerCellLeft).toBe(3);
+  expect(alignment.gutterBackground).not.toMatch(/rgba\([^)]*,\s*0?\.\d+\)/);
+  expect(alignment.gutterBackground).not.toContain(" / ");
+
+  const selectedBeforeScrollbarDrag = await optimizedGrid.locator(".result-cell.selected").count();
+  const scrollbarDragPoints = await grid.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    return {
+      verticalStart: { x: bounds.right - 3, y: bounds.top + bounds.height / 2 },
+      horizontalStart: { x: bounds.left + bounds.width / 2, y: bounds.bottom - 3 },
+      body: { x: bounds.left + 80, y: bounds.top + 48 }
+    };
+  });
+  await page.mouse.move(scrollbarDragPoints.verticalStart.x, scrollbarDragPoints.verticalStart.y);
+  await page.mouse.down();
+  await page.mouse.move(scrollbarDragPoints.body.x, scrollbarDragPoints.body.y);
+  await page.mouse.up();
+  await page.mouse.move(scrollbarDragPoints.horizontalStart.x, scrollbarDragPoints.horizontalStart.y);
+  await page.mouse.down();
+  await page.mouse.move(scrollbarDragPoints.body.x, scrollbarDragPoints.body.y);
+  await page.mouse.up();
+  await expect(optimizedGrid).not.toHaveClass(/is-scrollbar-dragging/);
+  await expect(optimizedGrid.locator(".result-cell.selected")).toHaveCount(selectedBeforeScrollbarDrag);
 
   const optimizedMenuPoint = await grid.evaluate((element) => {
     const viewport = element.getBoundingClientRect();
     const cell = [...element.querySelectorAll(".result-virtual-grid__cell")]
       .map((item) => item.getBoundingClientRect())
       .find((bounds) => bounds.left >= viewport.left + 34 && bounds.right <= viewport.right
-        && bounds.top >= viewport.top + 32 && bounds.bottom <= viewport.bottom);
+        && bounds.top >= viewport.top && bounds.bottom <= viewport.bottom);
     if (!cell) throw new Error("No optimized result cell is fully visible");
     return { x: cell.left + cell.width / 2, y: cell.top + cell.height / 2 };
   });
@@ -394,9 +455,9 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
   })).toEqual({ clipped: true, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
   await page.getByRole("option", { name: /column_1/ }).first().click();
   await page.keyboard.press("Escape");
-  await expect(grid.locator(".result-column-title")).toHaveCount(1);
-  await expect(grid.locator(".result-column-title")).toHaveText("column_1");
-  await expect(grid.locator(".result-virtual-grid__header")).toBeVisible();
+  await expect(optimizedGrid.locator(".result-column-title")).toHaveCount(1);
+  await expect(optimizedGrid.locator(".result-column-title")).toHaveText("column_1");
+  await expect(optimizedGrid.locator(".result-virtual-grid__header")).toBeVisible();
   await expect.poll(() => grid.evaluate((element) => element.scrollLeft)).toBe(0);
 
   await page.setViewportSize({ width: 1024, height: 640 });
@@ -411,7 +472,7 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
   await page.getByRole("option", { name: /column_1/ }).first().click();
   await page.keyboard.press("Escape");
   await page.setViewportSize({ width: 1440, height: 900 });
-  await expect(grid.locator(".result-column-title").first()).toHaveText("column_1");
+  await expect(optimizedGrid.locator(".result-column-title").first()).toHaveText("column_1");
 
   await page.getByRole("button", { name: "筛选 column_1", exact: true }).click();
   await page.locator(".result-filter-popover .el-select").first().click();
@@ -419,8 +480,8 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
   await page.getByRole("textbox", { name: "筛选值", exact: true }).fill("199");
   await page.getByRole("button", { name: "应用", exact: true }).click();
   await expect(page.getByText("显示 1 / 已加载 200 行 · 38 ms", { exact: true })).toBeVisible();
-  await expect(grid.locator(".result-virtual-grid__header")).toBeVisible();
-  await expect(grid.locator(".result-column-title").first()).toHaveText("column_1");
+  await expect(optimizedGrid.locator(".result-virtual-grid__header")).toBeVisible();
+  await expect(optimizedGrid.locator(".result-column-title").first()).toHaveText("column_1");
   await expect.poll(() => grid.evaluate((element) => element.scrollTop)).toBe(0);
 
   await page.getByRole("button", { name: "筛选 column_1", exact: true }).click();

@@ -1,4 +1,4 @@
-import type { Component } from "vue";
+import type { VNodeChild } from "vue";
 
 export interface VirtualRange {
   start: number;
@@ -12,10 +12,11 @@ export interface ColumnMetrics {
 
 export interface ResultVirtualColumn {
   key: string;
+  label: string;
   sourceIndex: number;
   visibleIndex: number;
   width: number;
-  headerRenderer: Component;
+  headerRenderer: () => VNodeChild;
 }
 
 export interface ResultGridScrollPosition {
@@ -56,9 +57,8 @@ export function visibleColumnRange(widths: number[], metrics: ColumnMetrics, scr
   const bufferWidth = visibleWidth * Math.max(0, bufferScreens);
   const left = Math.max(0, scrollLeft - bufferWidth);
   const right = Math.max(0, scrollLeft) + visibleWidth + bufferWidth;
-  let first = firstColumnEndingAfter(widths, metrics.offsets, left);
-  let last = first;
-  while (last < widths.length && metrics.offsets[last] < right) last++;
+  const first = firstColumnEndingAfter(widths, metrics.offsets, left);
+  const last = firstColumnStartingAtOrAfter(metrics.offsets, right);
   return { start: first, end: Math.max(first, last) };
 }
 
@@ -74,7 +74,18 @@ function firstColumnEndingAfter(widths: number[], offsets: number[], position: n
     if (offsets[middle] + widths[middle] > position) high = middle;
     else low = middle + 1;
   }
-  return Math.min(widths.length - 1, low);
+  return Math.min(widths.length, low);
+}
+
+function firstColumnStartingAtOrAfter(offsets: number[], position: number): number {
+  let low = 0;
+  let high = offsets.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (offsets[middle] >= position) high = middle;
+    else low = middle + 1;
+  }
+  return low;
 }
 
 export function clampScroll(value: number, contentSize: number, viewportSize: number): number {
