@@ -8,51 +8,79 @@
     @closed="stopRecording"
     @update:model-value="$emit('update:modelValue', $event)"
   >
-    <div class="shortcut-drawer-toolbar">
-      <p>点击操作右侧的按键开始录制。字母和数字需要搭配修饰键。</p>
-      <el-button size="small" :disabled="saving" @click="resetBindings">恢复默认</el-button>
-    </div>
+    <div class="shortcut-settings-content">
+      <section class="shortcut-settings-section shortcut-overview">
+        <div class="shortcut-section-heading">
+          <div>
+            <strong>录制说明</strong>
+            <span>点击操作右侧的按键开始录制。字母和数字需要搭配修饰键。</span>
+          </div>
+          <el-button
+            class="shortcut-reset-button"
+            size="small"
+            :disabled="saving"
+            @click="resetBindings"
+          >
+            恢复默认
+          </el-button>
+        </div>
+      </section>
 
-    <el-alert
-      v-if="feedback"
-      class="shortcut-feedback"
-      :title="feedback"
-      type="warning"
-      :closable="false"
-      show-icon
-    />
+      <el-alert
+        v-if="feedback"
+        class="shortcut-feedback"
+        :title="feedback"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
 
-    <section v-for="group in groupedActions" :key="group.id" class="shortcut-group">
-      <h3>{{ group.label }}</h3>
-      <div
-        v-for="action in group.actions"
-        :key="action.id"
-        class="shortcut-row"
-        :class="{ recording: recordingAction === action.id }"
+      <section
+        v-for="group in groupedActions"
+        :key="group.id"
+        class="shortcut-settings-section shortcut-group"
       >
-        <span class="shortcut-action-label">{{ action.label }}</span>
-        <button
-          class="shortcut-recorder"
-          type="button"
-          :aria-label="`录制${action.label}快捷键`"
-          :disabled="saving"
-          @click="startRecording(action.id)"
-        >
-          <span v-if="recordingAction === action.id" class="recording-prompt">请按下快捷键…</span>
-          <kbd v-else-if="bindings[action.id]">{{ displayShortcut(bindings[action.id]) }}</kbd>
-          <span v-else class="unassigned">未设置</span>
-        </button>
-        <el-button
-          text
-          size="small"
-          aria-label="清除快捷键"
-          :disabled="saving || !bindings[action.id]"
-          @click="clearBinding(action.id)"
-        >
-          清除
-        </el-button>
-      </div>
-    </section>
+        <div class="shortcut-section-heading">
+          <div>
+            <strong>{{ group.label }}</strong>
+            <span>{{ group.description }} · {{ group.actions.length }} 项</span>
+          </div>
+        </div>
+        <div class="shortcut-rows">
+          <div
+            v-for="action in group.actions"
+            :key="action.id"
+            class="shortcut-row"
+            :class="{ recording: recordingAction === action.id }"
+          >
+            <span class="shortcut-action-label" :title="action.label">{{ action.label }}</span>
+            <button
+              class="shortcut-recorder"
+              type="button"
+              :aria-label="`录制${action.label}快捷键`"
+              :disabled="saving"
+              @click="startRecording(action.id)"
+            >
+              <span v-if="recordingAction === action.id" class="recording-prompt">请按下快捷键…</span>
+              <kbd v-else-if="bindings[action.id]" :title="displayShortcut(bindings[action.id])">
+                {{ displayShortcut(bindings[action.id]) }}
+              </kbd>
+              <span v-else class="unassigned">未设置</span>
+            </button>
+            <el-button
+              class="shortcut-clear-button"
+              text
+              size="small"
+              aria-label="清除快捷键"
+              :disabled="saving || !bindings[action.id]"
+              @click="clearBinding(action.id)"
+            >
+              清除
+            </el-button>
+          </div>
+        </div>
+      </section>
+    </div>
   </el-drawer>
 </template>
 
@@ -68,6 +96,7 @@ import {
   type ShortcutActionId,
   type ShortcutBinding,
   type ShortcutBindings,
+  type ShortcutGroupId,
 } from "../shortcuts";
 
 const props = defineProps<{
@@ -86,8 +115,17 @@ const emit = defineEmits<{
 const recordingAction = ref<ShortcutActionId | null>(null);
 const feedback = ref("");
 
+const GROUP_DESCRIPTIONS: Record<ShortcutGroupId, string> = {
+  mainToolbar: "文件、查询、事务与全局操作",
+  workspaceSidebar: "对象与连接面板",
+  sqlEditor: "编辑、排版与补全",
+  resultSet: "结果复制、布局与导出",
+  statusBar: "结果数据加载",
+};
+
 const groupedActions = computed(() => SHORTCUT_GROUPS.map((group) => ({
   ...group,
+  description: GROUP_DESCRIPTIONS[group.id],
   actions: SHORTCUT_ACTIONS.filter((action) => action.group === group.id),
 })));
 
@@ -153,63 +191,110 @@ function recordKey(event: KeyboardEvent): void {
 </script>
 
 <style scoped>
-.shortcut-drawer-toolbar {
+.shortcut-settings-content {
   display: flex;
-  margin-bottom: 14px;
-  align-items: center;
+  flex-direction: column;
+  gap: 16px;
+}
+.shortcut-settings-section {
+  padding: 16px;
+  border: 1px solid var(--db-border-soft);
+  border-radius: 14px;
+  background: var(--db-content);
+  background: color-mix(in srgb, var(--db-content) 82%, transparent);
+}
+.shortcut-section-heading {
+  display: flex;
+  margin-bottom: 12px;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
 }
-.shortcut-drawer-toolbar p {
-  margin: 0;
-  color: var(--db-muted);
-  font-size: 12px;
-  line-height: 1.5;
+.shortcut-section-heading > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
 }
-.shortcut-feedback { margin-bottom: 12px; }
-.shortcut-group {
-  margin-bottom: 14px;
+.shortcut-section-heading strong {
   overflow: hidden;
-  border: 1px solid var(--db-border-soft);
-  border-radius: 12px;
-  background: var(--db-content);
-}
-.shortcut-group h3 {
-  margin: 0;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--db-border-soft);
-  color: var(--db-muted);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shortcut-section-heading span {
+  overflow: hidden;
+  color: var(--db-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shortcut-overview .shortcut-section-heading { margin-bottom: 0; align-items: center; }
+.shortcut-reset-button { flex: none; }
+.shortcut-feedback {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+}
+.shortcut-feedback :deep(.el-alert__content) { min-width: 0; padding: 0; }
+.shortcut-feedback :deep(.el-alert__title) {
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .shortcut-row {
   display: grid;
-  min-height: 44px;
-  padding: 5px 8px 5px 14px;
+  min-height: 40px;
+  padding: 4px 0;
   align-items: center;
-  grid-template-columns: minmax(140px, 1fr) 168px 48px;
+  grid-template-columns: minmax(136px, 1fr) minmax(0, 160px) 44px;
   gap: 8px;
   border-bottom: 1px solid var(--db-border-soft);
 }
 .shortcut-row:last-child { border-bottom: 0; }
-.shortcut-row.recording { background: color-mix(in srgb, var(--db-accent) 8%, transparent); }
+.shortcut-row.recording {
+  margin-inline: -6px;
+  padding-inline: 6px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--db-accent) 8%, transparent);
+}
 .shortcut-action-label { min-width: 0; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .shortcut-recorder {
   display: flex;
+  width: 100%;
   min-width: 0;
   height: 30px;
   padding: 0 10px;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--db-border);
+  border: 1px solid var(--db-control-border);
   border-radius: 7px;
   color: var(--db-text);
-  background: var(--db-panel);
+  background: var(--db-control-bg);
   cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
 }
+.shortcut-recorder:hover { background: var(--db-control-hover); }
 .shortcut-recorder:hover, .shortcut-recorder:focus-visible { border-color: var(--db-accent); outline: none; }
+.shortcut-row.recording .shortcut-recorder {
+  border-color: var(--db-accent);
+  background: color-mix(in srgb, var(--db-accent) 10%, var(--db-control-bg));
+}
 .shortcut-recorder:disabled { opacity: .6; cursor: not-allowed; }
-.shortcut-recorder kbd { overflow: hidden; font: inherit; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.shortcut-recorder kbd {
+  min-width: 0;
+  overflow: hidden;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .recording-prompt { color: var(--db-accent); font-size: 12px; }
 .unassigned { color: var(--db-muted); font-size: 12px; }
+.shortcut-clear-button { width: 44px; margin-left: 0; padding-inline: 5px; }
 </style>

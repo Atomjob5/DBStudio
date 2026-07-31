@@ -879,7 +879,30 @@ test("supports Apple appearance, system theme settings and compact windows", asy
   await expect(page.getByRole("radio", { name: "竖线分隔符", exact: true })).toBeChecked();
   await page.getByLabel("流式推送行数说明", { exact: true }).hover();
   await expect(page.getByRole("tooltip").filter({ hasText: "值越小首屏越快" })).toBeVisible();
-  await page.getByRole("button", { name: "Close this dialog", exact: true }).click();
+
+  await page.getByRole("button", { name: "配置快捷键", exact: true }).click();
+  const shortcutDrawer = page.locator(".shortcut-settings-drawer");
+  await expect(shortcutDrawer).toBeVisible();
+  await expect(shortcutDrawer.getByRole("heading", { name: "快捷键", exact: true })).toBeVisible();
+  await expect(shortcutDrawer.locator(".shortcut-group")).toHaveCount(5);
+  await expect(shortcutDrawer.locator(".shortcut-row")).toHaveCount(31);
+  await expect(shortcutDrawer.getByText("文件、查询、事务与全局操作 · 13 项", { exact: true })).toBeVisible();
+  await expect(shortcutDrawer.getByText("结果数据加载 · 2 项", { exact: true })).toBeVisible();
+  const shortcutBounds = await shortcutDrawer.boundingBox();
+  if (!shortcutBounds) throw new Error("Shortcut settings drawer is not measurable");
+  expect(Math.round(shortcutBounds.width)).toBe(520);
+  expect(await shortcutDrawer.evaluate((drawer) => {
+    const body = drawer.querySelector(".el-drawer__body");
+    const rows = [...drawer.querySelectorAll<HTMLElement>(".shortcut-row")];
+    return !!body && body.scrollWidth <= body.clientWidth
+      && rows.every((row) => row.scrollWidth <= row.clientWidth);
+  })).toBe(true);
+  await expect(shortcutDrawer).toHaveScreenshot("apple-shortcuts-dark.png");
+  await shortcutDrawer.getByRole("button", { name: "Close this dialog", exact: true }).click();
+  await expect(shortcutDrawer).toBeHidden();
+  await expect(page.getByRole("heading", { name: "设置", exact: true })).toBeVisible();
+
+  await page.locator(".settings-drawer").getByRole("button", { name: "Close this dialog", exact: true }).click();
   await expect(page.getByRole("heading", { name: "设置", exact: true })).toBeHidden();
 
   await page.getByRole("button", { name: "更多操作", exact: true }).hover();
