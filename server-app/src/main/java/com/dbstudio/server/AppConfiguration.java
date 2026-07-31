@@ -45,6 +45,10 @@ public class AppConfiguration {
             SecretStore secrets) {
         return new ConnectionWorkbookService(database, providers, profiles, catalog, secrets);
     }
+    @Bean public ConnectionProfileCloneService connectionProfileCloneService(
+            AppDatabase database, ConnectionProfileRepository profiles, SecretStore secrets) {
+        return new ConnectionProfileCloneService(database, profiles, secrets);
+    }
     @Bean public QueryHistoryRepository queryHistory(AppDatabase database) {
         return new QueryHistoryRepository(database);
     }

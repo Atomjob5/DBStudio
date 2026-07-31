@@ -87,6 +87,20 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
     if (value) value.environmentId = String(payload.environmentId);
     return value;
   }
+  if (type === "connection.profile.clone") {
+    const source = profiles.find((item) => item.id === payload.id);
+    if (!source) throw new Error("数据库链接不存在或已删除");
+    const suffix = /^(.*) - 副本(?: (\d+))?$/.exec(source.name.trim());
+    const root = suffix?.[1]?.trim() || source.name.trim();
+    const used = new Set(profiles.filter((item) => item.environmentId === source.environmentId)
+      .map((item) => item.name.trim().toLocaleLowerCase()));
+    let name = `${root} - 副本`;
+    for (let sequence = 2; used.has(name.toLocaleLowerCase()); sequence++) name = `${root} - 副本 ${sequence}`;
+    const profile = { ...source, id: crypto.randomUUID(), name, settings: { ...source.settings },
+      revision: String(Date.now()) };
+    profiles.push(profile);
+    return { profile, passwordStatus: source.rememberPassword ? "copied" : "not-remembered" };
+  }
   if (type === "connection.profile.delete") { const index = profiles.findIndex((item) => item.id === payload.id); if (index >= 0) profiles.splice(index, 1); return { deleted: true }; }
   if (type === "connection.import.template" || type === "connection.export") return {};
   if (type === "connection.import.preview") return { filename: (payload.file as File | undefined)?.name ?? "connections.xlsx",

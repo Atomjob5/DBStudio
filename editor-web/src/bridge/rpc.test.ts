@@ -184,6 +184,24 @@ describe("RpcClient websocket recovery", () => {
     client.dispose();
   });
 
+  it("routes connection cloning without sending connection settings or passwords", async () => {
+    const response = { profile: { id: "profile-copy", name: "订单库 - 副本" },
+      passwordStatus: "copied" };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).includes("/open")
+      ? jsonResponse({ workspaceId: "workspace", recoveryDecisionRequired: false, editors: [] })
+      : jsonResponse(response));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new RpcClient();
+    await open(client);
+
+    await expect(client.request("connection.profile.clone", { id: "profile-source" }))
+      .resolves.toEqual(response);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/workspaces/workspace/connection-profiles/profile-source/clone"),
+      expect.objectContaining({ method: "POST", body: undefined }));
+    client.dispose();
+  });
+
   it("rejects a socket closed before opening and reconnects with exponential backoff", async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).includes("/workspaces/")

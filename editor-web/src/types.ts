@@ -124,6 +124,13 @@ export interface ConnectionInput {
   rememberPassword: boolean;
 }
 
+export type ConnectionClonePasswordStatus = "copied" | "not-remembered" | "unavailable";
+
+export interface ConnectionCloneResult {
+  profile: SavedProfile;
+  passwordStatus: ConnectionClonePasswordStatus;
+}
+
 export type ConnectionImportOperation = "create" | "update";
 export type ConnectionImportTestStatus = "untested" | "testing" | "success" | "failed";
 

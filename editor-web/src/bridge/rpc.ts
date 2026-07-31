@@ -343,6 +343,7 @@ export class RpcClient {
       case "connection.profile.create": return { path: `${ws}/connection-profiles`, method: "POST", body };
       case "connection.profile.update": return { path: `${ws}/connection-profiles/${encodeURIComponent(String(body.id ?? ""))}`, method: "PUT", body };
       case "connection.profile.move": return { path: `${ws}/connection-profiles/${encodeURIComponent(String(body.id ?? ""))}/location`, method: "PUT", body };
+      case "connection.profile.clone": return { path: `${ws}/connection-profiles/${encodeURIComponent(String(body.id ?? ""))}/clone`, method: "POST" };
       case "connection.profile.delete": return { path: `${ws}/connection-profiles/${encodeURIComponent(String(body.id ?? ""))}`, method: "DELETE" };
       case "connection.import.commit": return { path: `${ws}/connection-imports`, method: "POST", body };
       case "metadata.children": return { path: `${ws}/metadata/children`, method: "POST", body };

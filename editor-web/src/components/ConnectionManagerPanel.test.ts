@@ -81,6 +81,57 @@ describe("ConnectionManagerPanel", () => {
     expect(document.body.textContent).toContain("重命名");
   });
 
+  it("仅在链接右键菜单中按编辑、克隆、删除顺序显示克隆入口", () => {
+    const contextMenus = wrapper.findAllComponents(ElDropdown)
+      .filter((item) => item.props("trigger") === "contextmenu");
+    const profileMenus = contextMenus.filter((item) =>
+      item.findAllComponents(ElDropdownItem).some((entry) => entry.props("command") === "clone"));
+
+    expect(profileMenus).toHaveLength(profiles.length);
+    expect(profileMenus[0].findAllComponents(ElDropdownItem).map((item) => item.props("command")))
+      .toEqual(["edit", "clone", "delete"]);
+    expect(contextMenus.filter((item) => !profileMenus.includes(item))
+      .every((item) => item.findAllComponents(ElDropdownItem)
+        .every((entry) => entry.props("command") !== "clone"))).toBe(true);
+  });
+
+  it("立即克隆链接、阻止重复触发并刷新目录", async () => {
+    let finishClone: ((value: unknown) => void) | undefined;
+    rpcRequest.mockReturnValueOnce(new Promise((resolve) => { finishClone = resolve; }));
+    const profileMenu = wrapper.findAllComponents(ElDropdown)
+      .find((item) => item.props("trigger") === "contextmenu" && item.text().includes("订单库"));
+    expect(profileMenu).toBeTruthy();
+
+    (profileMenu!.vm as { $emit: (event: string, value: string) => void }).$emit("command", "clone");
+    await wrapper.vm.$nextTick();
+    expect(rpcRequest).toHaveBeenCalledWith("connection.profile.clone", { id: "profile-a" }, 60_000);
+    expect(wrapper.findAllComponents(ElDropdownItem)
+      .filter((item) => item.props("command") === "clone")
+      .every((item) => item.props("disabled"))).toBe(true);
+
+    (profileMenu!.vm as { $emit: (event: string, value: string) => void }).$emit("command", "clone");
+    expect(rpcRequest).toHaveBeenCalledTimes(1);
+    finishClone?.({ profile: { ...profiles[0], id: "profile-clone", name: "订单库 - 副本" },
+      passwordStatus: "not-remembered" });
+    await flushPromises();
+    expect(wrapper.emitted("changed")).toHaveLength(1);
+    expect(document.body.textContent).toContain("已克隆为“订单库 - 副本”");
+  });
+
+  it("密码不可复制时提示副本需要补充密码", async () => {
+    rpcRequest.mockResolvedValueOnce({
+      profile: { ...profiles[0], id: "profile-clone", name: "订单库 - 副本", rememberPassword: false },
+      passwordStatus: "unavailable"
+    });
+    const profileMenu = wrapper.findAllComponents(ElDropdown)
+      .find((item) => item.props("trigger") === "contextmenu" && item.text().includes("订单库"));
+
+    (profileMenu!.vm as { $emit: (event: string, value: string) => void }).$emit("command", "clone");
+    await flushPromises();
+
+    expect(document.body.textContent).toContain("原密码不可用，请在使用前补充密码");
+  });
+
   it("将新增、批量导入和批量导出统一放在原下拉菜单", async () => {
     expect(wrapper.find('button[aria-label="批量导入数据库链接"]').exists()).toBe(false);
     expect(wrapper.find('button[aria-label="批量导出数据库链接"]').exists()).toBe(false);

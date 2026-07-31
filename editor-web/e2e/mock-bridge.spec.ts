@@ -127,6 +127,16 @@ test("previews connection workbook imports in a responsive confirmation dialog",
   await expect(drawer.getByText("使用系统密钥库记住密码", { exact: true })).toBeVisible();
 });
 
+test("clones a database connection immediately from its context menu", async ({ page }) => {
+  const manager = page.locator(".connection-manager");
+  await manager.getByText("本地开发库", { exact: true }).click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: "克隆链接", exact: true })).toBeVisible();
+  await page.getByRole("menuitem", { name: "克隆链接", exact: true }).click();
+
+  await expect(manager.getByText("本地开发库 - 副本", { exact: true })).toBeVisible();
+  await expect(page.getByText("已克隆为“本地开发库 - 副本”", { exact: true })).toBeVisible();
+});
+
 test("connects and renders a streamed query result with the development bridge", async ({ page }) => {
   await connectMock(page);
   await expect(page.locator('.connection-pill input')).toHaveValue("DEV / 本地开发库");

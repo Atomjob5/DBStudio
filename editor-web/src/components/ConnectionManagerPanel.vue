@@ -33,6 +33,8 @@
           <el-dropdown-item v-if="data.kind==='system'" command="add-environment">新增环境</el-dropdown-item>
           <el-dropdown-item v-if="data.kind==='environment'" command="add-profile">新增链接</el-dropdown-item>
           <el-dropdown-item v-if="data.kind==='profile'" command="edit">编辑 / 测试</el-dropdown-item>
+          <el-dropdown-item v-if="data.kind==='profile'" command="clone"
+                            :disabled="Boolean(cloningProfileId)">克隆链接</el-dropdown-item>
           <el-dropdown-item v-if="data.kind!=='profile'" command="rename">重命名</el-dropdown-item>
           <el-dropdown-item divided command="delete">删除</el-dropdown-item>
         </el-dropdown-menu></template>
@@ -60,7 +62,10 @@ import { Coin, Connection, Download, Folder, Plus, Search } from "@element-plus/
 import type { AllowDragFunction, AllowDropFunction, ElTree } from "element-plus";
 import { rpc } from "../bridge/rpc";
 import ConnectionImportDialog from "./ConnectionImportDialog.vue";
-import type { ConnectionEnvironment, ConnectionImportResult, ConnectionSystem, ProviderInfo, SavedProfile } from "../types";
+import type {
+  ConnectionCloneResult, ConnectionEnvironment, ConnectionImportResult, ConnectionSystem,
+  ProviderInfo, SavedProfile
+} from "../types";
 
 interface CatalogNode { key:string; id:string; kind:"system"|"environment"|"profile"; label:string; detail?:string;
   systemId?:string; environmentId?:string; profile?:SavedProfile; children?:CatalogNode[]; }
@@ -69,6 +74,7 @@ const emit = defineEmits<{ changed:[]; "create-profile":[environmentId:string]; 
 const treeRef = ref<InstanceType<typeof ElTree>>(); const filterText=ref(""); const selected=ref<CatalogNode>();
 const dragTargetPath=ref("");
 const importDialog=ref(false);const exportSelecting=ref(false);const exporting=ref(false);
+const cloningProfileId=ref("");
 const selectedExportIds=ref<string[]>([]);
 const treeProps={label:"label",children:"children"};
 const treeData=computed<CatalogNode[]>(()=>props.systems.map((system)=>({key:`system:${system.id}`,id:system.id,kind:"system",label:system.name,
@@ -133,11 +139,26 @@ async function nodeCommand(command:string,node:CatalogNode):Promise<void>{
   if(command==="add-environment")return createEnvironment(node.id);
   if(command==="add-profile")return emit("create-profile",node.id);
   if(command==="edit"&&node.profile)return emit("edit-profile",node.profile);
+  if(command==="clone"&&node.profile)return cloneProfile(node.profile);
   if(command==="rename"){const name=await promptName(`重命名${node.kind==="system"?"系统":"环境"}`,node.label,node.label);if(!name)return;
     return run(node.kind==="system"?"connection.system.update":"connection.environment.update",{id:node.id,name});}
   if(command==="delete"){try{await ElMessageBox.confirm(`删除“${node.label}”后将从连接目录隐藏，已有编辑会话不受影响。`,`删除${node.kind==="system"?"系统":node.kind==="environment"?"环境":"链接"}`,
       {type:"warning",confirmButtonText:"删除",cancelButtonText:"取消"});}catch{return;}
     return run(node.kind==="system"?"connection.system.delete":node.kind==="environment"?"connection.environment.delete":"connection.profile.delete",{id:node.id});}
+}
+async function cloneProfile(profile:SavedProfile):Promise<void>{
+  if(cloningProfileId.value)return;
+  cloningProfileId.value=profile.id;
+  try{
+    const result=await rpc.request<ConnectionCloneResult>("connection.profile.clone",{id:profile.id},60_000);
+    emit("changed");
+    if(result.passwordStatus==="unavailable"){
+      ElMessage.warning(`已克隆为“${result.profile.name}”，原密码不可用，请在使用前补充密码`);
+    }else{
+      ElMessage.success(`已克隆为“${result.profile.name}”`);
+    }
+  }catch(error){ElMessage.error(error instanceof Error?error.message:String(error));}
+  finally{cloningProfileId.value="";}
 }
 async function promptName(title:string,placeholder:string,value=""):Promise<string|undefined>{try{const result=await ElMessageBox.prompt(placeholder,title,{inputValue:value,inputValidator:(raw)=>Boolean(raw.trim())||"名称不能为空",confirmButtonText:"确定",cancelButtonText:"取消"});return result.value.trim();}catch{return undefined;}}
 async function run(type:string,payload:Record<string,unknown>):Promise<void>{try{await rpc.request(type,payload);emit("changed");ElMessage.success("连接目录已更新");}catch(error){ElMessage.error(error instanceof Error?error.message:String(error));}}

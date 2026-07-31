@@ -152,6 +152,7 @@ public final class DbStudioApiController {
     private final ApplicationRunLifecycle runLifecycle;
     private final ObjectMapper objectMapper;
     private final ConnectionWorkbookService connectionWorkbooks;
+    private final ConnectionProfileCloneService connectionClones;
     private final CompletionSnapshotService completionSnapshots = new CompletionSnapshotService();
 
     public DbStudioApiController(ProviderRegistry providers, ConnectionProfileRepository profiles,
@@ -160,13 +161,15 @@ public final class DbStudioApiController {
                                  SecretStore secrets, CsvService csv, WorkspaceRegistry workspaces,
                                  ConfigurableApplicationContext application,
                                  WorkspaceRepository workspaceRepository, ApplicationRunLifecycle runLifecycle,
-                                 ObjectMapper objectMapper, ConnectionWorkbookService connectionWorkbooks) {
+                                 ObjectMapper objectMapper, ConnectionWorkbookService connectionWorkbooks,
+                                 ConnectionProfileCloneService connectionClones) {
         this.providers = providers; this.profiles = profiles; this.catalog = catalog; this.history = history;
         this.settings = settings; this.secrets = secrets; this.csv = csv;
         this.workspaces = workspaces; this.application = application;
         this.workspaceRepository = workspaceRepository; this.runLifecycle = runLifecycle;
         this.objectMapper = objectMapper;
         this.connectionWorkbooks = connectionWorkbooks;
+        this.connectionClones = connectionClones;
     }
 
     @PutMapping("/workspaces/{workspaceId}")
@@ -333,6 +336,17 @@ public final class DbStudioApiController {
                                                         @PathVariable String profileId,
                                                         @RequestBody Map<String, Object> body) throws Exception {
         return saveConnectionProfile(workspaceId, profileId, body);
+    }
+
+    @PostMapping("/workspaces/{workspaceId}/connection-profiles/{profileId}/clone")
+    public Map<String, Object> cloneConnectionProfile(@PathVariable String workspaceId,
+                                                       @PathVariable String profileId) throws Exception {
+        workspaces.require(workspaceId);
+        ConnectionProfileCloneService.CloneResult result =
+                connectionClones.cloneProfile(profileId(profileId));
+        connectionsChanged();
+        return ApiPayloads.map("profile", profileMap(result.profile()),
+                "passwordStatus", result.passwordStatus());
     }
 
     @PutMapping("/workspaces/{workspaceId}/connection-profiles/{profileId}/location")
