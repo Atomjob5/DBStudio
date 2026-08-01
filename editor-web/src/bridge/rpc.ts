@@ -156,6 +156,49 @@ export class RpcClient {
     return this.fetchJson(`/api/v1/workspaces/${this.workspaceId}/csv/uploads`, "POST", data, 120_000);
   }
 
+  async uploadResultLargeValue(editorId: string, executionId: string, resultIndex: number,
+                               columnIndex: number, file: File): Promise<{ token: string; size: number }> {
+    await this.ensureOperational();
+    if (this.mock) return await this.mock("query.uploadLargeValue",
+      { editorId, executionId, resultIndex, columnIndex, file }, this.emitBound) as { token: string; size: number };
+    const data = new FormData(); data.append("file", file, file.name);
+    const query = new URLSearchParams({ executionId, columnIndex: String(columnIndex) });
+    return this.fetchJson(`/api/v1/workspaces/${this.workspaceId}/editors/${encodeURIComponent(editorId)}`
+      + `/results/${resultIndex}/large-values?${query}`, "POST", data, 120_000);
+  }
+
+  async downloadResultLargeValue(editorId: string, executionId: string, resultIndex: number,
+                                 rowId: string, columnIndex: number, filename: string): Promise<void> {
+    await this.ensureOperational();
+    if (this.mock) { await this.mock("query.downloadLargeValue",
+      { editorId, executionId, resultIndex, rowId, columnIndex }, this.emitBound); return; }
+    const query = new URLSearchParams({ executionId });
+    const blob = await this.fetchBlob(`/api/v1/workspaces/${this.workspaceId}/editors/${encodeURIComponent(editorId)}`
+      + `/results/${resultIndex}/large-values/${encodeURIComponent(rowId)}/${columnIndex}?${query}`, "GET", undefined, 120_000);
+    downloadBlob(blob, filename);
+  }
+
+  async readResultLargeValue(editorId: string, executionId: string, resultIndex: number,
+                             rowId: string, columnIndex: number): Promise<Blob> {
+    await this.ensureOperational();
+    if (this.mock) return await this.mock("query.readLargeValue",
+      { editorId, executionId, resultIndex, rowId, columnIndex }, this.emitBound) as Blob;
+    const query = new URLSearchParams({ executionId });
+    return this.fetchBlob(`/api/v1/workspaces/${this.workspaceId}/editors/${encodeURIComponent(editorId)}`
+      + `/results/${resultIndex}/large-values/${encodeURIComponent(rowId)}/${columnIndex}?${query}`,
+    "GET", undefined, 120_000);
+  }
+
+  async deleteResultLargeValueDraft(editorId: string, executionId: string, resultIndex: number,
+                                    columnIndex: number, token: string): Promise<void> {
+    await this.ensureOperational();
+    if (this.mock) { await this.mock("query.deleteLargeValueDraft",
+      { editorId, executionId, resultIndex, columnIndex, token }, this.emitBound); return; }
+    const query = new URLSearchParams({ executionId, columnIndex: String(columnIndex) });
+    await this.fetchJson(`/api/v1/workspaces/${this.workspaceId}/editors/${encodeURIComponent(editorId)}`
+      + `/results/${resultIndex}/large-value-drafts/${encodeURIComponent(token)}?${query}`, "DELETE");
+  }
+
   async previewConnectionWorkbook(file: File): Promise<ConnectionImportPreview> {
     await this.ensureOperational();
     if (this.mock) {
@@ -360,6 +403,10 @@ export class RpcClient {
       case "query.fetchRows": return { path: `${ws}/editors/${editorId}/results/${encodeURIComponent(String(body.resultIndex ?? 0))}/page`, method: "POST", body };
       case "query.applyChanges": return {
         path: `${ws}/editors/${editorId}/results/${encodeURIComponent(String(body.resultIndex ?? 0))}/changes`,
+        method: "POST", body
+      };
+      case "query.previewChanges": return {
+        path: `${ws}/editors/${editorId}/results/${encodeURIComponent(String(body.resultIndex ?? 0))}/changes/preview`,
         method: "POST", body
       };
       case "query.cancel": {

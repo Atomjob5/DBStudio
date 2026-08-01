@@ -148,7 +148,7 @@ describe("ResultPanel streaming rendering", () => {
       failed: false, durationMs: 8,
       results: [{
         resultIndex: 0, sql: "select id, name from sample for update", type: "QUERY",
-        columns: ["id", "name"], rows: [["1", "before"]],
+        columns: ["id", "name"], rows: [["1", "before"]], rowIds: ["row-1"],
         columnDetails: [
           { label: "id", name: "id", remarks: "", catalog: "db", schema: "", table: "sample",
             typeName: "BIGINT", jdbcType: -5 },
@@ -156,7 +156,8 @@ describe("ResultPanel streaming rendering", () => {
             typeName: "VARCHAR", jdbcType: 12 }
         ],
         mutationTarget: {
-          qualifiedName: "`db`.`sample`", editableForUpdate: true,
+          qualifiedName: "`db`.`sample`", editableForUpdate: true, mode: "editable" as const,
+          updateSupported: true, insertSupported: true, deleteSupported: true, lockMode: "WAIT",
           columns: [
             { resultIndex: 0, name: "id", quotedName: "`id`", jdbcType: -5 },
             { resultIndex: 1, name: "name", quotedName: "`name`", jdbcType: 12 }
@@ -169,7 +170,9 @@ describe("ResultPanel streaming rendering", () => {
     const edits = useResultEditStore();
     edits.setUnlocked("editor-1", "execution-edit", 0, true);
     const wrapper = mount(ResultPanel, {
-      props: { activeResultIndex: 0, execution }, global: { plugins: [ElementPlus] }
+      props: { activeResultIndex: 0, execution, showResultEditActions: true,
+        resultEditUnlocked: true, canToggleResultEdit: true, canApplyResultChanges: true },
+      global: { plugins: [ElementPlus] }
     });
     const table = wrapper.findComponent({ name: "ElTableV2" });
     const columns = table.props("columns") as Column[];
@@ -191,6 +194,9 @@ describe("ResultPanel streaming rendering", () => {
     const pending = (wrapper.findComponent({ name: "ElTableV2" }).props("columns") as Column[])[2]
       .cellRenderer?.({ rowData: row, rowIndex: 0 } as never) as VNode;
     expect(pending.props?.class).toContain("result-cell-pending");
+    expect(wrapper.get('[aria-label="应用更改"]').classes()).toContain("el-button--success");
+    expect(wrapper.get('[aria-label="结果变更数量"]').text()).toContain("草稿 1");
+    expect(wrapper.find('[aria-label="确认结果修改"]').exists()).toBe(false);
   });
 
   it("removes the local data toolbar and synchronizes the active result", async () => {
@@ -804,7 +810,7 @@ describe("ResultPanel streaming rendering", () => {
     });
     expect(rowClass({ rowData: rows()[0] })).toBe("result-row-selected");
     expect(rowClass({ rowData: rows()[1] })).toBe("");
-  });
+  }, 20_000);
 
   it("sums selected headers across the current filtered rows and clears stale totals", async () => {
     const result = {

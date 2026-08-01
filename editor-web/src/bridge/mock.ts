@@ -186,16 +186,23 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
       const editableForUpdate = /\bfor\s+update\b/i.test(String(payload.text ?? ""));
       emit("query.resultMeta", { editorId, resultIndex: 0, sql: payload.text, type: "QUERY", columns: resultColumns,
         columnDetails: resultDetails, mutationTarget: { qualifiedName: "`demo`.`sample`", columns: [
-          { resultIndex: 0, name: "id", quotedName: "`id`", jdbcType: -5 },
-          { resultIndex: 1, name: "name", quotedName: "`name`", jdbcType: 12 }
+          { resultIndex: 0, name: "id", quotedName: "`id`", jdbcType: -5,
+            typeFamily: "number", editable: true, nullable: false, autoIncrement: true },
+          { resultIndex: 1, name: "name", quotedName: "`name`", jdbcType: 12,
+            typeFamily: "text", editable: true, nullable: true }
         ], uniqueKeys: [{ name: "PRIMARY", primary: true, resultColumnIndices: [0] }],
-          editableForUpdate },
+          editableForUpdate, mode: editableForUpdate ? "editable" : "readOnly",
+          reasonCode: editableForUpdate ? "" : "FOR_UPDATE_REQUIRED",
+          reason: editableForUpdate ? "" : "需要显式执行单表 FOR UPDATE 查询",
+          lockMode: editableForUpdate ? "WAIT" : "NONE", updateSupported: editableForUpdate,
+          insertSupported: editableForUpdate, deleteSupported: editableForUpdate },
         updateCount: -1, truncated: false, durationMs: 0 });
       const rows = Array.from({ length: 200 }, (_, index) => wideResult
         ? resultColumns.map((_, column) => column === 0 ? String(index + 1) : `R${index + 1} C${column + 1}`)
         : [String(index + 1), `Apple Studio ${index + 1} ✨`]);
-      emit("query.rows", { editorId, resultIndex: 0, rows: rows.slice(0, 100) });
-      emit("query.rows", { editorId, resultIndex: 0, rows: rows.slice(100) });
+      const rowIds = rows.map(() => crypto.randomUUID());
+      emit("query.rows", { editorId, resultIndex: 0, rowIds: rowIds.slice(0, 100), rows: rows.slice(0, 100) });
+      emit("query.rows", { editorId, resultIndex: 0, rowIds: rowIds.slice(100), rows: rows.slice(100) });
       emit("query.resultComplete", { editorId, resultIndex: 0, durationMs: 38, truncated: true });
       emit("query.executionComplete", { editorId, executionId, cancelled: false, failed: false, durationMs: 38,
         transactionDirty: editableForUpdate, resultChangesDirty: false });
@@ -217,8 +224,25 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
       hasMore: end < total, nextOffset: end, cancelled: false };
   }
   if (type === "query.applyChanges") {
+    if (Array.isArray(payload.operations)) {
+      return { appliedOperationIds: payload.operations.map((operation: any) => operation.operationId),
+        rowPatches: payload.operations.map((operation: any) => ({ operationId: operation.operationId,
+          kind: operation.kind, rowIndex: operation.rowIndex ?? -1,
+          rowId: operation.kind === "insert" ? crypto.randomUUID() : operation.rowId,
+          row: operation.kind === "insert" ? ["201", "新增记录"] : operation.kind === "update"
+            ? [String(Number(operation.rowIndex ?? 0) + 1),
+              operation.values?.find((item: any) => item.columnIndex === 1)?.value?.value ?? "已更新"] : [] })),
+        transactionDirty: true, resultChangesDirty: true };
+    }
     return { rows: payload.rows, transactionDirty: true, resultChangesDirty: true };
   }
+  if (type === "query.previewChanges") return { previews: (payload.operations as any[] ?? []).map((operation) => ({
+    operationId: operation.operationId,
+    sql: operation.kind === "insert" ? "INSERT INTO `demo`.`sample` (`id`, `name`) VALUES (?, ?)"
+      : operation.kind === "delete" ? "DELETE FROM `demo`.`sample` WHERE `id` = ?"
+        : "UPDATE `demo`.`sample` SET `name` = ? WHERE `id` = ?",
+    binds: operation.values?.map((item: any) => item.value?.kind === "null" ? "NULL" : item.value?.value ?? "DEFAULT") ?? []
+  })) };
   if (type === "transaction.commit" || type === "transaction.rollback") {
     const message = type === "transaction.commit" ? "事务已提交" : "事务已回滚";
     emit("transaction.status", { editorId: payload.editorId, dirty: false,

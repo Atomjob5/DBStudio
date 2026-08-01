@@ -98,6 +98,7 @@ public final class DbStudioApiController {
             "result.copyHeaderOnDoubleClick", "result.copySeparator",
             "result.headerSortingEnabled", "result.headerFilteringEnabled", "result.showColumnRemarksInHeader",
             "result.scrollOptimizationEnabled", "result.scrollOptimizationBufferScreens",
+            "result.edit.maxLobBytes",
             "statusBar.showSelectedColumnRemarks",
             "connection.maxActiveSessions", "connection.autoCommit", "connection.idleTimeoutMinutes",
             "connection.transactionDisconnectRollbackMinutes",
@@ -777,6 +778,10 @@ public final class DbStudioApiController {
                 workspace.events().emit("query.rows", ApiPayloads.map(
                         "editorId", editorId, "resultIndex", resultIndex, "rows", rows));
             }
+            @Override public void rows(int resultIndex, List<String> rowIds, List<List<String>> rows) {
+                workspace.events().emit("query.rows", ApiPayloads.map(
+                        "editorId", editorId, "resultIndex", resultIndex, "rowIds", rowIds, "rows", rows));
+            }
             @Override public void resultCompleted(int resultIndex, StatementResult result) {
                 workspace.events().emit("query.resultComplete", ApiPayloads.map("editorId", editorId,
                         "resultIndex", resultIndex, "updateCount", result.updateCount(),
@@ -799,7 +804,7 @@ public final class DbStudioApiController {
                                     String dialectId) {
         workspace.events().emit("query.resultMeta", ApiPayloads.map("editorId", editorId,
                 "resultIndex", resultIndex, "sql", sql, "type", type.name(), "columns", columns,
-                "columnDetails", columnDetails, "mutationTarget", mutationTarget,
+                "columnDetails", columnDetails, "mutationTarget", mutationTarget, "editCapability", mutationTarget,
                 "dialectId", dialectId,
                 "rows", Collections.emptyList(), "updateCount", -1,
                 "truncated", false, "durationMs", 0, "complete", false));
@@ -819,7 +824,13 @@ public final class DbStudioApiController {
         List<Map<String, Object>> columns = new ArrayList<Map<String, Object>>();
         for (ResultMutationTarget.Column column : target.columns()) {
             columns.add(ApiPayloads.map("resultIndex", column.resultIndex(), "name", column.name(),
-                    "quotedName", column.quotedName(), "jdbcType", column.jdbcType()));
+                    "quotedName", column.quotedName(), "jdbcType", column.jdbcType(),
+                    "typeName", column.typeName(), "typeFamily", column.typeFamily(),
+                    "size", column.size(), "scale", column.scale(), "nullable", column.nullable(),
+                    "defaultValue", column.defaultValue(), "defaultAvailable", column.defaultAvailable(),
+                    "autoIncrement", column.autoIncrement(), "generated", column.generated(),
+                    "editable", column.editable(), "readOnlyReason", column.readOnlyReason(),
+                    "enumValues", column.enumValues()));
         }
         List<Map<String, Object>> keys = new ArrayList<Map<String, Object>>();
         for (ResultMutationTarget.Key key : target.uniqueKeys()) {
@@ -827,7 +838,11 @@ public final class DbStudioApiController {
                     "resultColumnIndices", key.resultColumnIndices()));
         }
         return ApiPayloads.map("qualifiedName", target.qualifiedName(), "columns", columns,
-                "uniqueKeys", keys, "editableForUpdate", target.editableForUpdate());
+                "uniqueKeys", keys, "editableForUpdate", target.editableForUpdate(),
+                "mode", target.mode(), "reasonCode", target.reasonCode(), "reason", target.reason(),
+                "lockMode", target.lockMode(), "updateSupported", target.updateSupported(),
+                "insertSupported", target.insertSupported(), "deleteSupported", target.deleteSupported(),
+                "emptyStringIsNull", target.emptyStringIsNull());
     }
 
     @DeleteMapping("/workspaces/{workspaceId}/executions/{executionId}")
@@ -882,12 +897,13 @@ public final class DbStudioApiController {
                 () -> workspace.events().emit("query.pageStarted", ApiPayloads.map(
                         "editorId", editorId, "executionId", executionId.toString(),
                         "resultIndex", resultIndex))).get(120, TimeUnit.SECONDS);
-        if (!page.cancelled()) editor.appendResultRows(resultIndex, page.rows(), page.hasMore());
+        if (!page.cancelled()) editor.appendResultRows(resultIndex, page.rows(), page.rowIds(),
+                page.rowLocators(), page.hasMore());
         LOG.info("结果分页完成 workspace={} editor={} execution={} resultIndex={} offset={} rows={} hasMore={} cancelled={}",
                 workspaceId, editorId, executionId, resultIndex, offset, page.rows().size(),
                 page.hasMore(), page.cancelled());
         return ApiPayloads.map("executionId", executionId.toString(), "resultIndex", resultIndex,
-                "offset", offset, "rows", page.rows(), "hasMore", page.hasMore(),
+                "offset", offset, "rows", page.rows(), "rowIds", page.rowIds(), "hasMore", page.hasMore(),
                 "nextOffset", offset + page.rows().size(), "cancelled", page.cancelled());
     }
 
@@ -910,7 +926,11 @@ public final class DbStudioApiController {
         StatementResult source = result(editor, resultIndex);
         ResultMutationTarget target = source.mutationTarget();
         if (target == null || !target.editableForUpdate()) {
-            throw new ApiException("RESULT_NOT_EDITABLE", "只有单表 FOR UPDATE 查询结果支持直接修改");
+            throw new ApiException("RESULT_NOT_EDITABLE", target == null || target.reason().isEmpty()
+                    ? "只有单表 FOR UPDATE 查询结果支持直接修改" : target.reason());
+        }
+        if (body.get("operations") instanceof List) {
+            return applyResultOperations(workspace, editor, executionId, resultIndex, source, target, body);
         }
         List<QueryRunner.RowChange> requested = resultRowChanges(body.get("rows"));
         List<QueryRunner.RowChange> applied;
@@ -940,6 +960,144 @@ public final class DbStudioApiController {
                 "resultChangesDirty", editor.resultChangesDirty());
     }
 
+    @PostMapping("/workspaces/{workspaceId}/editors/{editorId}/results/{resultIndex}/changes/preview")
+    public Map<String, Object> previewResultChanges(@PathVariable String workspaceId,
+                                                     @PathVariable String editorId,
+                                                     @PathVariable int resultIndex,
+                                                     @RequestBody Map<String, Object> body) {
+        Workspace workspace = workspaces.require(workspaceId);
+        EditorSession editor = workspace.editors().require(editorId);
+        UUID executionId;
+        try { executionId = UUID.fromString(ApiPayloads.required(body, "executionId")); }
+        catch (IllegalArgumentException exception) {
+            throw new ApiException("INVALID_EXECUTION_ID", "结果执行编号无效");
+        }
+        if (!executionId.equals(editor.lastExecutionId())) {
+            throw new ApiException("STALE_RESULT", "查询结果已经过期，请重新执行");
+        }
+        StatementResult source = result(editor, resultIndex);
+        ResultMutationTarget target = source.mutationTarget();
+        if (target == null || !target.editableForUpdate()) {
+            throw new ApiException("RESULT_NOT_EDITABLE", target == null ? "当前结果不可编辑" : target.reason());
+        }
+        List<QueryRunner.ResultOperation> operations = resultOperations(body.get("operations"), source);
+        List<Map<String, Object>> previews = new ArrayList<Map<String, Object>>();
+        for (QueryRunner.MutationPreview preview : QueryRunner.previewResultOperations(
+                target, source.rows(), source.rowLocators(), operations)) {
+            previews.add(ApiPayloads.map("operationId", preview.operationId(), "sql", preview.sql(),
+                    "binds", preview.binds()));
+        }
+        return ApiPayloads.map("previews", previews);
+    }
+
+    @PostMapping(value = "/workspaces/{workspaceId}/editors/{editorId}/results/{resultIndex}/large-values",
+            consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public Map<String, Object> uploadResultLargeValue(@PathVariable String workspaceId,
+                                                       @PathVariable String editorId,
+                                                       @PathVariable int resultIndex,
+                                                       @RequestParam String executionId,
+                                                       @RequestParam int columnIndex,
+                                                       @RequestPart("file") MultipartFile file) throws Exception {
+        Workspace workspace = workspaces.require(workspaceId);
+        EditorSession editor = workspace.editors().require(editorId);
+        UUID execution = resultExecution(editor, executionId);
+        StatementResult source = result(editor, resultIndex);
+        ResultMutationTarget.Column column = editableLargeValueColumn(source, columnIndex);
+        long maximum = resultEditMaxLobBytes();
+        if (file.getSize() > maximum) throw new ApiException(
+                "RESULT_LOB_TOO_LARGE", "大字段草稿超过允许的最大大小");
+        String token;
+        try (java.io.InputStream input = file.getInputStream()) {
+            token = workspace.storeLargeValueDraft(editorId, execution, resultIndex, columnIndex,
+                    input, maximum);
+        }
+        return ApiPayloads.map("token", token, "size", workspace.largeValueDraftSize(token),
+                "typeFamily", column.typeFamily());
+    }
+
+    @GetMapping("/workspaces/{workspaceId}/editors/{editorId}/results/{resultIndex}/large-values/{rowId}/{columnIndex}")
+    public ResponseEntity<StreamingResponseBody> downloadResultLargeValue(@PathVariable String workspaceId,
+                                                                           @PathVariable String editorId,
+                                                                           @PathVariable int resultIndex,
+                                                                           @PathVariable String rowId,
+                                                                           @PathVariable int columnIndex,
+                                                                           @RequestParam String executionId) {
+        Workspace workspace = workspaces.require(workspaceId);
+        EditorSession editor = workspace.editors().require(editorId);
+        resultExecution(editor, executionId);
+        StatementResult source = result(editor, resultIndex);
+        ResultMutationTarget.Column column = editableLargeValueColumn(source, columnIndex);
+        int rowIndex = source.rowIds().indexOf(rowId);
+        if (rowIndex < 0) throw new ApiException("STALE_RESULT", "查询结果行已经过期，请重新执行");
+        MediaType contentType = "clob".equals(column.typeFamily())
+                ? new MediaType("text", "plain", StandardCharsets.UTF_8) : MediaType.APPLICATION_OCTET_STREAM;
+        StreamingResponseBody body = output -> {
+            try {
+                workspace.streamResultValue(editor, source.mutationTarget(), source.rows().get(rowIndex),
+                        source.rowLocators().get(rowIndex), columnIndex, output, resultEditMaxLobBytes())
+                        .get(120, TimeUnit.SECONDS);
+            } catch (Exception exception) {
+                throw new IOException("读取大字段失败", exception);
+            }
+        };
+        return ResponseEntity.ok().contentType(contentType)
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"result-value-"
+                        + (rowIndex + 1) + "-" + columnIndex + "\"")
+                .body(body);
+    }
+
+    @DeleteMapping("/workspaces/{workspaceId}/editors/{editorId}/results/{resultIndex}/large-value-drafts/{token}")
+    public Map<String, Object> deleteResultLargeValueDraft(@PathVariable String workspaceId,
+                                                            @PathVariable String editorId,
+                                                            @PathVariable int resultIndex,
+                                                            @PathVariable String token,
+                                                            @RequestParam String executionId,
+                                                            @RequestParam int columnIndex) {
+        Workspace workspace = workspaces.require(workspaceId);
+        EditorSession editor = workspace.editors().require(editorId);
+        UUID execution = resultExecution(editor, executionId);
+        workspace.requireLargeValueDraft(token, editorId, execution, resultIndex, columnIndex);
+        workspace.removeLargeValueDraft(token);
+        return ApiPayloads.map("deleted", true);
+    }
+
+    private Map<String, Object> applyResultOperations(Workspace workspace, EditorSession editor,
+                                                       UUID executionId, int resultIndex,
+                                                       StatementResult source, ResultMutationTarget target,
+                                                       Map<String, Object> body) throws Exception {
+        List<QueryRunner.ResultOperation> requested = resultOperations(body.get("operations"), source);
+        List<String> largeValueTokens = new ArrayList<String>();
+        requested = resolveLargeValueDrafts(workspace, editor, executionId, resultIndex,
+                requested, largeValueTokens);
+        QueryRunner.MutationBatchResult applied;
+        try {
+            applied = workspace.applyResultOperations(editor, target, source.rows(), source.rowLocators(), requested)
+                    .get(120, TimeUnit.SECONDS);
+        } catch (ExecutionException exception) {
+            Throwable cause = exception.getCause();
+            if (cause instanceof QueryExecutionException) {
+                QueryExecutionException rejected = (QueryExecutionException) cause;
+                throw new ApiException("RESULT_CHANGE_REJECTED", rejected.getMessage(),
+                        ApiPayloads.map("operationId", rejected.operationId(),
+                                "columnIndex", rejected.columnIndex()), rejected);
+            }
+            throw exception;
+        }
+        List<EditorSession.ResultPatch> recorded = editor.recordResultOperations(executionId, resultIndex, applied);
+        for (String token : largeValueTokens) workspace.removeLargeValueDraft(token);
+        List<Map<String, Object>> patches = new ArrayList<Map<String, Object>>(recorded.size());
+        for (EditorSession.ResultPatch patch : recorded) {
+            patches.add(ApiPayloads.map("operationId", patch.operationId(), "kind", patch.kind(),
+                    "rowIndex", patch.rowIndex(), "rowId", patch.rowId(), "row", patch.row()));
+        }
+        workspace.events().emit("transaction.status", ApiPayloads.map(
+                "editorId", editor.id().toString(), "dirty", true, "state", "active",
+                "resultChangesDirty", editor.resultChangesDirty(), "message", "结果更改已应用，等待提交事务"));
+        return ApiPayloads.map("appliedOperationIds", operationIds(applied),
+                "hiddenOperationIds", hiddenOperationIds(applied), "rowPatches", patches,
+                "transactionDirty", true, "resultChangesDirty", editor.resultChangesDirty());
+    }
+
     @PostMapping("/workspaces/{workspaceId}/editors/{editorId}/transaction/{action}")
     public Map<String, Object> transaction(@PathVariable String workspaceId, @PathVariable String editorId,
                                             @PathVariable String action) throws Exception {
@@ -955,7 +1113,17 @@ public final class DbStudioApiController {
                 "resultChangesDirty", false, "message", message));
         workspaceRepository.updateTransactionState(workspaceId, editorId, "none");
         LOG.info("事务操作完成 workspace={} editor={} action={}", workspaceId, editorId, action);
-        return ApiPayloads.map("dirty", false, "resultChangesDirty", false, "message", message);
+        List<Map<String, Object>> resultSnapshots = new ArrayList<Map<String, Object>>();
+        if ("rollback".equals(action) && editor.lastExecution() != null) {
+            List<StatementResult> results = editor.lastExecution().results();
+            for (int index = 0; index < results.size(); index++) {
+                StatementResult snapshot = results.get(index);
+                if (snapshot.hasRows()) resultSnapshots.add(ApiPayloads.map(
+                        "resultIndex", index, "rows", snapshot.rows(), "rowIds", snapshot.rowIds()));
+            }
+        }
+        return ApiPayloads.map("dirty", false, "resultChangesDirty", false, "message", message,
+                "resultSnapshots", resultSnapshots);
     }
 
     @PostMapping("/workspaces/{workspaceId}/sql/format")
@@ -1051,6 +1219,14 @@ public final class DbStudioApiController {
                 }
             } catch (NumberFormatException exception) {
                 throw new ApiException("INVALID_SETTING", "预渲染缓冲必须在 0.5 到 3 屏之间，并以 0.5 屏递增");
+            }
+        }
+        if ("result.edit.maxLobBytes".equals(key)) {
+            try {
+                long bytes = Long.parseLong(value);
+                if (bytes < 1_048_576L || bytes > 1_073_741_824L) throw new NumberFormatException();
+            } catch (NumberFormatException exception) {
+                throw new ApiException("INVALID_SETTING", "结果大字段上限必须在 1 MiB 到 1 GiB 之间");
             }
         }
         if ("result.copySeparator".equals(key)
@@ -1570,6 +1746,159 @@ public final class DbStudioApiController {
         return result;
     }
 
+    private static List<QueryRunner.ResultOperation> resultOperations(Object rawOperations,
+                                                                       StatementResult source) {
+        if (!(rawOperations instanceof List)) {
+            throw new ApiException("INVALID_RESULT_CHANGES", "operations 必须是数组");
+        }
+        List<QueryRunner.ResultOperation> result = new ArrayList<QueryRunner.ResultOperation>();
+        Set<String> operationIds = new LinkedHashSet<String>();
+        for (Object rawOperation : (List<?>) rawOperations) {
+            if (!(rawOperation instanceof Map)) {
+                throw new ApiException("INVALID_RESULT_CHANGES", "结果修改操作格式无效");
+            }
+            @SuppressWarnings("unchecked") Map<String, Object> operation = (Map<String, Object>) rawOperation;
+            String operationId = ApiPayloads.text(operation, "operationId").trim();
+            if (operationId.isEmpty()) operationId = UUID.randomUUID().toString();
+            if (!operationIds.add(operationId)) {
+                throw new ApiException("INVALID_RESULT_CHANGES", "结果修改包含重复操作编号");
+            }
+            String kindText = ApiPayloads.required(operation, "kind").trim().toUpperCase(Locale.ROOT);
+            final QueryRunner.MutationKind kind;
+            try { kind = QueryRunner.MutationKind.valueOf(kindText); }
+            catch (IllegalArgumentException exception) {
+                throw new ApiException("INVALID_RESULT_CHANGES", "结果修改操作类型无效");
+            }
+            int rowIndex = -1;
+            if (kind != QueryRunner.MutationKind.INSERT) {
+                String rowId = ApiPayloads.text(operation, "rowId").trim();
+                if (rowId.isEmpty()) {
+                    throw new ApiException("INVALID_RESULT_CHANGES", "更新或删除操作必须使用服务端行标识");
+                }
+                rowIndex = source.rowIds().indexOf(rowId);
+                if (rowIndex < 0 || rowIndex >= source.rows().size()) {
+                    throw new ApiException("STALE_RESULT", "查询结果行已经过期，请重新执行");
+                }
+            }
+            List<QueryRunner.ValueChange> values = resultValues(operation.get("values"));
+            if (kind == QueryRunner.MutationKind.UPDATE && values.isEmpty()) continue;
+            if (kind == QueryRunner.MutationKind.DELETE && !values.isEmpty()) {
+                throw new ApiException("INVALID_RESULT_CHANGES", "删除操作不能包含字段值");
+            }
+            result.add(new QueryRunner.ResultOperation(operationId, kind, rowIndex, values));
+        }
+        if (result.isEmpty()) throw new ApiException("INVALID_RESULT_CHANGES", "没有需要应用的结果修改");
+        return result;
+    }
+
+    private static List<QueryRunner.ValueChange> resultValues(Object rawValues) {
+        if (rawValues == null) return Collections.emptyList();
+        if (!(rawValues instanceof List)) throw new ApiException("INVALID_RESULT_CHANGES", "values 必须是数组");
+        List<QueryRunner.ValueChange> result = new ArrayList<QueryRunner.ValueChange>();
+        for (Object rawValue : (List<?>) rawValues) {
+            if (!(rawValue instanceof Map)) {
+                throw new ApiException("INVALID_RESULT_CHANGES", "结果字段值格式无效");
+            }
+            @SuppressWarnings("unchecked") Map<String, Object> value = (Map<String, Object>) rawValue;
+            int columnIndex = integer(value, "columnIndex", -1);
+            Object encoded = value.get("value");
+            QueryRunner.MutationValue mutationValue;
+            if (encoded instanceof Map) {
+                @SuppressWarnings("unchecked") Map<String, Object> typed = (Map<String, Object>) encoded;
+                String kind = ApiPayloads.text(typed, "kind");
+                if ("largevaluefile".equalsIgnoreCase(kind)) {
+                    throw new ApiException("INVALID_RESULT_CHANGES", "大字段内部文件引用不能由客户端提供");
+                }
+                Object text = typed.get("value");
+                if (text != null && !(text instanceof String)) {
+                    throw new ApiException("INVALID_RESULT_CHANGES", "字段值必须是字符串");
+                }
+                try { mutationValue = new QueryRunner.MutationValue(kind, (String) text); }
+                catch (IllegalArgumentException exception) {
+                    throw new ApiException("INVALID_RESULT_CHANGES", exception.getMessage());
+                }
+            } else if (encoded == null) {
+                mutationValue = QueryRunner.MutationValue.nullValue();
+            } else if (encoded instanceof String) {
+                mutationValue = QueryRunner.MutationValue.text((String) encoded);
+            } else {
+                throw new ApiException("INVALID_RESULT_CHANGES", "字段值格式无效");
+            }
+            result.add(new QueryRunner.ValueChange(columnIndex, mutationValue));
+        }
+        return result;
+    }
+
+    private List<QueryRunner.ResultOperation> resolveLargeValueDrafts(
+            Workspace workspace, EditorSession editor, UUID executionId, int resultIndex,
+            List<QueryRunner.ResultOperation> operations, List<String> usedTokens) {
+        List<QueryRunner.ResultOperation> result = new ArrayList<QueryRunner.ResultOperation>();
+        StatementResult source = result(editor, resultIndex);
+        for (QueryRunner.ResultOperation operation : operations) {
+            List<QueryRunner.ValueChange> values = new ArrayList<QueryRunner.ValueChange>();
+            for (QueryRunner.ValueChange value : operation.values()) {
+                if (!value.value().isLargeValueToken()) { values.add(value); continue; }
+                editableLargeValueColumn(source, value.columnIndex());
+                String token = value.value().value();
+                Path path = workspace.requireLargeValueDraft(token, editor.id().toString(), executionId,
+                        resultIndex, value.columnIndex());
+                values.add(new QueryRunner.ValueChange(value.columnIndex(),
+                        QueryRunner.MutationValue.largeValueFile(path.toString())));
+                usedTokens.add(token);
+            }
+            result.add(new QueryRunner.ResultOperation(operation.operationId(), operation.kind(),
+                    operation.rowIndex(), values));
+        }
+        return result;
+    }
+
+    private static UUID resultExecution(EditorSession editor, String rawExecutionId) {
+        final UUID executionId;
+        try { executionId = UUID.fromString(rawExecutionId); }
+        catch (IllegalArgumentException exception) {
+            throw new ApiException("INVALID_EXECUTION_ID", "结果执行编号无效");
+        }
+        if (!executionId.equals(editor.lastExecutionId())) {
+            throw new ApiException("STALE_RESULT", "查询结果已经过期，请重新执行");
+        }
+        return executionId;
+    }
+
+    private static ResultMutationTarget.Column editableLargeValueColumn(StatementResult source, int columnIndex) {
+        ResultMutationTarget target = source.mutationTarget();
+        if (target == null || !target.editableForUpdate()) {
+            throw new ApiException("RESULT_NOT_EDITABLE", "当前结果不支持大字段编辑");
+        }
+        for (ResultMutationTarget.Column column : target.columns()) if (column.resultIndex() == columnIndex) {
+            if (!("raw".equals(column.typeFamily()) || "clob".equals(column.typeFamily())
+                    || "blob".equals(column.typeFamily())) || !column.editable()) {
+                throw new ApiException("RESULT_LOB_NOT_EDITABLE", "该字段不支持大字段读写");
+            }
+            return column;
+        }
+        throw new ApiException("STALE_RESULT", "结果字段已经过期");
+    }
+
+    private long resultEditMaxLobBytes() throws SQLException {
+        String value = settings.get("result.edit.maxLobBytes").orElse("268435456");
+        try { return Long.parseLong(value); }
+        catch (NumberFormatException ignored) { return 268_435_456L; }
+    }
+
+    private static List<String> operationIds(QueryRunner.MutationBatchResult batch) {
+        List<String> result = new ArrayList<String>();
+        for (QueryRunner.OperationResult operation : batch.operations()) result.add(operation.operationId());
+        return result;
+    }
+
+    private static List<String> hiddenOperationIds(QueryRunner.MutationBatchResult batch) {
+        List<String> result = new ArrayList<String>();
+        for (QueryRunner.OperationResult operation : batch.operations()) {
+            if (!operation.visible()) result.add(operation.operationId());
+        }
+        return result;
+    }
+
     private static void rejectPendingResultChanges(EditorSession editor, String operation) {
         if (editor.resultChangesDirty()) {
             throw new ApiException("RESULT_CHANGES_PENDING",
@@ -1637,6 +1966,7 @@ public final class DbStudioApiController {
         if (!result.containsKey("result.scrollOptimizationBufferScreens")) {
             result.put("result.scrollOptimizationBufferScreens", "1");
         }
+        if (!result.containsKey("result.edit.maxLobBytes")) result.put("result.edit.maxLobBytes", "268435456");
         if (!result.containsKey("statusBar.showSelectedColumnRemarks")) result.put("statusBar.showSelectedColumnRemarks", "true");
         if (!result.containsKey("connection.maxActiveSessions")) result.put("connection.maxActiveSessions", "10");
         if (!result.containsKey("connection.autoCommit")) result.put("connection.autoCommit", "false");

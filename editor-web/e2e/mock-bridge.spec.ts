@@ -1,5 +1,46 @@
 import { expect, test, type Page } from "@playwright/test";
 
+const completionRequestCounts = new WeakMap<Page, number>();
+
+async function installCompletionSnapshotRoute(page: Page): Promise<void> {
+  completionRequestCounts.set(page, 0);
+  await page.route("**/api/v1/workspaces/*/metadata/completion-snapshot", async (route) => {
+    completionRequestCounts.set(page, (completionRequestCounts.get(page) ?? 0) + 1);
+    const tableNames = ["customer", "order_item", "product", "sales_order", "sales_order_item"];
+    const columns: Record<string, string[]> = {
+      sales_order: ["order_id", "customer_id", "created_at"],
+      sales_order_item: ["order_id", "product_id", "quantity"]
+    };
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        formatVersion: 1,
+        providerId: "mysql",
+        sourceProfileId: "profile-dev",
+        generatedAt: new Date().toISOString(),
+        defaultNamespaceKey: "catalog:eastwealthcrawler",
+        selectedNamespaceKeys: ["catalog:eastwealthcrawler"],
+        namespaces: [{
+          key: "catalog:eastwealthcrawler",
+          catalog: "eastwealthcrawler",
+          schema: "",
+          label: "eastwealthcrawler",
+          objects: tableNames.map((name) => ({
+            name,
+            kind: "table",
+            remarks: "",
+            columns: (columns[name] ?? []).map((column) => ({
+              name: column,
+              typeName: "VARCHAR",
+              remarks: ""
+            }))
+          }))
+        }]
+      })
+    });
+  });
+}
+
 async function ensureMockWorkspace(page: Page): Promise<void> {
   const picker = page.getByRole("main", { name: "选择工作空间" });
   const selector = page.locator(".connection-pill input");
@@ -20,6 +61,16 @@ async function connectMock(page: Page): Promise<void> {
   await dropdown.getByText("DEV", { exact: true }).click();
   await dropdown.getByText("本地开发库", { exact: true }).click();
   await expect(selector).toHaveValue("DEV / 本地开发库");
+  await initializeCompletionSchemaDialog(page);
+}
+
+async function initializeCompletionSchemaDialog(page: Page): Promise<void> {
+  const schemaDialog = page.getByRole("dialog", { name: "选择 SQL 补全 Schema", exact: true });
+  await schemaDialog.waitFor({ state: "visible", timeout: 1_000 }).catch(() => undefined);
+  if (await schemaDialog.isVisible()) {
+    await schemaDialog.getByRole("button", { name: "开始缓存", exact: true }).click();
+    await expect(schemaDialog).toBeHidden();
+  }
 }
 
 async function dismissCompletionSchemaDialog(page: Page): Promise<void> {
@@ -29,6 +80,12 @@ async function dismissCompletionSchemaDialog(page: Page): Promise<void> {
     await schemaDialog.getByRole("button", { name: "取消", exact: true }).click();
     await expect(schemaDialog).toBeHidden();
   }
+}
+
+async function expectCompletionUpdated(page: Page): Promise<void> {
+  await page.getByRole("button", { name: "系统状态和通知", exact: true }).hover();
+  await expect(page.getByLabel("所有系统状态和通知")).toContainText("补全已更新");
+  await page.mouse.move(720, 420);
 }
 
 async function resultTypography(page: Page) {
@@ -53,6 +110,7 @@ async function resultTypography(page: Page) {
 }
 
 test.beforeEach(async ({ page }) => {
+  await installCompletionSnapshotRoute(page);
   await page.goto("/?mock=1");
   await ensureMockWorkspace(page);
 });
@@ -530,10 +588,8 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
 
 test("shares completion cache across editors and refreshes it only from the object explorer", async ({ page }) => {
   await connectMock(page);
-  await expect(page.locator(".completion-status")).toContainText("补全已更新");
-  const completionRequests = () => page.evaluate(() =>
-    (window as Window & { __DBSTUDIO_MOCK_COUNTS__?: Record<string, number> })
-      .__DBSTUDIO_MOCK_COUNTS__?.["metadata.completionSnapshot"] ?? 0);
+  await expectCompletionUpdated(page);
+  const completionRequests = () => completionRequestCounts.get(page) ?? 0;
   await expect.poll(completionRequests).toBe(1);
 
   await page.getByRole("button", { name: "新建查询", exact: true }).click();
@@ -558,8 +614,12 @@ test("shares completion cache across editors and refreshes it only from the obje
     .evaluate((element) => (element as HTMLButtonElement).click());
   await expect(page.getByRole("button", { name: "刷新对象树", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "刷新对象树", exact: true }).click();
+  const refreshDialog = page.getByRole("dialog", { name: "刷新 SQL 补全缓存", exact: true });
+  await expect(refreshDialog).toBeVisible();
+  await refreshDialog.getByText("eastwealthcrawler", { exact: true }).click();
+  await refreshDialog.getByRole("button", { name: "开始缓存", exact: true }).click();
   await expect.poll(completionRequests).toBe(2);
-  await expect(page.locator(".completion-status")).toContainText("补全已更新");
+  await expectCompletionUpdated(page);
 });
 
 test("edits a FOR UPDATE result in two stages before committing", async ({ page }) => {
@@ -572,12 +632,13 @@ test("edits a FOR UPDATE result in two stages before committing", async ({ page 
   await page.getByRole("button", { name: "执行", exact: true }).click();
   await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
 
-  const unlock = page.getByRole("button", { name: "解锁结果编辑", exact: true });
-  const post = page.getByRole("button", { name: "确认结果修改", exact: true });
+  const unlock = page.getByRole("button", { name: "切换结果编辑模式", exact: true });
+  const post = page.getByRole("button", { name: "应用更改", exact: true });
   await expect(unlock).toBeEnabled();
   await expect(post).toBeDisabled();
   await unlock.click();
-  await expect(page.getByRole("button", { name: "锁定结果编辑", exact: true })).toBeVisible();
+  await expect(unlock).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "新增行", exact: true })).toBeEnabled();
 
   await page.locator(".result-cell").filter({ hasText: /^Apple Studio 1 ✨$/ }).first().dblclick();
   const cellEditor = page.getByRole("textbox", { name: "编辑结果值", exact: true });
@@ -587,17 +648,22 @@ test("edits a FOR UPDATE result in two stages before committing", async ({ page 
   await expect(page.locator(".result-cell-pending").filter({ hasText: "Edited locally" })).toBeVisible();
   await expect(post).toBeEnabled();
 
+  await page.getByRole("button", { name: "变更清单", exact: true }).click();
+  const changes = page.getByRole("dialog", { name: "结果变更清单", exact: true });
+  await expect(changes).toContainText("UPDATE `demo`.`sample` SET `name` = ? WHERE `id` = ?");
+  await changes.getByRole("button", { name: "关闭", exact: true }).click();
+
   await post.click();
   await expect(page.locator(".result-cell-posted").filter({ hasText: "Edited locally" })).toBeVisible();
   await expect(post).toBeDisabled();
   await page.getByRole("button", { name: "提交事务", exact: true }).click();
   await expect(page.locator(".result-cell-pending, .result-cell-posted")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "解锁结果编辑", exact: true })).toBeDisabled();
+  await expect(unlock).toBeDisabled();
 });
 
 test("filters duplicate column names by the SQL alias at the cursor", async ({ page }) => {
   await connectMock(page);
-  await expect(page.locator(".completion-status")).toContainText("补全已更新");
+  await expectCompletionUpdated(page);
   const editor = page.locator(".monaco-editor .view-lines");
   await editor.click();
   await page.keyboard.press("ControlOrMeta+A");
@@ -608,8 +674,7 @@ test("filters duplicate column names by the SQL alias at the cursor", async ({ p
   await expect(widget).toBeVisible();
   const orderId = widget.locator(".monaco-list-row").filter({ hasText: "order_id" });
   await expect(orderId).toHaveCount(1);
-  await expect(orderId).toContainText("sales_order");
-  await expect(orderId).not.toContainText("sales_order_item");
+  await expect(widget.locator(".monaco-list-row").filter({ hasText: "sales_order_item" })).toHaveCount(0);
 });
 
 test("transforms and comments only the selected SQL with Monaco undo support", async ({ page, context }) => {
@@ -895,7 +960,7 @@ test("supports Apple appearance, system theme settings and compact windows", asy
   await expect(page.getByText("双击表头复制列名", { exact: true })).toBeVisible();
   await expect(page.getByText("多列复制分隔符", { exact: true })).toBeVisible();
   const compactRows = page.locator(".settings-drawer .compact-setting-row");
-  await expect(compactRows).toHaveCount(19);
+  await expect(compactRows).toHaveCount(20);
   expect(await compactRows.evaluateAll((rows) => rows.every((row) => {
     const style = getComputedStyle(row);
     const label = row.querySelector(".el-form-item__label")?.getBoundingClientRect();

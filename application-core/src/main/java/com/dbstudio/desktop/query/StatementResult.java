@@ -13,6 +13,8 @@ public final class StatementResult {
     private final List<ResultColumn> columnDetails;
     private final ResultMutationTarget mutationTarget;
     private final List<List<String>> rows;
+    private final List<String> rowIds;
+    private final List<List<String>> rowLocators;
     private final long updateCount;
     private final boolean truncated;
     private final Duration duration;
@@ -32,6 +34,21 @@ public final class StatementResult {
     public StatementResult(String sql, StatementType type, List<String> columns, List<ResultColumn> columnDetails,
                            ResultMutationTarget mutationTarget, List<List<String>> rows, long updateCount,
                            boolean truncated, Duration duration, String errorMessage) {
+        this(sql, type, columns, columnDetails, mutationTarget, rows, null, updateCount,
+                truncated, duration, errorMessage);
+    }
+
+    public StatementResult(String sql, StatementType type, List<String> columns, List<ResultColumn> columnDetails,
+                           ResultMutationTarget mutationTarget, List<List<String>> rows, List<String> rowIds,
+                           long updateCount, boolean truncated, Duration duration, String errorMessage) {
+        this(sql, type, columns, columnDetails, mutationTarget, rows, rowIds, null,
+                updateCount, truncated, duration, errorMessage);
+    }
+
+    public StatementResult(String sql, StatementType type, List<String> columns, List<ResultColumn> columnDetails,
+                           ResultMutationTarget mutationTarget, List<List<String>> rows, List<String> rowIds,
+                           List<List<String>> rowLocators, long updateCount, boolean truncated,
+                           Duration duration, String errorMessage) {
         this.sql = sql;
         this.type = type;
         this.columns = columns == null ? Collections.<String>emptyList()
@@ -48,6 +65,19 @@ public final class StatementResult {
             }
             this.rows = Collections.unmodifiableList(copied);
         }
+        List<String> identifiers = new ArrayList<String>(this.rows.size());
+        if (rowIds != null && rowIds.size() == this.rows.size()) identifiers.addAll(rowIds);
+        else for (int index = 0; index < this.rows.size(); index++) {
+            identifiers.add(java.util.UUID.randomUUID().toString());
+        }
+        this.rowIds = Collections.unmodifiableList(identifiers);
+        List<List<String>> locators = new ArrayList<List<String>>(this.rows.size());
+        for (int index = 0; index < this.rows.size(); index++) {
+            List<String> values = rowLocators != null && index < rowLocators.size()
+                    ? rowLocators.get(index) : Collections.<String>emptyList();
+            locators.add(Collections.unmodifiableList(new ArrayList<String>(values)));
+        }
+        this.rowLocators = Collections.unmodifiableList(locators);
         this.updateCount = updateCount;
         this.truncated = truncated;
         this.duration = duration == null ? Duration.ZERO : duration;
@@ -60,6 +90,10 @@ public final class StatementResult {
     public List<ResultColumn> columnDetails() { return columnDetails; }
     public ResultMutationTarget mutationTarget() { return mutationTarget; }
     public List<List<String>> rows() { return rows; }
+    /** Opaque row identities scoped to this execution result. */
+    public List<String> rowIds() { return rowIds; }
+    /** Server-only physical locator values parallel to rows. */
+    public List<List<String>> rowLocators() { return rowLocators; }
     public long updateCount() { return updateCount; }
     public boolean truncated() { return truncated; }
     public Duration duration() { return duration; }

@@ -81,4 +81,31 @@ public interface SqlDialect {
     default Optional<ResultMutationSource> resultMutationSource(String sql) {
         return Optional.empty();
     }
+
+    /** Returns an explainable edit assessment even when the query must remain read-only. */
+    default ResultEditPlan resultEditPlan(String sql) {
+        Optional<ResultMutationSource> source = resultMutationSource(sql);
+        if (!source.isPresent()) return ResultEditPlan.readOnly(
+                "UNSUPPORTED_QUERY_SHAPE", "仅支持可解析的单一基表查询");
+        if (!source.get().editableForUpdate()) return ResultEditPlan.readOnly(source.get(),
+                "FOR_UPDATE_REQUIRED", "需要显式执行单表 FOR UPDATE 查询");
+        return ResultEditPlan.editable(source.get());
+    }
+
+    /** Adds server-only locator expressions to a safe single-table query. */
+    default String appendResultLocatorColumns(String sql, List<String> expressions, List<String> aliases) {
+        return sql;
+    }
+
+    /** Adds a server-owned row locator predicate and removes pagination for authoritative rereads. */
+    default String appendResultLocatorPredicate(String sql, List<String> predicates) {
+        return "";
+    }
+
+    /** Returns the source qualifier exactly as it should appear in a rewritten query. */
+    default String resultMutationQualifier(String sql, ResultMutationSource source) {
+        if (source == null) return "";
+        String qualifier = source.alias().isEmpty() ? source.table() : source.alias();
+        return qualifier.isEmpty() ? "" : quoteIdentifier(qualifier);
+    }
 }

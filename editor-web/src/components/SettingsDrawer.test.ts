@@ -12,6 +12,7 @@ describe("SettingsDrawer compact result settings", () => {
         resolvedTheme: "light",
         maxRows: 1000,
         streamBatchRows: 100,
+        maxLobBytes: 268_435_456,
         columnLayoutScope: "result",
         copyHeaderOnDoubleClick: true,
         copySeparator: "comma",
@@ -42,7 +43,7 @@ describe("SettingsDrawer compact result settings", () => {
   it("renders compact connection and result settings without the old alert", async () => {
     const wrapper = mountDrawer();
     await flushPromises();
-    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(19);
+    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(20);
     expect(wrapper.findComponent({ name: "ElAlert" }).exists()).toBe(false);
     const separator = wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "comma");

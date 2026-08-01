@@ -22,11 +22,14 @@ export const useQueryStore = defineStore("query", () => {
     replaceExecution(editorId, { ...execution, results: [...execution.results, result] });
   }
 
-  function appendRows(editorId: string, resultIndex: number, rows: Array<Array<string | null>>): void {
+  function appendRows(editorId: string, resultIndex: number, rows: Array<Array<string | null>>,
+                      rowIds: string[] = []): void {
     const execution = executions.value[editorId];
     const result = execution?.results.find((item) => item.resultIndex === resultIndex);
     if (!execution || !result) { warnLate(editorId, resultIndex); return; }
-    const updated = { ...result, rows: [...result.rows, ...rows] };
+    const ids = rowIds.length === rows.length ? rowIds
+      : rows.map(() => crypto.randomUUID());
+    const updated = { ...result, rows: [...result.rows, ...rows], rowIds: [...(result.rowIds ?? []), ...ids] };
     replaceExecution(editorId, { ...execution, results: execution.results.map((item) => item === result ? updated : item) });
   }
 
@@ -57,6 +60,65 @@ export const useQueryStore = defineStore("query", () => {
       row[cell.columnIndex] = cell.value;
     }
     const updated = { ...result, rows };
+    replaceExecution(editorId, { ...execution,
+      results: execution.results.map((item) => item === result ? updated : item) });
+  }
+
+  function appendDraftRow(editorId: string, resultIndex: number, rowId: string,
+                          row: Array<string | null>): void {
+    const execution = executions.value[editorId];
+    const result = execution?.results.find((item) => item.resultIndex === resultIndex);
+    if (!execution || !result) return;
+    const updated = { ...result, rows: [...result.rows, row], rowIds: [...(result.rowIds ?? []), rowId] };
+    replaceExecution(editorId, { ...execution,
+      results: execution.results.map((item) => item === result ? updated : item) });
+  }
+
+  function removeRowById(editorId: string, resultIndex: number, rowId: string): void {
+    const execution = executions.value[editorId];
+    const result = execution?.results.find((item) => item.resultIndex === resultIndex);
+    if (!execution || !result) return;
+    const index = (result.rowIds ?? []).indexOf(rowId);
+    if (index < 0) return;
+    const updated = { ...result, rows: result.rows.filter((_, rowIndex) => rowIndex !== index),
+      rowIds: (result.rowIds ?? []).filter((_, rowIndex) => rowIndex !== index) };
+    replaceExecution(editorId, { ...execution,
+      results: execution.results.map((item) => item === result ? updated : item) });
+  }
+
+  function applyResultPatches(editorId: string, resultIndex: number,
+                              patches: Array<{ kind: "update" | "insert" | "delete"; rowId: string;
+                                rowIndex: number; row: Array<string | null>; clientRowId?: string }>): void {
+    const execution = executions.value[editorId];
+    const result = execution?.results.find((item) => item.resultIndex === resultIndex);
+    if (!execution || !result) return;
+    const rows = result.rows.map((row) => [...row]);
+    const rowIds = [...(result.rowIds ?? result.rows.map(() => crypto.randomUUID()))];
+    for (const patch of patches) {
+      if (patch.kind === "delete") {
+        const index = rowIds.indexOf(patch.rowId) >= 0 ? rowIds.indexOf(patch.rowId)
+          : patch.clientRowId ? rowIds.indexOf(patch.clientRowId) : -1;
+        if (index >= 0) { rows.splice(index, 1); rowIds.splice(index, 1); }
+      } else if (patch.kind === "update") {
+        const index = rowIds.indexOf(patch.rowId);
+        if (index >= 0) rows[index] = [...patch.row];
+      } else {
+        const draftIndex = patch.clientRowId ? rowIds.indexOf(patch.clientRowId) : -1;
+        if (draftIndex >= 0) { rows[draftIndex] = [...patch.row]; rowIds[draftIndex] = patch.rowId; }
+        else { rows.push([...patch.row]); rowIds.push(patch.rowId); }
+      }
+    }
+    const updated = { ...result, rows, rowIds };
+    replaceExecution(editorId, { ...execution,
+      results: execution.results.map((item) => item === result ? updated : item) });
+  }
+
+  function replaceResultSnapshot(editorId: string, resultIndex: number,
+                                 rows: Array<Array<string | null>>, rowIds: string[]): void {
+    const execution = executions.value[editorId];
+    const result = execution?.results.find((item) => item.resultIndex === resultIndex);
+    if (!execution || !result) return;
+    const updated = { ...result, rows: rows.map((row) => [...row]), rowIds: [...rowIds] };
     replaceExecution(editorId, { ...execution,
       results: execution.results.map((item) => item === result ? updated : item) });
   }
@@ -100,6 +162,7 @@ export const useQueryStore = defineStore("query", () => {
   }
 
   function clear(): void { executions.value = {}; }
-  return { executions, start, addResult, appendRows, completeResult, updateCells, applyColumnRemarks,
+  return { executions, start, addResult, appendRows, completeResult, updateCells, appendDraftRow,
+    removeRowById, applyResultPatches, replaceResultSnapshot, applyColumnRemarks,
     complete, markHistorical, clearEditor, clear };
 });

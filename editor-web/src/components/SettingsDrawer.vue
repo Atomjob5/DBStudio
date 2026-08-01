@@ -161,6 +161,18 @@
         </el-form-item>
         <el-form-item class="compact-setting-row">
           <template #label>
+            <div class="setting-label"><span>可编辑大字段上限</span>
+              <el-tooltip content="CLOB、BLOB 与 RAW 草稿采用临时文件流式读写；超过上限会在写入数据库前拒绝。" placement="top">
+                <el-icon class="setting-help" tabindex="0" aria-label="可编辑大字段上限说明"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </div>
+          </template>
+          <div class="number-with-unit"><el-input-number class="compact-number" size="small"
+            :model-value="Math.round(maxLobBytes / 1048576)" :min="1" :max="1024" :step="16" controls-position="right"
+            @update:model-value="$emit('update:maxLobBytes', ($event ?? 256) * 1048576)" /><span>MiB</span></div>
+        </el-form-item>
+        <el-form-item class="compact-setting-row">
+          <template #label>
             <div class="setting-label"><span>滚动优化</span>
               <el-tooltip content="减少滚动时渲染的行列数量，降低宽表和大量数据滚动时的渲染压力，适合低配置设备。" placement="top">
                 <el-icon class="setting-help" tabindex="0" aria-label="滚动优化说明"><QuestionFilled /></el-icon>
@@ -267,7 +279,7 @@ import type { ColumnLayoutScope } from "../columnLayout";
 import type { CopySeparator } from "../resultCopy";
 
 defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: ResolvedTheme; maxRows: number;
-  streamBatchRows: number; columnLayoutScope: ColumnLayoutScope; copyHeaderOnDoubleClick: boolean;
+  streamBatchRows: number; maxLobBytes: number; columnLayoutScope: ColumnLayoutScope; copyHeaderOnDoubleClick: boolean;
   copySeparator: CopySeparator; maxActiveSessions: number; idleTimeoutMinutes: number;
   headerSortingEnabled: boolean; headerFilteringEnabled: boolean;
   showColumnRemarksInHeader: boolean; scrollOptimizationEnabled: boolean;
@@ -280,7 +292,7 @@ defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: Resolv
   minimapEnabled: boolean; wordWrapEnabled: boolean }>();
 const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme": [value: ThemePreference];
   "update:minimapEnabled": [value: boolean]; "update:wordWrapEnabled": [value: boolean];
-  "update:maxRows": [value: number]; "update:streamBatchRows": [value: number];
+  "update:maxRows": [value: number]; "update:streamBatchRows": [value: number]; "update:maxLobBytes": [value: number];
   "update:columnLayoutScope": [value: ColumnLayoutScope]; "update:copyHeaderOnDoubleClick": [value: boolean];
   "update:copySeparator": [value: CopySeparator]; "update:maxActiveSessions": [value: number];
   "update:autoCommit": [value: boolean];

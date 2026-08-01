@@ -192,7 +192,7 @@ describe("App result loading status toolbar", () => {
     const error = vi.spyOn(ElMessage, "error").mockImplementation(() => undefined as never);
     await nextTick();
 
-    const post = wrapper.get('button[aria-label="确认结果修改"]');
+    const post = wrapper.get('button[aria-label="应用更改"]');
     expect(post.classes()).toContain("el-button--success");
     await post.trigger("click");
     await flushPromises();
@@ -201,7 +201,8 @@ describe("App result loading status toolbar", () => {
     expect(edits.hasPending("bootstrap-editor")).toBe(true);
     expect(rpcRequest).toHaveBeenCalledWith("query.applyChanges", {
       editorId: "bootstrap-editor", executionId: "execution-edit", resultIndex: 0,
-      rows: [{ rowIndex: 0, cells: [{ columnIndex: 1, value: "UNKNOWN" }] }]
+      operations: [{ operationId: "update:row:0", kind: "update", rowId: undefined, rowIndex: 0,
+        values: [{ columnIndex: 1, value: { kind: "text", value: "UNKNOWN" } }] }]
     }, 30_000);
   });
 

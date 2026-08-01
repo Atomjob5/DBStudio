@@ -161,6 +161,7 @@ public final class EditorSessionRegistry implements AutoCloseable {
         private volatile String lastSql;
         private final AtomicBoolean transactionOperation = new AtomicBoolean();
         private final Map<String, String> originalResultValues = new HashMap<String, String>();
+        private final Map<Integer, StatementResult> originalResultSnapshots = new HashMap<Integer, StatementResult>();
 
         private EditorSession(UUID id, String title) { this.id = id; this.title = title; }
         public UUID id() { return id; }
@@ -184,7 +185,9 @@ public final class EditorSessionRegistry implements AutoCloseable {
         public String lastSql() { return lastSql; }
         public long lastTouched() { return lastTouched; }
         public boolean transactionOperationActive() { return transactionOperation.get(); }
-        public synchronized boolean resultChangesDirty() { return !originalResultValues.isEmpty(); }
+        public synchronized boolean resultChangesDirty() {
+            return !originalResultValues.isEmpty() || !originalResultSnapshots.isEmpty();
+        }
         public synchronized boolean beginTransactionOperation() {
             if (activeExecutionId != null || transactionOperation.get()) return false;
             transactionOperation.set(true);
@@ -287,15 +290,22 @@ public final class EditorSessionRegistry implements AutoCloseable {
         public void setMaxRows(int maxRows) { QueryRunner current = runner; if (current != null) current.setMaxRows(maxRows); }
         public void setStreamBatchRows(int rows) { QueryRunner current = runner; if (current != null) current.setStreamBatchRows(rows); }
 
-        public synchronized void appendResultRows(int resultIndex, List<List<String>> rows, boolean hasMore) {
+        public synchronized void appendResultRows(int resultIndex, List<List<String>> rows,
+                                                  List<String> rowIds, List<List<String>> rowLocators,
+                                                  boolean hasMore) {
             QueryExecution execution = lastExecution;
             if (execution == null || resultIndex < 0 || resultIndex >= execution.results().size()) return;
             List<StatementResult> results = new ArrayList<StatementResult>(execution.results());
             StatementResult source = results.get(resultIndex);
             List<List<String>> combined = new ArrayList<List<String>>(source.rows());
             combined.addAll(rows);
+            List<String> combinedIds = new ArrayList<String>(source.rowIds());
+            combinedIds.addAll(rowIds);
+            List<List<String>> combinedLocators = new ArrayList<List<String>>(source.rowLocators());
+            combinedLocators.addAll(rowLocators);
             results.set(resultIndex, new StatementResult(source.sql(), source.type(), source.columns(), source.columnDetails(),
-                    source.mutationTarget(), combined, source.updateCount(), hasMore, source.duration(), source.errorMessage()));
+                    source.mutationTarget(), combined, combinedIds, combinedLocators, source.updateCount(), hasMore,
+                    source.duration(), source.errorMessage()));
             lastExecution = new QueryExecution(results, execution.duration(), execution.cancelled());
             touch();
         }
@@ -332,12 +342,18 @@ public final class EditorSessionRegistry implements AutoCloseable {
 
         public synchronized void commitResultChanges() {
             originalResultValues.clear();
+            originalResultSnapshots.clear();
             touch();
         }
 
         public synchronized void rollbackResultChanges() {
-            if (originalResultValues.isEmpty() || lastExecution == null) return;
+            if ((originalResultValues.isEmpty() && originalResultSnapshots.isEmpty()) || lastExecution == null) return;
             List<StatementResult> results = new ArrayList<StatementResult>(lastExecution.results());
+            for (Map.Entry<Integer, StatementResult> snapshot : originalResultSnapshots.entrySet()) {
+                if (snapshot.getKey() >= 0 && snapshot.getKey() < results.size()) {
+                    results.set(snapshot.getKey(), snapshot.getValue());
+                }
+            }
             Map<Integer, List<List<String>>> rowsByResult = new HashMap<Integer, List<List<String>>>();
             for (Map.Entry<String, String> entry : originalResultValues.entrySet()) {
                 String[] parts = entry.getKey().split(":", 3);
@@ -361,7 +377,86 @@ public final class EditorSessionRegistry implements AutoCloseable {
             }
             lastExecution = new QueryExecution(results, lastExecution.duration(), lastExecution.cancelled());
             originalResultValues.clear();
+            originalResultSnapshots.clear();
             touch();
+        }
+
+        public synchronized List<ResultPatch> recordResultOperations(UUID executionId, int resultIndex,
+                                                                       QueryRunner.MutationBatchResult batch) {
+            if (executionId == null || !executionId.equals(lastExecutionId) || lastExecution == null
+                    || resultIndex < 0 || resultIndex >= lastExecution.results().size()) {
+                throw new RpcException("STALE_RESULT", "查询结果已经过期，请重新执行");
+            }
+            List<StatementResult> results = new ArrayList<StatementResult>(lastExecution.results());
+            StatementResult source = results.get(resultIndex);
+            if (!originalResultSnapshots.containsKey(resultIndex)) originalResultSnapshots.put(resultIndex, source);
+            List<List<String>> rows = mutableRows(source.rows());
+            List<String> rowIds = new ArrayList<String>(source.rowIds());
+            List<List<String>> rowLocators = new ArrayList<List<String>>(source.rowLocators());
+            List<Integer> deleted = new ArrayList<Integer>();
+            List<ResultPatch> patches = new ArrayList<ResultPatch>();
+            for (QueryRunner.OperationResult operation : batch.operations()) {
+                if (operation.kind() == QueryRunner.MutationKind.UPDATE) {
+                    if (operation.rowIndex() < 0 || operation.rowIndex() >= rows.size()) {
+                        throw new RpcException("STALE_RESULT", "查询结果行已经过期，请重新执行");
+                    }
+                    if (operation.visible()) {
+                        rows.set(operation.rowIndex(), new ArrayList<String>(operation.row()));
+                        rowLocators.set(operation.rowIndex(), new ArrayList<String>(operation.locator()));
+                        patches.add(new ResultPatch(operation.operationId(), "update", operation.rowIndex(),
+                                rowIds.get(operation.rowIndex()), operation.row()));
+                    } else {
+                        deleted.add(operation.rowIndex());
+                        patches.add(new ResultPatch(operation.operationId(), "delete", operation.rowIndex(),
+                                rowIds.get(operation.rowIndex()), Collections.<String>emptyList()));
+                    }
+                } else if (operation.kind() == QueryRunner.MutationKind.DELETE) {
+                    deleted.add(operation.rowIndex());
+                    patches.add(new ResultPatch(operation.operationId(), "delete", operation.rowIndex(),
+                            rowIds.get(operation.rowIndex()), operation.row()));
+                } else if (operation.kind() == QueryRunner.MutationKind.INSERT) {
+                    if (operation.visible()) {
+                        String rowId = UUID.randomUUID().toString();
+                        rows.add(new ArrayList<String>(operation.row()));
+                        rowIds.add(rowId);
+                        rowLocators.add(new ArrayList<String>(operation.locator()));
+                        patches.add(new ResultPatch(operation.operationId(), "insert", rows.size() - 1,
+                                rowId, operation.row()));
+                    } else {
+                        patches.add(new ResultPatch(operation.operationId(), "delete", -1, "",
+                                Collections.<String>emptyList()));
+                    }
+                }
+            }
+            Collections.sort(deleted, Collections.reverseOrder());
+            for (Integer rowIndex : deleted) {
+                if (rowIndex >= 0 && rowIndex < rows.size()) {
+                    rows.remove((int) rowIndex); rowIds.remove((int) rowIndex); rowLocators.remove((int) rowIndex);
+                }
+            }
+            results.set(resultIndex, new StatementResult(source.sql(), source.type(), source.columns(),
+                    source.columnDetails(), source.mutationTarget(), rows, rowIds, rowLocators,
+                    source.updateCount(), source.truncated(), source.duration(), source.errorMessage()));
+            lastExecution = new QueryExecution(results, lastExecution.duration(), lastExecution.cancelled());
+            touch();
+            return Collections.unmodifiableList(patches);
+        }
+
+        public static final class ResultPatch {
+            private final String operationId;
+            private final String kind;
+            private final int rowIndex;
+            private final String rowId;
+            private final List<String> row;
+            private ResultPatch(String operationId, String kind, int rowIndex, String rowId, List<String> row) {
+                this.operationId = operationId; this.kind = kind; this.rowIndex = rowIndex; this.rowId = rowId;
+                this.row = Collections.unmodifiableList(new ArrayList<String>(row));
+            }
+            public String operationId() { return operationId; }
+            public String kind() { return kind; }
+            public int rowIndex() { return rowIndex; }
+            public String rowId() { return rowId; }
+            public List<String> row() { return row; }
         }
 
         private static List<List<String>> mutableRows(List<List<String>> source) {
@@ -372,7 +467,7 @@ public final class EditorSessionRegistry implements AutoCloseable {
 
         private static StatementResult resultWithRows(StatementResult source, List<List<String>> rows) {
             return new StatementResult(source.sql(), source.type(), source.columns(), source.columnDetails(),
-                    source.mutationTarget(), rows, source.updateCount(), source.truncated(),
+                    source.mutationTarget(), rows, source.rowIds(), source.rowLocators(), source.updateCount(), source.truncated(),
                     source.duration(), source.errorMessage());
         }
 
@@ -388,6 +483,7 @@ public final class EditorSessionRegistry implements AutoCloseable {
 
         @Override public synchronized void close() {
             closeRunner(); context = null; bindingKey = null; originalResultValues.clear();
+            originalResultSnapshots.clear();
         }
     }
 

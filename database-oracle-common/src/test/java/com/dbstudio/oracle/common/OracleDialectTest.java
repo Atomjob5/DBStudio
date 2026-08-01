@@ -73,13 +73,44 @@ class OracleDialectTest {
         assertFalse(dialect.resultMutationSource(
                 "SELECT a.id FROM sales.orders a /* FOR UPDATE */").get().editableForUpdate());
         assertFalse(dialect.resultMutationSource(
-                "SELECT 'FOR UPDATE' AS value FROM sales.orders").isPresent());
+                "SELECT 'FOR UPDATE' AS value FROM sales.orders").get().editableForUpdate());
         assertFalse(dialect.resultMutationSource("SELECT a.id FROM a JOIN b ON b.id=a.id").isPresent());
         assertFalse(dialect.resultMutationSource(
                 "WITH data AS (SELECT id FROM sales.orders) SELECT id FROM data FOR UPDATE").isPresent());
         assertFalse(dialect.resultMutationSource(
                 "SELECT id FROM sales.orders UNION SELECT id FROM sales.archive_orders").isPresent());
-        assertFalse(dialect.resultMutationSource(
+        assertTrue(dialect.resultMutationSource(
                 "SELECT id, amount + 1 FROM sales.orders FOR UPDATE").isPresent());
+        assertEquals("DATABASE_LINK_NOT_SUPPORTED", dialect.resultEditPlan(
+                "SELECT id FROM sales.orders@remote FOR UPDATE").reasonCode());
+        assertEquals("SET_QUERY_NOT_SUPPORTED", dialect.resultEditPlan(
+                "SELECT id FROM sales.orders UNION SELECT id FROM sales.archive_orders").reasonCode());
+        String unqualifiedSql = "SELECT * FROM APP_CONFIG a WHERE a.id = 1 FOR UPDATE";
+        ResultMutationSource unqualified = dialect.resultMutationSource(unqualifiedSql)
+                .orElseThrow(AssertionError::new);
+        assertEquals("", unqualified.schema());
+        assertEquals("a", dialect.resultMutationQualifier(unqualifiedSql, unqualified));
+        assertEquals("APP_CONFIG", dialect.resultMutationQualifier(
+                "SELECT * FROM APP_CONFIG FOR UPDATE", dialect.resultMutationSource(
+                        "SELECT * FROM APP_CONFIG FOR UPDATE").orElseThrow(AssertionError::new)));
+        String unqualifiedRewrite = dialect.appendResultLocatorColumns(
+                unqualifiedSql, Collections.singletonList("ROWIDTOCHAR(a.ROWID)"),
+                Collections.singletonList("DBSTUDIO_LOCATOR_0"));
+        assertTrue(unqualifiedRewrite.contains("a.*"));
+        assertTrue(unqualifiedRewrite.contains("ROWIDTOCHAR(a.ROWID)"));
+        assertFalse(unqualifiedRewrite.matches("(?s).*SELECT\\s+\\*,.*"));
+        String rewritten = dialect.appendResultLocatorColumns(
+                "SELECT o.name AS label FROM sales.orders o ORDER BY o.id FETCH FIRST 10 ROWS ONLY FOR UPDATE",
+                Collections.singletonList("ROWIDTOCHAR(o.ROWID)"),
+                Collections.singletonList("DBSTUDIO_LOCATOR_0"));
+        assertTrue(rewritten.contains("DBSTUDIO_LOCATOR_0"));
+        assertTrue(rewritten.toUpperCase().contains("FOR UPDATE"));
+        String refresh = dialect.appendResultLocatorPredicate(
+                "SELECT o.id, o.amount * 2 doubled FROM sales.orders o WHERE o.amount > 10 "
+                        + "FETCH FIRST 5 ROWS ONLY FOR UPDATE",
+                Collections.singletonList("ROWID = CHARTOROWID(?)"));
+        assertTrue(refresh.toUpperCase().contains("CHARTOROWID(?)"));
+        assertTrue(refresh.toUpperCase().contains("AMOUNT > 10"));
+        assertFalse(refresh.toUpperCase().contains("FETCH FIRST"));
     }
 }

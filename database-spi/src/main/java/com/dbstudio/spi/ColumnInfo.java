@@ -12,6 +12,8 @@ public final class ColumnInfo {
     private final boolean primaryKey;
     private final int ordinal;
     private final String remarks;
+    private final boolean autoIncrement;
+    private final boolean generated;
 
     public ColumnInfo(String name, String typeName, int size, int scale, boolean nullable,
                       String defaultValue, boolean primaryKey, int ordinal) {
@@ -20,6 +22,12 @@ public final class ColumnInfo {
 
     public ColumnInfo(String name, String typeName, int size, int scale, boolean nullable,
                       String defaultValue, boolean primaryKey, int ordinal, String remarks) {
+        this(name, typeName, size, scale, nullable, defaultValue, primaryKey, ordinal, remarks, false, false);
+    }
+
+    public ColumnInfo(String name, String typeName, int size, int scale, boolean nullable,
+                      String defaultValue, boolean primaryKey, int ordinal, String remarks,
+                      boolean autoIncrement, boolean generated) {
         this.name = name;
         this.typeName = typeName;
         this.size = size;
@@ -29,6 +37,8 @@ public final class ColumnInfo {
         this.primaryKey = primaryKey;
         this.ordinal = ordinal;
         this.remarks = remarks == null ? "" : remarks;
+        this.autoIncrement = autoIncrement;
+        this.generated = generated;
     }
 
     public String name() { return name; }
@@ -40,6 +50,8 @@ public final class ColumnInfo {
     public boolean primaryKey() { return primaryKey; }
     public int ordinal() { return ordinal; }
     public String remarks() { return remarks; }
+    public boolean autoIncrement() { return autoIncrement; }
+    public boolean generated() { return generated; }
 
     @Override
     public boolean equals(Object value) {
@@ -48,12 +60,14 @@ public final class ColumnInfo {
         ColumnInfo other = (ColumnInfo) value;
         return size == other.size && scale == other.scale && nullable == other.nullable
                 && primaryKey == other.primaryKey && ordinal == other.ordinal
+                && autoIncrement == other.autoIncrement && generated == other.generated
                 && Objects.equals(name, other.name) && Objects.equals(typeName, other.typeName)
                 && Objects.equals(defaultValue, other.defaultValue) && Objects.equals(remarks, other.remarks);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(name, typeName, size, scale, nullable, defaultValue, primaryKey, ordinal, remarks);
+        return Objects.hash(name, typeName, size, scale, nullable, defaultValue, primaryKey, ordinal,
+                remarks, autoIncrement, generated);
     }
 }

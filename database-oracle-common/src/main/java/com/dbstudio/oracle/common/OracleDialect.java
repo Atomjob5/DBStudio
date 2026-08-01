@@ -4,7 +4,10 @@ import com.alibaba.druid.DbType;
 import com.alibaba.druid.sql.SQLUtils;
 import com.alibaba.druid.sql.ast.SQLExpr;
 import com.alibaba.druid.sql.ast.SQLStatement;
+import com.alibaba.druid.sql.ast.expr.SQLAllColumnExpr;
 import com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr;
+import com.alibaba.druid.sql.ast.expr.SQLAggregateExpr;
+import com.alibaba.druid.sql.ast.expr.SQLDbLinkExpr;
 import com.alibaba.druid.sql.ast.expr.SQLPropertyExpr;
 import com.alibaba.druid.sql.ast.statement.SQLExprTableSource;
 import com.alibaba.druid.sql.ast.statement.SQLSelectItem;
@@ -12,6 +15,7 @@ import com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock;
 import com.alibaba.druid.sql.ast.statement.SQLSelectStatement;
 import com.dbstudio.spi.DatabaseObject;
 import com.dbstudio.spi.ResultMutationSource;
+import com.dbstudio.spi.ResultEditPlan;
 import com.dbstudio.spi.SqlDialect;
 import com.dbstudio.spi.SqlStatement;
 import com.dbstudio.spi.SqlTextCompactor;
@@ -203,17 +207,100 @@ public class OracleDialect implements SqlDialect {
             if (select.getSelect().getWithSubQuery() != null) return Optional.empty();
             SQLSelectQueryBlock block = select.getSelect().getQueryBlock();
             if (block == null || !(block.getFrom() instanceof SQLExprTableSource)) return Optional.empty();
-            if (!block.selectItemHasAllColumn()) {
-                for (SQLSelectItem item : block.getSelectList()) {
-                    if (!(item.getExpr() instanceof SQLIdentifierExpr) && !(item.getExpr() instanceof SQLPropertyExpr)) return Optional.empty();
-                }
-            }
             SQLExprTableSource source = (SQLExprTableSource) block.getFrom();
             String table = normalize(source.getTableName());
             String schema = normalize(source.getSchema());
             return table.isEmpty() ? Optional.<ResultMutationSource>empty()
-                    : Optional.of(new ResultMutationSource("", schema, table, block.isForUpdate()));
+                    : Optional.of(new ResultMutationSource("", schema, table,
+                            normalize(source.getAlias()), block.isForUpdate()));
         } catch (RuntimeException ignored) { return Optional.empty(); }
+    }
+
+    @Override public ResultEditPlan resultEditPlan(String sql) {
+        try {
+            SQLStatement parsed = SQLUtils.parseSingleStatement(sql, DbType.oracle);
+            if (!(parsed instanceof SQLSelectStatement)) return ResultEditPlan.readOnly(
+                    "NOT_QUERY", "只有查询结果支持编辑");
+            SQLSelectStatement select = (SQLSelectStatement) parsed;
+            if (select.getSelect().getWithSubQuery() != null) return ResultEditPlan.readOnly(
+                    "CTE_NOT_SUPPORTED", "CTE 查询结果暂不支持编辑");
+            SQLSelectQueryBlock block = select.getSelect().getQueryBlock();
+            if (block == null) return ResultEditPlan.readOnly(
+                    "SET_QUERY_NOT_SUPPORTED", "UNION 等集合查询结果暂不支持编辑");
+            if (block.getGroupBy() != null || block.isDistinct() || hasAggregate(block)) {
+                return ResultEditPlan.readOnly("AGGREGATE_NOT_SUPPORTED", "聚合或去重查询结果暂不支持编辑");
+            }
+            if (!(block.getFrom() instanceof SQLExprTableSource)) return ResultEditPlan.readOnly(
+                    "JOIN_NOT_SUPPORTED", "联表或派生表查询结果暂不支持编辑");
+            SQLExprTableSource table = (SQLExprTableSource) block.getFrom();
+            if (table.getExpr() instanceof SQLDbLinkExpr || table.toString().contains("@")) {
+                return ResultEditPlan.readOnly("DATABASE_LINK_NOT_SUPPORTED", "数据库链路查询结果暂不支持编辑");
+            }
+            Optional<ResultMutationSource> source = resultMutationSource(sql);
+            if (!source.isPresent()) return ResultEditPlan.readOnly(
+                    "UNSUPPORTED_QUERY_SHAPE", "当前查询形态无法安全定位单一基表");
+            return source.get().editableForUpdate() ? ResultEditPlan.editable(source.get())
+                    : ResultEditPlan.readOnly(source.get(), "FOR_UPDATE_REQUIRED", "需要显式执行单表 FOR UPDATE 查询");
+        } catch (RuntimeException exception) {
+            return ResultEditPlan.readOnly("SQL_PARSE_FAILED", "SQL 无法安全解析，结果保持只读");
+        }
+    }
+
+    private static boolean hasAggregate(SQLSelectQueryBlock block) {
+        for (SQLSelectItem item : block.getSelectList()) if (item.getExpr() instanceof SQLAggregateExpr) return true;
+        return false;
+    }
+
+    @Override public String appendResultLocatorColumns(String sql, List<String> expressions, List<String> aliases) {
+        if (expressions == null || expressions.isEmpty() || expressions.size() != aliases.size()) return sql;
+        SQLStatement statement = SQLUtils.parseSingleStatement(sql, DbType.oracle);
+        if (!(statement instanceof SQLSelectStatement)) return sql;
+        SQLSelectQueryBlock block = ((SQLSelectStatement) statement).getSelect().getQueryBlock();
+        if (block == null) return sql;
+        qualifyBareWildcards(block);
+        for (int index = 0; index < expressions.size(); index++) {
+            block.addSelectItem(SQLUtils.toSQLExpr(expressions.get(index), DbType.oracle), aliases.get(index));
+        }
+        return SQLUtils.toSQLString(statement, DbType.oracle);
+    }
+
+    private static void qualifyBareWildcards(SQLSelectQueryBlock block) {
+        if (!(block.getFrom() instanceof SQLExprTableSource)) return;
+        SQLExprTableSource source = (SQLExprTableSource) block.getFrom();
+        String alias = source.getAlias();
+        String qualifier = alias == null || alias.trim().isEmpty()
+                ? SQLUtils.toSQLString(source.getExpr(), DbType.oracle) : alias;
+        for (SQLSelectItem item : block.getSelectList()) {
+            if (item.getExpr() instanceof SQLAllColumnExpr) {
+                item.setExpr(SQLUtils.toSQLExpr(qualifier + ".*", DbType.oracle));
+            }
+        }
+    }
+
+    @Override public String resultMutationQualifier(String sql, ResultMutationSource mutationSource) {
+        try {
+            SQLSelectQueryBlock block = queryBlock(sql);
+            if (block == null || !(block.getFrom() instanceof SQLExprTableSource)) {
+                return SqlDialect.super.resultMutationQualifier(sql, mutationSource);
+            }
+            SQLExprTableSource source = (SQLExprTableSource) block.getFrom();
+            String alias = source.getAlias();
+            return alias == null || alias.trim().isEmpty()
+                    ? SQLUtils.toSQLString(source.getExpr(), DbType.oracle) : alias;
+        } catch (RuntimeException ignored) {
+            return SqlDialect.super.resultMutationQualifier(sql, mutationSource);
+        }
+    }
+
+    @Override public String appendResultLocatorPredicate(String sql, List<String> predicates) {
+        if (predicates == null || predicates.isEmpty()) return "";
+        SQLStatement statement = SQLUtils.parseSingleStatement(sql, DbType.oracle);
+        if (!(statement instanceof SQLSelectStatement)) return "";
+        SQLSelectQueryBlock block = ((SQLSelectStatement) statement).getSelect().getQueryBlock();
+        if (block == null) return "";
+        block.addCondition(SQLUtils.toSQLExpr(String.join(" AND ", predicates), DbType.oracle));
+        block.setLimit(null);
+        return SQLUtils.toSQLString(statement, DbType.oracle);
     }
 
     private static SQLSelectQueryBlock queryBlock(String sql) {

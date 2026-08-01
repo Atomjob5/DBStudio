@@ -16,6 +16,9 @@ public interface QueryResultListener {
         resultMetadata(resultIndex, sql, type, columns);
     }
     void rows(int resultIndex, List<List<String>> rows);
+    default void rows(int resultIndex, List<String> rowIds, List<List<String>> rows) {
+        rows(resultIndex, rows);
+    }
     void resultCompleted(int resultIndex, StatementResult result);
 
     QueryResultListener NONE = new QueryResultListener() {

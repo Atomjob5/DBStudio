@@ -1,6 +1,7 @@
 package com.dbstudio.server;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -21,6 +22,8 @@ import com.dbstudio.spi.SqlStatement;
 import com.dbstudio.spi.StatementType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.file.Path;
+import java.nio.file.Files;
+import java.io.ByteArrayInputStream;
 import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -37,6 +40,30 @@ import org.junit.jupiter.api.io.TempDir;
 
 class WorkspaceSessionLifecycleTest {
     @TempDir Path directory;
+
+    @Test
+    void scopesLargeValueDraftsAndCleansTheirTemporaryFiles() throws Exception {
+        EditorConnectionLimiter limiter = new EditorConnectionLimiter();
+        Workspace workspace = new Workspace("lob-workspace", 100, 20, false,
+                new ObjectMapper(), directory.resolve("temporary"), limiter);
+        UUID execution = UUID.randomUUID();
+        try {
+            String token = workspace.storeLargeValueDraft("editor-1", execution, 2, 3,
+                    new ByteArrayInputStream(new byte[] { 1, 2, 3, 4 }), 4);
+            Path stored = workspace.requireLargeValueDraft(token, "editor-1", execution, 2, 3);
+            assertTrue(Files.exists(stored));
+            assertEquals(4, workspace.largeValueDraftSize(token));
+            ApiException foreign = assertThrows(ApiException.class, () -> workspace.requireLargeValueDraft(
+                    token, "editor-2", execution, 2, 3));
+            assertEquals("RESULT_LOB_TOKEN_INVALID", foreign.getCode());
+            assertThrows(ApiException.class, () -> workspace.storeLargeValueDraft("editor-1", execution,
+                    2, 3, new ByteArrayInputStream(new byte[] { 1, 2, 3, 4, 5 }), 4));
+            workspace.removeLargeValueDrafts("editor-1");
+            assertFalse(Files.exists(stored));
+        } finally {
+            workspace.close();
+        }
+    }
 
     @Test
     void reusesIdleJdbcAndCreatesANewGenerationAfterDisconnect() throws Exception {

@@ -299,7 +299,8 @@ class QueryWebSocketIntegrationTest {
                 statement.execute("CREATE TABLE " + table
                         + "(id BIGINT PRIMARY KEY, name VARCHAR(100) NOT NULL,"
                         + " order_status ENUM('NEW', 'DONE') NOT NULL)");
-                statement.execute("INSERT INTO " + table + " VALUES (1, 'before', 'NEW')");
+                statement.execute("INSERT INTO " + table
+                        + " VALUES (1, 'before', 'NEW'), (2, 'remove-me', 'DONE')");
             }
 
             List<Map<String, Object>> locked = executeSql(editorId, workspaceId, cookie, events,
@@ -307,6 +308,48 @@ class QueryWebSocketIntegrationTest {
             Map<String, Object> complete = executionComplete(locked);
             Map<String, Object> target = mutationTarget(locked);
             assertEquals(Boolean.TRUE, target.get("editableForUpdate"));
+
+            List<String> rowIds = resultRowIds(locked);
+            assertEquals(2, rowIds.size());
+            Map<String, Object> forgedBody = new HashMap<String, Object>();
+            forgedBody.put("executionId", complete.get("executionId"));
+            forgedBody.put("operations", Collections.singletonList(operation("forged-row", "update",
+                    "00000000-0000-0000-0000-000000000000",
+                    Collections.singletonList(typedValue(1, "text", "forged")))));
+            ResponseEntity<Map> forged = http.exchange(url("/api/v1/workspaces/" + workspaceId
+                            + "/editors/" + editorId + "/results/0/changes/preview"), HttpMethod.POST,
+                    new HttpEntity<Map<String, Object>>(forgedBody, authenticatedJsonHeaders(cookie)), Map.class);
+            assertEquals(org.springframework.http.HttpStatus.BAD_REQUEST, forged.getStatusCode());
+            assertEquals("STALE_RESULT", forged.getBody().get("code"));
+            Map<String, Object> mixedBody = new HashMap<String, Object>();
+            mixedBody.put("executionId", complete.get("executionId"));
+            List<Map<String, Object>> operations = new ArrayList<Map<String, Object>>();
+            operations.add(operation("update-one", "update", rowIds.get(0),
+                    Collections.singletonList(typedValue(1, "text", "pending"))));
+            operations.add(operation("insert-three", "insert", "",
+                    Arrays.asList(typedValue(0, "text", "3"), typedValue(1, "text", "inserted"),
+                            typedValue(2, "text", "DONE"))));
+            operations.add(operation("delete-two", "delete", rowIds.get(1),
+                    Collections.<Map<String, Object>>emptyList()));
+            mixedBody.put("operations", operations);
+            Map<String, Object> preview = exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId
+                    + "/editors/" + editorId + "/results/0/changes/preview", mixedBody, cookie);
+            assertEquals(3, ((List<?>) preview.get("previews")).size());
+            Map<String, Object> mixed = exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId
+                    + "/editors/" + editorId + "/results/0/changes", mixedBody, cookie);
+            assertEquals(Arrays.asList("update-one", "insert-three", "delete-two"),
+                    mixed.get("appliedOperationIds"));
+            assertEquals(3, ((List<?>) mixed.get("rowPatches")).size());
+            assertDatabaseValue(table, "before");
+            Map<String, Object> rolledBack = exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId
+                    + "/editors/" + editorId + "/transaction/rollback",
+                    Collections.<String, Object>emptyMap(), cookie);
+            assertEquals(1, ((List<?>) rolledBack.get("resultSnapshots")).size());
+            assertDatabaseValue(table, "before");
+
+            locked = executeSql(editorId, workspaceId, cookie, events,
+                    "SELECT id, name, order_status FROM " + table + " FOR UPDATE");
+            complete = executionComplete(locked);
 
             Map<String, Object> changeBody = new HashMap<String, Object>();
             changeBody.put("executionId", complete.get("executionId"));
@@ -487,6 +530,33 @@ class QueryWebSocketIntegrationTest {
             return target;
         }
         throw new AssertionError("Missing query.resultMeta mutationTarget");
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> resultRowIds(List<Map<String, Object>> events) {
+        List<String> result = new ArrayList<String>();
+        for (Map<String, Object> event : events) if ("query.rows".equals(event.get("type"))) {
+            Map<String, Object> payload = (Map<String, Object>) event.get("payload");
+            result.addAll((List<String>) payload.get("rowIds"));
+        }
+        return result;
+    }
+
+    private static Map<String, Object> typedValue(int columnIndex, String kind, String value) {
+        Map<String, Object> encoded = new HashMap<String, Object>();
+        encoded.put("kind", kind); encoded.put("value", value);
+        Map<String, Object> result = new HashMap<String, Object>();
+        result.put("columnIndex", columnIndex); result.put("value", encoded);
+        return result;
+    }
+
+    private static Map<String, Object> operation(String operationId, String kind, String rowId,
+                                                  List<Map<String, Object>> values) {
+        Map<String, Object> result = new HashMap<String, Object>();
+        result.put("operationId", operationId); result.put("kind", kind);
+        if (rowId != null && !rowId.isEmpty()) result.put("rowId", rowId);
+        result.put("values", values);
+        return result;
     }
 
     private void assertDatabaseValue(String table, String expected) throws Exception {

@@ -7,8 +7,13 @@ import com.dbstudio.spi.StatementType;
 import com.dbstudio.spi.SqlDialect;
 import com.dbstudio.spi.TransactionEffect;
 import java.io.IOException;
+import java.io.Closeable;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.Reader;
+import java.io.StringReader;
 import java.sql.Blob;
+import java.sql.CallableStatement;
 import java.sql.Clob;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -20,13 +25,19 @@ import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
 import java.sql.Types;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.OffsetTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Base64;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -237,6 +248,465 @@ public final class QueryRunner implements AutoCloseable {
         }
     }
 
+    /** Applies an ordered, atomic batch of update/insert/delete operations without committing the transaction. */
+    public CompletableFuture<MutationBatchResult> applyResultOperations(final ResultMutationTarget target,
+                                                                         final List<List<String>> rows,
+                                                                         final List<ResultOperation> operations) {
+        return applyResultOperations(target, rows, emptyLocators(rows == null ? 0 : rows.size()), operations);
+    }
+
+    public CompletableFuture<MutationBatchResult> applyResultOperations(final ResultMutationTarget target,
+                                                                         final List<List<String>> rows,
+                                                                         final List<List<String>> rowLocators,
+                                                                         final List<ResultOperation> operations) {
+        if (!executionActive.compareAndSet(false, true)) {
+            throw new QueryExecutionException("当前已有数据库操作正在执行", null);
+        }
+        final Map<String, String> loggingContext = MDC.getCopyOfContextMap();
+        return CompletableFuture.supplyAsync(() -> withLoggingContext(loggingContext,
+                () -> applyResultOperationsBlocking(target, rows, rowLocators, operations)), executor)
+                .whenComplete((ignored, failure) -> executionActive.set(false));
+    }
+
+    /** Streams one RAW/CLOB/BLOB value from the pinned result transaction without materializing it in memory. */
+    public CompletableFuture<Long> streamResultValue(final ResultMutationTarget target,
+                                                      final List<String> row,
+                                                      final List<String> rowLocator,
+                                                      final int columnIndex,
+                                                      final OutputStream output,
+                                                      final long maximumBytes) {
+        if (!executionActive.compareAndSet(false, true)) {
+            throw new QueryExecutionException("当前已有数据库操作正在执行", null);
+        }
+        final Map<String, String> loggingContext = MDC.getCopyOfContextMap();
+        return CompletableFuture.supplyAsync(() -> withLoggingContext(loggingContext, () -> {
+            try {
+                return streamResultValueBlocking(target, row, rowLocator, columnIndex, output, maximumBytes);
+            } catch (SQLException | IOException exception) {
+                throw new QueryExecutionException("读取大字段失败：" + resultChangeFailureDetail(exception), exception);
+            }
+        }), executor).whenComplete((ignored, failure) -> {
+            activeStatement.set(null);
+            executionActive.set(false);
+        });
+    }
+
+    private long streamResultValueBlocking(ResultMutationTarget target, List<String> row,
+                                           List<String> rowLocator, int columnIndex,
+                                           OutputStream output, long maximumBytes)
+            throws SQLException, IOException {
+        ResultMutationTarget.Column column = targetColumn(target, columnIndex);
+        if (!("raw".equals(column.typeFamily()) || "blob".equals(column.typeFamily())
+                || "clob".equals(column.typeFamily()))) {
+            throw new QueryExecutionException("该字段不是可流式读取的大字段", null, null, columnIndex);
+        }
+        if (column.quotedName() == null || column.quotedName().isEmpty()) {
+            throw new QueryExecutionException("表达式字段无法读取原始大字段", null, null, columnIndex);
+        }
+        OperationLocator locator = operationLocator(target, row, rowLocator);
+        if (locator == null) throw new QueryExecutionException("该行没有可用的安全定位器", null);
+        StringBuilder sql = new StringBuilder("SELECT ").append(column.quotedName())
+                .append(" FROM ").append(target.qualifiedName());
+        appendLocatorPredicate(sql, locator);
+        try (PreparedStatement statement = session.jdbcConnection().prepareStatement(sql.toString())) {
+            activeStatement.set(statement);
+            bindLocator(statement, 1, locator);
+            try (ResultSet result = statement.executeQuery()) {
+                if (!result.next()) throw new QueryExecutionException("目标行已经失效", null);
+                LimitedOutputStream limited = new LimitedOutputStream(output, maximumBytes);
+                if ("clob".equals(column.typeFamily())) {
+                    try (Reader reader = result.getCharacterStream(1)) {
+                        if (reader != null) {
+                            java.io.OutputStreamWriter writer = new java.io.OutputStreamWriter(limited, StandardCharsets.UTF_8);
+                            char[] buffer = new char[8192]; int count;
+                            while ((count = reader.read(buffer)) >= 0) writer.write(buffer, 0, count);
+                            writer.flush();
+                        }
+                    }
+                } else {
+                    try (InputStream input = result.getBinaryStream(1)) {
+                        if (input != null) {
+                            byte[] buffer = new byte[8192]; int count;
+                            while ((count = input.read(buffer)) >= 0) limited.write(buffer, 0, count);
+                        }
+                    }
+                }
+                if (result.next()) throw new QueryExecutionException("目标行定位结果不唯一", null);
+                return limited.written();
+            }
+        }
+    }
+
+    private static final class LimitedOutputStream extends OutputStream {
+        private final OutputStream delegate;
+        private final long maximum;
+        private long written;
+        private LimitedOutputStream(OutputStream delegate, long maximum) {
+            this.delegate = delegate; this.maximum = Math.max(1L, maximum);
+        }
+        @Override public void write(int value) throws IOException {
+            ensure(1); delegate.write(value); written++;
+        }
+        @Override public void write(byte[] values, int offset, int length) throws IOException {
+            ensure(length); delegate.write(values, offset, length); written += length;
+        }
+        private void ensure(int length) throws IOException {
+            if (written + length > maximum) throw new IOException("大字段超过允许的最大大小");
+        }
+        private long written() { return written; }
+    }
+
+    private MutationBatchResult applyResultOperationsBlocking(ResultMutationTarget target,
+                                                                List<List<String>> rows,
+                                                                List<List<String>> rowLocators,
+                                                                List<ResultOperation> operations) {
+        if (target == null || !target.editableForUpdate()) {
+            throw new QueryExecutionException(target == null || target.reason().isEmpty()
+                    ? "当前结果不支持直接修改" : target.reason(), null);
+        }
+        if (operations == null || operations.isEmpty()) {
+            throw new QueryExecutionException("没有需要应用的结果修改", null);
+        }
+        Connection connection = session.jdbcConnection();
+        Savepoint savepoint = null;
+        try {
+            if (connection.getAutoCommit()) {
+                throw new QueryExecutionException("请关闭自动提交后重新执行 FOR UPDATE", null);
+            }
+            savepoint = connection.setSavepoint();
+            List<OperationResult> applied = new ArrayList<OperationResult>();
+            for (ResultOperation operation : operations) {
+                try {
+                    if (operation.kind() == MutationKind.UPDATE) {
+                        applied.add(applyUpdateOperation(connection, target, rows, rowLocators, operation));
+                    } else if (operation.kind() == MutationKind.DELETE) {
+                        applied.add(applyDeleteOperation(connection, target, rows, rowLocators, operation));
+                    } else if (operation.kind() == MutationKind.INSERT) {
+                        applied.add(applyInsertOperation(connection, target, operation));
+                    } else {
+                        throw new QueryExecutionException("未知的结果修改操作", null);
+                    }
+                } catch (QueryExecutionException exception) {
+                    throw exception.withOperation(operation.operationId());
+                } catch (Exception exception) {
+                    throw new QueryExecutionException("应用结果修改失败：" + resultChangeFailureDetail(exception),
+                            exception, operation.operationId(), errorColumnIndex(target, exception));
+                }
+            }
+            releaseSavepoint(connection, savepoint);
+            transactionDirty.set(true);
+            return new MutationBatchResult(applied);
+        } catch (Exception exception) {
+            if (savepoint != null) try { connection.rollback(savepoint); } catch (SQLException ignored) { }
+            if (exception instanceof QueryExecutionException) throw (QueryExecutionException) exception;
+            throw new QueryExecutionException("应用结果修改失败：" + resultChangeFailureDetail(exception), exception);
+        }
+    }
+
+    private OperationResult applyUpdateOperation(Connection connection, ResultMutationTarget target,
+                                                   List<List<String>> rows, List<List<String>> rowLocators,
+                                                   ResultOperation operation)
+            throws SQLException {
+        List<String> row = sourceRow(rows, operation.rowIndex());
+        List<String> sourceLocator = sourceLocator(rowLocators, operation.rowIndex());
+        List<ValueChange> cells = validatedValues(target, operation.values(), false);
+        List<ValueChange> effective = new ArrayList<ValueChange>();
+        for (ValueChange cell : cells) {
+            String next = cell.value().asDisplayValue();
+            if (cell.value().isDefault() || !Objects.equals(row.get(cell.columnIndex()), next)) effective.add(cell);
+        }
+        if (effective.isEmpty()) return new OperationResult(operation.operationId(), operation.kind(),
+                operation.rowIndex(), row, sourceLocator, Collections.<ValueChange>emptyList(), true);
+        OperationLocator locator = operationLocator(target, row, sourceLocator);
+        if (locator == null) throw new QueryExecutionException("该行没有可用的安全定位器，无法修改", null);
+        String sql = updateOperationSql(target, locator, effective);
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            List<Closeable> resources = new ArrayList<Closeable>();
+            try {
+                int parameter = 1;
+                for (ValueChange cell : effective) {
+                    if (!cell.value().isDefault()) addResource(resources,
+                            bindOperationValue(statement, parameter++, cell, target));
+                }
+                bindLocator(statement, parameter, locator);
+                requireSingleRow(statement.executeUpdate(), "更新");
+            } finally {
+                closeResources(resources);
+            }
+        }
+        List<String> updated = new ArrayList<String>(row);
+        for (ValueChange cell : effective) updated.set(cell.columnIndex(), cell.value().asDisplayValue());
+        List<String> nextLocatorValues = updatedLocatorValues(target, sourceLocator, updated);
+        OperationLocator nextLocator = operationLocator(target, updated, nextLocatorValues);
+        if (nextLocator == null) throw new QueryExecutionException("修改定位字段后无法重新定位该行", null);
+        List<String> authoritative = refreshResultRow(connection, target, nextLocator, updated);
+        return new OperationResult(operation.operationId(), operation.kind(), operation.rowIndex(),
+                authoritative == null ? Collections.<String>emptyList() : authoritative,
+                nextLocatorValues, effective, authoritative != null);
+    }
+
+    private OperationResult applyDeleteOperation(Connection connection, ResultMutationTarget target,
+                                                   List<List<String>> rows, List<List<String>> rowLocators,
+                                                   ResultOperation operation)
+            throws SQLException {
+        if (!target.deleteSupported()) throw new QueryExecutionException("当前结果不支持删除记录", null);
+        List<String> row = sourceRow(rows, operation.rowIndex());
+        List<String> sourceLocator = sourceLocator(rowLocators, operation.rowIndex());
+        OperationLocator locator = operationLocator(target, row, sourceLocator);
+        if (locator == null) throw new QueryExecutionException("该行没有可用的安全定位器，无法删除", null);
+        try (PreparedStatement statement = connection.prepareStatement(deleteSql(target, locator))) {
+            bindLocator(statement, 1, locator);
+            requireSingleRow(statement.executeUpdate(), "删除");
+        }
+        return new OperationResult(operation.operationId(), operation.kind(), operation.rowIndex(), row,
+                sourceLocator, Collections.<ValueChange>emptyList(), true);
+    }
+
+    private OperationResult applyInsertOperation(Connection connection, ResultMutationTarget target,
+                                                   ResultOperation operation) throws SQLException {
+        if (!target.insertSupported()) throw new QueryExecutionException("当前结果不支持新增记录", null);
+        List<ValueChange> cells = validatedValues(target, operation.values(), true);
+        if (cells.isEmpty()) throw new QueryExecutionException("新增记录至少需要设置一个字段或 DEFAULT", null);
+        String sql = insertSql(target, cells);
+        if (target.locator() != null && "ROWID".equals(target.locator().kind())) {
+            return applyRowIdInsert(connection, target, operation, cells, sql);
+        }
+        try (PreparedStatement statement = connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+            List<Closeable> resources = new ArrayList<Closeable>();
+            try {
+                int parameter = 1;
+                for (ValueChange cell : cells) {
+                    if (!cell.value().isDefault()) addResource(resources,
+                            bindOperationValue(statement, parameter++, cell, target));
+                }
+                requireSingleRow(statement.executeUpdate(), "新增");
+                List<String> row = new ArrayList<String>(Collections.nCopies(visibleColumnCount(target), null));
+                for (ValueChange cell : cells) {
+                    if (!cell.value().isDefault()) row.set(cell.columnIndex(), cell.value().asDisplayValue());
+                }
+                String generatedValue = null;
+                try (ResultSet generated = statement.getGeneratedKeys()) {
+                    if (generated != null && generated.next()) {
+                        generatedValue = displayValue(generated.getObject(1));
+                        ResultMutationTarget.Column generatedColumn = firstAutoIncrementColumn(target);
+                        if (generatedColumn != null) row.set(generatedColumn.resultIndex(), generatedValue);
+                    }
+                }
+                List<String> locatorValues = updatedLocatorValues(target, Collections.<String>emptyList(), row);
+                if ((locatorValues.isEmpty() || containsNull(locatorValues)) && generatedValue != null
+                        && target.locator() != null && target.locator().predicates().size() == 1) {
+                    locatorValues = Collections.singletonList(generatedValue);
+                }
+                OperationLocator locator = operationLocator(target, row, locatorValues);
+                if (locator == null) {
+                    throw new QueryExecutionException("新增记录后无法取得安全行标识，请显式填写主键或唯一键", null);
+                }
+                List<String> authoritative = refreshResultRow(connection, target, locator, row);
+                return new OperationResult(operation.operationId(), operation.kind(), -1,
+                        authoritative == null ? Collections.<String>emptyList() : authoritative,
+                        locator.values, cells, authoritative != null);
+            } finally {
+                closeResources(resources);
+            }
+        }
+    }
+
+    private OperationResult applyRowIdInsert(Connection connection, ResultMutationTarget target,
+                                               ResultOperation operation, List<ValueChange> cells,
+                                               String insertSql) throws SQLException {
+        String block = "BEGIN " + insertSql + " RETURNING ROWID INTO ?; END;";
+        try (CallableStatement statement = connection.prepareCall(block)) {
+            List<Closeable> resources = new ArrayList<Closeable>();
+            try {
+                int parameter = 1;
+                for (ValueChange cell : cells) {
+                    if (!cell.value().isDefault()) addResource(resources,
+                            bindOperationValue(statement, parameter++, cell, target));
+                }
+                statement.registerOutParameter(parameter, Types.VARCHAR);
+                statement.execute();
+                List<String> locatorValues = Collections.singletonList(statement.getString(parameter));
+                OperationLocator locator = operationLocator(target, Collections.<String>emptyList(), locatorValues);
+                if (locator == null) throw new QueryExecutionException("新增记录后无法取得 ROWID", null);
+                List<String> row = new ArrayList<String>(Collections.nCopies(visibleColumnCount(target), null));
+                for (ValueChange cell : cells) if (!cell.value().isDefault()) {
+                    row.set(cell.columnIndex(), cell.value().asDisplayValue());
+                }
+                List<String> authoritative = refreshResultRow(connection, target, locator, row);
+                return new OperationResult(operation.operationId(), operation.kind(), -1,
+                        authoritative == null ? Collections.<String>emptyList() : authoritative,
+                        locatorValues, cells, authoritative != null);
+            } finally {
+                closeResources(resources);
+            }
+        }
+    }
+
+    private static List<String> sourceRow(List<List<String>> rows, int rowIndex) {
+        if (rowIndex < 0 || rowIndex >= rows.size()) {
+            throw new QueryExecutionException("结果行已经过期，请重新执行查询", null);
+        }
+        return rows.get(rowIndex);
+    }
+
+    private static List<String> sourceLocator(List<List<String>> locators, int rowIndex) {
+        if (locators == null || rowIndex < 0 || rowIndex >= locators.size()) {
+            return Collections.emptyList();
+        }
+        return locators.get(rowIndex);
+    }
+
+    private static List<ValueChange> validatedValues(ResultMutationTarget target, List<ValueChange> cells,
+                                                       boolean inserting) {
+        if (cells == null || cells.isEmpty()) return Collections.emptyList();
+        List<ValueChange> result = new ArrayList<ValueChange>();
+        java.util.Set<Integer> seen = new java.util.HashSet<Integer>();
+        for (ValueChange cell : cells) {
+            ResultMutationTarget.Column column = targetColumn(target, cell.columnIndex());
+            if (!seen.add(cell.columnIndex())) throw new QueryExecutionException("结果修改包含重复字段", null);
+            if (!column.editable() && !(inserting && column.autoIncrement() && cell.value().isDefault())) {
+                throw new QueryExecutionException("字段 " + column.name() + "：" + column.readOnlyReason(), null,
+                        null, column.resultIndex());
+            }
+            if (cell.value().isDefault() && !inserting && !column.defaultAvailable()) {
+                throw new QueryExecutionException("字段 " + column.name() + " 没有可用默认值", null,
+                        null, column.resultIndex());
+            }
+            if (cell.value().isNull() && !column.nullable()) {
+                throw new QueryExecutionException("字段 " + column.name() + " 不允许为空", null,
+                        null, column.resultIndex());
+            }
+            validateTextValue(target, column, cell.value());
+            result.add(cell);
+        }
+        return result;
+    }
+
+    private static void validateTextValue(ResultMutationTarget target, ResultMutationTarget.Column column,
+                                          MutationValue value) {
+        if (value.isNull() || value.isDefault() || value.isLargeValueFile() || value.isLargeValueToken()) return;
+        String text = value.value();
+        if (target.emptyStringIsNull() && text.isEmpty() && !column.nullable()) {
+            throw new QueryExecutionException("字段 " + column.name()
+                    + " 在 Oracle 兼容模式下不能使用空字符串（会转换为 NULL）", null,
+                    null, column.resultIndex());
+        }
+        if (!column.enumValues().isEmpty() && !column.enumValues().contains(text)) {
+            throw new QueryExecutionException("字段 " + column.name() + " 的枚举可选值为 "
+                    + String.join("、", column.enumValues()), null, null, column.resultIndex());
+        }
+        if ("text".equals(column.typeFamily()) && column.size() > 0
+                && text.codePointCount(0, text.length()) > column.size()) {
+            throw new QueryExecutionException("字段 " + column.name() + " 最多允许 "
+                    + column.size() + " 个字符", null, null, column.resultIndex());
+        }
+        if ("number".equals(column.typeFamily()) && !text.isEmpty()) {
+            try {
+                BigDecimal number = new BigDecimal(text);
+                if (column.scale() >= 0 && number.scale() > column.scale()) {
+                    throw new QueryExecutionException("字段 " + column.name() + " 最多允许 "
+                            + column.scale() + " 位小数", null, null, column.resultIndex());
+                }
+                if (column.size() > 0 && number.precision() > column.size()) {
+                    throw new QueryExecutionException("字段 " + column.name() + " 超过允许精度 "
+                            + column.size(), null, null, column.resultIndex());
+                }
+            } catch (NumberFormatException exception) {
+                throw new QueryExecutionException("字段 " + column.name() + " 必须是有效数值",
+                        exception, null, column.resultIndex());
+            }
+        }
+    }
+
+    private static Integer errorColumnIndex(ResultMutationTarget target, Exception exception) {
+        String message = String.valueOf(exception.getMessage()).toLowerCase(java.util.Locale.ROOT);
+        for (ResultMutationTarget.Column column : target.columns()) {
+            if (!column.name().isEmpty()
+                    && message.contains(column.name().toLowerCase(java.util.Locale.ROOT))) {
+                return column.resultIndex();
+            }
+        }
+        return null;
+    }
+
+    private static void requireSingleRow(int affected, String action) {
+        if (affected != 1) throw new QueryExecutionException(action + "结果不唯一，已取消本批次修改", null);
+    }
+
+    private static int visibleColumnCount(ResultMutationTarget target) {
+        int count = 0;
+        for (ResultMutationTarget.Column column : target.columns()) count = Math.max(count, column.resultIndex() + 1);
+        return count;
+    }
+
+    private static ResultMutationTarget.Column firstAutoIncrementColumn(ResultMutationTarget target) {
+        for (ResultMutationTarget.Column column : target.columns()) if (column.autoIncrement()) return column;
+        return null;
+    }
+
+    public static List<MutationPreview> previewResultOperations(ResultMutationTarget target,
+                                                                 List<List<String>> rows,
+                                                                 List<ResultOperation> operations) {
+        return previewResultOperations(target, rows, emptyLocators(rows == null ? 0 : rows.size()), operations);
+    }
+
+    public static List<MutationPreview> previewResultOperations(ResultMutationTarget target,
+                                                                 List<List<String>> rows,
+                                                                 List<List<String>> rowLocators,
+                                                                 List<ResultOperation> operations) {
+        List<MutationPreview> result = new ArrayList<MutationPreview>();
+        for (ResultOperation operation : operations) {
+            if (operation.kind() == MutationKind.INSERT) {
+                List<ValueChange> values = validatedValues(target, operation.values(), true);
+                result.add(new MutationPreview(operation.operationId(), insertSql(target, values), bindPreview(values)));
+                continue;
+            }
+            List<String> row = sourceRow(rows, operation.rowIndex());
+            OperationLocator locator = operationLocator(target, row,
+                    sourceLocator(rowLocators, operation.rowIndex()));
+            if (locator == null) throw new QueryExecutionException("该行没有可用的安全定位器", null,
+                    operation.operationId(), null);
+            if (operation.kind() == MutationKind.DELETE) {
+                result.add(new MutationPreview(operation.operationId(), deleteSql(target, locator),
+                        locatorPreview(locator)));
+            } else {
+                List<ValueChange> values = validatedValues(target, operation.values(), false);
+                List<String> binds = new ArrayList<String>(bindPreview(values));
+                binds.addAll(locatorPreview(locator));
+                result.add(new MutationPreview(operation.operationId(), updateOperationSql(target, locator, values), binds));
+            }
+        }
+        return Collections.unmodifiableList(result);
+    }
+
+    private static List<String> bindPreview(List<ValueChange> values) {
+        List<String> result = new ArrayList<String>();
+        for (ValueChange value : values) if (!value.value().isDefault()) {
+            String text = value.value().isNull() ? "NULL" : value.value().isLargeValueToken()
+                    ? "<large value>" : value.value().value();
+            result.add(text);
+        }
+        return result;
+    }
+
+    private static List<String> keyPreview(ResultMutationTarget target, ResultMutationTarget.Key key,
+                                           List<String> row) {
+        List<String> result = new ArrayList<String>();
+        for (Integer index : key.resultColumnIndices()) {
+            ResultMutationTarget.Column column = targetColumn(target, index);
+            result.add(column.name() + "=" + row.get(index));
+        }
+        return result;
+    }
+
+    private static List<String> locatorPreview(OperationLocator locator) {
+        List<String> result = new ArrayList<String>();
+        for (int index = 0; index < locator.values.size(); index++) {
+            result.add(locator.predicates.get(index).replace("?", "") + locator.values.get(index));
+        }
+        return result;
+    }
+
     private static String resultChangeFailureDetail(Exception exception) {
         SQLException sqlException = exception instanceof SQLException
                 ? (SQLException) exception : new SQLException(exception.getMessage(), exception);
@@ -244,6 +714,26 @@ public final class QueryRunner implements AutoCloseable {
                 : sanitize(sqlException);
         String lower = detail.toLowerCase(java.util.Locale.ROOT);
         String state = sqlException.getSQLState();
+        int code = Math.abs(sqlException.getErrorCode());
+        if (code == 1205 || code == 54 || code == 30006 || lower.contains("lock wait timeout")
+                || lower.contains("resource busy")) {
+            return "等待行锁超时或 NOWAIT 冲突（" + detail + "）";
+        }
+        if (code == 1213 || code == 60 || lower.contains("deadlock")) {
+            return "数据库检测到死锁，本批次已回滚（" + detail + "）";
+        }
+        if (code == 1062 || code == 1 || lower.contains("duplicate") || lower.contains("unique constraint")) {
+            return "字段值违反唯一约束（" + detail + "）";
+        }
+        if (code == 1048 || code == 1400 || lower.contains("cannot be null")) {
+            return "必填字段不能为 NULL（" + detail + "）";
+        }
+        if (code == 1406 || code == 12899 || lower.contains("data too long")) {
+            return "字段值超过允许长度（" + detail + "）";
+        }
+        if (code == 1264 || code == 1438 || lower.contains("out of range")) {
+            return "数值超过字段精度或范围（" + detail + "）";
+        }
         if (sqlException.getErrorCode() == 1265 || lower.contains("data truncated")) {
             return "字段值不符合数据库定义，请检查枚举可选值、长度或精度（" + detail + "）";
         }
@@ -301,6 +791,124 @@ public final class QueryRunner implements AutoCloseable {
         return null;
     }
 
+    private static OperationLocator operationLocator(ResultMutationTarget target, List<String> row,
+                                                       List<String> rowLocator) {
+        ResultMutationTarget.Locator configured = target.locator();
+        if (configured != null && rowLocator != null
+                && configured.predicates().size() == rowLocator.size()
+                && configured.jdbcTypes().size() == rowLocator.size() && !containsNull(rowLocator)) {
+            return new OperationLocator(configured.predicates(), configured.jdbcTypes(), rowLocator);
+        }
+        ResultMutationTarget.Key key = mutationKey(target, row);
+        if (key == null) return null;
+        List<String> predicates = new ArrayList<String>();
+        List<Integer> types = new ArrayList<Integer>();
+        List<String> values = new ArrayList<String>();
+        for (Integer index : key.resultColumnIndices()) {
+            ResultMutationTarget.Column column = targetColumn(target, index);
+            predicates.add(column.quotedName() + " = ?");
+            types.add(column.jdbcType());
+            values.add(row.get(index));
+        }
+        return new OperationLocator(predicates, types, values);
+    }
+
+    private static List<String> updatedLocatorValues(ResultMutationTarget target, List<String> current,
+                                                       List<String> updatedRow) {
+        ResultMutationTarget.Locator locator = target.locator();
+        if (locator == null) return Collections.emptyList();
+        if ("ROWID".equals(locator.kind())) return current == null
+                ? Collections.<String>emptyList() : new ArrayList<String>(current);
+        if (locator.columnNames().size() != locator.predicates().size()) return current == null
+                ? Collections.<String>emptyList() : new ArrayList<String>(current);
+        List<String> values = new ArrayList<String>();
+        for (String name : locator.columnNames()) {
+            ResultMutationTarget.Column match = null;
+            for (ResultMutationTarget.Column column : target.columns()) {
+                if (column.name().equalsIgnoreCase(name)) { match = column; break; }
+            }
+            if (match == null || match.resultIndex() < 0 || match.resultIndex() >= updatedRow.size()) {
+                return current == null ? Collections.<String>emptyList() : new ArrayList<String>(current);
+            }
+            values.add(updatedRow.get(match.resultIndex()));
+        }
+        return values;
+    }
+
+    private static boolean containsNull(List<String> values) {
+        if (values == null || values.isEmpty()) return true;
+        for (String value : values) if (value == null) return true;
+        return false;
+    }
+
+    private static int bindLocator(PreparedStatement statement, int parameter,
+                                   OperationLocator locator) throws SQLException {
+        for (int index = 0; index < locator.values.size(); index++) {
+            bind(statement, parameter++, locator.values.get(index), locator.jdbcTypes.get(index));
+        }
+        return parameter;
+    }
+
+    private static List<String> refreshRow(Connection connection, ResultMutationTarget target,
+                                            OperationLocator locator, List<String> baseRow) throws SQLException {
+        StringBuilder sql = new StringBuilder("SELECT ");
+        List<ResultMutationTarget.Column> columns = new ArrayList<ResultMutationTarget.Column>();
+        for (ResultMutationTarget.Column column : target.columns()) {
+            if (column.quotedName() != null && !column.quotedName().isEmpty()) columns.add(column);
+        }
+        Collections.sort(columns, (left, right) -> Integer.compare(left.resultIndex(), right.resultIndex()));
+        if (columns.isEmpty()) throw new QueryExecutionException("目标结果没有可重新读取的直接字段", null);
+        for (int index = 0; index < columns.size(); index++) {
+            if (index > 0) sql.append(", ");
+            sql.append(columns.get(index).quotedName());
+        }
+        sql.append(" FROM ").append(target.qualifiedName());
+        appendLocatorPredicate(sql, locator);
+        try (PreparedStatement statement = connection.prepareStatement(sql.toString())) {
+            bindLocator(statement, 1, locator);
+            try (ResultSet result = statement.executeQuery()) {
+                if (!result.next()) throw new QueryExecutionException("更改已执行，但无法重新读取目标行", null);
+                List<String> row = new ArrayList<String>(Collections.nCopies(visibleColumnCount(target), null));
+                if (baseRow != null) for (int index = 0; index < Math.min(row.size(), baseRow.size()); index++) {
+                    row.set(index, baseRow.get(index));
+                }
+                for (int index = 0; index < columns.size(); index++) {
+                    row.set(columns.get(index).resultIndex(), displayValue(result.getObject(index + 1)));
+                }
+                if (result.next()) throw new QueryExecutionException("重新读取目标行时定位结果不唯一", null);
+                return row;
+            }
+        }
+    }
+
+    private static List<String> refreshResultRow(Connection connection, ResultMutationTarget target,
+                                                  OperationLocator locator, List<String> baseRow)
+            throws SQLException {
+        if (target.refreshSql().isEmpty()) return refreshRow(connection, target, locator, baseRow);
+        try (PreparedStatement statement = connection.prepareStatement(target.refreshSql())) {
+            bindLocator(statement, 1, locator);
+            try (ResultSet result = statement.executeQuery()) {
+                if (!result.next()) return null;
+                int count = visibleColumnCount(target);
+                List<String> row = new ArrayList<String>(count);
+                for (int index = 1; index <= count; index++) row.add(displayValue(result.getObject(index)));
+                if (result.next()) throw new QueryExecutionException("重新执行原查询时行定位结果不唯一", null);
+                return row;
+            }
+        }
+    }
+
+    private static final class OperationLocator {
+        private final List<String> predicates;
+        private final List<Integer> jdbcTypes;
+        private final List<String> values;
+        private OperationLocator(List<String> predicates, List<Integer> jdbcTypes, List<String> values) {
+            this.predicates = new ArrayList<String>(predicates);
+            this.jdbcTypes = new ArrayList<Integer>(jdbcTypes);
+            this.values = new ArrayList<String>(values);
+        }
+    }
+
     private static String updateSql(ResultMutationTarget target, ResultMutationTarget.Key key,
                                     List<CellChange> cells) {
         StringBuilder sql = new StringBuilder("UPDATE ").append(target.qualifiedName()).append(" SET ");
@@ -314,6 +922,75 @@ public final class QueryRunner implements AutoCloseable {
             sql.append(targetColumn(target, key.resultColumnIndices().get(index)).quotedName()).append(" = ?");
         }
         return sql.toString();
+    }
+
+    private static String updateOperationSql(ResultMutationTarget target, ResultMutationTarget.Key key,
+                                             List<ValueChange> cells) {
+        StringBuilder sql = new StringBuilder("UPDATE ").append(target.qualifiedName()).append(" SET ");
+        for (int index = 0; index < cells.size(); index++) {
+            if (index > 0) sql.append(", ");
+            ValueChange cell = cells.get(index);
+            sql.append(targetColumn(target, cell.columnIndex()).quotedName()).append(" = ")
+                    .append(cell.value().isDefault() ? "DEFAULT" : "?");
+        }
+        appendKeyPredicate(sql, target, key);
+        return sql.toString();
+    }
+
+    private static String updateOperationSql(ResultMutationTarget target, OperationLocator locator,
+                                             List<ValueChange> cells) {
+        StringBuilder sql = new StringBuilder("UPDATE ").append(target.qualifiedName()).append(" SET ");
+        for (int index = 0; index < cells.size(); index++) {
+            if (index > 0) sql.append(", ");
+            ValueChange cell = cells.get(index);
+            sql.append(targetColumn(target, cell.columnIndex()).quotedName()).append(" = ")
+                    .append(cell.value().isDefault() ? "DEFAULT" : "?");
+        }
+        appendLocatorPredicate(sql, locator);
+        return sql.toString();
+    }
+
+    private static String deleteSql(ResultMutationTarget target, ResultMutationTarget.Key key) {
+        StringBuilder sql = new StringBuilder("DELETE FROM ").append(target.qualifiedName());
+        appendKeyPredicate(sql, target, key);
+        return sql.toString();
+    }
+
+    private static String deleteSql(ResultMutationTarget target, OperationLocator locator) {
+        StringBuilder sql = new StringBuilder("DELETE FROM ").append(target.qualifiedName());
+        appendLocatorPredicate(sql, locator);
+        return sql.toString();
+    }
+
+    private static String insertSql(ResultMutationTarget target, List<ValueChange> cells) {
+        StringBuilder sql = new StringBuilder("INSERT INTO ").append(target.qualifiedName()).append(" (");
+        for (int index = 0; index < cells.size(); index++) {
+            if (index > 0) sql.append(", ");
+            sql.append(targetColumn(target, cells.get(index).columnIndex()).quotedName());
+        }
+        sql.append(") VALUES (");
+        for (int index = 0; index < cells.size(); index++) {
+            if (index > 0) sql.append(", ");
+            sql.append(cells.get(index).value().isDefault() ? "DEFAULT" : "?");
+        }
+        return sql.append(')').toString();
+    }
+
+    private static void appendKeyPredicate(StringBuilder sql, ResultMutationTarget target,
+                                           ResultMutationTarget.Key key) {
+        sql.append(" WHERE ");
+        for (int index = 0; index < key.resultColumnIndices().size(); index++) {
+            if (index > 0) sql.append(" AND ");
+            sql.append(targetColumn(target, key.resultColumnIndices().get(index)).quotedName()).append(" = ?");
+        }
+    }
+
+    private static void appendLocatorPredicate(StringBuilder sql, OperationLocator locator) {
+        sql.append(" WHERE ");
+        for (int index = 0; index < locator.predicates.size(); index++) {
+            if (index > 0) sql.append(" AND ");
+            sql.append(locator.predicates.get(index));
+        }
     }
 
     public static boolean editableJdbcType(int jdbcType) {
@@ -375,6 +1052,97 @@ public final class QueryRunner implements AutoCloseable {
         }
     }
 
+    private static Closeable bindValue(PreparedStatement statement, int index, MutationValue value,
+                                       ResultMutationTarget.Column column) throws SQLException {
+        if (value.isNull()) { statement.setNull(index, column.jdbcType()); return null; }
+        if (value.isDefault()) throw new SQLException("DEFAULT 不应绑定为参数");
+        if (value.isLargeValueFile()) {
+            try {
+                if ("clob".equals(column.typeFamily())) {
+                    Reader reader = Files.newBufferedReader(Paths.get(value.value()), StandardCharsets.UTF_8);
+                    statement.setCharacterStream(index, reader);
+                    return reader;
+                } else {
+                    InputStream input = Files.newInputStream(Paths.get(value.value()));
+                    statement.setBinaryStream(index, input);
+                    return input;
+                }
+            } catch (IOException exception) {
+                throw new SQLException("大字段草稿文件不可用", exception);
+            }
+        }
+        String text = value.value();
+        try {
+            if ("raw".equals(column.typeFamily()) || "blob".equals(column.typeFamily())) {
+                byte[] bytes = binaryValue(text);
+                if ("blob".equals(column.typeFamily())) statement.setBinaryStream(index,
+                        new java.io.ByteArrayInputStream(bytes), bytes.length);
+                else statement.setBytes(index, bytes);
+                return null;
+            }
+            if ("clob".equals(column.typeFamily())) {
+                statement.setCharacterStream(index, new StringReader(text), text.length()); return null;
+            }
+            if (column.jdbcType() == Types.DATE && (text.contains(" ") || text.contains("T"))) {
+                statement.setTimestamp(index, java.sql.Timestamp.valueOf(text.replace('T', ' '))); return null;
+            }
+            if (column.jdbcType() == Types.TIME_WITH_TIMEZONE) {
+                statement.setObject(index, OffsetTime.parse(text)); return null;
+            }
+            if (column.jdbcType() == Types.TIME && (text.startsWith("-")
+                    || text.matches("(?:[2-9]\\d|\\d{3,}):\\d{2}:\\d{2}(?:\\.\\d+)?"))) {
+                // MySQL TIME is a duration and intentionally permits negative values and hours above 23.
+                statement.setString(index, text); return null;
+            }
+            if (column.jdbcType() == Types.TIMESTAMP_WITH_TIMEZONE) {
+                statement.setObject(index, OffsetDateTime.parse(text.replace(' ', 'T'))); return null;
+            }
+            if (column.jdbcType() == Types.NCHAR || column.jdbcType() == Types.NVARCHAR
+                    || column.jdbcType() == Types.LONGNVARCHAR) {
+                statement.setNString(index, text); return null;
+            }
+            bind(statement, index, text, column.jdbcType());
+            return null;
+        } catch (IllegalArgumentException exception) {
+            throw new SQLException("值格式与字段类型不匹配：" + exception.getMessage(), exception);
+        }
+    }
+
+    private static Closeable bindOperationValue(PreparedStatement statement, int parameter,
+                                                ValueChange value, ResultMutationTarget target) {
+        try {
+            return bindValue(statement, parameter, value.value(), targetColumn(target, value.columnIndex()));
+        } catch (SQLException exception) {
+            throw new QueryExecutionException(resultChangeFailureDetail(exception), exception,
+                    null, value.columnIndex());
+        }
+    }
+
+    private static void addResource(List<Closeable> resources, Closeable resource) {
+        if (resource != null) resources.add(resource);
+    }
+
+    private static void closeResources(List<Closeable> resources) {
+        for (Closeable resource : resources) try { resource.close(); }
+        catch (IOException ignored) { }
+    }
+
+    private static byte[] binaryValue(String value) {
+        String text = value == null ? "" : value.trim();
+        if (text.startsWith("0x") || text.startsWith("0X")) {
+            text = text.substring(2);
+            if ((text.length() & 1) != 0 || !text.matches("[0-9a-fA-F]*")) {
+                throw new IllegalArgumentException("二进制十六进制值格式无效");
+            }
+            byte[] bytes = new byte[text.length() / 2];
+            for (int index = 0; index < bytes.length; index++) {
+                bytes[index] = (byte) Integer.parseInt(text.substring(index * 2, index * 2 + 2), 16);
+            }
+            return bytes;
+        }
+        return Base64.getDecoder().decode(text);
+    }
+
     public static final class CellChange {
         private final int columnIndex;
         private final String value;
@@ -395,6 +1163,111 @@ public final class QueryRunner implements AutoCloseable {
         }
         public int rowIndex() { return rowIndex; }
         public List<CellChange> cells() { return cells; }
+    }
+
+    public enum MutationKind { UPDATE, INSERT, DELETE }
+
+    public static final class MutationValue {
+        private final String kind;
+        private final String value;
+        public MutationValue(String kind, String value) {
+            String normalized = kind == null ? "text" : kind.trim().toLowerCase(java.util.Locale.ROOT);
+            if (!"text".equals(normalized) && !"null".equals(normalized)
+                    && !"default".equals(normalized) && !"largevaluetoken".equals(normalized)
+                    && !"largevaluefile".equals(normalized)) {
+                throw new IllegalArgumentException("未知的结果字段值类型");
+            }
+            this.kind = normalized;
+            this.value = value;
+        }
+        public static MutationValue text(String value) { return new MutationValue("text", value); }
+        public static MutationValue nullValue() { return new MutationValue("null", null); }
+        public static MutationValue defaultValue() { return new MutationValue("default", null); }
+        public static MutationValue largeValueFile(String path) { return new MutationValue("largevaluefile", path); }
+        public String kind() { return kind; }
+        public String value() { return value == null ? "" : value; }
+        public boolean isNull() { return "null".equals(kind); }
+        public boolean isDefault() { return "default".equals(kind); }
+        public boolean isLargeValueToken() { return "largevaluetoken".equals(kind); }
+        public boolean isLargeValueFile() { return "largevaluefile".equals(kind); }
+        public String asDisplayValue() { return isNull() || isDefault() ? null : value; }
+    }
+
+    public static final class ValueChange {
+        private final int columnIndex;
+        private final MutationValue value;
+        public ValueChange(int columnIndex, MutationValue value) {
+            this.columnIndex = columnIndex;
+            this.value = Objects.requireNonNull(value, "value");
+        }
+        public int columnIndex() { return columnIndex; }
+        public MutationValue value() { return value; }
+    }
+
+    public static final class ResultOperation {
+        private final String operationId;
+        private final MutationKind kind;
+        private final int rowIndex;
+        private final List<ValueChange> values;
+        public ResultOperation(String operationId, MutationKind kind, int rowIndex, List<ValueChange> values) {
+            this.operationId = operationId == null || operationId.trim().isEmpty()
+                    ? java.util.UUID.randomUUID().toString() : operationId;
+            this.kind = Objects.requireNonNull(kind, "kind");
+            this.rowIndex = rowIndex;
+            this.values = values == null ? Collections.<ValueChange>emptyList()
+                    : Collections.unmodifiableList(new ArrayList<ValueChange>(values));
+        }
+        public String operationId() { return operationId; }
+        public MutationKind kind() { return kind; }
+        public int rowIndex() { return rowIndex; }
+        public List<ValueChange> values() { return values; }
+    }
+
+    public static final class OperationResult {
+        private final String operationId;
+        private final MutationKind kind;
+        private final int rowIndex;
+        private final List<String> row;
+        private final List<String> locator;
+        private final List<ValueChange> values;
+        private final boolean visible;
+        private OperationResult(String operationId, MutationKind kind, int rowIndex,
+                                List<String> row, List<String> locator, List<ValueChange> values,
+                                boolean visible) {
+            this.operationId = operationId; this.kind = kind; this.rowIndex = rowIndex;
+            this.row = Collections.unmodifiableList(new ArrayList<String>(row));
+            this.locator = Collections.unmodifiableList(new ArrayList<String>(locator));
+            this.values = Collections.unmodifiableList(new ArrayList<ValueChange>(values));
+            this.visible = visible;
+        }
+        public String operationId() { return operationId; }
+        public MutationKind kind() { return kind; }
+        public int rowIndex() { return rowIndex; }
+        public List<String> row() { return row; }
+        public List<String> locator() { return locator; }
+        public List<ValueChange> values() { return values; }
+        public boolean visible() { return visible; }
+    }
+
+    public static final class MutationBatchResult {
+        private final List<OperationResult> operations;
+        private MutationBatchResult(List<OperationResult> operations) {
+            this.operations = Collections.unmodifiableList(new ArrayList<OperationResult>(operations));
+        }
+        public List<OperationResult> operations() { return operations; }
+    }
+
+    public static final class MutationPreview {
+        private final String operationId;
+        private final String sql;
+        private final List<String> binds;
+        private MutationPreview(String operationId, String sql, List<String> binds) {
+            this.operationId = operationId; this.sql = sql;
+            this.binds = Collections.unmodifiableList(new ArrayList<String>(binds));
+        }
+        public String operationId() { return operationId; }
+        public String sql() { return sql; }
+        public List<String> binds() { return binds; }
     }
 
     /**
@@ -460,11 +1333,12 @@ public final class QueryRunner implements AutoCloseable {
         Instant started = Instant.now();
         LOG.info("分页查询开始 offset={} limit={} {}", offset, limit, SqlLogSupport.summary(sql));
         if (cancelRequested.get()) return PageResult.cancelledResult();
+        PreparedResultQuery prepared = columnResolver.prepare(sql);
         try (Statement statement = session.jdbcConnection().createStatement()) {
             statement.setFetchSize(JDBC_FETCH_SIZE);
             activeStatement.set(statement);
             if (cancelRequested.get()) return PageResult.cancelledResult();
-            if (!statement.execute(sql)) {
+            if (!statement.execute(prepared.executionSql())) {
                 throw new QueryExecutionException("该结果不是可分页的查询结果", null);
             }
             try (ResultSet resultSet = statement.getResultSet()) {
@@ -475,18 +1349,25 @@ public final class QueryRunner implements AutoCloseable {
 
                 ResultSetMetaData metadata = resultSet.getMetaData();
                 int columnCount = metadata.getColumnCount();
+                int visibleColumnCount = Math.max(0, columnCount - prepared.hiddenColumnCount());
                 List<List<String>> rows = new ArrayList<List<String>>(limit);
+                List<List<String>> locators = new ArrayList<List<String>>(limit);
                 while (rows.size() < limit && !cancelRequested.get() && resultSet.next()) {
-                    List<String> row = new ArrayList<String>(columnCount);
-                    for (int index = 1; index <= columnCount; index++) {
+                    List<String> row = new ArrayList<String>(visibleColumnCount);
+                    for (int index = 1; index <= visibleColumnCount; index++) {
                         row.add(displayValue(resultSet.getObject(index)));
                     }
                     rows.add(Collections.unmodifiableList(row));
+                    List<String> locator = new ArrayList<String>(prepared.hiddenColumnCount());
+                    for (int index = visibleColumnCount + 1; index <= columnCount; index++) {
+                        locator.add(displayValue(resultSet.getObject(index)));
+                    }
+                    locators.add(Collections.unmodifiableList(locator));
                 }
                 if (cancelRequested.get()) return PageResult.cancelledResult();
                 boolean hasMore = resultSet.next();
                 if (cancelRequested.get()) return PageResult.cancelledResult();
-                PageResult result = new PageResult(rows, hasMore);
+                PageResult result = new PageResult(rows, newRowIds(rows.size()), locators, hasMore, false);
                 LOG.info("分页查询完成 rows={} hasMore={} durationMs={}", rows.size(), hasMore,
                         Duration.between(started, Instant.now()).toMillis());
                 return result;
@@ -545,12 +1426,13 @@ public final class QueryRunner implements AutoCloseable {
         String preview = SqlLogSupport.preview(sqlStatement.text());
         if (!preview.isEmpty()) LOG.debug("SQL语句预览 index={} text={}", firstResultIndex, preview);
         if (cancelRequested.get()) return Collections.emptyList();
+        PreparedResultQuery prepared = columnResolver.prepare(sqlStatement.text());
         try (Statement statement = session.jdbcConnection().createStatement()) {
             statement.setFetchSize(JDBC_FETCH_SIZE);
             statement.setMaxRows(statementMaxRows + 1);
             activeStatement.set(statement);
             if (cancelRequested.get()) return Collections.emptyList();
-            boolean hasResult = statement.execute(sqlStatement.text());
+            boolean hasResult = statement.execute(prepared.executionSql());
             TransactionEffect effect = updateTransactionState(sqlStatement, hasResult);
             if (effect == TransactionEffect.IMPLICIT_COMMIT) {
                 columnResolver.invalidate();
@@ -562,7 +1444,7 @@ public final class QueryRunner implements AutoCloseable {
                 StatementResult output;
                 if (hasResult) {
                     try (ResultSet resultSet = statement.getResultSet()) {
-                        output = readResultSet(sqlStatement, resultSet, started, resultIndex, listener,
+                        output = readResultSet(sqlStatement, prepared, resultSet, started, resultIndex, listener,
                                 statementMaxRows, statementBatchRows);
                     }
                 } else {
@@ -604,14 +1486,16 @@ public final class QueryRunner implements AutoCloseable {
         }
     }
 
-    private StatementResult readResultSet(SqlStatement sqlStatement, ResultSet resultSet, Instant started,
+    private StatementResult readResultSet(SqlStatement sqlStatement, PreparedResultQuery prepared,
+                                          ResultSet resultSet, Instant started,
                                           int resultIndex, QueryResultListener listener,
                                           int resultMaxRows, int resultBatchRows) throws SQLException {
         ResultSetMetaData metadata = resultSet.getMetaData();
         int columnCount = metadata.getColumnCount();
-        List<String> columns = new ArrayList<String>(columnCount);
-        List<ResultColumn> columnDetails = new ArrayList<ResultColumn>(columnCount);
-        for (int index = 1; index <= columnCount; index++) {
+        int visibleColumnCount = Math.max(0, columnCount - prepared.hiddenColumnCount());
+        List<String> columns = new ArrayList<String>(visibleColumnCount);
+        List<ResultColumn> columnDetails = new ArrayList<ResultColumn>(visibleColumnCount);
+        for (int index = 1; index <= visibleColumnCount; index++) {
             String label = metadata.getColumnLabel(index);
             String name = metadata.getColumnName(index);
             String display = label == null || label.trim().isEmpty() ? name : label;
@@ -620,29 +1504,44 @@ public final class QueryRunner implements AutoCloseable {
                     metadata.getSchemaName(index), metadata.getTableName(index), metadata.getColumnTypeName(index), "",
                     metadata.getColumnType(index), display));
         }
-        ResolvedResultMetadata resolved = columnResolver.resolve(sqlStatement.text(),
+        ResolvedResultMetadata resolved = columnResolver.resolve(prepared,
                 Collections.unmodifiableList(columnDetails));
         columnDetails = resolved.columns();
         listener.resultMetadata(resultIndex, sqlStatement.text(), sqlStatement.type(), columnDetails,
                 resolved.mutationTarget());
 
         List<List<String>> rows = new ArrayList<List<String>>(Math.min(resultMaxRows, JDBC_FETCH_SIZE));
+        List<String> rowIds = new ArrayList<String>(Math.min(resultMaxRows, JDBC_FETCH_SIZE));
+        List<List<String>> rowLocators = new ArrayList<List<String>>(Math.min(resultMaxRows, JDBC_FETCH_SIZE));
         List<List<String>> batch = new ArrayList<List<String>>(Math.min(resultBatchRows, resultMaxRows));
+        List<String> batchIds = new ArrayList<String>(Math.min(resultBatchRows, resultMaxRows));
         boolean truncated = false;
         while (!cancelRequested.get() && resultSet.next()) {
             if (rows.size() >= resultMaxRows) { truncated = true; break; }
-            List<String> row = new ArrayList<String>(columnCount);
-            for (int index = 1; index <= columnCount; index++) row.add(displayValue(resultSet.getObject(index)));
+            List<String> row = new ArrayList<String>(visibleColumnCount);
+            for (int index = 1; index <= visibleColumnCount; index++) row.add(displayValue(resultSet.getObject(index)));
+            List<String> locator = new ArrayList<String>(prepared.hiddenColumnCount());
+            for (int index = visibleColumnCount + 1; index <= columnCount; index++) {
+                locator.add(displayValue(resultSet.getObject(index)));
+            }
             rows.add(row);
+            rowLocators.add(Collections.unmodifiableList(locator));
+            String rowId = java.util.UUID.randomUUID().toString();
+            rowIds.add(rowId);
             batch.add(Collections.unmodifiableList(new ArrayList<String>(row)));
+            batchIds.add(rowId);
             if (batch.size() == resultBatchRows) {
-                listener.rows(resultIndex, immutableRows(batch));
+                listener.rows(resultIndex, Collections.unmodifiableList(new ArrayList<String>(batchIds)),
+                        immutableRows(batch));
                 batch.clear();
+                batchIds.clear();
             }
         }
-        if (!batch.isEmpty()) listener.rows(resultIndex, immutableRows(batch));
+        if (!batch.isEmpty()) listener.rows(resultIndex,
+                Collections.unmodifiableList(new ArrayList<String>(batchIds)), immutableRows(batch));
         return new StatementResult(sqlStatement.text(), sqlStatement.type(), columns, columnDetails,
-                resolved.mutationTarget(), rows, -1, truncated, Duration.between(started, Instant.now()), null);
+                resolved.mutationTarget(), rows, rowIds, rowLocators, -1, truncated,
+                Duration.between(started, Instant.now()), null);
     }
 
     private static List<List<String>> immutableRows(List<List<String>> rows) {
@@ -653,26 +1552,46 @@ public final class QueryRunner implements AutoCloseable {
 
     public static final class PageResult {
         private final List<List<String>> rows;
+        private final List<String> rowIds;
+        private final List<List<String>> rowLocators;
         private final boolean hasMore;
         private final boolean cancelled;
 
         private PageResult(List<List<String>> rows, boolean hasMore) {
-            this(rows, hasMore, false);
+            this(rows, newRowIds(rows.size()), emptyLocators(rows.size()), hasMore, false);
         }
 
-        private PageResult(List<List<String>> rows, boolean hasMore, boolean cancelled) {
+        private PageResult(List<List<String>> rows, List<String> rowIds, List<List<String>> rowLocators,
+                           boolean hasMore, boolean cancelled) {
             this.rows = immutableRows(rows);
+            this.rowIds = Collections.unmodifiableList(new ArrayList<String>(rowIds));
+            this.rowLocators = immutableRows(rowLocators);
             this.hasMore = hasMore;
             this.cancelled = cancelled;
         }
 
         private static PageResult cancelledResult() {
-            return new PageResult(Collections.<List<String>>emptyList(), true, true);
+            return new PageResult(Collections.<List<String>>emptyList(), Collections.<String>emptyList(),
+                    Collections.<List<String>>emptyList(), true, true);
         }
 
         public List<List<String>> rows() { return rows; }
+        public List<String> rowIds() { return rowIds; }
+        public List<List<String>> rowLocators() { return rowLocators; }
         public boolean hasMore() { return hasMore; }
         public boolean cancelled() { return cancelled; }
+    }
+
+    private static List<String> newRowIds(int size) {
+        List<String> result = new ArrayList<String>(size);
+        for (int index = 0; index < size; index++) result.add(java.util.UUID.randomUUID().toString());
+        return result;
+    }
+
+    private static List<List<String>> emptyLocators(int size) {
+        List<List<String>> result = new ArrayList<List<String>>(size);
+        for (int index = 0; index < size; index++) result.add(Collections.<String>emptyList());
+        return result;
     }
 
     public static String displayValue(Object value) throws SQLException {
@@ -787,6 +1706,16 @@ public final class QueryRunner implements AutoCloseable {
     }
 
     public static final class QueryExecutionException extends RuntimeException {
-        public QueryExecutionException(String message, Throwable cause) { super(message, cause); }
+        private final String operationId;
+        private final Integer columnIndex;
+        public QueryExecutionException(String message, Throwable cause) { this(message, cause, null, null); }
+        public QueryExecutionException(String message, Throwable cause, String operationId, Integer columnIndex) {
+            super(message, cause); this.operationId = operationId; this.columnIndex = columnIndex;
+        }
+        public String operationId() { return operationId; }
+        public Integer columnIndex() { return columnIndex; }
+        private QueryExecutionException withOperation(String value) {
+            return operationId != null ? this : new QueryExecutionException(getMessage(), getCause(), value, columnIndex);
+        }
     }
 }

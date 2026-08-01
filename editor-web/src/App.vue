@@ -174,7 +174,14 @@
               <el-splitter-panel :min="150" collapsible>
                 <ResultPanel ref="resultPanel" v-model:active-result-index="activeResultIndex" :execution="activeExecution"
                              :executing="editors.active?.busy === true"
+                             :show-result-edit-actions="showResultEditActions"
+                             :result-edit-unlocked="resultEditUnlocked"
+                             :can-toggle-result-edit="canToggleResultEdit"
+                             :result-edit-tooltip="resultEditTooltip"
+                             :can-apply-result-changes="canPostResultChanges"
+                             :apply-result-changes-tooltip="postResultChangesTooltip"
                              @export-loaded="exportLoaded" @export-full="exportFull"
+                             @toggle-result-edit="toggleResultEdit" @apply-result-changes="postActiveResultChanges"
                              @selected-column="selectedResultColumn = $event"
                              @selected-row-count="selectedResultRowCount = $event" />
               </el-splitter-panel>
@@ -190,13 +197,6 @@
                   :show-selected-column-remarks="settings.showSelectedColumnRemarks" :system-items="systemStatusItems"
                   :can-load-more="canLoadMore" :loading-mode="activeResultLoading?.mode"
                   :next-page-tooltip="nextPageTooltip" :all-rows-tooltip="allRowsTooltip"
-                  :show-result-edit-actions="showResultEditActions"
-                  :result-edit-unlocked="resultEditUnlocked"
-                  :can-toggle-result-edit="canToggleResultEdit"
-                  :result-edit-tooltip="resultEditTooltip"
-                  :can-post-changes="canPostResultChanges"
-                  :post-changes-tooltip="postResultChangesTooltip"
-                  @toggle-result-edit="toggleResultEdit" @post-result-changes="postActiveResultChanges"
                   @load-next="loadNextResultPage" @load-all="loadAllResultRows" @dismiss-task="dismissStatusTask" />
   </el-container>
 
@@ -205,7 +205,8 @@
                     @saved="profileSaved" />
   <HistoryDrawer v-model="historyDrawer" @open="openHistory" />
   <SettingsDrawer v-model="settingsDrawer" :theme="app.themePreference" :resolved-theme="app.theme" :max-rows="settings.maxResultRows"
-                  :stream-batch-rows="settings.streamBatchRows" :column-layout-scope="settings.columnLayoutScope"
+                  :stream-batch-rows="settings.streamBatchRows" :max-lob-bytes="settings.maxResultLobBytes"
+                  :column-layout-scope="settings.columnLayoutScope"
                   :copy-header-on-double-click="settings.copyHeaderOnDoubleClick" :copy-separator="settings.copySeparator"
                   :header-sorting-enabled="settings.headerSortingEnabled" :header-filtering-enabled="settings.headerFilteringEnabled"
                   :show-column-remarks-in-header="settings.showColumnRemarksInHeader"
@@ -221,7 +222,7 @@
                   :minimap-enabled="settings.minimapEnabled" :word-wrap-enabled="settings.wordWrapEnabled"
                   :completion-cache-size="completionCacheSize" :completion-cache-environment-count="metadata.completionStats.environmentCount"
                   :completion-cache-loading-count="metadata.completionStats.loadingCount" :can-clear-completion-caches="metadata.canClearCompletions"
-                  @update:theme="updateTheme" @update:max-rows="updateMaxRows"
+                  @update:theme="updateTheme" @update:max-rows="updateMaxRows" @update:max-lob-bytes="updateMaxLobBytes"
                   @update:stream-batch-rows="updateStreamBatchRows" @update:column-layout-scope="updateColumnLayoutScope"
                   @update:copy-header-on-double-click="updateCopyHeaderOnDoubleClick"
                   @update:header-sorting-enabled="updateHeaderSortingEnabled"
@@ -300,7 +301,7 @@ import { useConnectionStore } from "./stores/connection";
 import { useEditorStore } from "./stores/editor";
 import { formatCompletionBytes, useMetadataStore } from "./stores/metadata";
 import { useQueryStore } from "./stores/query";
-import { useResultEditStore } from "./stores/resultEdits";
+import { useResultEditStore, type ResultEditSession } from "./stores/resultEdits";
 import { useSettingsStore } from "./stores/settings";
 import { useStatusBarStore } from "./stores/statusBar";
 import type { ColumnLayoutScope } from "./columnLayout";
@@ -441,7 +442,7 @@ const hasActiveTransaction = computed(() => Boolean(editors.active?.transactionD
 const canOperateTransaction = computed(() => Boolean(hasActiveTransaction.value && !activeDatabaseBusy.value
   && editors.active?.executionPhase === "idle" && editors.active.transactionOperation === "idle"
   && activeConnected.value && app.transportState === "ready"));
-const showResultEditActions = computed(() => activeResult.value?.mutationTarget?.editableForUpdate === true);
+const showResultEditActions = computed(() => Boolean(activeResult.value?.mutationTarget));
 const activeResultEditSession = computed(() => {
   const tab = editors.active;
   const execution = activeExecution.value;
@@ -451,26 +452,23 @@ const activeResultEditSession = computed(() => {
     : undefined;
 });
 const resultEditUnlocked = computed(() => activeResultEditSession.value?.unlocked === true);
-const resultHasUsableKey = computed(() => {
-  const target = activeResult.value?.mutationTarget;
-  const rows = activeResult.value?.rows ?? [];
-  return Boolean(target?.uniqueKeys.some((key) => key.resultColumnIndices.length > 0
-    && rows.some((row) => key.resultColumnIndices.every((index) => row[index] !== null
-      && row[index] !== undefined))));
-});
 const canToggleResultEdit = computed(() => Boolean(showResultEditActions.value
-  && !settings.autoCommit && resultHasUsableKey.value && canOperateTransaction.value
+  && (activeResult.value?.mutationTarget?.mode === "editable"
+    || activeResult.value?.mutationTarget?.editableForUpdate === true)
+  && !settings.autoCommit && canOperateTransaction.value
   && !activeExecution.value?.historical));
 const resultEditTooltip = computed(() => settings.autoCommit
   ? "请关闭自动提交后重新执行 FOR UPDATE"
   : activeExecution.value?.historical ? "断线前结果不可编辑"
-    : !resultHasUsableKey.value ? "结果中没有可用的非空唯一键"
+    : activeResult.value?.mutationTarget?.mode !== "editable"
+      && activeResult.value?.mutationTarget?.editableForUpdate !== true
+      ? activeResult.value?.mutationTarget?.reason || "当前查询形态不支持编辑"
       : !hasActiveTransaction.value ? "事务已结束，请重新执行 FOR UPDATE"
-        : resultEditUnlocked.value ? "锁定结果编辑（不会提交或释放数据库锁）" : "解锁并编辑结果");
+        : resultEditUnlocked.value ? "退出编辑模式（不会提交或释放数据库锁）" : "进入结果编辑模式");
 const canPostResultChanges = computed(() => Boolean(editors.active && canOperateTransaction.value
-  && resultEdits.pending(editors.active.id).some((cell) => activeResultEditSession.value?.cells.includes(cell))));
+  && activeResultEditSession.value && resultEdits.operations(activeResultEditSession.value).length > 0));
 const postResultChangesTooltip = computed(() => canPostResultChanges.value
-  ? "确认当前结果修改并写入未提交事务" : "没有待确认的结果修改");
+  ? "应用当前结果的草稿更改到未提交事务" : "没有待应用的本地草稿");
 const transportStatusText = computed(() => app.transportState === "recovering" ? "正在恢复浏览器工作区…"
   : app.transportState === "connecting" ? "正在建立事件通道…"
     : app.transportState === "offline" ? "事件通道不可用" : "事件通道重连中…");
@@ -691,12 +689,12 @@ function installEventHandlers(): void {
   }));
   disposers.push(rpc.on("query.resultMeta", (raw) => {
     const data = raw as QueryResult & { editorId: string };
-    queries.addResult(data.editorId, { ...data, rows: [], complete: false });
+    queries.addResult(data.editorId, { ...data, rows: [], rowIds: [], complete: false });
     void resolveResultColumnRemarks(data.editorId, data.resultIndex, data.sql, data.columnDetails);
   }));
   disposers.push(rpc.on("query.rows", (raw) => {
-    const data = raw as { editorId: string; resultIndex: number; rows: Array<Array<string | null>> };
-    queries.appendRows(data.editorId, data.resultIndex, data.rows);
+    const data = raw as { editorId: string; resultIndex: number; rows: Array<Array<string | null>>; rowIds?: string[] };
+    queries.appendRows(data.editorId, data.resultIndex, data.rows, data.rowIds);
   }));
   disposers.push(rpc.on("query.resultComplete", (raw) => {
     const data = raw as { editorId: string; resultIndex: number } & Partial<QueryResult>;
@@ -989,39 +987,44 @@ async function postActiveResultChanges(): Promise<void> {
   try {
     await postResultEditSession(session);
   } catch (error) {
-    app.status = "确认结果修改失败";
+    app.status = "应用结果更改失败";
+    const details = (error as { details?: { operationId?: string; columnIndex?: number } }).details;
+    if (details?.operationId) resultEdits.setOperationError(session.editorId, session.executionId,
+      session.resultIndex, details.operationId, details.columnIndex, message(error));
     ElMessage.error(message(error));
   }
 }
-async function postResultEditSession(session: {
-  editorId: string; executionId: string; resultIndex: number;
-  cells: Array<{ rowIndex: number; columnIndex: number; confirmedValue: string | null; draftValue: string | null }>;
-}): Promise<void> {
-  const pending = session.cells.filter((cell) => cell.draftValue !== cell.confirmedValue);
-  if (!pending.length) return;
-  const rows = new Map<number, Array<{ columnIndex: number; value: string | null }>>();
-  for (const cell of pending) {
-    const cells = rows.get(cell.rowIndex) ?? [];
-    cells.push({ columnIndex: cell.columnIndex, value: cell.draftValue });
-    rows.set(cell.rowIndex, cells);
-  }
+async function postResultEditSession(session: ResultEditSession): Promise<void> {
+  const operations = resultEdits.operations(session);
+  if (!operations.length) return;
+  const clientRowIds = new Map(operations.map((operation) => [operation.operationId, operation.rowId]));
   await rpc.ensureOperational();
-  await rpc.request("query.applyChanges", {
+  const response = await rpc.request<{
+    appliedOperationIds: string[];
+    hiddenOperationIds?: string[];
+    rowPatches: Array<{ operationId: string; kind: "update" | "insert" | "delete";
+      rowIndex: number; rowId: string; row: Array<string | null> }>;
+  }>("query.applyChanges", {
     editorId: session.editorId,
     executionId: session.executionId,
     resultIndex: session.resultIndex,
-    rows: [...rows].map(([rowIndex, cells]) => ({ rowIndex, cells }))
+    operations: operations.map(({ sequence: _sequence, ...operation }) => operation)
   }, 30_000);
-  resultEdits.markPosted(session.editorId, session.executionId, session.resultIndex);
+  queries.applyResultPatches(session.editorId, session.resultIndex, response.rowPatches.map((patch) => ({
+    ...patch, clientRowId: clientRowIds.get(patch.operationId)
+  })));
+  resultEdits.markPosted(session.editorId, session.executionId, session.resultIndex,
+    response.appliedOperationIds);
   editors.patch(session.editorId, {
     transactionDirty: true, transactionState: "active", resultChangesDirty: true
   });
-  app.status = "结果修改已确认，等待提交事务";
+  app.status = response.hiddenOperationIds?.length
+    ? `${response.hiddenOperationIds.length} 项更改已写入事务，但不再符合原查询条件`
+    : "结果更改已应用，等待提交或回滚事务";
 }
 async function postEditorPendingChanges(editorId: string): Promise<void> {
   const sessions = Object.values(resultEdits.sessions)
-    .filter((session) => session.editorId === editorId
-      && session.cells.some((cell) => cell.draftValue !== cell.confirmedValue));
+    .filter((session) => session.editorId === editorId && resultEdits.operations(session).length > 0);
   for (const session of sessions) await postResultEditSession(session);
 }
 function restoreResultEditValues(editorId: string, mode: "confirmed" | "original"): void {
@@ -1168,7 +1171,7 @@ async function commitActive(): Promise<void> {
   const tab = editors.active;
   if (!tab?.connection || !canOperateTransaction.value) return;
   if (resultEdits.hasPending(tab.id)) {
-    ElMessage.warning("结果中有尚未确认的修改，请先点击“确认修改”");
+    ElMessage.warning("结果中有尚未应用的本地草稿，请先点击“应用更改”");
     return;
   }
   editors.patch(tab.id, { transactionOperation: "committing" });
@@ -1191,8 +1194,12 @@ async function rollbackActive(): Promise<void> {
   editors.patch(tab.id, { transactionOperation: "rolling-back" });
   try {
     await rpc.ensureOperational();
-    const response = await rpc.request<{ dirty: boolean; message: string }>("transaction.rollback", { editorId: tab.id });
-    restoreResultEditValues(tab.id, "original");
+    const response = await rpc.request<{ dirty: boolean; message: string;
+      resultSnapshots?: Array<{ resultIndex: number; rows: Array<Array<string | null>>; rowIds: string[] }> }>(
+      "transaction.rollback", { editorId: tab.id });
+    if (response.resultSnapshots?.length) for (const snapshot of response.resultSnapshots) {
+      queries.replaceResultSnapshot(tab.id, snapshot.resultIndex, snapshot.rows, snapshot.rowIds);
+    } else restoreResultEditValues(tab.id, "original");
     resultEdits.finishEditor(tab.id);
     editors.patch(tab.id, { transactionDirty: response.dirty, resultChangesDirty: false,
       transactionState: response.dirty ? "active" : "none" });
@@ -1209,6 +1216,7 @@ interface ResultPageResponse {
   resultIndex: number;
   offset: number;
   rows: Array<Array<string | null>>;
+  rowIds?: string[];
   hasMore: boolean;
   nextOffset: number;
   cancelled?: boolean;
@@ -1260,7 +1268,7 @@ async function loadResultRows(resultIndex: number, initialOffset: number, all: b
         app.status = `数据加载已取消 · 已保留 ${offset} 行`;
         break;
       }
-      if (page.rows.length) queries.appendRows(tab.id, resultIndex, page.rows);
+      if (page.rows.length) queries.appendRows(tab.id, resultIndex, page.rows, page.rowIds);
       queries.completeResult(tab.id, resultIndex, { truncated: page.hasMore });
       offset = page.nextOffset;
       app.status = page.hasMore ? `已加载 ${offset} 行` : `已获取全部 ${offset} 行`;
@@ -1750,6 +1758,11 @@ async function updateMaxRows(value: number): Promise<void> {
   const previous = settings.maxResultRows; settings.maxResultRows = value;
   try { await rpc.request("settings.update", { key: "result.maxRows", value: String(value) }); }
   catch (error) { settings.maxResultRows = previous; reportError(error); }
+}
+async function updateMaxLobBytes(value: number): Promise<void> {
+  const previous = settings.maxResultLobBytes; settings.maxResultLobBytes = value;
+  try { await rpc.request("settings.update", { key: "result.edit.maxLobBytes", value: String(value) }); }
+  catch (error) { settings.maxResultLobBytes = previous; reportError(error); }
 }
 async function updateStreamBatchRows(value: number): Promise<void> {
   const previous = settings.streamBatchRows; settings.streamBatchRows = value;

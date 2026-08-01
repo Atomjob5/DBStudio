@@ -2,6 +2,7 @@ package com.dbstudio.mysql;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.dbstudio.spi.ConnectionProfile;
@@ -9,6 +10,7 @@ import com.dbstudio.spi.DatabaseObjectType;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.sql.SQLException;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -58,6 +60,33 @@ class MySqlIntegrationTest {
                 assertEquals(0, result.getInt(1));
             }
             assertFalse(session.jdbcConnection().getAutoCommit());
+
+            try (java.sql.Statement statement = session.jdbcConnection().createStatement()) {
+                statement.executeUpdate("INSERT INTO contract_test VALUES (1, 'locked'), (2, 'free')");
+            }
+            session.commit();
+            try (com.dbstudio.spi.DatabaseSession contender = provider.connections().connect(profile, password)) {
+                try (java.sql.Statement locker = session.jdbcConnection().createStatement();
+                     java.sql.ResultSet locked = locker.executeQuery(
+                             "SELECT id FROM contract_test WHERE id = 1 FOR UPDATE")) {
+                    assertTrue(locked.next());
+                }
+                try (java.sql.Statement statement = contender.jdbcConnection().createStatement()) {
+                    try (java.sql.ResultSet skipped = statement.executeQuery(
+                            "SELECT id FROM contract_test WHERE id = 1 FOR UPDATE SKIP LOCKED")) {
+                        assertFalse(skipped.next());
+                    }
+                    SQLException nowait = assertThrows(SQLException.class, () -> statement.executeQuery(
+                            "SELECT id FROM contract_test WHERE id = 1 FOR UPDATE NOWAIT"));
+                    assertTrue(nowait.getErrorCode() != 0 || nowait.getSQLState() != null);
+                }
+                session.rollback();
+                try (java.sql.Statement statement = contender.jdbcConnection().createStatement()) {
+                    assertEquals(1, statement.executeUpdate(
+                            "UPDATE contract_test SET name = 'after-release' WHERE id = 1"));
+                }
+                contender.rollback();
+            }
         } finally {
             java.util.Arrays.fill(password, '\0');
         }

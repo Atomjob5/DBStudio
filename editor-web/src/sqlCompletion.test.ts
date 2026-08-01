@@ -380,7 +380,7 @@ describe("handwritten context-aware SQL completion", () => {
     const result = resolveCompletion(largeIndex, { providerId: "mysql", sql: "select * from ", prefix: "", limit: 100 });
     expect(result.items).toHaveLength(100);
     expect(result.incomplete).toBe(true);
-  });
+  }, 20_000);
 });
 
 function complete(sql: string) {

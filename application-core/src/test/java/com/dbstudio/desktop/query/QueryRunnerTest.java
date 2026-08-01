@@ -266,6 +266,145 @@ class QueryRunnerTest {
     }
 
     @Test
+    void appliesOrderedUpdateInsertDeleteOperationsAndReturnsAuthoritativeRows() throws Exception {
+        final Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
+        connection.setAutoCommit(false);
+        try (QueryRunner runner = new QueryRunner(session(connection), 20, 20)) {
+            runner.execute(Arrays.asList(
+                    sql("CREATE TABLE operation_sample(id INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT 'db-default')",
+                            StatementType.DDL),
+                    sql("INSERT INTO operation_sample VALUES (1, 'one'), (2, 'two')", StatementType.INSERT)), true)
+                    .join();
+            runner.commit().join();
+            StatementResult source = runner.execute(Collections.singletonList(
+                    sql("SELECT id, name FROM operation_sample ORDER BY id", StatementType.QUERY)), true)
+                    .join().results().get(0);
+            ResultMutationTarget target = editableTarget("\"operation_sample\"");
+            List<QueryRunner.ResultOperation> operations = Arrays.asList(
+                    new QueryRunner.ResultOperation("update-1", QueryRunner.MutationKind.UPDATE, 0,
+                            Collections.singletonList(new QueryRunner.ValueChange(1,
+                                    QueryRunner.MutationValue.text("updated")))),
+                    new QueryRunner.ResultOperation("insert-3", QueryRunner.MutationKind.INSERT, -1,
+                            Arrays.asList(new QueryRunner.ValueChange(0, QueryRunner.MutationValue.text("3")),
+                                    new QueryRunner.ValueChange(1, QueryRunner.MutationValue.text("three")))),
+                    new QueryRunner.ResultOperation("delete-2", QueryRunner.MutationKind.DELETE, 1,
+                            Collections.<QueryRunner.ValueChange>emptyList()));
+
+            QueryRunner.MutationBatchResult applied = runner.applyResultOperations(
+                    target, source.rows(), operations).join();
+
+            assertEquals(Arrays.asList("1", "updated"), applied.operations().get(0).row());
+            assertEquals(Arrays.asList("3", "three"), applied.operations().get(1).row());
+            assertEquals(Arrays.asList(Arrays.asList("1", "updated"), Arrays.asList("3", "three")),
+                    runner.execute(Collections.singletonList(sql(
+                            "SELECT id, name FROM operation_sample ORDER BY id", StatementType.QUERY)), true)
+                            .join().results().get(0).rows());
+            runner.commit().join();
+
+            try {
+                runner.applyResultOperations(target, Arrays.asList(
+                        Arrays.asList("1", "updated"), Arrays.asList("3", "three")), Arrays.asList(
+                        new QueryRunner.ResultOperation("update-before-error", QueryRunner.MutationKind.UPDATE, 0,
+                                Collections.singletonList(new QueryRunner.ValueChange(1,
+                                        QueryRunner.MutationValue.text("must-rollback")))),
+                        new QueryRunner.ResultOperation("duplicate", QueryRunner.MutationKind.INSERT, -1,
+                                Arrays.asList(new QueryRunner.ValueChange(0, QueryRunner.MutationValue.text("3")),
+                                        new QueryRunner.ValueChange(1, QueryRunner.MutationValue.text("duplicate"))))))
+                        .join();
+                throw new AssertionError("expected the atomic batch to fail");
+            } catch (CompletionException expected) {
+                QueryRunner.QueryExecutionException failure =
+                        (QueryRunner.QueryExecutionException) expected.getCause();
+                assertEquals("duplicate", failure.operationId());
+            }
+            assertEquals("updated", runner.execute(Collections.singletonList(sql(
+                    "SELECT name FROM operation_sample WHERE id=1", StatementType.QUERY)), true)
+                    .join().results().get(0).rows().get(0).get(0));
+
+            List<QueryRunner.MutationPreview> previews = QueryRunner.previewResultOperations(
+                    target, source.rows(), operations);
+            assertTrue(previews.get(0).sql().contains("SET \"name\" = ?"));
+            assertFalse(previews.get(0).sql().contains("updated"));
+        }
+    }
+
+    @Test
+    void rereadsComputedColumnsAndReportsRowsThatLeaveTheOriginalFilter() throws Exception {
+        final Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
+        connection.setAutoCommit(false);
+        try (QueryRunner runner = new QueryRunner(session(connection), 20, 20)) {
+            runner.execute(Arrays.asList(
+                    sql("CREATE TABLE filtered_edit(id INTEGER PRIMARY KEY, name TEXT NOT NULL)", StatementType.DDL),
+                    sql("INSERT INTO filtered_edit VALUES (1, 'keep-one')", StatementType.INSERT)), true).join();
+            runner.commit().join();
+            List<ResultMutationTarget.Column> columns = Arrays.asList(
+                    new ResultMutationTarget.Column(0, "id", "\"id\"", Types.INTEGER,
+                            "INTEGER", "number", 0, 0, false, "", false, false, true, ""),
+                    new ResultMutationTarget.Column(1, "name", "\"name\"", Types.VARCHAR,
+                            "TEXT", "text", 0, 0, false, "", false, false, true, ""),
+                    new ResultMutationTarget.Column(2, "name_length", "", Types.INTEGER,
+                            "INTEGER", "number", 0, 0, true, "", false, false, false, "计算表达式只读"));
+            ResultMutationTarget.Locator locator = new ResultMutationTarget.Locator("UNIQUE_KEY",
+                    Collections.singletonList("\"id\" = ?"), Collections.singletonList(Types.INTEGER),
+                    Collections.singletonList("id"));
+            ResultMutationTarget target = new ResultMutationTarget("\"filtered_edit\"", columns,
+                    Collections.singletonList(new ResultMutationTarget.Key("PRIMARY", true,
+                            Collections.singletonList(0))), true, "editable", "", "", "WAIT",
+                    true, true, locator, false,
+                    "SELECT id, name, length(name) FROM filtered_edit WHERE name LIKE 'keep%' AND id = ?");
+            List<QueryRunner.ResultOperation> operations = Arrays.asList(
+                    new QueryRunner.ResultOperation("leave-filter", QueryRunner.MutationKind.UPDATE, 0,
+                            Collections.singletonList(new QueryRunner.ValueChange(1,
+                                    QueryRunner.MutationValue.text("gone")))),
+                    new QueryRunner.ResultOperation("visible-insert", QueryRunner.MutationKind.INSERT, -1,
+                            Arrays.asList(new QueryRunner.ValueChange(0, QueryRunner.MutationValue.text("2")),
+                                    new QueryRunner.ValueChange(1, QueryRunner.MutationValue.text("keep-two")))));
+
+            QueryRunner.MutationBatchResult applied = runner.applyResultOperations(target,
+                    Collections.singletonList(Arrays.asList("1", "keep-one", "8")),
+                    Collections.singletonList(Collections.singletonList("1")), operations).join();
+
+            assertFalse(applied.operations().get(0).visible());
+            assertTrue(applied.operations().get(0).row().isEmpty());
+            assertTrue(applied.operations().get(1).visible());
+            assertEquals(Arrays.asList("2", "keep-two", "8"), applied.operations().get(1).row());
+            runner.rollback().join();
+        }
+    }
+
+    @Test
+    void reportsTypedFieldValidationAtTheOperationAndColumn() throws Exception {
+        Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
+        connection.setAutoCommit(false);
+        try (QueryRunner runner = new QueryRunner(session(connection), 10, 10)) {
+            runner.execute(Arrays.asList(
+                    sql("CREATE TABLE typed_edit(id INTEGER PRIMARY KEY, status TEXT NOT NULL)", StatementType.DDL),
+                    sql("INSERT INTO typed_edit VALUES (1, 'NEW')", StatementType.INSERT)), true).join();
+            ResultMutationTarget target = new ResultMutationTarget("\"typed_edit\"", Arrays.asList(
+                    new ResultMutationTarget.Column(0, "id", "\"id\"", Types.INTEGER,
+                            "INTEGER", "number", 10, 0, false, "", false, false, true, ""),
+                    new ResultMutationTarget.Column(1, "status", "\"status\"", Types.VARCHAR,
+                            "enum('NEW','DONE')", "text", 10, 0, false, "", false, false, true, "")),
+                    Collections.singletonList(new ResultMutationTarget.Key("PRIMARY", true,
+                            Collections.singletonList(0))), true);
+            try {
+                runner.applyResultOperations(target, Collections.singletonList(Arrays.asList("1", "NEW")),
+                        Collections.singletonList(new QueryRunner.ResultOperation("invalid-enum",
+                                QueryRunner.MutationKind.UPDATE, 0,
+                                Collections.singletonList(new QueryRunner.ValueChange(1,
+                                        QueryRunner.MutationValue.text("UNKNOWN")))))).join();
+                throw new AssertionError("expected enum validation to fail");
+            } catch (CompletionException expected) {
+                QueryRunner.QueryExecutionException failure =
+                        (QueryRunner.QueryExecutionException) expected.getCause();
+                assertEquals("invalid-enum", failure.operationId());
+                assertEquals(Integer.valueOf(1), failure.columnIndex());
+                assertTrue(failure.getMessage().contains("NEW"));
+            }
+        }
+    }
+
+    @Test
     void acceptsCancellationBeforeStatementCreationAndResetsForTheNextExecution() throws Exception {
         final Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
         connection.setAutoCommit(false);
@@ -329,6 +468,14 @@ class QueryRunnerTest {
                         throw exception.getCause();
                     }
                 });
+    }
+
+    private static ResultMutationTarget editableTarget(String table) {
+        return new ResultMutationTarget(table, Arrays.asList(
+                new ResultMutationTarget.Column(0, "id", "\"id\"", Types.INTEGER),
+                new ResultMutationTarget.Column(1, "name", "\"name\"", Types.VARCHAR)),
+                Collections.singletonList(new ResultMutationTarget.Key(
+                        "pk", true, Collections.singletonList(0))), true);
     }
 
     private StatementResult query(QueryRunner runner, int rows, final List<Integer> batches,

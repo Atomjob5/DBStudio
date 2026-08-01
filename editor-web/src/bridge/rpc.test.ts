@@ -109,7 +109,7 @@ describe("RpcClient websocket recovery", () => {
   });
 
   it("uses the exact execution id for cancellation and rejects a missing id locally", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).includes("/open")
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => String(input).includes("/open")
       ? jsonResponse({ workspaceId: "workspace", recoveryDecisionRequired: false, editors: [] })
       : jsonResponse({ cancelled: true }));
     vi.stubGlobal("fetch", fetchMock);
@@ -164,6 +164,25 @@ describe("RpcClient websocket recovery", () => {
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining("/editors/editor-1/results/3/changes"),
       expect.objectContaining({ method: "POST", body: JSON.stringify(body) }));
+    client.dispose();
+  });
+
+  it("routes parameterized result change previews without moving values into the URL", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => String(input).includes("/open")
+      ? jsonResponse({ workspaceId: "workspace", recoveryDecisionRequired: false, editors: [] })
+      : jsonResponse({ previews: [{ operationId: "update:row-1", sql: "UPDATE t SET name = ? WHERE id = ?" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new RpcClient();
+    await open(client);
+    const body = { editorId: "editor-1", executionId: "execution-1", resultIndex: 4,
+      operations: [{ operationId: "update:row-1", kind: "update", rowId: "row-1",
+        values: [{ columnIndex: 1, value: { kind: "text", value: "secret-value" } }] }] };
+
+    await client.request("query.previewChanges", body);
+
+    const call = fetchMock.mock.calls.find(([input]) => String(input).includes("/changes/preview"));
+    expect(call?.[0]).not.toContain("secret-value");
+    expect(call?.[1]).toMatchObject({ method: "POST", body: JSON.stringify(body) });
     client.dispose();
   });
 

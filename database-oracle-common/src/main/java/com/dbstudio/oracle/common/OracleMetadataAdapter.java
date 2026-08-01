@@ -204,7 +204,8 @@ public class OracleMetadataAdapter implements MetadataAdapter {
                 columns.add(new ColumnInfo(name, result.getString("TYPE_NAME"), result.getInt("COLUMN_SIZE"),
                         result.getInt("DECIMAL_DIGITS"), result.getInt("NULLABLE") != DatabaseMetaData.columnNoNulls,
                         result.getString("COLUMN_DEF"), containsIgnoreCase(primary, name),
-                        result.getInt("ORDINAL_POSITION"), value(result.getString("REMARKS"))));
+                        result.getInt("ORDINAL_POSITION"), value(result.getString("REMARKS")),
+                        yes(result, "IS_AUTOINCREMENT"), yes(result, "IS_GENERATEDCOLUMN")));
             }
         }
         Collections.sort(columns, new Comparator<ColumnInfo>() {
@@ -213,6 +214,11 @@ public class OracleMetadataAdapter implements MetadataAdapter {
             }
         });
         return Collections.unmodifiableList(columns);
+    }
+
+    private static boolean yes(ResultSet result, String column) {
+        try { return "YES".equalsIgnoreCase(result.getString(column)); }
+        catch (SQLException ignored) { return false; }
     }
 
     @Override public List<ColumnInfo> listCompletionColumns(DatabaseSession session, String catalog, String schema,

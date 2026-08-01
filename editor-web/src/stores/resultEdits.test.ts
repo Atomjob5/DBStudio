@@ -38,4 +38,42 @@ describe("result edit store", () => {
     store.finishEditor("editor-1");
     expect(store.hasChanges("editor-2")).toBe(true);
   });
+
+  it("builds ordered insert update and delete operations with typed values", () => {
+    const store = useResultEditStore();
+    store.addInsert("editor-1", "execution-1", 0, "draft:new", 2, [0, 1]);
+    store.stage("editor-1", "execution-1", 0, 2, 1, null, "created", "draft:new");
+    store.stage("editor-1", "execution-1", 0, 0, 1, "before", "after", "row-1");
+    store.markDelete("editor-1", "execution-1", 0, "row-2", 1, ["2", "remove"]);
+
+    const session = store.session("editor-1", "execution-1", 0)!;
+    expect(store.operations(session).map((operation) => operation.kind)).toEqual(["insert", "update", "delete"]);
+    expect(store.operations(session)[0].values).toEqual([
+      { columnIndex: 0, value: { kind: "default" } },
+      { columnIndex: 1, value: { kind: "text", value: "created" } }
+    ]);
+    expect(store.pendingOperationCount("editor-1")).toBe(3);
+    expect(store.undo("editor-1", "execution-1", 0)).toEqual({ kind: "delete", rowId: "row-2" });
+    expect(store.operations(session).map((operation) => operation.kind)).toEqual(["insert", "update"]);
+  });
+
+  it("keeps large value tokens opaque and returns them for cleanup when undone", () => {
+    const store = useResultEditStore();
+    store.stageMutation("editor-1", "execution-1", 0, 0, 2, "preview",
+      { kind: "largeValueToken", value: "opaque-token" }, "row-1");
+    const session = store.session("editor-1", "execution-1", 0)!;
+    expect(store.operations(session)[0].values[0].value).toEqual(
+      { kind: "largeValueToken", value: "opaque-token" });
+    expect(store.undo("editor-1", "execution-1", 0)).toEqual({
+      kind: "cell", rowIndex: 0, columnIndex: 2, value: "preview", largeValueToken: "opaque-token"
+    });
+
+    store.addInsert("editor-1", "execution-1", 0, "draft:new", 1, [0, 2]);
+    store.stageMutation("editor-1", "execution-1", 0, 1, 2, null,
+      { kind: "largeValueToken", value: "insert-token" }, "draft:new");
+    expect(store.undo("editor-1", "execution-1", 0)).toEqual({
+      kind: "insert", rowId: "draft:new",
+      largeValues: [{ columnIndex: 2, token: "insert-token" }]
+    });
+  });
 });

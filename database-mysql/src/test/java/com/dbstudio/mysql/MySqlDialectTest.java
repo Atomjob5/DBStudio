@@ -2,6 +2,7 @@ package com.dbstudio.mysql;
 
 import com.dbstudio.spi.StatementType;
 import java.util.Arrays;
+import java.util.Collections;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -79,8 +80,25 @@ class MySqlDialectTest {
         assertFalse(dialect.resultMutationSource(
                 "SELECT id FROM orders /* FOR UPDATE */").get().editableForUpdate());
         assertFalse(dialect.resultMutationSource("SELECT a.id FROM orders a JOIN items b ON b.order_id=a.id").isPresent());
-        assertFalse(dialect.resultMutationSource("SELECT id, amount + 1 FROM orders").isPresent());
+        assertTrue(dialect.resultMutationSource("SELECT id, amount + 1 FROM orders").isPresent());
         assertFalse(dialect.resultMutationSource("WITH data AS (SELECT * FROM orders) SELECT * FROM data").isPresent());
         assertFalse(dialect.resultMutationSource("SELECT id FROM orders UNION SELECT id FROM archive_orders").isPresent());
+        assertEquals("JOIN_NOT_SUPPORTED", dialect.resultEditPlan(
+                "SELECT a.id FROM orders a JOIN items b ON b.order_id=a.id FOR UPDATE").reasonCode());
+        assertEquals("CTE_NOT_SUPPORTED", dialect.resultEditPlan(
+                "WITH data AS (SELECT * FROM orders) SELECT * FROM data FOR UPDATE").reasonCode());
+        assertEquals("AGGREGATE_NOT_SUPPORTED", dialect.resultEditPlan(
+                "SELECT COUNT(*) FROM orders FOR UPDATE").reasonCode());
+        String rewritten = dialect.appendResultLocatorColumns(
+                "SELECT o.name AS label FROM orders o WHERE o.id > 0 ORDER BY o.id LIMIT 10 FOR UPDATE",
+                Collections.singletonList("o.`id`"), Collections.singletonList("__DBSTUDIO_LOCATOR_0"));
+        assertTrue(rewritten.contains("__DBSTUDIO_LOCATOR_0"));
+        assertTrue(rewritten.toUpperCase().contains("FOR UPDATE"));
+        String refresh = dialect.appendResultLocatorPredicate(
+                "SELECT o.id, o.amount * 2 AS doubled FROM orders o WHERE o.amount > 10 LIMIT 5 FOR UPDATE",
+                Collections.singletonList("`id` = ?"));
+        assertTrue(refresh.contains("`id` = ?"));
+        assertTrue(refresh.toUpperCase().contains("AMOUNT > 10"));
+        assertFalse(refresh.toUpperCase().contains("LIMIT"));
     }
 }

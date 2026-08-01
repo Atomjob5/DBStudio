@@ -113,6 +113,12 @@ public interface MetadataAdapter {
         return false;
     }
 
+    /** Empty when row editing is safe for the physical table; otherwise a user-facing read-only reason. */
+    default String resultEditTableReason(DatabaseSession session, String catalog, String schema,
+                                         String objectName) throws SQLException {
+        return "";
+    }
+
     default List<UniqueKeyInfo> listUniqueKeys(DatabaseSession session, String catalog, String schema,
                                                 String objectName) throws SQLException {
         return Collections.emptyList();

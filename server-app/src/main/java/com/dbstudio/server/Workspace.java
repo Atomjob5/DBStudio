@@ -13,6 +13,8 @@ import com.dbstudio.desktop.web.EditorSessionRegistry.EditorSession;
 import com.dbstudio.spi.SqlStatement;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.SQLException;
@@ -46,6 +48,7 @@ final class Workspace implements AutoCloseable {
     private final WorkspaceEventChannel events;
     private final Path temporaryDirectory;
     private final Map<String, Path> uploads = new ConcurrentHashMap<String, Path>();
+    private final Map<String, LargeValueDraft> largeValueDrafts = new ConcurrentHashMap<String, LargeValueDraft>();
     private final ExecutorService tasks;
     private final AtomicInteger activeTasks = new AtomicInteger();
     private final EditorConnectionLimiter limiter;
@@ -263,6 +266,23 @@ final class Workspace implements AutoCloseable {
         return active.runner.applyResultChanges(target, rows, changes);
     }
 
+    CompletableFuture<QueryRunner.MutationBatchResult> applyResultOperations(
+            final EditorSession editor, final ResultMutationTarget target,
+            final List<List<String>> rows, final List<List<String>> rowLocators,
+            final List<QueryRunner.ResultOperation> operations) {
+        ensureBound(editor);
+        if (editor.activeExecutionId() != null) throw new ApiException("QUERY_BUSY", "当前标签已有查询正在执行");
+        if (editor.transactionOperationActive()) {
+            throw new ApiException("TRANSACTION_BUSY", "当前标签正在提交或回滚事务");
+        }
+        final ActiveLease active;
+        synchronized (this) { active = activeLeases.get(editor.id().toString()); }
+        if (active == null || !active.runner.isTransactionDirty()) {
+            throw new ApiException("RESULT_EDIT_TRANSACTION_ENDED", "事务已经结束，请重新执行 FOR UPDATE");
+        }
+        return active.runner.applyResultOperations(target, rows, rowLocators, operations);
+    }
+
     CompletableFuture<Void> commit(final EditorSession editor) {
         final ActiveLease active = beginTransactionOperation(editor);
         if (active == null) return CompletableFuture.completedFuture(null);
@@ -271,6 +291,7 @@ final class Workspace implements AutoCloseable {
                 editor.endTransactionOperation();
                 if (failure == null) {
                     editor.commitResultChanges();
+                    removeLargeValueDrafts(editor.id().toString());
                     releasePinned(editor, active);
                 }
                 if (failure != null) LOG.warn("Workspace事务提交失败 workspaceId={} editorId={}", id, editor.id(), failure);
@@ -290,6 +311,7 @@ final class Workspace implements AutoCloseable {
                 editor.endTransactionOperation();
                 if (failure == null) {
                     editor.rollbackResultChanges();
+                    removeLargeValueDrafts(editor.id().toString());
                     releasePinned(editor, active);
                     LOG.info("Workspace事务回滚完成 workspaceId={} editorId={}", id, editor.id());
                 } else {
@@ -513,6 +535,84 @@ final class Workspace implements AutoCloseable {
         catch (IOException exception) { LOG.warn("删除Workspace临时文件失败 workspaceId={} uploadId={}", id, uploadId, exception); }
     }
 
+    String storeLargeValueDraft(String editorId, UUID executionId, int resultIndex, int columnIndex,
+                                InputStream input, long maximumBytes) throws IOException {
+        Files.createDirectories(temporaryDirectory);
+        String token = UUID.randomUUID().toString();
+        Path target = temporaryDirectory.resolve("result-large-value-" + token + ".draft");
+        long written = 0;
+        try (OutputStream output = Files.newOutputStream(target)) {
+            byte[] buffer = new byte[8192]; int count;
+            while ((count = input.read(buffer)) >= 0) {
+                written += count;
+                if (written > maximumBytes) throw new ApiException(
+                        "RESULT_LOB_TOO_LARGE", "大字段草稿超过允许的最大大小");
+                output.write(buffer, 0, count);
+            }
+        } catch (IOException | RuntimeException exception) {
+            Files.deleteIfExists(target);
+            throw exception;
+        }
+        largeValueDrafts.put(token, new LargeValueDraft(target, editorId, executionId,
+                resultIndex, columnIndex, written));
+        return token;
+    }
+
+    Path requireLargeValueDraft(String token, String editorId, UUID executionId,
+                                int resultIndex, int columnIndex) {
+        LargeValueDraft draft = largeValueDrafts.get(token);
+        if (draft == null || !draft.editorId.equals(editorId) || !draft.executionId.equals(executionId)
+                || draft.resultIndex != resultIndex || draft.columnIndex != columnIndex
+                || !Files.exists(draft.path)) {
+            throw new ApiException("RESULT_LOB_TOKEN_INVALID", "大字段草稿不存在、已过期或不属于当前结果");
+        }
+        return draft.path;
+    }
+
+    long largeValueDraftSize(String token) {
+        LargeValueDraft draft = largeValueDrafts.get(token);
+        return draft == null ? 0L : draft.size;
+    }
+
+    void removeLargeValueDraft(String token) {
+        LargeValueDraft draft = largeValueDrafts.remove(token);
+        if (draft != null) try { Files.deleteIfExists(draft.path); }
+        catch (IOException exception) { LOG.warn("删除大字段草稿失败 workspaceId={} token={}", id, token, exception); }
+    }
+
+    void removeLargeValueDrafts(String editorId) {
+        for (Map.Entry<String, LargeValueDraft> entry
+                : new ArrayList<Map.Entry<String, LargeValueDraft>>(largeValueDrafts.entrySet())) {
+            if (entry.getValue().editorId.equals(editorId)) removeLargeValueDraft(entry.getKey());
+        }
+    }
+
+    CompletableFuture<Long> streamResultValue(EditorSession editor, ResultMutationTarget target,
+                                               List<String> row, List<String> rowLocator,
+                                               int columnIndex, OutputStream output, long maximumBytes) {
+        ensureBound(editor);
+        ActiveLease active;
+        synchronized (this) { active = activeLeases.get(editor.id().toString()); }
+        if (active == null || !active.runner.isTransactionDirty()) {
+            throw new ApiException("RESULT_EDIT_TRANSACTION_ENDED", "事务已经结束，请重新执行 FOR UPDATE");
+        }
+        return active.runner.streamResultValue(target, row, rowLocator, columnIndex, output, maximumBytes);
+    }
+
+    private static final class LargeValueDraft {
+        private final Path path;
+        private final String editorId;
+        private final UUID executionId;
+        private final int resultIndex;
+        private final int columnIndex;
+        private final long size;
+        private LargeValueDraft(Path path, String editorId, UUID executionId, int resultIndex,
+                                int columnIndex, long size) {
+            this.path = path; this.editorId = editorId; this.executionId = executionId;
+            this.resultIndex = resultIndex; this.columnIndex = columnIndex; this.size = size;
+        }
+    }
+
     String startTask(final String kind, final TaskOperation operation) {
         final String taskId = UUID.randomUUID().toString(); activeTasks.incrementAndGet();
         LOG.info("Workspace任务开始 workspaceId={} taskId={} kind={}", id, taskId, kind);
@@ -548,7 +648,7 @@ final class Workspace implements AutoCloseable {
         for (EditorSession editor : new ArrayList<EditorSession>(editors.all())) releaseEditorLease(editor, true);
         editors.close();
         for (ContextReference reference : contexts.values()) reference.pool.close();
-        contexts.clear(); bindings.clear();
+        contexts.clear(); bindings.clear(); largeValueDrafts.clear();
         for (char[] password : credentials.values()) java.util.Arrays.fill(password, '\0');
         credentials.clear(); events.close(); deleteTemporaryDirectory();
         LOG.info("Workspace运行时已关闭 workspaceId={}", id);

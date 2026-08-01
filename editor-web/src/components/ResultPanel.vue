@@ -17,6 +17,45 @@
           <el-tag v-if="activeResult?.truncated" size="small" type="warning" effect="plain">已截断</el-tag>
         </div>
         <div class="result-actions" aria-label="结果操作">
+          <template v-if="showResultEditActions">
+            <el-tooltip :content="resultEditTooltip">
+              <el-button text class="result-edit-mode" :type="resultEditUnlocked ? 'primary' : 'default'"
+                         :icon="EditPen" :disabled="!canToggleResultEdit"
+                         :aria-pressed="resultEditUnlocked" aria-label="切换结果编辑模式"
+                         @click="$emit('toggle-result-edit')">
+                {{ resultEditUnlocked ? "编辑中" : "编辑模式" }}
+              </el-button>
+            </el-tooltip>
+            <el-tooltip content="新增一条本地草稿记录">
+              <el-button text :icon="Plus" aria-label="新增行"
+                         :disabled="!resultEditUnlocked || !activeResult?.mutationTarget?.insertSupported"
+                         @click="addResultRow" />
+            </el-tooltip>
+            <el-tooltip content="将所选记录标记为待删除">
+              <el-button text :icon="Delete" aria-label="删除所选行"
+                         :disabled="!canDeleteSelectedRows" @click="deleteSelectedResultRows" />
+            </el-tooltip>
+            <el-tooltip content="撤销最后一项本地草稿">
+              <el-button text :icon="RefreshLeft" aria-label="撤销结果草稿"
+                         :disabled="editDraftCount === 0" @click="undoResultDraft" />
+            </el-tooltip>
+            <el-tooltip :content="applyResultChangesTooltip">
+              <el-button text :icon="CircleCheck" aria-label="应用更改"
+                         :type="canApplyResultChanges ? 'success' : 'default'"
+                         :disabled="!canApplyResultChanges" @click="$emit('apply-result-changes')" />
+            </el-tooltip>
+            <el-tooltip content="查看旧值、新值和参数化 SQL">
+              <el-button text :icon="Document" aria-label="变更清单"
+                         :disabled="editDraftCount + editAppliedCount === 0" @click="openChangesDialog" />
+            </el-tooltip>
+            <span class="result-edit-counts" aria-label="结果变更数量">
+              草稿 {{ editDraftCount }} · 已应用 {{ editAppliedCount }}
+            </span>
+            <el-tag v-if="activeResult?.mutationTarget?.emptyStringIsNull" size="small" type="warning" effect="plain">
+              空字符串按 NULL
+            </el-tag>
+            <span class="result-action-divider" aria-hidden="true" />
+          </template>
           <el-tooltip v-if="showRestoreLayout" :content="restoreLayoutTitle">
             <el-button text :icon="RefreshLeft" aria-label="复原列布局" @click="restoreLayout" />
           </el-tooltip>
@@ -72,6 +111,7 @@
                            :selected-row-sources="selectedRowSources"
                            :editing-cell="editingCell" :editing-value="editingCell?.value"
                            :cell-states="resultCellStates"
+                           :row-classes="resultRowClasses"
                            :has-footer="!!sumSummary"
                            @cell-pointerdown="startCellSelection" @cell-pointerenter="extendCellSelection"
                            @cell-contextmenu="openCellMenu" @cell-dblclick="handleCellDoubleClick"
@@ -115,13 +155,39 @@
     <ResultValueDialog v-model="valueDialog.visible" :value="valueDialog.value" />
     <ResultValueCompareDialog v-model="compareDialog" :left="compareValues.left" :right="compareValues.right"
                               :theme="app.theme" />
+    <ResultLargeValueDialog v-if="largeValueEditor && execution && activeResult"
+                            v-model="largeValueEditor.visible" :family="largeValueEditor.family"
+                            :value="activeResult.rows[largeValueEditor.rowIndex]?.[largeValueEditor.columnIndex] ?? null"
+                            :max-bytes="settings.maxResultLobBytes" :editor-id="execution.editorId"
+                            :execution-id="execution.executionId" :result-index="activeResult.resultIndex"
+                            :row-id="resultRowId(largeValueEditor.rowIndex)"
+                            :column-index="largeValueEditor.columnIndex"
+                            :column-name="activeResult.columns[largeValueEditor.columnIndex]"
+                            @save="saveLargeValueDraft" />
+    <el-dialog v-model="changesDialogVisible" title="结果变更清单" width="760px" append-to-body>
+      <div class="result-change-summary">
+        <span>目标表：{{ activeResult?.mutationTarget?.qualifiedName || "—" }}</span>
+        <span>锁策略：{{ activeResult?.mutationTarget?.lockMode || "WAIT" }}</span>
+        <span>草稿 {{ editDraftCount }} 项，已应用 {{ editAppliedCount }} 项</span>
+      </div>
+      <el-table :data="changeListRows" max-height="360" empty-text="没有结果变更">
+        <el-table-column prop="kindLabel" label="操作" width="82" />
+        <el-table-column prop="rowLabel" label="记录" width="88" />
+        <el-table-column prop="changes" label="旧值 → 新值" min-width="210" show-overflow-tooltip />
+        <el-table-column prop="sql" label="参数化 SQL" min-width="290" show-overflow-tooltip />
+      </el-table>
+      <el-alert v-if="previewError" class="result-change-preview-error" :title="previewError"
+                type="warning" :closable="false" show-icon />
+      <template #footer><el-button @click="changesDialogVisible = false">关闭</el-button></template>
+    </el-dialog>
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, h, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { ElMessage, TableV2FixedDir } from "element-plus";
-import { CopyDocument, DataAnalysis, Download, Postcard, RefreshLeft } from "@element-plus/icons-vue";
+import { CircleCheck, CopyDocument, DataAnalysis, Delete, Document, Download, EditPen, Plus,
+  Postcard, RefreshLeft } from "@element-plus/icons-vue";
 import type { Column } from "element-plus";
 import type { QueryExecutionState, SelectedResultColumn } from "../types";
 import { matchesColumnQuery, resultColumnOptions, type ColumnOption } from "../columnFilter";
@@ -131,7 +197,7 @@ import { useColumnLayoutStore } from "../stores/columnLayout";
 import { useSettingsStore } from "../stores/settings";
 import { useAppStore } from "../stores/app";
 import { useQueryStore } from "../stores/query";
-import { useResultEditStore } from "../stores/resultEdits";
+import { useResultEditStore, type ResultMutationValue } from "../stores/resultEdits";
 import { resultColumnRemarksText, resultCopyText, type ResultCopyMode } from "../resultCopy";
 import { writeClipboardText } from "../clipboard";
 import { cellSelectionKey, copyGrid, copyInPredicate, copyRowSql, normalizeRange, selectRows,
@@ -146,19 +212,31 @@ import ResultVirtualGrid from "./ResultVirtualGrid.vue";
 import ResultSummaryFooter from "./ResultSummaryFooter.vue";
 import ResultValueDialog from "./ResultValueDialog.vue";
 import ResultValueCompareDialog from "./ResultValueCompareDialog.vue";
+import ResultLargeValueDialog from "./ResultLargeValueDialog.vue";
 import { displayShortcut, shortcutTooltip } from "../shortcuts";
+import { rpc } from "../bridge/rpc";
 
 const props = withDefaults(defineProps<{
   execution?: QueryExecutionState;
   activeResultIndex: number;
   executing?: boolean;
-}>(), { executing: false });
+  showResultEditActions?: boolean;
+  resultEditUnlocked?: boolean;
+  canToggleResultEdit?: boolean;
+  resultEditTooltip?: string;
+  canApplyResultChanges?: boolean;
+  applyResultChangesTooltip?: string;
+}>(), { executing: false, showResultEditActions: false, resultEditUnlocked: false,
+  canToggleResultEdit: false, resultEditTooltip: "当前结果不可编辑",
+  canApplyResultChanges: false, applyResultChangesTooltip: "没有待应用的本地草稿" });
 const emit = defineEmits<{
   "export-loaded": [resultIndex: number];
   "export-full": [resultIndex: number];
   "update:active-result-index": [resultIndex: number];
   "selected-column": [column: SelectedResultColumn | undefined];
   "selected-row-count": [count: number];
+  "toggle-result-edit": [];
+  "apply-result-changes": [];
 }>();
 const columnLayouts = useColumnLayoutStore();
 const settings = useSettingsStore();
@@ -206,6 +284,8 @@ const selectionMode = ref<"cells" | "rows">("cells");
 const singleRecordMode = ref(false);
 const valueDialog = ref<{ visible: boolean; value: string | null }>({ visible: false, value: null });
 const compareDialog = ref(false);
+const largeValueEditor = ref<{ visible: boolean; rowIndex: number; columnIndex: number;
+  family: "raw" | "clob" | "blob" }>();
 const editingCell = ref<{
   rowIndex: number;
   columnIndex: number;
@@ -227,11 +307,60 @@ const activeEditSession = computed(() => {
     : undefined;
 });
 const resultEditUnlocked = computed(() => activeEditSession.value?.unlocked === true);
-const resultCellStates = computed<Record<string, "pending" | "posted">>(() => {
+const editDraftCount = computed(() => activeEditSession.value
+  ? resultEdits.operations(activeEditSession.value).length : 0);
+const editAppliedCount = computed(() => {
+  const current = activeEditSession.value;
+  if (!current) return 0;
+  return current.inserts.filter((item) => item.status === "applied").length
+    + current.deletes.filter((item) => item.status === "applied").length
+    + new Set(current.cells.filter((cell) => cell.appliedMutation || cell.confirmedValue !== cell.originalValue)
+      .map((cell) => cell.rowId || cell.rowIndex)).size;
+});
+const resultRowClasses = computed<Record<number, string>>(() => {
   const execution = props.execution;
   const result = activeResult.value;
   if (!execution || !result) return {};
-  const values: Record<string, "pending" | "posted"> = {};
+  const values: Record<number, string> = {};
+  for (let rowIndex = 0; rowIndex < result.rows.length; rowIndex++) {
+    const rowId = result.rowIds?.[rowIndex];
+    const inserted = activeEditSession.value?.inserts.find((item) => item.rowId === rowId);
+    if (inserted) values[rowIndex] = inserted.status === "applied" ? "result-row-inserted-applied" : "result-row-inserted";
+    if (resultEdits.isDeleted(execution.editorId, execution.executionId, result.resultIndex, rowId)) {
+      values[rowIndex] = "result-row-deleted";
+    }
+  }
+  return values;
+});
+const canDeleteSelectedRows = computed(() => Boolean(resultEditUnlocked.value
+  && activeResult.value?.mutationTarget?.deleteSupported && selectedRowSources.value.length));
+const changesDialogVisible = ref(false);
+const changePreviews = ref<Array<{ operationId: string; sql: string; binds: string[] }>>([]);
+const previewError = ref("");
+const changeListRows = computed(() => {
+  const current = activeEditSession.value;
+  const result = activeResult.value;
+  if (!current || !result) return [];
+  const previews = new Map(changePreviews.value.map((item) => [item.operationId, item]));
+  return resultEdits.operations(current, false).map((operation) => {
+    const preview = previews.get(operation.operationId);
+    const cells = operation.kind === "update" ? current.cells.filter((cell) =>
+      (operation.rowId ? cell.rowId === operation.rowId : cell.rowIndex === operation.rowIndex)) : [];
+    const changes = operation.kind === "insert"
+      ? operation.values.map((item) => `${result.columns[item.columnIndex]}=${mutationValueText(item.value)}`).join("，")
+      : operation.kind === "delete" ? "整行删除"
+        : cells.map((cell) => `${result.columns[cell.columnIndex]}: ${cell.originalValue ?? "NULL"} → ${cell.draftValue ?? "NULL"}`).join("，");
+    return { operationId: operation.operationId,
+      kindLabel: operation.kind === "insert" ? "新增" : operation.kind === "delete" ? "删除" : "更新",
+      rowLabel: operation.kind === "insert" ? "新增行" : `第 ${operation.rowIndex + 1} 行`, changes,
+      sql: preview ? `${preview.sql}  [${preview.binds.join(", ")}]` : "已应用到当前事务" };
+  });
+});
+const resultCellStates = computed<Record<string, "pending" | "posted" | "error">>(() => {
+  const execution = props.execution;
+  const result = activeResult.value;
+  if (!execution || !result) return {};
+  const values: Record<string, "pending" | "posted" | "error"> = {};
   for (const cell of activeEditSession.value?.cells ?? []) {
     const state = resultEdits.cellState(execution.editorId, execution.executionId,
       result.resultIndex, cell.rowIndex, cell.columnIndex);
@@ -389,7 +518,8 @@ function columnDefinition(column: ColumnOption, visiblePosition: number): Column
       class: ["result-cell", cellData === null ? "null-value" : cellData.startsWith?.("0x") ? "binary-value" : "",
         selectionMode.value === "cells" && selected ? "selected" : "",
         editState === "pending" ? "result-cell-pending" : "",
-        editState === "posted" ? "result-cell-posted" : ""],
+        editState === "posted" ? "result-cell-posted" : "",
+        editState === "error" ? "result-cell-error" : ""],
       title: cellData !== null && cellData.length >= 40 ? cellData : undefined,
       onPointerdown: (event: PointerEvent) => startCellSelection(event, rowIndex, visiblePosition),
       onPointerenter: () => extendCellSelection(rowIndex, visiblePosition),
@@ -401,8 +531,8 @@ function columnDefinition(column: ColumnOption, visiblePosition: number): Column
 }
 
 function legacyRowClass({ rowData }: { rowData: ViewRow }): string {
-  return selectionMode.value === "rows" && selectedRowSources.value.includes(rowData.sourceIndex)
-    ? "result-row-selected" : "";
+  return [selectionMode.value === "rows" && selectedRowSources.value.includes(rowData.sourceIndex)
+    ? "result-row-selected" : "", resultRowClasses.value[rowData.sourceIndex] ?? ""].filter(Boolean).join(" ");
 }
 
 function resultColumnWidth(column: ColumnOption, identity: string): number {
@@ -1135,6 +1265,94 @@ function handleSingleRecordDoubleClick(row: ViewRow, columnIndex: number): void 
   valueDialog.value = { visible: true, value: row.cells[columnIndex] ?? null };
 }
 
+function resultRowId(rowIndex: number): string {
+  const result = activeResult.value;
+  return result?.rowIds?.[rowIndex] ?? `${props.execution?.executionId ?? "result"}:${result?.resultIndex ?? 0}:${rowIndex}`;
+}
+
+function mutationValueText(value: { kind: string; value?: string }): string {
+  if (value.kind === "null") return "NULL";
+  if (value.kind === "default") return "DEFAULT";
+  if (value.kind === "largeValueToken") return "<大字段草稿>";
+  return value.value ?? "";
+}
+
+function addResultRow(): void {
+  const execution = props.execution;
+  const result = activeResult.value;
+  const target = result?.mutationTarget;
+  if (!execution || !result || !resultEditUnlocked.value || !target?.insertSupported) return;
+  const rowId = `draft:${crypto.randomUUID()}`;
+  const rowIndex = result.rows.length;
+  const editable = target.columns.filter((column) => !column.generated && (column.editable !== false || column.autoIncrement))
+    .map((column) => column.resultIndex);
+  resultEdits.addInsert(execution.editorId, execution.executionId, result.resultIndex, rowId, rowIndex, editable);
+  queries.appendDraftRow(execution.editorId, result.resultIndex, rowId,
+    Array.from({ length: result.columns.length }, () => null));
+  selectedRowSources.value = [rowIndex];
+  selectionMode.value = "rows";
+  if (editable.length) nextTick(() => startEditCell(rowIndex, editable[0]));
+}
+
+function deleteSelectedResultRows(): void {
+  const execution = props.execution;
+  const result = activeResult.value;
+  if (!execution || !result || !canDeleteSelectedRows.value) return;
+  const selected = [...selectedRowSources.value].sort((left, right) => right - left);
+  for (const rowIndex of selected) {
+    const rowId = resultRowId(rowIndex);
+    const insertedLargeValues = activeEditSession.value?.inserts.find((item) => item.rowId === rowId)?.values
+      .flatMap((item) => item.value.kind === "largeValueToken"
+        ? [{ columnIndex: item.columnIndex, token: item.value.value }] : []) ?? [];
+    const action = resultEdits.markDelete(execution.editorId, execution.executionId, result.resultIndex,
+      rowId, rowIndex, result.rows[rowIndex] ?? []);
+    if (action === "cancelled-insert") {
+      queries.removeRowById(execution.editorId, result.resultIndex, rowId);
+      for (const value of insertedLargeValues) void rpc.deleteResultLargeValueDraft(
+        execution.editorId, execution.executionId, result.resultIndex, value.columnIndex, value.token);
+    }
+  }
+  clearSelection();
+}
+
+function undoResultDraft(): void {
+  const execution = props.execution;
+  const result = activeResult.value;
+  if (!execution || !result) return;
+  const undone = resultEdits.undo(execution.editorId, execution.executionId, result.resultIndex);
+  if (!undone) return;
+  if (undone.kind === "cell") queries.updateCells(execution.editorId, result.resultIndex, [{
+    rowIndex: undone.rowIndex, columnIndex: undone.columnIndex, value: undone.value
+  }]);
+  if (undone.kind === "cell" && undone.largeValueToken) void rpc.deleteResultLargeValueDraft(
+    execution.editorId, execution.executionId, result.resultIndex, undone.columnIndex, undone.largeValueToken);
+  else if (undone.kind === "insert") {
+    queries.removeRowById(execution.editorId, result.resultIndex, undone.rowId);
+    for (const value of undone.largeValues) void rpc.deleteResultLargeValueDraft(
+      execution.editorId, execution.executionId, result.resultIndex, value.columnIndex, value.token);
+  }
+}
+
+async function openChangesDialog(): Promise<void> {
+  const execution = props.execution;
+  const result = activeResult.value;
+  const current = activeEditSession.value;
+  if (!execution || !result || !current) return;
+  changesDialogVisible.value = true;
+  previewError.value = "";
+  const operations = resultEdits.operations(current);
+  if (!operations.length) { changePreviews.value = []; return; }
+  try {
+    const response = await rpc.request<{ previews: Array<{ operationId: string; sql: string; binds: string[] }> }>(
+      "query.previewChanges", { editorId: execution.editorId, executionId: execution.executionId,
+        resultIndex: result.resultIndex,
+        operations: operations.map(({ sequence: _sequence, ...operation }) => operation) });
+    changePreviews.value = response.previews;
+  } catch (error) {
+    previewError.value = error instanceof Error ? error.message : String(error);
+  }
+}
+
 function startEditCell(rowIndex: number, columnIndex: number): void {
   const result = activeResult.value;
   if (!resultEditUnlocked.value || !result) return;
@@ -1142,8 +1360,40 @@ function startEditCell(rowIndex: number, columnIndex: number): void {
     ElMessage.warning("该字段类型或行唯一键不支持直接修改");
     return;
   }
+  const family = result.mutationTarget?.columns.find((item) => item.resultIndex === columnIndex)?.typeFamily;
+  if (family === "raw" || family === "clob" || family === "blob") {
+    largeValueEditor.value = { visible: true, rowIndex, columnIndex, family };
+    return;
+  }
   const value = result.rows[rowIndex]?.[columnIndex] ?? null;
   editingCell.value = { rowIndex, columnIndex, value, valueAtOpen: value };
+}
+
+function saveLargeValueDraft(value: ResultMutationValue): void {
+  const edit = largeValueEditor.value;
+  const execution = props.execution;
+  const result = activeResult.value;
+  if (!edit || !execution || !result) return;
+  const current = result.rows[edit.rowIndex]?.[edit.columnIndex] ?? null;
+  const rowId = resultRowId(edit.rowIndex);
+  const previousMutation = activeEditSession.value?.inserts.find((item) => item.rowId === rowId)?.values
+    .find((item) => item.columnIndex === edit.columnIndex)?.value
+    ?? activeEditSession.value?.cells.find((item) => item.rowId === rowId
+      && item.columnIndex === edit.columnIndex)?.draftMutation;
+  if (value.kind === "text") {
+    resultEdits.stage(execution.editorId, execution.executionId, result.resultIndex,
+      edit.rowIndex, edit.columnIndex, current, value.value, rowId);
+    queries.updateCells(execution.editorId, result.resultIndex, [{ rowIndex: edit.rowIndex,
+      columnIndex: edit.columnIndex, value: value.value }]);
+  } else {
+    resultEdits.stageMutation(execution.editorId, execution.executionId, result.resultIndex,
+      edit.rowIndex, edit.columnIndex, current, value, rowId);
+  }
+  if (previousMutation?.kind === "largeValueToken"
+      && (value.kind !== "largeValueToken" || value.value !== previousMutation.value)) {
+    void rpc.deleteResultLargeValueDraft(execution.editorId, execution.executionId,
+      result.resultIndex, edit.columnIndex, previousMutation.value);
+  }
 }
 
 function updateEditingValue(value: string): void {
@@ -1158,7 +1408,7 @@ function commitCellEdit(): void {
   editingCell.value = undefined;
   if (edit.value === edit.valueAtOpen) return;
   resultEdits.stage(execution.editorId, execution.executionId, result.resultIndex,
-    edit.rowIndex, edit.columnIndex, edit.valueAtOpen, edit.value);
+    edit.rowIndex, edit.columnIndex, edit.valueAtOpen, edit.value, resultRowId(edit.rowIndex));
   queries.updateCells(execution.editorId, result.resultIndex, [{
     rowIndex: edit.rowIndex, columnIndex: edit.columnIndex, value: edit.value
   }]);
@@ -1175,7 +1425,7 @@ function setSelectedCellsNull(): void {
     const current = result.rows[cell.sourceRow]?.[cell.sourceColumn] ?? null;
     if (current === null) continue;
     resultEdits.stage(execution.editorId, execution.executionId, result.resultIndex,
-      cell.sourceRow, cell.sourceColumn, current, null);
+      cell.sourceRow, cell.sourceColumn, current, null, resultRowId(cell.sourceRow));
     updates.push({ rowIndex: cell.sourceRow, columnIndex: cell.sourceColumn, value: null });
   }
   queries.updateCells(execution.editorId, result.resultIndex, updates);
@@ -1186,13 +1436,16 @@ function isCellEditable(rowIndex: number, columnIndex: number): boolean {
   const target = result?.mutationTarget;
   const row = result?.rows[rowIndex];
   const column = target?.columns.find((item) => item.resultIndex === columnIndex);
-  if (!target?.editableForUpdate || !row || !column || !editableJdbcType(column.jdbcType)) return false;
-  return target.uniqueKeys.some((key) => key.resultColumnIndices.length > 0
-    && key.resultColumnIndices.every((index) => row[index] !== null && row[index] !== undefined));
+  if (!(target?.mode === "editable" || target?.editableForUpdate) || !row || !column || column.editable === false
+      || !editableJdbcType(column.jdbcType)) return false;
+  if (resultEdits.isDeleted(props.execution?.editorId ?? "", props.execution?.executionId ?? "",
+      result?.resultIndex ?? -1, resultRowId(rowIndex))) return false;
+  return Boolean(target.updateSupported !== false || activeEditSession.value?.inserts
+    .some((item) => item.rowId === resultRowId(rowIndex) && item.status === "draft"));
 }
 
 function editableJdbcType(jdbcType: number): boolean {
-  return !new Set([-4, -3, -2, -8, 1111, 2000, 2002, 2003, 2004, 2005, 2006, 2009, 2011])
+  return !new Set([1111, 2000, 2002, 2003, 2006, 2009])
     .has(jdbcType);
 }
 
@@ -1325,7 +1578,12 @@ onBeforeUnmount(() => {
 .result-actions { margin-left: auto; display: inline-flex; align-items: center; gap: 2px; }
 .result-actions .el-select { width: 210px; }
 .result-actions :deep(.el-button) { width: 28px; min-height: 28px; padding: 0; }
+.result-actions :deep(.result-edit-mode) { width: auto; padding: 0 8px; font-size: 11px; }
 .result-actions :deep(.el-dropdown) { display: inline-flex; }
+.result-edit-counts { color: var(--db-muted); font-size: 10px; white-space: nowrap; }
+.result-action-divider { width: 1px; height: 18px; margin: 0 4px; background: var(--db-border-soft); }
+.result-change-summary { display: flex; gap: 18px; margin-bottom: 12px; color: var(--db-muted); font-size: 12px; }
+.result-change-preview-error { margin-top: 12px; }
 .column-option {
   width: 100%;
   min-width: 0;
@@ -1371,6 +1629,10 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, var(--db-accent) 14%, transparent);
   box-shadow: inset 3px 0 0 var(--db-accent);
 }
+:deep(.result-cell-error) {
+  background: color-mix(in srgb, var(--el-color-danger) 13%, transparent);
+  box-shadow: inset 0 0 0 1px var(--el-color-danger);
+}
 :deep(.result-cell-editor) {
   box-sizing: border-box;
   width: 100%;
@@ -1396,6 +1658,10 @@ onBeforeUnmount(() => {
   background: var(--db-accent-soft);
 }
 :deep(.el-table-v2__row.result-row-selected .result-row-number) { background: transparent; }
+:deep(.el-table-v2__row.result-row-inserted) { background: color-mix(in srgb, var(--el-color-success) 10%, transparent); }
+:deep(.el-table-v2__row.result-row-inserted-applied) { background: color-mix(in srgb, var(--el-color-success) 6%, transparent); }
+:deep(.el-table-v2__row.result-row-deleted) { background: color-mix(in srgb, var(--el-color-danger) 9%, transparent); opacity: .72; }
+:deep(.el-table-v2__row.result-row-deleted .result-cell) { text-decoration: line-through; }
 :deep(.el-table-v2__footer) { background: var(--db-panel-soft); }
 :deep(.el-table-v2__left) {
   border-right: 0;

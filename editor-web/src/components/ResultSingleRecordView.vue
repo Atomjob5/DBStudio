@@ -12,7 +12,8 @@
           <span v-else class="single-record-value"
                 :class="{ 'null-value': field.value === null,
                   'result-cell-pending': cellStates?.[`${row.sourceIndex}:${field.index}`] === 'pending',
-                  'result-cell-posted': cellStates?.[`${row.sourceIndex}:${field.index}`] === 'posted' }"
+                  'result-cell-posted': cellStates?.[`${row.sourceIndex}:${field.index}`] === 'posted',
+                  'result-cell-error': cellStates?.[`${row.sourceIndex}:${field.index}`] === 'error' }"
                 :title="valueTitle(field.value)" tabindex="0"
                 @dblclick="$emit('cell-dblclick', field.index)"
                 @keydown.enter.prevent="$emit('cell-dblclick', field.index)"
@@ -37,7 +38,7 @@ const props = defineProps<{
   row: ViewRow;
   editingColumnIndex?: number;
   editingValue?: string | null;
-  cellStates?: Record<string, "pending" | "posted">;
+  cellStates?: Record<string, "pending" | "posted" | "error">;
 }>();
 defineEmits<{
   "cell-dblclick": [columnIndex: number];
@@ -105,6 +106,7 @@ function valueTitle(value: string | null): string | undefined {
   background: color-mix(in srgb, var(--db-accent) 14%, transparent);
   box-shadow: inset 3px 0 0 var(--db-accent);
 }
+.result-cell-error { background: color-mix(in srgb, var(--el-color-danger) 13%, transparent); }
 :deep(.el-table) {
   --el-table-border-color: var(--db-border-soft);
   --el-table-header-bg-color: var(--db-table-header);

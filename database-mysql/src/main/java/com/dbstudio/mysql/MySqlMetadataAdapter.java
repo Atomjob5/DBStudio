@@ -196,7 +196,9 @@ public final class MySqlMetadataAdapter implements MetadataAdapter {
                         resultSet.getString("COLUMN_DEF"),
                         primaryKeys.contains(name),
                         resultSet.getInt("ORDINAL_POSITION"),
-                        resultSet.getString("REMARKS")));
+                        resultSet.getString("REMARKS"),
+                        yes(resultSet, "IS_AUTOINCREMENT"),
+                        yes(resultSet, "IS_GENERATEDCOLUMN")));
             }
         }
         Collections.sort(columns, new Comparator<ColumnInfo>() {
@@ -205,6 +207,11 @@ public final class MySqlMetadataAdapter implements MetadataAdapter {
             }
         });
         return columns;
+    }
+
+    private static boolean yes(ResultSet resultSet, String column) {
+        try { return "YES".equalsIgnoreCase(resultSet.getString(column)); }
+        catch (SQLException ignored) { return false; }
     }
 
     @Override
@@ -238,6 +245,22 @@ public final class MySqlMetadataAdapter implements MetadataAdapter {
             }
         }
         return false;
+    }
+
+    @Override public String resultEditTableReason(DatabaseSession session, String catalog, String schema,
+                                                   String objectName) throws SQLException {
+        String effectiveCatalog = catalog == null || catalog.isEmpty() ? session.currentCatalog() : catalog;
+        try (PreparedStatement statement = session.jdbcConnection().prepareStatement(
+                "SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?")) {
+            statement.setString(1, effectiveCatalog);
+            statement.setString(2, objectName);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) return "无法确认目标表存储引擎";
+                String engine = rows.getString(1);
+                return "INNODB".equalsIgnoreCase(engine) ? ""
+                        : "MySQL 结果编辑仅支持 InnoDB 事务表（当前引擎：" + value(engine) + "）";
+            }
+        }
     }
 
     @Override

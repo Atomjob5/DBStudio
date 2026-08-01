@@ -5,12 +5,14 @@ import com.alibaba.druid.sql.SQLUtils;
 import com.alibaba.druid.sql.ast.SQLExpr;
 import com.alibaba.druid.sql.ast.SQLStatement;
 import com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr;
+import com.alibaba.druid.sql.ast.expr.SQLAggregateExpr;
 import com.alibaba.druid.sql.ast.expr.SQLPropertyExpr;
 import com.alibaba.druid.sql.ast.statement.SQLSelectItem;
 import com.alibaba.druid.sql.ast.statement.SQLExprTableSource;
 import com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock;
 import com.alibaba.druid.sql.ast.statement.SQLSelectStatement;
 import com.dbstudio.spi.ResultMutationSource;
+import com.dbstudio.spi.ResultEditPlan;
 import com.dbstudio.spi.SqlDialect;
 import com.dbstudio.spi.SqlStatement;
 import com.dbstudio.spi.SqlTextCompactor;
@@ -255,12 +257,6 @@ public final class MySqlDialect implements SqlDialect {
             if (selectStatement.getSelect().getWithSubQuery() != null) return Optional.empty();
             SQLSelectQueryBlock block = selectStatement.getSelect().getQueryBlock();
             if (block == null || !(block.getFrom() instanceof SQLExprTableSource)) return Optional.empty();
-            if (!block.selectItemHasAllColumn()) {
-                for (SQLSelectItem item : block.getSelectList()) {
-                    if (!(item.getExpr() instanceof SQLIdentifierExpr)
-                            && !(item.getExpr() instanceof SQLPropertyExpr)) return Optional.empty();
-                }
-            }
             SQLExprTableSource source = (SQLExprTableSource) block.getFrom();
             String table = normalizedIdentifier(source.getTableName());
             if (table.isEmpty()) return Optional.empty();
@@ -268,10 +264,66 @@ public final class MySqlDialect implements SqlDialect {
             // Druid 会通过 getSchema() 暴露两段式名称，这里统一归一化差异。
             String catalog = normalizedIdentifier(source.getCatalog());
             if (catalog.isEmpty()) catalog = normalizedIdentifier(source.getSchema());
-            return Optional.of(new ResultMutationSource(catalog, "", table, block.isForUpdate()));
+            return Optional.of(new ResultMutationSource(catalog, "", table,
+                    normalizedIdentifier(source.getAlias()), block.isForUpdate()));
         } catch (RuntimeException ignored) {
             return Optional.empty();
         }
+    }
+
+    @Override public ResultEditPlan resultEditPlan(String sql) {
+        try {
+            SQLStatement statement = SQLUtils.parseSingleMysqlStatement(sql);
+            if (!(statement instanceof SQLSelectStatement)) return ResultEditPlan.readOnly(
+                    "NOT_QUERY", "只有查询结果支持编辑");
+            SQLSelectStatement select = (SQLSelectStatement) statement;
+            if (select.getSelect().getWithSubQuery() != null) return ResultEditPlan.readOnly(
+                    "CTE_NOT_SUPPORTED", "CTE 查询结果暂不支持编辑");
+            SQLSelectQueryBlock block = select.getSelect().getQueryBlock();
+            if (block == null) return ResultEditPlan.readOnly(
+                    "SET_QUERY_NOT_SUPPORTED", "UNION 等集合查询结果暂不支持编辑");
+            if (block.getGroupBy() != null || block.isDistinct() || hasAggregate(block)) {
+                return ResultEditPlan.readOnly("AGGREGATE_NOT_SUPPORTED", "聚合或去重查询结果暂不支持编辑");
+            }
+            if (!(block.getFrom() instanceof SQLExprTableSource)) return ResultEditPlan.readOnly(
+                    "JOIN_NOT_SUPPORTED", "联表或派生表查询结果暂不支持编辑");
+            Optional<ResultMutationSource> source = resultMutationSource(sql);
+            if (!source.isPresent()) return ResultEditPlan.readOnly(
+                    "UNSUPPORTED_QUERY_SHAPE", "当前查询形态无法安全定位单一基表");
+            return source.get().editableForUpdate() ? ResultEditPlan.editable(source.get())
+                    : ResultEditPlan.readOnly(source.get(), "FOR_UPDATE_REQUIRED", "需要显式执行单表 FOR UPDATE 查询");
+        } catch (RuntimeException exception) {
+            return ResultEditPlan.readOnly("SQL_PARSE_FAILED", "SQL 无法安全解析，结果保持只读");
+        }
+    }
+
+    private static boolean hasAggregate(SQLSelectQueryBlock block) {
+        for (SQLSelectItem item : block.getSelectList()) if (item.getExpr() instanceof SQLAggregateExpr) return true;
+        return false;
+    }
+
+    @Override public String appendResultLocatorColumns(String sql, List<String> expressions, List<String> aliases) {
+        if (expressions == null || expressions.isEmpty() || expressions.size() != aliases.size()) return sql;
+        SQLStatement statement = SQLUtils.parseSingleMysqlStatement(sql);
+        if (!(statement instanceof SQLSelectStatement)) return sql;
+        SQLSelectQueryBlock block = ((SQLSelectStatement) statement).getSelect().getQueryBlock();
+        if (block == null) return sql;
+        for (int index = 0; index < expressions.size(); index++) {
+            block.addSelectItem(SQLUtils.toSQLExpr(expressions.get(index), com.alibaba.druid.DbType.mysql),
+                    aliases.get(index));
+        }
+        return SQLUtils.toSQLString(statement, com.alibaba.druid.DbType.mysql);
+    }
+
+    @Override public String appendResultLocatorPredicate(String sql, List<String> predicates) {
+        if (predicates == null || predicates.isEmpty()) return "";
+        SQLStatement statement = SQLUtils.parseSingleMysqlStatement(sql);
+        if (!(statement instanceof SQLSelectStatement)) return "";
+        SQLSelectQueryBlock block = ((SQLSelectStatement) statement).getSelect().getQueryBlock();
+        if (block == null) return "";
+        block.addCondition(SQLUtils.toSQLExpr(String.join(" AND ", predicates), DbType.mysql));
+        block.setLimit(null);
+        return SQLUtils.toSQLString(statement, DbType.mysql);
     }
 
     private static String sourceColumnName(SQLExpr expression) {

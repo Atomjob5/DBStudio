@@ -28,7 +28,8 @@
       <div class="result-virtual-grid__canvas" :style="canvasStyle">
         <div v-for="entry in visibleRows" :key="entry.slot"
              class="result-virtual-grid__row" role="row"
-             :class="{ 'result-row-selected': selectionMode === 'rows' && selectedRowSet.has(entry.row.sourceIndex) }"
+             :class="[{ 'result-row-selected': selectionMode === 'rows' && selectedRowSet.has(entry.row.sourceIndex) },
+                       rowClasses?.[entry.row.sourceIndex]]"
              :style="rowStyle(entry.index)">
           <span class="result-row-number result-virtual-grid__gutter"
                 :class="{ selected: selectionMode === 'rows' && selectedRowSet.has(entry.row.sourceIndex) }"
@@ -100,7 +101,8 @@ const props = defineProps<{
   hasFooter?: boolean;
   editingCell?: { rowIndex: number; columnIndex: number };
   editingValue?: string | null;
-  cellStates?: Record<string, "pending" | "posted">;
+  cellStates?: Record<string, "pending" | "posted" | "error">;
+  rowClasses?: Record<number, string>;
 }>();
 
 const emit = defineEmits<{
@@ -390,7 +392,7 @@ function cellClasses(rowIndex: number, column: ResultVirtualColumn): Array<strin
   const state = row ? props.cellStates?.[`${row.sourceIndex}:${column.sourceIndex}`] : undefined;
   return [value === null ? "null-value" : "", value?.startsWith("0x") ? "binary-value" : "",
     selected && "selected", state === "pending" && "result-cell-pending",
-    state === "posted" && "result-cell-posted"];
+    state === "posted" && "result-cell-posted", state === "error" && "result-cell-error"];
 }
 
 function isEditing(row: ViewRow, column: ResultVirtualColumn): boolean {
@@ -638,6 +640,10 @@ defineExpose({ getScrollPosition, setScrollPosition });
 .result-virtual-grid.is-scrollbar-dragging .result-virtual-grid__row:hover { background: transparent; }
 .result-virtual-grid__row.result-row-selected,
 .result-virtual-grid__row.result-row-selected:hover { background: var(--db-accent-soft); }
+.result-virtual-grid__row.result-row-inserted { background: color-mix(in srgb, var(--el-color-success) 10%, transparent); }
+.result-virtual-grid__row.result-row-inserted-applied { background: color-mix(in srgb, var(--el-color-success) 6%, transparent); }
+.result-virtual-grid__row.result-row-deleted { background: color-mix(in srgb, var(--el-color-danger) 9%, transparent); opacity: .72; }
+.result-virtual-grid__row.result-row-deleted .result-cell { text-decoration: line-through; }
 .result-virtual-grid.is-scrollbar-dragging .result-virtual-grid__row { pointer-events: none; }
 .result-virtual-grid__gutter {
   position: sticky;
@@ -724,6 +730,10 @@ defineExpose({ getScrollPosition, setScrollPosition });
 .result-cell-posted {
   background: color-mix(in srgb, var(--db-accent) 14%, transparent);
   box-shadow: inset 3px 0 0 var(--db-accent);
+}
+.result-cell-error {
+  background: color-mix(in srgb, var(--el-color-danger) 13%, transparent);
+  box-shadow: inset 0 0 0 1px var(--el-color-danger);
 }
 .result-virtual-grid__footer { flex: none; }
 .result-virtual-grid__viewport::-webkit-scrollbar { width: 8px; height: 8px; }
