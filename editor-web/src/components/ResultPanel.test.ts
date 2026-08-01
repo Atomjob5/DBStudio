@@ -212,6 +212,139 @@ describe("ResultPanel streaming rendering", () => {
     expect(wrapper.find('[aria-label="确认结果修改"]').exists()).toBe(false);
   });
 
+  it("returns focus after Enter so arrows can move and Enter can edit the next cell", async () => {
+    const execution = {
+      executionId: "execution-edit-keyboard", editorId: "editor-keyboard", busy: false,
+      cancelled: false, failed: false, durationMs: 8,
+      results: [{
+        resultIndex: 0, sql: "select id, name from sample for update", type: "QUERY",
+        columns: ["id", "name"], rows: [["1", "before"], ["2", "second"]],
+        rowIds: ["row-1", "row-2"],
+        columnDetails: [
+          { label: "id", name: "id", remarks: "", catalog: "db", schema: "", table: "sample",
+            typeName: "BIGINT", jdbcType: -5 },
+          { label: "name", name: "name", remarks: "", catalog: "db", schema: "", table: "sample",
+            typeName: "VARCHAR", jdbcType: 12 }
+        ],
+        mutationTarget: {
+          qualifiedName: "`db`.`sample`", editableForUpdate: true, mode: "editable" as const,
+          updateSupported: true, insertSupported: true, deleteSupported: true, lockMode: "WAIT",
+          columns: [
+            { resultIndex: 0, name: "id", quotedName: "`id`", jdbcType: -5 },
+            { resultIndex: 1, name: "name", quotedName: "`name`", jdbcType: 12 }
+          ],
+          uniqueKeys: [{ name: "PRIMARY", primary: true, resultColumnIndices: [0] }]
+        },
+        updateCount: -1, truncated: false, durationMs: 7, complete: true
+      }]
+    };
+    const edits = useResultEditStore();
+    const wrapper = mount(ResultPanel, {
+      attachTo: document.body,
+      props: { activeResultIndex: 0, execution }, global: { plugins: [ElementPlus] }
+    });
+    edits.setUnlocked("editor-keyboard", "execution-edit-keyboard", 0, true);
+    await nextTick();
+
+    const table = () => wrapper.findComponent({ name: "ElTableV2" });
+    const cell = (rowIndex: number, columnIndex: number) => {
+      const columns = table().props("columns") as Column[];
+      const rows = table().props("data") as Array<{ sourceIndex: number; cells: string[] }>;
+      return columns[columnIndex + 1]
+        .cellRenderer?.({ rowData: rows[rowIndex], rowIndex } as never) as VNode;
+    };
+    const host = wrapper.get(".table-host");
+    cell(0, 0).props?.onPointerdown({
+      button: 0, preventDefault: vi.fn(), ctrlKey: false, metaKey: false, shiftKey: false
+    });
+    window.dispatchEvent(new Event("pointerup"));
+    cell(0, 0).props?.onDblclick();
+    await nextTick();
+
+    const editor = cell(0, 0);
+    expect(editor.type).toBe("input");
+    editor.props?.onInput({ target: { value: "10" } });
+    editor.props?.onKeydown({ key: "Enter", preventDefault: vi.fn() });
+    await nextTick();
+    expect(document.activeElement).toBe(host.element);
+
+    await host.trigger("keydown", { key: "ArrowRight" });
+    await nextTick();
+    expect(String(cell(0, 1).props?.class)).toContain("focused");
+    expect(String(cell(0, 1).props?.class)).toContain("selected");
+
+    await host.trigger("keydown", { key: "Enter" });
+    await nextTick();
+    expect(cell(0, 1).type).toBe("input");
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    outside.focus();
+    await nextTick();
+    expect(document.activeElement).toBe(outside);
+    outside.remove();
+    wrapper.unmount();
+  });
+
+  it("keeps the Enter, arrow and Enter editing flow in the optimized grid", async () => {
+    useSettingsStore().scrollOptimizationEnabled = true;
+    const execution = {
+      executionId: "execution-edit-virtual-keyboard", editorId: "editor-virtual-keyboard",
+      busy: false, cancelled: false, failed: false, durationMs: 8,
+      results: [{
+        resultIndex: 0, sql: "select id, name from sample for update", type: "QUERY",
+        columns: ["id", "name"], rows: [["1", "before"], ["2", "second"]],
+        rowIds: ["row-1", "row-2"],
+        columnDetails: [
+          { label: "id", name: "id", remarks: "", catalog: "db", schema: "", table: "sample",
+            typeName: "BIGINT", jdbcType: -5 },
+          { label: "name", name: "name", remarks: "", catalog: "db", schema: "", table: "sample",
+            typeName: "VARCHAR", jdbcType: 12 }
+        ],
+        mutationTarget: {
+          qualifiedName: "`db`.`sample`", editableForUpdate: true, mode: "editable" as const,
+          updateSupported: true, insertSupported: true, deleteSupported: true, lockMode: "WAIT",
+          columns: [
+            { resultIndex: 0, name: "id", quotedName: "`id`", jdbcType: -5 },
+            { resultIndex: 1, name: "name", quotedName: "`name`", jdbcType: 12 }
+          ],
+          uniqueKeys: [{ name: "PRIMARY", primary: true, resultColumnIndices: [0] }]
+        },
+        updateCount: -1, truncated: false, durationMs: 7, complete: true
+      }]
+    };
+    const edits = useResultEditStore();
+    const wrapper = mount(ResultPanel, {
+      attachTo: document.body,
+      props: { activeResultIndex: 0, execution }, global: { plugins: [ElementPlus] }
+    });
+    edits.setUnlocked("editor-virtual-keyboard", "execution-edit-virtual-keyboard", 0, true);
+    await nextTick();
+
+    const grid = wrapper.findComponent({ name: "ResultVirtualGrid" });
+    const row = { sourceIndex: 0, cells: ["1", "before"] };
+    grid.vm.$emit("cell-pointerdown", {
+      button: 0, preventDefault: vi.fn(), ctrlKey: false, metaKey: false, shiftKey: false
+    }, 0, 0);
+    window.dispatchEvent(new Event("pointerup"));
+    grid.vm.$emit("cell-dblclick", 0, 0, row);
+    await nextTick();
+    expect(grid.props("editingCell")).toEqual(expect.objectContaining({ rowIndex: 0, columnIndex: 0 }));
+
+    grid.vm.$emit("update:editing-value", "10");
+    grid.vm.$emit("commit-edit", "enter");
+    await nextTick();
+    const host = wrapper.get(".table-host");
+    expect(document.activeElement).toBe(host.element);
+
+    await host.trigger("keydown", { key: "ArrowRight" });
+    await nextTick();
+    expect(grid.props("focusedCellKey")).toBe("0:1");
+    await host.trigger("keydown", { key: "Enter" });
+    await nextTick();
+    expect(grid.props("editingCell")).toEqual(expect.objectContaining({ rowIndex: 0, columnIndex: 1 }));
+    wrapper.unmount();
+  });
+
   it("clones every selected row as an insert draft and prepares large values without copying previews", async () => {
     const queries = useQueryStore();
     const edits = useResultEditStore();
@@ -798,6 +931,177 @@ describe("ResultPanel streaming rendering", () => {
     settings.headerFilteringEnabled = false; await nextTick();
     expect((table().props("data") as Array<{ cells: Array<string | null> }>).map((row) => row.cells[0]))
       .toEqual(["10", "2", null]);
+  });
+
+  it("moves an active cell with arrows and extends a keyboard range from its anchor", async () => {
+    const wrapper = mount(ResultPanel, { props: { activeResultIndex: 0, execution: {
+      executionId: "execution-keyboard", editorId: "editor-1", busy: false, cancelled: false,
+      failed: false, durationMs: 4,
+      results: [{ resultIndex: 0, sql: "select id, name, amount", type: "QUERY",
+        columns: ["id", "name", "amount"],
+        rows: [["1", "A", "10"], ["2", "B", "20"], ["3", "C", "30"]],
+        updateCount: -1, truncated: false, durationMs: 3, complete: true }]
+    } }, global: { plugins: [ElementPlus] } });
+    const table = () => wrapper.findComponent({ name: "ElTableV2" });
+    const columns = () => table().props("columns") as Column[];
+    const rows = () => table().props("data") as Array<{ sourceIndex: number; cells: string[] }>;
+    const cell = (row: number, column: number) =>
+      columns()[column + 1].cellRenderer?.({ rowData: rows()[row], rowIndex: row } as never) as VNode;
+    const classes = (row: number, column: number) => String(cell(row, column).props?.class);
+    const host = wrapper.get(".table-host");
+    cell(1, 1).props?.onPointerdown({
+      button: 0, preventDefault: vi.fn(), ctrlKey: false, metaKey: false, shiftKey: false
+    });
+    window.dispatchEvent(new Event("pointerup"));
+    await nextTick();
+    expect(classes(1, 1)).toContain("focused");
+
+    await host.trigger("keydown", { key: "ArrowRight" });
+    await nextTick();
+    expect(classes(1, 2)).toContain("focused");
+    expect(classes(1, 2)).toContain("selected");
+    expect(classes(1, 1)).not.toContain("selected");
+
+    await host.trigger("keydown", { key: "ArrowDown" });
+    await host.trigger("keydown", { key: "ArrowDown" });
+    await nextTick();
+    expect(classes(2, 2)).toContain("focused");
+
+    await host.trigger("keydown", { key: "ArrowLeft", shiftKey: true });
+    await nextTick();
+    expect(classes(2, 1)).toContain("focused");
+    expect(classes(2, 1)).toContain("selected");
+    expect(classes(2, 2)).toContain("selected");
+    await host.trigger("keydown", { key: "ArrowRight", shiftKey: true });
+    await nextTick();
+    expect(classes(2, 2)).toContain("focused");
+    expect(classes(2, 1)).not.toContain("selected");
+
+    await host.trigger("keydown", { key: "ArrowLeft", shiftKey: true });
+    await host.trigger("keydown", { key: "ArrowLeft", shiftKey: true });
+    await nextTick();
+    expect(classes(2, 0)).toContain("focused");
+    expect([0, 1, 2].every((column) => classes(2, column).includes("selected"))).toBe(true);
+
+    await host.trigger("keydown", { key: "ArrowRight", ctrlKey: true });
+    await nextTick();
+    expect(classes(2, 0)).toContain("focused");
+
+    const input = document.createElement("input");
+    host.element.appendChild(input);
+    const inputArrow = new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true });
+    input.dispatchEvent(inputArrow);
+    expect(inputArrow.defaultPrevented).toBe(false);
+    expect(classes(2, 0)).toContain("focused");
+    input.remove();
+
+    await host.trigger("keydown", { key: "Escape" });
+    await nextTick();
+    expect(classes(2, 0)).not.toContain("focused");
+    expect(classes(2, 0)).not.toContain("selected");
+
+    cell(0, 0).props?.onPointerdown({
+      button: 0, preventDefault: vi.fn(), ctrlKey: false, metaKey: false, shiftKey: false
+    });
+    window.dispatchEvent(new Event("pointerup"));
+    cell(2, 2).props?.onPointerdown({
+      button: 0, preventDefault: vi.fn(), ctrlKey: true, metaKey: false, shiftKey: false
+    });
+    await host.trigger("keydown", { key: "ArrowLeft" });
+    await nextTick();
+    expect(classes(2, 1)).toContain("focused");
+    expect(classes(2, 1)).toContain("selected");
+    expect(classes(0, 0)).not.toContain("selected");
+    expect(classes(2, 2)).not.toContain("selected");
+    await host.trigger("keydown", { key: "Escape" });
+
+    const rowNumber = columns()[0].cellRenderer?.({ rowData: rows()[0] } as never) as VNode;
+    rowNumber.props?.onPointerdown({
+      button: 0, preventDefault: vi.fn(), stopPropagation: vi.fn(),
+      ctrlKey: false, metaKey: false, shiftKey: false
+    });
+    await host.trigger("keydown", { key: "ArrowDown" });
+    await nextTick();
+    expect(String(columns()[0].cellRenderer?.({ rowData: rows()[0] } as never)?.props?.class))
+      .toContain("selected");
+    expect(classes(1, 0)).not.toContain("focused");
+    wrapper.unmount();
+  });
+
+  it("navigates in sorted, hidden and reordered visual column order while keeping source identity", async () => {
+    const settings = useSettingsStore();
+    settings.columnLayoutScope = "editor";
+    const wrapper = mount(ResultPanel, { props: { activeResultIndex: 0, execution: {
+      executionId: "execution-keyboard-order", editorId: "editor-1", busy: false, cancelled: false,
+      failed: false, durationMs: 4,
+      results: [{ resultIndex: 0, sql: "select id, name, amount", type: "QUERY",
+        columns: ["id", "name", "amount"],
+        columnDetails: [
+          { label: "id", name: "id", remarks: "", catalog: "db", schema: "", table: "sample", typeName: "BIGINT", jdbcType: -5 },
+          { label: "name", name: "name", remarks: "", catalog: "db", schema: "", table: "sample", typeName: "VARCHAR", jdbcType: 12 },
+          { label: "amount", name: "amount", remarks: "", catalog: "db", schema: "", table: "sample", typeName: "DECIMAL", jdbcType: 3 }
+        ],
+        rows: [["2", "B", "20"], ["1", "A", "10"], ["3", "C", "30"]],
+        updateCount: -1, truncated: false, durationMs: 3, complete: true }]
+    } }, global: { plugins: [ElementPlus] } });
+    const table = () => wrapper.findComponent({ name: "ElTableV2" });
+    const columns = () => table().props("columns") as Column[];
+    const rows = () => table().props("data") as Array<{ sourceIndex: number; cells: string[] }>;
+    const cell = (row: number, column: number) =>
+      columns()[column + 1].cellRenderer?.({ rowData: rows()[row], rowIndex: row } as never) as VNode;
+
+    const firstHeader = columns()[1].headerCellRenderer?.({} as never) as VNode;
+    const tools = (firstHeader.children as VNode[]).find((child) => child?.props?.columnIndex === 0) as VNode;
+    tools.props?.onSort();
+    await nextTick();
+    expect(rows().map((row) => row.cells[0])).toEqual(["1", "2", "3"]);
+    cell(0, 0).props?.onPointerdown({
+      button: 0, preventDefault: vi.fn(), ctrlKey: false, metaKey: false, shiftKey: false
+    });
+    window.dispatchEvent(new Event("pointerup"));
+    await wrapper.get(".table-host").trigger("keydown", { key: "ArrowDown" });
+    await nextTick();
+    expect(String(cell(1, 0).props?.class)).toContain("focused");
+
+    settings.headerSortingEnabled = false;
+    await nextTick();
+    expect(rows().map((row) => row.cells[0])).toEqual(["2", "1", "3"]);
+    expect(String(cell(0, 0).props?.class)).toContain("focused");
+
+    const select = wrapper.findComponent({ name: "ElSelect" });
+    select.vm.$emit("update:modelValue", [0, 2]);
+    await nextTick();
+    cell(0, 0).props?.onPointerdown({
+      button: 0, preventDefault: vi.fn(), ctrlKey: false, metaKey: false, shiftKey: false
+    });
+    window.dispatchEvent(new Event("pointerup"));
+    await wrapper.get(".table-host").trigger("keydown", { key: "ArrowRight" });
+    await nextTick();
+    expect((columns().slice(1) as Array<{ title: string }>).map((column) => column.title))
+      .toEqual(["id", "amount"]);
+    expect(String(cell(0, 1).props?.class)).toContain("focused");
+
+    select.vm.$emit("update:modelValue", []);
+    await nextTick();
+    const sourceHeader = columns()[1].headerCellRenderer?.({} as never) as VNode;
+    const targetHeader = columns()[2].headerCellRenderer?.({} as never) as VNode;
+    const dataTransfer = { effectAllowed: "", dropEffect: "", setData: vi.fn(), setDragImage: vi.fn() };
+    sourceHeader.props?.onDragstart({ dataTransfer, preventDefault: vi.fn() });
+    const dragEvent = { dataTransfer, clientX: 90, preventDefault: vi.fn(),
+      currentTarget: { getBoundingClientRect: () => ({ left: 0, width: 100 }) } };
+    targetHeader.props?.onDragover(dragEvent);
+    targetHeader.props?.onDrop(dragEvent);
+    await nextTick();
+    expect((columns().slice(1) as Array<{ title: string }>).map((column) => column.title))
+      .toEqual(["name", "id", "amount"]);
+    cell(0, 0).props?.onPointerdown({
+      button: 0, preventDefault: vi.fn(), ctrlKey: false, metaKey: false, shiftKey: false
+    });
+    window.dispatchEvent(new Event("pointerup"));
+    await wrapper.get(".table-host").trigger("keydown", { key: "ArrowRight" });
+    await nextTick();
+    expect(String(cell(0, 1).props?.class)).toContain("focused");
+    wrapper.unmount();
   });
 
   it("copies a rectangular cell selection and generates safe SQL for selected rows", async () => {

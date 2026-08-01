@@ -117,6 +117,7 @@
                            :buffer-screens="settings.scrollOptimizationBufferScreens"
                            :selection-mode="selectionMode" :cell-range="cellRange"
                            :selected-cell-keys="selectedCellKeys"
+                           :focused-cell-key="focusedCellKey"
                            :selected-row-sources="selectedRowSources"
                            :editing-cell="editingCell" :editing-value="editingCell?.value"
                            :cell-states="resultCellStates"
@@ -260,9 +261,12 @@ const tableHost = ref<HTMLElement>();
 const virtualGrid = ref<{
   getScrollPosition: () => ResultGridScrollPosition;
   setScrollPosition: (position: ResultGridScrollPosition) => void;
+  scrollCellIntoView: (rowIndex: number, columnIndex: number) => void;
 }>();
 const legacyTable = ref<{
   scrollTo: (position: { scrollLeft?: number; scrollTop?: number }) => void;
+  scrollToLeft: (scrollLeft: number) => void;
+  scrollToRow: (row: number, strategy?: "auto" | "center" | "end" | "start" | "smart") => void;
 }>();
 const legacyScrollPosition = ref<ResultGridScrollPosition>({ left: 0, top: 0 });
 const activeLayout = ref<{ layoutKey: string; viewKey: string; identities: string[] }>();
@@ -285,6 +289,7 @@ const filters = ref<Record<string, ResultFilter[]>>({});
 const cellRange = ref<CellRange>();
 const cellAnchor = ref<CellPoint>();
 const selectedCells = ref<SelectedCell[]>([]);
+const focusedCell = ref<{ sourceRow: number; sourceColumn: number }>();
 const selectedColumnIndex = ref<number>();
 const selectingCells = ref(false);
 const selectingRows = ref(false);
@@ -474,6 +479,9 @@ const displayRows = computed(() => visibleRows(activeResult.value?.rows ?? [], c
 const selectedCellKeySet = computed(() => new Set(selectedCells.value.map((cell) =>
   cellSelectionKey(cell.sourceRow, cell.sourceColumn))));
 const selectedCellKeys = computed(() => [...selectedCellKeySet.value]);
+const focusedCellKey = computed(() => focusedCell.value
+  ? cellSelectionKey(focusedCell.value.sourceRow, focusedCell.value.sourceColumn)
+  : undefined);
 const selectedCellsInView = computed<SelectedCell[]>(() => {
   const rowPositions = new Map(displayRows.value.map((row, index) => [row.sourceIndex, index]));
   const columnPositions = new Map(visibleColumnOptions.value.map((column, index) => [column.index, index]));
@@ -520,6 +528,7 @@ function columnDefinition(column: ColumnOption, visiblePosition: number): Column
   cellRenderer: ({ rowData, rowIndex }: { rowData: ViewRow; rowIndex: number }) => {
     const cellData = rowData.cells[column.index] ?? null;
     const selected = selectedCellKeySet.value.has(cellSelectionKey(rowData.sourceIndex, column.index));
+    const focused = focusedCellKey.value === cellSelectionKey(rowData.sourceIndex, column.index);
     if (editingCell.value?.rowIndex === rowData.sourceIndex
         && editingCell.value.columnIndex === column.index) {
       return h("input", {
@@ -529,7 +538,10 @@ function columnDefinition(column: ColumnOption, visiblePosition: number): Column
         autofocus: true,
         onInput: (event: Event) => updateEditingValue((event.target as HTMLInputElement).value),
         onKeydown: (event: KeyboardEvent) => {
-          if (event.key === "Enter") { event.preventDefault(); commitCellEdit(); }
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commitCellEdit("enter");
+          }
           else if (event.key === "Escape") { event.preventDefault(); cancelCellEdit(); }
         },
         onBlur: commitCellEdit,
@@ -543,6 +555,7 @@ function columnDefinition(column: ColumnOption, visiblePosition: number): Column
     return h("span", {
       class: ["result-cell", cellData === null ? "null-value" : cellData.startsWith?.("0x") ? "binary-value" : "",
         selectionMode.value === "cells" && selected ? "selected" : "",
+        selectionMode.value === "cells" && focused ? "focused" : "",
         editState === "pending" ? "result-cell-pending" : "",
         editState === "posted" ? "result-cell-posted" : "",
         editState === "error" ? "result-cell-error" : ""],
@@ -913,6 +926,7 @@ function clearSelection(): void {
   cellRange.value = undefined;
   cellAnchor.value = undefined;
   selectedCells.value = [];
+  focusedCell.value = undefined;
   selectedColumnIndex.value = undefined;
   emit("selected-column", undefined);
   selectedRowSources.value = [];
@@ -943,7 +957,13 @@ function startCellSelection(event: PointerEvent, row: number, column: number): v
     selectedCells.value = selectedCellKeySet.value.has(key)
       ? selectedCells.value.filter((cell) => cellSelectionKey(cell.sourceRow, cell.sourceColumn) !== key)
       : [...selectedCells.value, selected];
-    cellAnchor.value = point;
+    const nextFocus = selectedCells.value.some((cell) =>
+      cell.sourceRow === selected.sourceRow && cell.sourceColumn === selected.sourceColumn)
+      ? selected : selectedCellsInView.value.at(-1);
+    focusedCell.value = nextFocus
+      ? { sourceRow: nextFocus.sourceRow, sourceColumn: nextFocus.sourceColumn }
+      : undefined;
+    cellAnchor.value = nextFocus ? { row: nextFocus.row, column: nextFocus.column } : undefined;
     cellRange.value = undefined;
     selectingCells.value = false;
     if (selectedCells.value.length) selectStatusColumn(column);
@@ -953,6 +973,7 @@ function startCellSelection(event: PointerEvent, row: number, column: number): v
     }
     return;
   }
+  focusCellAt(point);
   if (event.shiftKey && cellAnchor.value) {
     cellRange.value = { start: cellAnchor.value, end: point };
   } else {
@@ -968,8 +989,10 @@ function startCellSelection(event: PointerEvent, row: number, column: number): v
 
 function extendCellSelection(row: number, column: number): void {
   if (!selectingCells.value || !cellAnchor.value) return;
-  cellRange.value = { start: cellAnchor.value, end: { row, column } };
+  const point = { row, column };
+  cellRange.value = { start: cellAnchor.value, end: point };
   selectedCells.value = cellsInRange(cellRange.value);
+  focusCellAt(point);
 }
 
 function finishCellSelection(): void {
@@ -985,6 +1008,7 @@ function selectResultRow(event: PointerEvent, sourceIndex: number): void {
   selectedColumnIndex.value = undefined;
   emit("selected-column", undefined);
   cellRange.value = undefined; cellAnchor.value = undefined; selectedCells.value = [];
+  focusedCell.value = undefined;
   const order = displayRows.value.map((row) => row.sourceIndex);
   const before = [...selectedRowSources.value];
   const rangeAnchor = event.shiftKey && rowAnchor.value !== undefined ? rowAnchor.value : sourceIndex;
@@ -1036,6 +1060,7 @@ function openCellMenu(event: MouseEvent, row: number, column: number, rowData: V
     cellAnchor.value = point; cellRange.value = { start: point, end: point };
     selectedCells.value = cellsInRange(cellRange.value);
   }
+  focusCellAt({ row, column });
   openDataMenu(event, "cells");
 }
 
@@ -1045,6 +1070,7 @@ function openRowMenu(event: MouseEvent, sourceIndex: number): void {
   selectedColumnIndex.value = undefined;
   emit("selected-column", undefined);
   cellRange.value = undefined; cellAnchor.value = undefined; selectedCells.value = [];
+  focusedCell.value = undefined;
   if (!selectedRowSources.value.includes(sourceIndex)) {
     selectedRowSources.value = [sourceIndex]; rowAnchor.value = sourceIndex;
   }
@@ -1062,6 +1088,24 @@ function selectedCellAt(row: number, column: number): SelectedCell | undefined {
     sourceColumn: viewColumn.index,
     value: viewRow.cells[viewColumn.index] ?? null
   };
+}
+
+function focusCellAt(point: CellPoint): SelectedCell | undefined {
+  const cell = selectedCellAt(point.row, point.column);
+  focusedCell.value = cell
+    ? { sourceRow: cell.sourceRow, sourceColumn: cell.sourceColumn }
+    : undefined;
+  return cell;
+}
+
+function focusedCellInView(): SelectedCell | undefined {
+  const focused = focusedCell.value;
+  if (focused) {
+    const row = displayRows.value.findIndex((item) => item.sourceIndex === focused.sourceRow);
+    const column = visibleColumnOptions.value.findIndex((item) => item.index === focused.sourceColumn);
+    if (row >= 0 && column >= 0) return selectedCellAt(row, column);
+  }
+  return selectedCellsInView.value.at(-1);
 }
 
 function cellsInRange(range: CellRange | undefined): SelectedCell[] {
@@ -1539,18 +1583,26 @@ function updateEditingValue(value: string): void {
   if (editingCell.value) editingCell.value.value = value;
 }
 
-function commitCellEdit(): void {
+function commitCellEdit(reason: "enter" | "blur" | "viewport" = "blur"): void {
   const edit = editingCell.value;
   const execution = props.execution;
   const result = activeResult.value;
   if (!edit || !execution || !result) return;
   editingCell.value = undefined;
+  if (reason === "enter") restoreTableFocusAfterEdit();
   if (edit.value === edit.valueAtOpen) return;
   resultEdits.stage(execution.editorId, execution.executionId, result.resultIndex,
     edit.rowIndex, edit.columnIndex, edit.valueAtOpen, edit.value, resultRowId(edit.rowIndex));
   queries.updateCells(execution.editorId, result.resultIndex, [{
     rowIndex: edit.rowIndex, columnIndex: edit.columnIndex, value: edit.value
   }]);
+}
+
+function restoreTableFocusAfterEdit(): void {
+  void nextTick(() => {
+    if (editingCell.value || singleRecordMode.value) return;
+    tableHost.value?.focus({ preventScroll: true });
+  });
 }
 
 function cancelCellEdit(): void { editingCell.value = undefined; }
@@ -1591,6 +1643,7 @@ function editableJdbcType(jdbcType: number): boolean {
 function tableKeydown(event: KeyboardEvent): void {
   const target = event.target as HTMLElement | null;
   if (target?.matches("input, textarea, select, [contenteditable='true']")) return;
+  if (moveFocusedCell(event)) return;
   if (event.key === "Escape") { clearSelection(); closeDataMenu(); return; }
   if ((event.key === "Enter" || event.key === "F2") && resultEditUnlocked.value) {
     const selected = selectedCellsInView.value[0];
@@ -1603,6 +1656,64 @@ function tableKeydown(event: KeyboardEvent): void {
   if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "c" && hasDataSelection.value) {
     event.preventDefault(); void copyCurrentSelection();
   }
+}
+
+function moveFocusedCell(event: KeyboardEvent): boolean {
+  const movement: Record<string, CellPoint> = {
+    ArrowUp: { row: -1, column: 0 }, ArrowDown: { row: 1, column: 0 },
+    ArrowLeft: { row: 0, column: -1 }, ArrowRight: { row: 0, column: 1 }
+  };
+  const delta = movement[event.key];
+  if (!delta || event.ctrlKey || event.metaKey || event.altKey
+      || singleRecordMode.value || selectionMode.value !== "cells") return false;
+  const active = focusedCellInView();
+  if (!active || !displayRows.value.length || !visibleColumnOptions.value.length) return false;
+  const targetPoint = {
+    row: Math.max(0, Math.min(displayRows.value.length - 1, active.row + delta.row)),
+    column: Math.max(0, Math.min(visibleColumnOptions.value.length - 1, active.column + delta.column))
+  };
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.shiftKey) {
+    const anchor = cellAnchor.value
+      && cellAnchor.value.row >= 0 && cellAnchor.value.row < displayRows.value.length
+      && cellAnchor.value.column >= 0 && cellAnchor.value.column < visibleColumnOptions.value.length
+      ? cellAnchor.value : { row: active.row, column: active.column };
+    cellAnchor.value = anchor;
+    cellRange.value = { start: anchor, end: targetPoint };
+  } else {
+    cellAnchor.value = targetPoint;
+    cellRange.value = { start: targetPoint, end: targetPoint };
+  }
+  selectedCells.value = cellsInRange(cellRange.value);
+  focusCellAt(targetPoint);
+  selectStatusColumn(targetPoint.column);
+  void nextTick(() => scrollCellIntoView(targetPoint));
+  return true;
+}
+
+function scrollCellIntoView(point: CellPoint): void {
+  if (virtualGrid.value) {
+    virtualGrid.value.scrollCellIntoView(point.row, point.column);
+    return;
+  }
+  legacyTable.value?.scrollToRow(point.row, "auto");
+  const column = visibleColumnOptions.value[point.column];
+  if (!column) return;
+  const left = visibleColumnOptions.value.slice(0, point.column).reduce((total, item) => {
+    const identity = currentIdentities.value[item.index];
+    return total + resultColumnWidth(item, identity);
+  }, 0);
+  const right = left + resultColumnWidth(column, currentIdentities.value[column.index]);
+  const viewportWidth = tableHost.value?.querySelector<HTMLElement>(".el-table-v2__main")?.clientWidth
+    ?? tableHost.value?.clientWidth ?? 0;
+  const availableWidth = Math.max(0, viewportWidth - 34 - 8);
+  const currentLeft = legacyScrollPosition.value.left;
+  const nextLeft = left < currentLeft ? left
+    : right > currentLeft + availableWidth ? right - availableWidth : currentLeft;
+  if (nextLeft === currentLeft) return;
+  legacyScrollPosition.value = { ...legacyScrollPosition.value, left: Math.max(0, nextLeft) };
+  legacyTable.value?.scrollToLeft(legacyScrollPosition.value.left);
 }
 
 function autoScrollSelection(event: PointerEvent): void {
@@ -1889,6 +2000,10 @@ onBeforeUnmount(() => {
   user-select: none;
 }
 :deep(.result-cell.selected) { outline: 1.5px solid var(--db-accent); background: var(--db-accent-soft); }
+:deep(.result-cell.focused) {
+  outline: 2px solid var(--db-accent);
+  outline-offset: -1px;
+}
 :deep(.result-row-number) {
   position: relative; display: block; width: 100%; height: 32px; margin: 0; border: 0; border-radius: 0;
   background: var(--db-row-gutter-bg);

@@ -51,9 +51,9 @@
                    aria-label="编辑结果值"
                    @pointerdown.stop @dblclick.stop
                    @input="$emit('update:editing-value', ($event.target as HTMLInputElement).value)"
-                   @keydown.enter.prevent.stop="$emit('commit-edit')"
+                   @keydown.enter.prevent.stop="$emit('commit-edit', 'enter')"
                    @keydown.esc.prevent.stop="$emit('cancel-edit')"
-                   @blur="$emit('commit-edit')" />
+                   @blur="$emit('commit-edit', 'blur')" />
             <template v-else>{{ cellText(entry.row, columnEntry.column) }}</template>
           </span>
         </div>
@@ -97,6 +97,7 @@ const props = defineProps<{
   selectionMode: "cells" | "rows";
   cellRange?: CellRange;
   selectedCellKeys?: string[];
+  focusedCellKey?: string;
   selectedRowSources: number[];
   hasFooter?: boolean;
   editingCell?: { rowIndex: number; columnIndex: number };
@@ -111,7 +112,7 @@ const emit = defineEmits<{
   "cell-contextmenu": [event: MouseEvent, rowIndex: number, columnIndex: number, row: ViewRow];
   "cell-dblclick": [rowIndex: number, columnIndex: number, row: ViewRow];
   "update:editing-value": [value: string];
-  "commit-edit": [];
+  "commit-edit": [reason: "enter" | "blur" | "viewport"];
   "cancel-edit": [];
   "row-pointerdown": [event: PointerEvent, sourceIndex: number];
   "row-pointerenter": [sourceIndex: number];
@@ -256,7 +257,7 @@ function commitEditingCellOutside(nextRows: VirtualRange, nextColumns: VirtualRa
   if (rowIndex >= nextRows.start && rowIndex < nextRows.end
       && columnIndex >= nextColumns.start && columnIndex < nextColumns.end) return;
   editingCommitRequested = true;
-  emit("commit-edit");
+  emit("commit-edit", "viewport");
 }
 
 function refreshWindow(bufferScreens = seeking.value ? 0 : props.bufferScreens): void {
@@ -389,9 +390,11 @@ function cellClasses(rowIndex: number, column: ResultVirtualColumn): Array<strin
     && rowIndex >= range.start.row && rowIndex <= range.end.row
     && column.visibleIndex >= range.start.column && column.visibleIndex <= range.end.column;
   const selected = props.selectionMode === "cells" && (selectedByIdentity || selectedByRange);
+  const focused = props.selectionMode === "cells" && !!row
+    && props.focusedCellKey === `${row.sourceIndex}:${column.sourceIndex}`;
   const state = row ? props.cellStates?.[`${row.sourceIndex}:${column.sourceIndex}`] : undefined;
   return [value === null ? "null-value" : "", value?.startsWith("0x") ? "binary-value" : "",
-    selected && "selected", state === "pending" && "result-cell-pending",
+    selected && "selected", focused && "focused", state === "pending" && "result-cell-pending",
     state === "posted" && "result-cell-posted", state === "error" && "result-cell-error"];
 }
 
@@ -507,6 +510,25 @@ function setScrollPosition(position: ResultGridScrollPosition): void {
   refreshWindow();
 }
 
+function scrollCellIntoView(rowIndex: number, columnIndex: number): void {
+  const element = viewport.value;
+  const column = props.columns[columnIndex];
+  if (!element || rowIndex < 0 || rowIndex >= props.rows.length || !column) return;
+  const rowTop = rowIndex * ROW_HEIGHT;
+  const rowBottom = rowTop + ROW_HEIGHT;
+  const columnLeft = metrics.value.offsets[columnIndex];
+  const columnRight = columnLeft + column.width;
+  const availableWidth = Math.max(0, element.clientWidth - GUTTER_WIDTH);
+  let nextTop = element.scrollTop;
+  let nextLeft = element.scrollLeft;
+  if (rowTop < nextTop) nextTop = rowTop;
+  else if (rowBottom > nextTop + element.clientHeight) nextTop = rowBottom - element.clientHeight;
+  if (column.width > availableWidth || columnLeft < nextLeft) nextLeft = columnLeft;
+  else if (columnRight > nextLeft + availableWidth) nextLeft = columnRight - availableWidth;
+  if (nextTop === element.scrollTop && nextLeft === element.scrollLeft) return;
+  setScrollPosition({ left: nextLeft, top: nextTop });
+}
+
 function normalizeScrollPosition(): void {
   const element = viewport.value;
   if (!element) return;
@@ -567,7 +589,7 @@ onBeforeUnmount(() => {
   finishScrollbarDrag();
 });
 
-defineExpose({ getScrollPosition, setScrollPosition });
+defineExpose({ getScrollPosition, setScrollPosition, scrollCellIntoView });
 </script>
 
 <style scoped>

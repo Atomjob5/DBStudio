@@ -341,6 +341,27 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
   expect(legacyTypography.cellFamily).toContain("-apple-system");
   expect(legacyTypography.titleFamily).toBe(legacyTypography.cellFamily);
   const legacyScroller = page.locator(".el-table-v2__main .el-table-v2__body");
+  await page.locator(".result-cell").filter({ hasText: /^1$/ }).first().click();
+  await expect(page.locator(".result-cell.focused")).toHaveText("1");
+  await page.keyboard.press("ArrowRight");
+  await expect(page.locator(".result-cell.focused")).toHaveText("R1 C2");
+  await page.keyboard.press("Shift+ArrowDown");
+  await expect(page.locator(".result-cell.selected")).toHaveCount(2);
+  await expect(page.locator(".result-cell.focused")).toHaveText("R2 C2");
+  await page.keyboard.press("ArrowDown");
+  for (let index = 0; index < 20; index++) await page.keyboard.press("ArrowDown");
+  for (let index = 0; index < 15; index++) await page.keyboard.press("ArrowRight");
+  await expect(page.locator(".result-cell.focused")).toHaveText("R23 C17");
+  const legacyFocusVisibility = await page.locator(".result-cell.focused").evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    const viewport = element.closest(".el-table-v2__main")!.getBoundingClientRect();
+    return bounds.top >= viewport.top && bounds.bottom <= viewport.bottom
+      && bounds.left >= viewport.left + 34 && bounds.right <= viewport.right;
+  });
+  expect(legacyFocusVisibility).toBe(true);
+  for (let index = 0; index < 22; index++) await page.keyboard.press("ArrowUp");
+  for (let index = 0; index < 16; index++) await page.keyboard.press("ArrowLeft");
+  await expect(page.locator(".result-cell.focused")).toHaveText("1");
   await legacyScroller.hover();
   await page.mouse.wheel(0, 320);
   await page.mouse.wheel(480, 0);
@@ -366,6 +387,30 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
   await expect.poll(() => grid.evaluate((element) => ({
     top: Math.round(element.scrollTop), left: Math.round(element.scrollLeft)
   }))).toEqual({ top: 320, left: 480 });
+  const navigationTarget = await grid.evaluate((element) => {
+    const viewport = element.getBoundingClientRect();
+    const cell = [...element.querySelectorAll<HTMLElement>(".result-virtual-grid__cell")].find((item) => {
+      const bounds = item.getBoundingClientRect();
+      return bounds.top >= viewport.top && bounds.bottom <= viewport.bottom
+        && bounds.left >= viewport.left + 34 && bounds.right <= viewport.right;
+    });
+    if (!cell) throw new Error("No virtual cell is fully visible for keyboard navigation");
+    return { row: cell.dataset.gridRow!, column: cell.dataset.gridColumn! };
+  });
+  await grid.locator(`[data-grid-row="${navigationTarget.row}"][data-grid-column="${navigationTarget.column}"]`).click();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Shift+ArrowRight");
+  await expect(page.locator(".result-virtual-grid .result-cell.focused")).toHaveCount(1);
+  await expect(page.locator(".result-virtual-grid .result-cell.selected")).toHaveCount(2);
+  for (let index = 0; index < 18; index++) await page.keyboard.press("ArrowDown");
+  for (let index = 0; index < 10; index++) await page.keyboard.press("ArrowRight");
+  await expect.poll(() => page.locator(".result-virtual-grid .result-cell.focused").evaluate((element) => {
+      const bounds = element.getBoundingClientRect();
+      const viewport = element.closest(".result-virtual-grid__viewport")!.getBoundingClientRect();
+      return bounds.top >= viewport.top && bounds.bottom <= viewport.bottom
+        && bounds.left >= viewport.left + 34 && bounds.right <= viewport.right;
+    })).toBe(true);
   await grid.evaluate((element) => {
     element.scrollTop = 1600;
     element.scrollLeft = 1200;
@@ -678,6 +723,12 @@ test("edits a FOR UPDATE result in two stages before committing", async ({ page 
   await cellEditor.fill("Edited locally");
   await cellEditor.press("Enter");
   await expect(page.locator(".result-cell-pending").filter({ hasText: "Edited locally" })).toBeVisible();
+  await page.keyboard.press("ArrowLeft");
+  await expect(page.locator(".result-cell.focused")).toHaveText("1");
+  await page.keyboard.press("Enter");
+  await expect(cellEditor).toBeVisible();
+  await expect(cellEditor).toHaveValue("1");
+  await cellEditor.press("Enter");
   await expect(post).toBeEnabled();
 
   await unlock.click();

@@ -159,6 +159,35 @@ describe("ResultVirtualGrid", () => {
     wrapper.unmount();
   });
 
+  it("marks the focused cell and scrolls it fully into view outside the sticky gutter", async () => {
+    const wrapper = mount(ResultVirtualGrid, {
+      props: {
+        rows, columns, headerHeight: 32, bufferScreens: 1, selectionMode: "cells",
+        selectedRowSources: [], selectedCellKeys: ["10:4"], focusedCellKey: "10:4"
+      }
+    });
+    const viewport = wrapper.get(".result-virtual-grid__viewport").element as HTMLElement;
+    Object.defineProperties(viewport, {
+      clientWidth: { configurable: true, value: 274 },
+      clientHeight: { configurable: true, value: 64 }
+    });
+    wrapper.vm.setScrollPosition({ left: 0, top: 0 });
+    wrapper.vm.scrollCellIntoView(10, 4);
+    await nextTick();
+
+    expect(wrapper.vm.getScrollPosition()).toEqual({ left: 360, top: 288 });
+    const focused = wrapper.get('[data-grid-row="10"][data-grid-column="4"]');
+    expect(focused.classes()).toContain("selected");
+    expect(focused.classes()).toContain("focused");
+
+    wrapper.vm.scrollCellIntoView(10, 3);
+    expect(wrapper.vm.getScrollPosition()).toEqual({ left: 360, top: 288 });
+    wrapper.vm.scrollCellIntoView(0, 0);
+    await nextTick();
+    expect(wrapper.vm.getScrollPosition()).toEqual({ left: 0, top: 0 });
+    wrapper.unmount();
+  });
+
   it("edits a virtualized cell and distinguishes pending from posted values", async () => {
     const wrapper = mount(ResultVirtualGrid, {
       props: {
@@ -182,6 +211,7 @@ describe("ResultVirtualGrid", () => {
     await input.trigger("keydown", { key: "Enter" });
     expect(wrapper.emitted("update:editing-value")?.at(-1)).toEqual(["next"]);
     expect(wrapper.emitted("commit-edit")).toHaveLength(1);
+    expect(wrapper.emitted("commit-edit")?.[0]).toEqual(["enter"]);
     expect(wrapper.get('[data-grid-row="0"][data-grid-column="1"]').classes()).toContain("result-cell-pending");
     expect(wrapper.get('[data-grid-row="1"][data-grid-column="1"]').classes()).toContain("result-cell-posted");
     wrapper.unmount();
@@ -381,6 +411,7 @@ describe("ResultVirtualGrid", () => {
     expect(wrapper.findAll(".result-virtual-grid__seek-header").some((header) => header.text().includes("字段 99")))
       .toBe(true);
     expect(wrapper.emitted("commit-edit")).toHaveLength(1);
+    expect(wrapper.emitted("commit-edit")?.[0]).toEqual(["viewport"]);
 
     viewport.scrollLeft = 60_000;
     viewport.dispatchEvent(new Event("scroll"));

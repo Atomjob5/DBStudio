@@ -556,6 +556,33 @@ describe("App result loading status toolbar", () => {
     });
   });
 
+  it("reserves plain result-grid arrows before configurable global shortcuts", async () => {
+    const settings = useSettingsStore();
+    settings.minimapEnabled = true;
+    settings.setShortcut("editor.toggleMinimap", "ArrowRight");
+    const host = document.createElement("div");
+    host.className = "table-host";
+    document.body.appendChild(host);
+
+    const plainArrow = new KeyboardEvent("keydown", {
+      key: "ArrowRight", code: "ArrowRight", bubbles: true, cancelable: true
+    });
+    host.dispatchEvent(plainArrow);
+    await flushPromises();
+    expect(settings.minimapEnabled).toBe(true);
+    expect(plainArrow.defaultPrevented).toBe(false);
+
+    settings.setShortcut("editor.toggleMinimap", "Mod+ArrowRight");
+    const modifiedArrow = new KeyboardEvent("keydown", {
+      key: "ArrowRight", code: "ArrowRight", ctrlKey: true, bubbles: true, cancelable: true
+    });
+    host.dispatchEvent(modifiedArrow);
+    await flushPromises();
+    expect(settings.minimapEnabled).toBe(false);
+    expect(modifiedArrow.defaultPrevented).toBe(true);
+    host.remove();
+  });
+
   it("runs configurable selection actions only while SQL text is selected", async () => {
     const settings = useSettingsStore();
     settings.setShortcut("editor.uppercase", "F2");

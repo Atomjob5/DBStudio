@@ -1551,6 +1551,9 @@ async function requestConnectionPassword(): Promise<{ password: string; remember
 
 function handleShortcut(event: KeyboardEvent): void {
   if (settings.shortcutRecordingActive || event.isComposing) return;
+  const target = event.target instanceof Element ? event.target : null;
+  if (target?.closest(".table-host") && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)
+      && !event.ctrlKey && !event.metaKey && !event.altKey) return;
   const binding = shortcutFromKeyboardEvent(event);
   if (!binding) return;
   const actionId = actionForShortcut(settings.shortcuts, binding);
