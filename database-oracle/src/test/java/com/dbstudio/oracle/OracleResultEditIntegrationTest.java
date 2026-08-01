@@ -1,5 +1,6 @@
 package com.dbstudio.oracle;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -95,6 +96,26 @@ class OracleResultEditIntegrationTest {
                             || String.valueOf(conflict.getMessage()).toLowerCase(Locale.ROOT).contains("busy"));
                 }
 
+                try (PreparedStatement clone = owner.prepareStatement("INSERT INTO " + table
+                        + " (id, name, amount, happened_at, zoned_at, raw_value, text_value, binary_value)"
+                        + " SELECT ?, ?, amount, happened_at, zoned_at, raw_value, text_value, binary_value"
+                        + " FROM " + table + " WHERE ROWID = CHARTOROWID(?)")) {
+                    clone.setLong(1, 1001L);
+                    clone.setString(2, "cloned-rollback");
+                    clone.setString(3, rowId);
+                    assertEquals(1, clone.executeUpdate());
+                }
+                assertClonedLargeValues(owner, table, 1001L, "cloned-rollback");
+                owner.rollback();
+                try (PreparedStatement absent = contender.prepareStatement("SELECT COUNT(*) FROM " + table
+                        + " WHERE id = ?")) {
+                    absent.setLong(1, 1001L);
+                    try (ResultSet result = absent.executeQuery()) {
+                        assertTrue(result.next());
+                        assertEquals(0, result.getInt(1));
+                    }
+                }
+
                 try (PreparedStatement update = owner.prepareStatement("UPDATE " + table
                         + " SET name = ?, happened_at = ? WHERE ROWID = CHARTOROWID(?)")) {
                     update.setString(1, "changed");
@@ -143,6 +164,15 @@ class OracleResultEditIntegrationTest {
                     assertTrue(result.next());
                     assertEquals(1, result.getInt(1));
                 }
+                try (PreparedStatement clone = owner.prepareStatement("INSERT INTO " + table
+                        + " (id, name, amount, happened_at, zoned_at, raw_value, text_value, binary_value)"
+                        + " SELECT ?, ?, amount, happened_at, zoned_at, raw_value, text_value, binary_value"
+                        + " FROM " + table + " WHERE ROWID = CHARTOROWID(?)")) {
+                    clone.setLong(1, 1002L);
+                    clone.setString(2, "cloned-commit");
+                    clone.setString(3, rowId);
+                    assertEquals(1, clone.executeUpdate());
+                }
                 owner.commit();
                 try (PreparedStatement committed = contender.prepareStatement("SELECT name FROM " + table
                         + " WHERE ROWID = CHARTOROWID(?)")) {
@@ -152,11 +182,27 @@ class OracleResultEditIntegrationTest {
                         assertEquals("committed-after-query", result.getString(1));
                     }
                 }
+                assertClonedLargeValues(contender, table, 1002L, "cloned-commit");
             } finally {
                 owner.rollback();
                 try (Statement statement = owner.createStatement()) {
                     statement.execute("DROP TABLE " + table + " PURGE");
                 }
+            }
+        }
+    }
+
+    private static void assertClonedLargeValues(Connection connection, String table, long id,
+                                                 String expectedName) throws SQLException {
+        try (PreparedStatement query = connection.prepareStatement("SELECT name, raw_value, text_value, binary_value"
+                + " FROM " + table + " WHERE id = ?")) {
+            query.setLong(1, id);
+            try (ResultSet result = query.executeQuery()) {
+                assertTrue(result.next());
+                assertEquals(expectedName, result.getString(1));
+                assertArrayEquals(new byte[] { 0x00, 0x0f, (byte) 0xff }, result.getBytes(2));
+                assertEquals("大字段文本", result.getString(3));
+                assertArrayEquals(new byte[] { 1, 2, 3 }, result.getBytes(4));
             }
         }
     }

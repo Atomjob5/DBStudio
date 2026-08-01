@@ -558,6 +558,33 @@ final class Workspace implements AutoCloseable {
         return token;
     }
 
+    String storeLargeValueDraft(String editorId, UUID executionId, int resultIndex, int columnIndex,
+                                LargeValueDraftWriter writer, long maximumBytes) throws Exception {
+        Files.createDirectories(temporaryDirectory);
+        String token = UUID.randomUUID().toString();
+        Path target = temporaryDirectory.resolve("result-large-value-" + token + ".draft");
+        long written;
+        try (OutputStream output = Files.newOutputStream(target)) {
+            written = writer.write(output);
+            if (written > maximumBytes) throw new ApiException(
+                    "RESULT_LOB_TOO_LARGE", "大字段草稿超过允许的最大大小");
+        } catch (Exception exception) {
+            Files.deleteIfExists(target);
+            throw exception;
+        }
+        largeValueDrafts.put(token, new LargeValueDraft(target, editorId, executionId,
+                resultIndex, columnIndex, written));
+        return token;
+    }
+
+    String cloneLargeValueDraft(String sourceToken, String editorId, UUID executionId,
+                                int resultIndex, int columnIndex, long maximumBytes) throws IOException {
+        Path source = requireLargeValueDraft(sourceToken, editorId, executionId, resultIndex, columnIndex);
+        try (InputStream input = Files.newInputStream(source)) {
+            return storeLargeValueDraft(editorId, executionId, resultIndex, columnIndex, input, maximumBytes);
+        }
+    }
+
     Path requireLargeValueDraft(String token, String editorId, UUID executionId,
                                 int resultIndex, int columnIndex) {
         LargeValueDraft draft = largeValueDrafts.get(token);
@@ -611,6 +638,11 @@ final class Workspace implements AutoCloseable {
             this.path = path; this.editorId = editorId; this.executionId = executionId;
             this.resultIndex = resultIndex; this.columnIndex = columnIndex; this.size = size;
         }
+    }
+
+    @FunctionalInterface
+    interface LargeValueDraftWriter {
+        long write(OutputStream output) throws Exception;
     }
 
     String startTask(final String kind, final TaskOperation operation) {

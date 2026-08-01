@@ -700,6 +700,41 @@ test("edits a FOR UPDATE result in two stages before committing", async ({ page 
   await expect(unlock).toBeDisabled();
 });
 
+test("clones all selected result rows as local insert drafts", async ({ page }) => {
+  await connectMock(page);
+  await dismissCompletionSchemaDialog(page);
+  await replaceSql(page, "select id, name from sample for update");
+  await page.getByRole("button", { name: "执行", exact: true }).click();
+  await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "切换结果编辑模式", exact: true }).click();
+
+  const rowNumbers = page.locator(".result-row-number:not(.result-row-number-header)");
+  const first = await rowNumbers.nth(0).boundingBox();
+  const second = await rowNumbers.nth(1).boundingBox();
+  if (!first || !second) throw new Error("Result row numbers are not measurable");
+  await page.mouse.move(first.x + first.width / 2, first.y + first.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(second.x + second.width / 2, second.y + second.height / 2, { steps: 3 });
+  await page.mouse.up();
+  await rowNumbers.nth(1).click({ button: "right" });
+  const clone = page.getByRole("menuitem", { name: "克隆", exact: true });
+  await expect(clone).toBeEnabled();
+  await clone.click();
+
+  await expect(page.getByText("202 行 · 38 ms", { exact: true })).toBeVisible();
+  await expect(page.locator(".execution-status")).toHaveText("已选中 2 行");
+  await page.getByRole("button", { name: "变更清单", exact: true }).click();
+  const changes = page.getByRole("dialog", { name: "结果变更清单", exact: true });
+  await expect(changes.getByText("克隆新增", { exact: true })).toHaveCount(2);
+  await expect(changes).toContainText("INSERT INTO `demo`.`sample`");
+  await changes.getByRole("button", { name: "关闭", exact: true }).click();
+
+  await page.getByRole("button", { name: "撤销结果草稿", exact: true }).click();
+  await expect(page.getByText("201 行 · 38 ms", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "撤销结果草稿", exact: true }).click();
+  await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
+});
+
 test("applies pending result edits into the transaction before executing more SQL", async ({ page }) => {
   await connectMock(page);
   await dismissCompletionSchemaDialog(page);

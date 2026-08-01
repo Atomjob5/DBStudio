@@ -8,6 +8,7 @@ import { useAppStore } from "../stores/app";
 import { useQueryStore } from "../stores/query";
 import { useResultEditStore } from "../stores/resultEdits";
 import { useSettingsStore } from "../stores/settings";
+import { rpc } from "../bridge/rpc";
 import type { Column } from "element-plus";
 import type { VNode } from "vue";
 
@@ -176,12 +177,14 @@ describe("ResultPanel streaming rendering", () => {
     expect(wrapper.get('[aria-label="切换结果编辑模式"]').attributes("aria-pressed")).toBe("false");
     expect(wrapper.find('[aria-label="结果编辑操作"]').exists()).toBe(false);
     expect(wrapper.find('[aria-label="应用更改"]').exists()).toBe(false);
+    expect(wrapper.findComponent({ name: "ResultDataContextMenu" }).props("showClone")).toBe(false);
 
     edits.setUnlocked("editor-1", "execution-edit", 0, true);
     await nextTick();
     expect(wrapper.get('[aria-label="切换结果编辑模式"]').attributes("aria-pressed")).toBe("true");
     expect(wrapper.findAll(".result-edit-operation button").map((button) => button.attributes("aria-label")))
       .toEqual(["应用更改", "撤销结果草稿", "新增行", "删除行", "变更清单"]);
+    expect(wrapper.findComponent({ name: "ResultDataContextMenu" }).props("showClone")).toBe(true);
     expect(wrapper.find('[aria-label="结果变更数量"]').exists()).toBe(false);
     expect(wrapper.text()).not.toContain("空字符串按 NULL");
 
@@ -207,6 +210,104 @@ describe("ResultPanel streaming rendering", () => {
     expect(pending.props?.class).toContain("result-cell-pending");
     expect(wrapper.get('[aria-label="应用更改"]').classes()).toContain("el-button--success");
     expect(wrapper.find('[aria-label="确认结果修改"]').exists()).toBe(false);
+  });
+
+  it("clones every selected row as an insert draft and prepares large values without copying previews", async () => {
+    const queries = useQueryStore();
+    const edits = useResultEditStore();
+    queries.start("editor-clone", "execution-clone");
+    queries.addResult("editor-clone", {
+      resultIndex: 0, sql: "select id, name, payload, generated_value from sample for update", type: "QUERY",
+      columns: ["id", "name", "payload", "generated_value"],
+      rows: [["1", "before", "0x0102", "computed-1"], ["2", "second", "0x0304", "computed-2"]],
+      rowIds: ["row-1", "row-2"],
+      columnDetails: [
+        { label: "id", name: "id", remarks: "", catalog: "db", schema: "", table: "sample",
+          typeName: "BIGINT", jdbcType: -5 },
+        { label: "name", name: "name", remarks: "", catalog: "db", schema: "", table: "sample",
+          typeName: "VARCHAR", jdbcType: 12 },
+        { label: "payload", name: "payload", remarks: "", catalog: "db", schema: "", table: "sample",
+          typeName: "BLOB", jdbcType: 2004 },
+        { label: "generated_value", name: "generated_value", remarks: "", catalog: "db", schema: "",
+          table: "sample", typeName: "VARCHAR", jdbcType: 12 }
+      ],
+      mutationTarget: {
+        qualifiedName: "`db`.`sample`", editableForUpdate: true, mode: "editable",
+        updateSupported: true, insertSupported: true, deleteSupported: true,
+        columns: [
+          { resultIndex: 0, name: "id", quotedName: "`id`", jdbcType: -5,
+            typeFamily: "number", editable: true },
+          { resultIndex: 1, name: "name", quotedName: "`name`", jdbcType: 12,
+            typeFamily: "text", editable: true },
+          { resultIndex: 2, name: "payload", quotedName: "`payload`", jdbcType: 2004,
+            typeFamily: "blob", editable: true },
+          { resultIndex: 3, name: "generated_value", quotedName: "`generated_value`", jdbcType: 12,
+            typeFamily: "text", editable: false, generated: true }
+        ],
+        uniqueKeys: [{ name: "PRIMARY", primary: true, resultColumnIndices: [0] }]
+      },
+      updateCount: -1, truncated: false, durationMs: 3, complete: true
+    });
+    queries.complete("editor-clone", { durationMs: 4, failed: false, cancelled: false });
+    edits.setUnlocked("editor-clone", "execution-clone", 0, true);
+    edits.stage("editor-clone", "execution-clone", 0, 0, 1, "before", "draft-name", "row-1");
+    queries.updateCells("editor-clone", 0, [{ rowIndex: 0, columnIndex: 1, value: "draft-name" }]);
+    edits.stageMutation("editor-clone", "execution-clone", 0, 1, 2, "0x0304",
+      { kind: "largeValueToken", value: "source-draft-token" }, "row-2");
+    const cloneSpy = vi.spyOn(rpc, "cloneResultLargeValues").mockImplementation(async (_editorId, _executionId,
+      _resultIndex, sources) => ({ values: sources.map((source, index) => ({
+        cloneId: source.cloneId, columnIndex: source.columnIndex, token: `cloned-token-${index}`,
+        size: 4, typeFamily: "blob"
+      })) }));
+    const Harness = defineComponent({
+      components: { ResultPanel },
+      setup() { return { execution: computed(() => queries.executions["editor-clone"]) }; },
+      template: '<ResultPanel :execution="execution" :active-result-index="0" show-result-edit-actions />'
+    });
+    const wrapper = mount(Harness, { global: { plugins: [ElementPlus] } });
+    await nextTick();
+    const panel = wrapper.findComponent(ResultPanel);
+    const table = panel.findComponent({ name: "ElTableV2" });
+    const columns = table.props("columns") as Column[];
+    const rows = table.props("data") as Array<{ sourceIndex: number; cells: string[] }>;
+    const first = columns[0].cellRenderer?.({ rowData: rows[0] } as never) as VNode;
+    const second = columns[0].cellRenderer?.({ rowData: rows[1] } as never) as VNode;
+    first.props?.onPointerdown({ button: 0, preventDefault: vi.fn(), stopPropagation: vi.fn(),
+      ctrlKey: false, metaKey: false, shiftKey: false });
+    second.props?.onPointerenter();
+    window.dispatchEvent(new Event("pointerup"));
+    second.props?.onContextmenu({ preventDefault: vi.fn(), stopPropagation: vi.fn(), clientX: 20, clientY: 30 });
+    await nextTick();
+    const menu = panel.findComponent({ name: "ResultDataContextMenu" });
+    expect(menu.props()).toMatchObject({ mode: "rows", showClone: true, canClone: true, cloneBusy: false });
+
+    menu.vm.$emit("command", "clone");
+    await flushPromises();
+    await nextTick();
+
+    expect(cloneSpy).toHaveBeenCalledOnce();
+    expect(cloneSpy.mock.calls[0][3].map((item) => item.source)).toEqual([
+      { kind: "row", rowId: "row-1" },
+      { kind: "draft", token: "source-draft-token" }
+    ]);
+    const result = queries.executions["editor-clone"].results[0];
+    expect(result.rows.slice(2)).toEqual([
+      ["1", "draft-name", "0x0102", null],
+      ["2", "second", "0x0304", null]
+    ]);
+    const inserts = edits.session("editor-clone", "execution-clone", 0)?.inserts ?? [];
+    expect(inserts).toHaveLength(2);
+    expect(inserts.map((insert) => insert.origin)).toEqual(["clone", "clone"]);
+    expect(inserts[0].values).toEqual([
+      { columnIndex: 0, value: { kind: "text", value: "1" } },
+      { columnIndex: 1, value: { kind: "text", value: "draft-name" } },
+      { columnIndex: 2, value: { kind: "largeValueToken", value: "cloned-token-0" } }
+    ]);
+    expect(inserts[1].values[2]).toEqual(
+      { columnIndex: 2, value: { kind: "largeValueToken", value: "cloned-token-1" } });
+    expect((panel.findComponent({ name: "ElTableV2" }).props("data") as Array<unknown>)).toHaveLength(4);
+    cloneSpy.mockRestore();
+    wrapper.unmount();
   });
 
   it("removes the local data toolbar and synchronizes the active result", async () => {

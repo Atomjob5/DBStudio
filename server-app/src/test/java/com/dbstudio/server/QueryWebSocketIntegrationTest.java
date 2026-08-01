@@ -298,13 +298,14 @@ class QueryWebSocketIntegrationTest {
             try (Connection connection = MYSQL.createConnection(""); Statement statement = connection.createStatement()) {
                 statement.execute("CREATE TABLE " + table
                         + "(id BIGINT PRIMARY KEY, name VARCHAR(100) NOT NULL,"
-                        + " order_status ENUM('NEW', 'DONE') NOT NULL)");
+                        + " order_status ENUM('NEW', 'DONE') NOT NULL, payload LONGBLOB)");
                 statement.execute("INSERT INTO " + table
-                        + " VALUES (1, 'before', 'NEW'), (2, 'remove-me', 'DONE')");
+                        + " VALUES (1, 'before', 'NEW', X'00010203'),"
+                        + " (2, 'remove-me', 'DONE', X'040506')");
             }
 
             List<Map<String, Object>> locked = executeSql(editorId, workspaceId, cookie, events,
-                    "SELECT id, name, order_status FROM " + table + " FOR UPDATE");
+                    "SELECT id, name, order_status, payload FROM " + table + " FOR UPDATE");
             Map<String, Object> complete = executionComplete(locked);
             Map<String, Object> target = mutationTarget(locked);
             assertEquals(Boolean.TRUE, target.get("editableForUpdate"));
@@ -321,6 +322,25 @@ class QueryWebSocketIntegrationTest {
                     new HttpEntity<Map<String, Object>>(forgedBody, authenticatedJsonHeaders(cookie)), Map.class);
             assertEquals(org.springframework.http.HttpStatus.BAD_REQUEST, forged.getStatusCode());
             assertEquals("STALE_RESULT", forged.getBody().get("code"));
+
+            Map<String, Object> cloneSource = new HashMap<String, Object>();
+            cloneSource.put("kind", "row");
+            cloneSource.put("rowId", rowIds.get(0));
+            Map<String, Object> cloneItem = new HashMap<String, Object>();
+            cloneItem.put("cloneId", "insert-three");
+            cloneItem.put("columnIndex", 3);
+            cloneItem.put("source", cloneSource);
+            Map<String, Object> cloneBody = new HashMap<String, Object>();
+            cloneBody.put("executionId", complete.get("executionId"));
+            cloneBody.put("sources", Collections.singletonList(cloneItem));
+            Map<String, Object> cloned = exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId
+                    + "/editors/" + editorId + "/results/0/large-value-clones", cloneBody, cookie);
+            List<Map<String, Object>> clonedValues = (List<Map<String, Object>>) cloned.get("values");
+            assertEquals(1, clonedValues.size());
+            assertEquals("insert-three", clonedValues.get(0).get("cloneId"));
+            assertEquals(4, ((Number) clonedValues.get(0).get("size")).intValue());
+            String clonedPayloadToken = String.valueOf(clonedValues.get(0).get("token"));
+
             Map<String, Object> mixedBody = new HashMap<String, Object>();
             mixedBody.put("executionId", complete.get("executionId"));
             List<Map<String, Object>> operations = new ArrayList<Map<String, Object>>();
@@ -328,7 +348,8 @@ class QueryWebSocketIntegrationTest {
                     Collections.singletonList(typedValue(1, "text", "pending"))));
             operations.add(operation("insert-three", "insert", "",
                     Arrays.asList(typedValue(0, "text", "3"), typedValue(1, "text", "inserted"),
-                            typedValue(2, "text", "DONE"))));
+                            typedValue(2, "text", "DONE"),
+                            typedValue(3, "largeValueToken", clonedPayloadToken))));
             operations.add(operation("delete-two", "delete", rowIds.get(1),
                     Collections.<Map<String, Object>>emptyList()));
             mixedBody.put("operations", operations);
@@ -339,7 +360,9 @@ class QueryWebSocketIntegrationTest {
                     + "/editors/" + editorId + "/results/0/changes", mixedBody, cookie);
             assertEquals(Arrays.asList("update-one", "insert-three", "delete-two"),
                     mixed.get("appliedOperationIds"));
-            assertEquals(3, ((List<?>) mixed.get("rowPatches")).size());
+            List<Map<String, Object>> patches = (List<Map<String, Object>>) mixed.get("rowPatches");
+            assertEquals(3, patches.size());
+            assertEquals(Arrays.asList("3", "inserted", "DONE", "0x00010203"), patches.get(1).get("row"));
             assertDatabaseValue(table, "before");
             Map<String, Object> rolledBack = exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId
                     + "/editors/" + editorId + "/transaction/rollback",

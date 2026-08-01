@@ -160,6 +160,8 @@
                            :can-in="canCopyIn" :can-insert="canCopyInsert" :can-update="canCopyUpdate"
                            :can-delete="canCopyDelete" :can-compare="canCompareCells" :can-sum="canSumCells"
                            :can-set-null="canSetSelectedCellNull"
+                           :show-clone="resultEditUnlocked" :can-clone="canCloneSelectedRows"
+                           :clone-busy="cloneBusy"
                            @close="closeDataMenu" @command="dataMenuCommand" />
     <ResultValueDialog v-model="valueDialog.visible" :value="valueDialog.value" />
     <ResultValueCompareDialog v-model="compareDialog" :left="compareValues.left" :right="compareValues.right"
@@ -297,6 +299,7 @@ const valueDialog = ref<{ visible: boolean; value: string | null }>({ visible: f
 const compareDialog = ref(false);
 const largeValueEditor = ref<{ visible: boolean; rowIndex: number; columnIndex: number;
   family: "raw" | "clob" | "blob" }>();
+const cloneBusy = ref(false);
 const editingCell = ref<{
   rowIndex: number;
   columnIndex: number;
@@ -345,6 +348,14 @@ const resultRowClasses = computed<Record<number, string>>(() => {
 });
 const canDeleteSelectedRows = computed(() => Boolean(resultEditUnlocked.value
   && activeResult.value?.mutationTarget?.deleteSupported && selectedRowSources.value.length));
+const canCloneSelectedRows = computed(() => {
+  const execution = props.execution;
+  const result = activeResult.value;
+  if (!execution || !result || !resultEditUnlocked.value || !result.mutationTarget?.insertSupported
+      || cloneBusy.value || !selectedRowsInDisplayOrder.value.length) return false;
+  return selectedRowsInDisplayOrder.value.every((row) => !resultEdits.isDeleted(
+    execution.editorId, execution.executionId, result.resultIndex, resultRowId(row.sourceIndex)));
+});
 const changesDialogVisible = ref(false);
 const changePreviews = ref<Array<{ operationId: string; sql: string; binds: string[] }>>([]);
 const previewError = ref("");
@@ -361,9 +372,13 @@ const changeListRows = computed(() => {
       ? operation.values.map((item) => `${result.columns[item.columnIndex]}=${mutationValueText(item.value)}`).join("，")
       : operation.kind === "delete" ? "整行删除"
         : cells.map((cell) => `${result.columns[cell.columnIndex]}: ${cell.originalValue ?? "NULL"} → ${cell.draftValue ?? "NULL"}`).join("，");
+    const insertOrigin = operation.kind === "insert"
+      ? current.inserts.find((item) => item.operationId === operation.operationId)?.origin : undefined;
     return { operationId: operation.operationId,
-      kindLabel: operation.kind === "insert" ? "新增" : operation.kind === "delete" ? "删除" : "更新",
-      rowLabel: operation.kind === "insert" ? "新增行" : `第 ${operation.rowIndex + 1} 行`, changes,
+      kindLabel: operation.kind === "insert" ? insertOrigin === "clone" ? "克隆新增" : "新增"
+        : operation.kind === "delete" ? "删除" : "更新",
+      rowLabel: operation.kind === "insert" ? insertOrigin === "clone" ? "克隆行" : "新增行"
+        : `第 ${operation.rowIndex + 1} 行`, changes,
       sql: preview ? `${preview.sql}  [${preview.binds.join(", ")}]` : "已应用到当前事务" };
   });
 });
@@ -1218,6 +1233,10 @@ const canSumHeaderData = computed(() => selectedOrderedColumns().length > 0
   && headerSumResult.value.valid && headerSumResult.value.count > 0);
 
 function dataMenuCommand(command: DataMenuCommand): void {
+  if (command === "clone") {
+    void cloneSelectedResultRows();
+    return;
+  }
   if (command === "set-null") {
     setSelectedCellsNull();
     return;
@@ -1286,6 +1305,115 @@ function mutationValueText(value: { kind: string; value?: string }): string {
   if (value.kind === "default") return "DEFAULT";
   if (value.kind === "largeValueToken") return "<大字段草稿>";
   return value.value ?? "";
+}
+
+function currentDraftMutation(rowIndex: number, columnIndex: number): ResultMutationValue | undefined {
+  const current = activeEditSession.value;
+  const rowId = resultRowId(rowIndex);
+  const inserted = current?.inserts.find((item) => item.rowId === rowId && item.status === "draft");
+  const insertedValue = inserted?.values.find((item) => item.columnIndex === columnIndex)?.value;
+  if (insertedValue) return { ...insertedValue };
+  const cell = current?.cells.find((item) => (item.rowId ? item.rowId === rowId : item.rowIndex === rowIndex)
+    && item.columnIndex === columnIndex);
+  if (!cell) return undefined;
+  if (cell.draftMutation) return { ...cell.draftMutation };
+  if (cell.draftValue !== cell.confirmedValue) {
+    return cell.draftValue === null ? { kind: "null" } : { kind: "text", value: cell.draftValue };
+  }
+  return undefined;
+}
+
+async function cleanupPreparedCloneValues(editorId: string, executionId: string, resultIndex: number,
+                                          values: Array<{ columnIndex: number; token: string }>): Promise<void> {
+  await Promise.allSettled(values.map((value) => rpc.deleteResultLargeValueDraft(
+    editorId, executionId, resultIndex, value.columnIndex, value.token)));
+}
+
+async function cloneSelectedResultRows(): Promise<void> {
+  const execution = props.execution;
+  const result = activeResult.value;
+  const target = result?.mutationTarget;
+  if (!execution || !result || !target || !canCloneSelectedRows.value || cloneBusy.value) return;
+  const selected = selectedRowsInDisplayOrder.value.map((row) => ({
+    sourceIndex: row.sourceIndex, cells: [...row.cells]
+  }));
+  const editableColumns = target.columns.filter((column) => !column.generated && column.editable !== false);
+  const seeds = selected.map((row) => ({
+    rowId: `draft:${crypto.randomUUID()}`,
+    sourceIndex: row.sourceIndex,
+    row: Array.from({ length: result.columns.length }, () => null as string | null),
+    values: [] as Array<{ columnIndex: number; value: ResultMutationValue }>
+  }));
+  const largeSources: Array<{ cloneId: string; columnIndex: number;
+    source: { kind: "row"; rowId: string } | { kind: "draft"; token: string } }> = [];
+
+  for (let seedIndex = 0; seedIndex < seeds.length; seedIndex++) {
+    const seed = seeds[seedIndex];
+    const source = selected[seedIndex];
+    for (const column of editableColumns) {
+      const columnIndex = column.resultIndex;
+      const mutation = currentDraftMutation(source.sourceIndex, columnIndex);
+      const large = column.typeFamily === "raw" || column.typeFamily === "clob" || column.typeFamily === "blob";
+      if (large && !mutation && source.cells[columnIndex] !== null) {
+        largeSources.push({ cloneId: seed.rowId, columnIndex,
+          source: { kind: "row", rowId: resultRowId(source.sourceIndex) } });
+        seed.row[columnIndex] = source.cells[columnIndex] ?? null;
+        continue;
+      }
+      if (large && mutation?.kind === "largeValueToken") {
+        largeSources.push({ cloneId: seed.rowId, columnIndex,
+          source: { kind: "draft", token: mutation.value } });
+        seed.row[columnIndex] = source.cells[columnIndex] ?? null;
+        continue;
+      }
+      const value = mutation ?? (source.cells[columnIndex] === null
+        ? { kind: "null" } as const
+        : { kind: "text", value: source.cells[columnIndex] as string } as const);
+      seed.values.push({ columnIndex, value: { ...value } });
+      seed.row[columnIndex] = value.kind === "text" ? value.value : null;
+    }
+  }
+
+  cloneBusy.value = true;
+  let prepared: Array<{ cloneId: string; columnIndex: number; token: string; size: number;
+    typeFamily: string }> = [];
+  try {
+    if (largeSources.length) {
+      prepared = (await rpc.cloneResultLargeValues(execution.editorId, execution.executionId,
+        result.resultIndex, largeSources)).values;
+    }
+    const preparedByCell = new Map(prepared.map((item) => [`${item.cloneId}:${item.columnIndex}`, item]));
+    for (const source of largeSources) {
+      const value = preparedByCell.get(`${source.cloneId}:${source.columnIndex}`);
+      if (!value) throw new Error("服务端未返回完整的大字段克隆结果");
+      const seed = seeds.find((item) => item.rowId === source.cloneId);
+      seed?.values.push({ columnIndex: source.columnIndex,
+        value: { kind: "largeValueToken", value: value.token } });
+    }
+    if (props.execution?.executionId !== execution.executionId
+        || activeResult.value?.resultIndex !== result.resultIndex || !resultEditUnlocked.value) {
+      throw new Error("结果编辑状态已经变化，请重新选择需要克隆的行");
+    }
+    const firstRowIndex = activeResult.value.rows.length;
+    const editableIndices = editableColumns.map((column) => column.resultIndex);
+    for (let index = 0; index < seeds.length; index++) {
+      const seed = seeds[index];
+      seed.values.sort((left, right) => left.columnIndex - right.columnIndex);
+      const rowIndex = firstRowIndex + index;
+      resultEdits.addInsert(execution.editorId, execution.executionId, result.resultIndex,
+        seed.rowId, rowIndex, editableIndices, { origin: "clone", values: seed.values });
+      queries.appendDraftRow(execution.editorId, result.resultIndex, seed.rowId, seed.row);
+    }
+    selectedRowSources.value = seeds.map((_, index) => firstRowIndex + index);
+    selectionMode.value = "rows";
+    rowAnchor.value = selectedRowSources.value[0];
+    ElMessage.success(`已克隆 ${seeds.length} 行`);
+  } catch (error) {
+    await cleanupPreparedCloneValues(execution.editorId, execution.executionId, result.resultIndex, prepared);
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  } finally {
+    cloneBusy.value = false;
+  }
 }
 
 function addResultRow(): void {

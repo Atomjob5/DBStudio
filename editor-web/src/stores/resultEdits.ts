@@ -25,6 +25,7 @@ export interface ResultInsertEdit {
   rowId: string;
   rowIndex: number;
   values: Array<{ columnIndex: number; value: ResultMutationValue }>;
+  origin: "blank" | "clone";
   status: "draft" | "applied";
   sequence: number;
 }
@@ -153,12 +154,18 @@ export const useResultEditStore = defineStore("result-edits", () => {
   }
 
   function addInsert(editorId: string, executionId: string, resultIndex: number, rowId: string,
-                     rowIndex: number, editableColumnIndices: number[]): ResultInsertEdit | undefined {
+                     rowIndex: number, editableColumnIndices: number[],
+                     options: { origin?: "blank" | "clone";
+                       values?: Array<{ columnIndex: number; value: ResultMutationValue }> } = {}):
+    ResultInsertEdit | undefined {
     const current = session(editorId, executionId, resultIndex, true);
     if (!current) return undefined;
     const inserted: ResultInsertEdit = {
-      operationId: crypto.randomUUID(), rowId, rowIndex, status: "draft", sequence: current.nextSequence++,
-      values: editableColumnIndices.map((columnIndex) => ({ columnIndex, value: { kind: "default" } }))
+      operationId: crypto.randomUUID(), rowId, rowIndex, origin: options.origin ?? "blank",
+      status: "draft", sequence: current.nextSequence++,
+      values: (options.values ?? editableColumnIndices.map((columnIndex) => ({
+        columnIndex, value: { kind: "default" } as ResultMutationValue
+      }))).map((item) => ({ columnIndex: item.columnIndex, value: { ...item.value } }))
     };
     current.inserts.push(inserted);
     return inserted;

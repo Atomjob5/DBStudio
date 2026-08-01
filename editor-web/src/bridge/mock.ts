@@ -229,6 +229,13 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
     return { executionId, resultIndex: Number(payload.resultIndex ?? 0), offset, rows,
       hasMore: end < total, nextOffset: end, cancelled: false };
   }
+  if (type === "query.cloneLargeValues") {
+    const sources = Array.isArray(payload.sources) ? payload.sources as Array<Record<string, unknown>> : [];
+    return { values: sources.map((source) => ({
+      cloneId: String(source.cloneId), columnIndex: Number(source.columnIndex),
+      token: crypto.randomUUID(), size: 0, typeFamily: "blob"
+    })) };
+  }
   if (type === "query.applyChanges") {
     transactionDirtyEditors.add(String(payload.editorId));
     if (Array.isArray(payload.operations)) {

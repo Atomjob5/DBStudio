@@ -1,6 +1,7 @@
 package com.dbstudio.server;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -21,6 +22,7 @@ import com.dbstudio.spi.SqlDialect;
 import com.dbstudio.spi.SqlStatement;
 import com.dbstudio.spi.StatementType;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Files;
 import java.io.ByteArrayInputStream;
@@ -60,6 +62,52 @@ class WorkspaceSessionLifecycleTest {
                     2, 3, new ByteArrayInputStream(new byte[] { 1, 2, 3, 4, 5 }), 4));
             workspace.removeLargeValueDrafts("editor-1");
             assertFalse(Files.exists(stored));
+        } finally {
+            workspace.close();
+        }
+    }
+
+    @Test
+    void clonesLargeValueDraftsIntoIndependentTemporaryFiles() throws Exception {
+        EditorConnectionLimiter limiter = new EditorConnectionLimiter();
+        Workspace workspace = new Workspace("lob-clone-workspace", 100, 20, false,
+                new ObjectMapper(), directory.resolve("clone-temporary"), limiter);
+        UUID execution = UUID.randomUUID();
+        try {
+            String sourceToken = workspace.storeLargeValueDraft("editor-1", execution, 0, 2,
+                    new ByteArrayInputStream(new byte[] { 1, 2, 3, 4 }), 8);
+            Path source = workspace.requireLargeValueDraft(sourceToken, "editor-1", execution, 0, 2);
+            String cloneToken = workspace.cloneLargeValueDraft(sourceToken, "editor-1", execution, 0, 2, 8);
+            Path clone = workspace.requireLargeValueDraft(cloneToken, "editor-1", execution, 0, 2);
+
+            assertFalse(source.equals(clone));
+            assertArrayEquals(Files.readAllBytes(source), Files.readAllBytes(clone));
+            workspace.removeLargeValueDraft(sourceToken);
+            assertFalse(Files.exists(source));
+            assertTrue(Files.exists(clone));
+            assertArrayEquals(new byte[] { 1, 2, 3, 4 }, Files.readAllBytes(clone));
+        } finally {
+            workspace.close();
+        }
+    }
+
+    @Test
+    void removesAnIncompleteStreamedLargeValueDraft() throws Exception {
+        EditorConnectionLimiter limiter = new EditorConnectionLimiter();
+        Path temporary = directory.resolve("failed-clone-temporary");
+        Workspace workspace = new Workspace("lob-failed-clone-workspace", 100, 20, false,
+                new ObjectMapper(), temporary, limiter);
+        UUID execution = UUID.randomUUID();
+        try {
+            assertThrows(IOException.class, () -> workspace.storeLargeValueDraft(
+                    "editor-1", execution, 0, 2, output -> {
+                        output.write(new byte[] { 1, 2, 3 });
+                        throw new IOException("stream failed");
+                    }, 8));
+            assertTrue(Files.exists(temporary));
+            try (java.util.stream.Stream<Path> files = Files.list(temporary)) {
+                assertEquals(0L, files.count());
+            }
         } finally {
             workspace.close();
         }

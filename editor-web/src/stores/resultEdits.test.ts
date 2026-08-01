@@ -57,6 +57,28 @@ describe("result edit store", () => {
     expect(store.operations(session).map((operation) => operation.kind)).toEqual(["insert", "update"]);
   });
 
+  it("creates clone inserts with complete initial values while keeping the server operation as insert", () => {
+    const store = useResultEditStore();
+    const inserted = store.addInsert("editor-1", "execution-1", 0, "draft:clone", 2, [0, 1, 2], {
+      origin: "clone",
+      values: [
+        { columnIndex: 0, value: { kind: "text", value: "10" } },
+        { columnIndex: 1, value: { kind: "null" } },
+        { columnIndex: 2, value: { kind: "largeValueToken", value: "independent-token" } }
+      ]
+    });
+
+    expect(inserted).toMatchObject({ origin: "clone", status: "draft", rowId: "draft:clone" });
+    const operations = store.operations(store.session("editor-1", "execution-1", 0)!);
+    expect(operations).toHaveLength(1);
+    expect(operations[0]).toMatchObject({ kind: "insert", rowId: "draft:clone", rowIndex: 2,
+      values: inserted?.values });
+    expect(store.undo("editor-1", "execution-1", 0)).toEqual({
+      kind: "insert", rowId: "draft:clone",
+      largeValues: [{ columnIndex: 2, token: "independent-token" }]
+    });
+  });
+
   it("keeps large value tokens opaque and returns them for cleanup when undone", () => {
     const store = useResultEditStore();
     store.stageMutation("editor-1", "execution-1", 0, 0, 2, "preview",

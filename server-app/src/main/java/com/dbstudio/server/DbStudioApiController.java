@@ -1019,6 +1019,70 @@ public final class DbStudioApiController {
                 "typeFamily", column.typeFamily());
     }
 
+    @PostMapping("/workspaces/{workspaceId}/editors/{editorId}/results/{resultIndex}/large-value-clones")
+    public Map<String, Object> cloneResultLargeValues(@PathVariable String workspaceId,
+                                                       @PathVariable String editorId,
+                                                       @PathVariable int resultIndex,
+                                                       @RequestBody Map<String, Object> body) throws Exception {
+        Workspace workspace = workspaces.require(workspaceId);
+        EditorSession editor = workspace.editors().require(editorId);
+        UUID execution = resultExecution(editor, ApiPayloads.required(body, "executionId"));
+        StatementResult result = result(editor, resultIndex);
+        Object rawSources = body.get("sources");
+        if (!(rawSources instanceof List)) {
+            throw new ApiException("INVALID_RESULT_LOB_CLONE", "sources 必须是数组");
+        }
+        long maximum = resultEditMaxLobBytes();
+        Set<String> cloneCells = new LinkedHashSet<String>();
+        List<String> createdTokens = new ArrayList<String>();
+        List<Map<String, Object>> values = new ArrayList<Map<String, Object>>();
+        try {
+            for (Object rawSource : (List<?>) rawSources) {
+                if (!(rawSource instanceof Map)) {
+                    throw new ApiException("INVALID_RESULT_LOB_CLONE", "大字段克隆来源格式无效");
+                }
+                @SuppressWarnings("unchecked") Map<String, Object> item = (Map<String, Object>) rawSource;
+                String cloneId = ApiPayloads.required(item, "cloneId").trim();
+                int columnIndex = integer(item, "columnIndex", -1);
+                ResultMutationTarget.Column column = editableLargeValueColumn(result, columnIndex);
+                if (cloneId.isEmpty() || !cloneCells.add(cloneId + ":" + columnIndex)) {
+                    throw new ApiException("INVALID_RESULT_LOB_CLONE", "大字段克隆目标重复或无效");
+                }
+                Object rawOrigin = item.get("source");
+                if (!(rawOrigin instanceof Map)) {
+                    throw new ApiException("INVALID_RESULT_LOB_CLONE", "大字段克隆来源缺失");
+                }
+                @SuppressWarnings("unchecked") Map<String, Object> origin = (Map<String, Object>) rawOrigin;
+                String kind = ApiPayloads.required(origin, "kind").trim().toLowerCase(Locale.ROOT);
+                final String token;
+                if ("row".equals(kind)) {
+                    String rowId = ApiPayloads.required(origin, "rowId").trim();
+                    int rowIndex = result.rowIds().indexOf(rowId);
+                    if (rowIndex < 0 || rowIndex >= result.rows().size()) {
+                        throw new ApiException("STALE_RESULT", "查询结果行已经过期，请重新执行");
+                    }
+                    token = workspace.storeLargeValueDraft(editorId, execution, resultIndex, columnIndex,
+                            output -> workspace.streamResultValue(editor, result.mutationTarget(),
+                                    result.rows().get(rowIndex), result.rowLocators().get(rowIndex),
+                                    columnIndex, output, maximum).get(120, TimeUnit.SECONDS), maximum);
+                } else if ("draft".equals(kind)) {
+                    token = workspace.cloneLargeValueDraft(ApiPayloads.required(origin, "token").trim(),
+                            editorId, execution, resultIndex, columnIndex, maximum);
+                } else {
+                    throw new ApiException("INVALID_RESULT_LOB_CLONE", "不支持的大字段克隆来源");
+                }
+                createdTokens.add(token);
+                values.add(ApiPayloads.map("cloneId", cloneId, "columnIndex", columnIndex,
+                        "token", token, "size", workspace.largeValueDraftSize(token),
+                        "typeFamily", column.typeFamily()));
+            }
+        } catch (Exception exception) {
+            for (String token : createdTokens) workspace.removeLargeValueDraft(token);
+            throw exception;
+        }
+        return ApiPayloads.map("values", values);
+    }
+
     @GetMapping("/workspaces/{workspaceId}/editors/{editorId}/results/{resultIndex}/large-values/{rowId}/{columnIndex}")
     public ResponseEntity<StreamingResponseBody> downloadResultLargeValue(@PathVariable String workspaceId,
                                                                            @PathVariable String editorId,

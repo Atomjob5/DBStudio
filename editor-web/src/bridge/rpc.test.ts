@@ -186,6 +186,31 @@ describe("RpcClient websocket recovery", () => {
     client.dispose();
   });
 
+  it("routes batch large-value cloning with opaque row and draft sources", async () => {
+    const response = { values: [{ cloneId: "draft:clone", columnIndex: 2,
+      token: "new-token", size: 4, typeFamily: "blob" }] };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).includes("/open")
+      ? jsonResponse({ workspaceId: "workspace", recoveryDecisionRequired: false, editors: [] })
+      : jsonResponse(response));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new RpcClient();
+    await open(client);
+    const sources = [
+      { cloneId: "draft:clone", columnIndex: 2, source: { kind: "row" as const, rowId: "row-1" } },
+      { cloneId: "draft:clone-2", columnIndex: 2,
+        source: { kind: "draft" as const, token: "source-token" } }
+    ];
+
+    await expect(client.cloneResultLargeValues("editor-1", "execution-1", 3, sources)).resolves.toEqual(response);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/editors/editor-1/results/3/large-value-clones"),
+      expect.objectContaining({ method: "POST", body: JSON.stringify({
+        editorId: "editor-1", executionId: "execution-1", resultIndex: 3, sources
+      }) }));
+    client.dispose();
+  });
+
   it("routes the confirmed connection import through the active workspace", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).includes("/open")
       ? jsonResponse({ workspaceId: "workspace", recoveryDecisionRequired: false, editors: [] })

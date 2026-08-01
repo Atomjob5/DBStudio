@@ -167,6 +167,17 @@ export class RpcClient {
       + `/results/${resultIndex}/large-values?${query}`, "POST", data, 120_000);
   }
 
+  async cloneResultLargeValues(editorId: string, executionId: string, resultIndex: number,
+                               sources: Array<{ cloneId: string; columnIndex: number;
+                                 source: { kind: "row"; rowId: string }
+                                   | { kind: "draft"; token: string } }>):
+    Promise<{ values: Array<{ cloneId: string; columnIndex: number; token: string;
+      size: number; typeFamily: string }> }> {
+    return await this.request("query.cloneLargeValues", {
+      editorId, executionId, resultIndex, sources
+    }, 120_000);
+  }
+
   async downloadResultLargeValue(editorId: string, executionId: string, resultIndex: number,
                                  rowId: string, columnIndex: number, filename: string): Promise<void> {
     await this.ensureOperational();
@@ -407,6 +418,10 @@ export class RpcClient {
       };
       case "query.previewChanges": return {
         path: `${ws}/editors/${editorId}/results/${encodeURIComponent(String(body.resultIndex ?? 0))}/changes/preview`,
+        method: "POST", body
+      };
+      case "query.cloneLargeValues": return {
+        path: `${ws}/editors/${editorId}/results/${encodeURIComponent(String(body.resultIndex ?? 0))}/large-value-clones`,
         method: "POST", body
       };
       case "query.cancel": {
