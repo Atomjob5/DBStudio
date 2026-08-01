@@ -18,6 +18,43 @@
         </div>
         <div class="result-actions" aria-label="结果操作">
           <template v-if="showResultEditActions">
+            <Transition name="result-edit-actions">
+              <div v-if="resultEditUnlocked" class="result-edit-operations"
+                   role="group" aria-label="结果编辑操作">
+                <span class="result-edit-operation">
+                  <el-tooltip :content="applyResultChangesTooltip">
+                    <el-button text :icon="CircleCheck" aria-label="应用更改"
+                               :type="canApplyResultChanges ? 'success' : 'default'"
+                               :disabled="!canApplyResultChanges" @click="$emit('apply-result-changes')" />
+                  </el-tooltip>
+                </span>
+                <span class="result-edit-operation">
+                  <el-tooltip content="撤销最后一项本地草稿">
+                    <el-button text :icon="RefreshLeft" aria-label="撤销结果草稿"
+                               :disabled="editDraftCount === 0" @click="undoResultDraft" />
+                  </el-tooltip>
+                </span>
+                <span class="result-edit-operation">
+                  <el-tooltip content="新增一条本地草稿记录">
+                    <el-button text :icon="Plus" aria-label="新增行"
+                               :disabled="!activeResult?.mutationTarget?.insertSupported"
+                               @click="addResultRow" />
+                  </el-tooltip>
+                </span>
+                <span class="result-edit-operation">
+                  <el-tooltip content="将所选记录标记为待删除">
+                    <el-button text :icon="Minus" aria-label="删除行"
+                               :disabled="!canDeleteSelectedRows" @click="deleteSelectedResultRows" />
+                  </el-tooltip>
+                </span>
+                <span class="result-edit-operation">
+                  <el-tooltip content="查看旧值、新值和参数化 SQL">
+                    <el-button text :icon="Document" aria-label="变更清单"
+                               :disabled="editDraftCount + editAppliedCount === 0" @click="openChangesDialog" />
+                  </el-tooltip>
+                </span>
+              </div>
+            </Transition>
             <el-tooltip :content="resultEditTooltip">
               <el-button text class="result-edit-mode" :type="resultEditUnlocked ? 'primary' : 'default'"
                          :icon="EditPen" :disabled="!canToggleResultEdit"
@@ -26,34 +63,6 @@
                 {{ resultEditUnlocked ? "编辑中" : "编辑模式" }}
               </el-button>
             </el-tooltip>
-            <el-tooltip content="新增一条本地草稿记录">
-              <el-button text :icon="Plus" aria-label="新增行"
-                         :disabled="!resultEditUnlocked || !activeResult?.mutationTarget?.insertSupported"
-                         @click="addResultRow" />
-            </el-tooltip>
-            <el-tooltip content="将所选记录标记为待删除">
-              <el-button text :icon="Delete" aria-label="删除所选行"
-                         :disabled="!canDeleteSelectedRows" @click="deleteSelectedResultRows" />
-            </el-tooltip>
-            <el-tooltip content="撤销最后一项本地草稿">
-              <el-button text :icon="RefreshLeft" aria-label="撤销结果草稿"
-                         :disabled="editDraftCount === 0" @click="undoResultDraft" />
-            </el-tooltip>
-            <el-tooltip :content="applyResultChangesTooltip">
-              <el-button text :icon="CircleCheck" aria-label="应用更改"
-                         :type="canApplyResultChanges ? 'success' : 'default'"
-                         :disabled="!canApplyResultChanges" @click="$emit('apply-result-changes')" />
-            </el-tooltip>
-            <el-tooltip content="查看旧值、新值和参数化 SQL">
-              <el-button text :icon="Document" aria-label="变更清单"
-                         :disabled="editDraftCount + editAppliedCount === 0" @click="openChangesDialog" />
-            </el-tooltip>
-            <span class="result-edit-counts" aria-label="结果变更数量">
-              草稿 {{ editDraftCount }} · 已应用 {{ editAppliedCount }}
-            </span>
-            <el-tag v-if="activeResult?.mutationTarget?.emptyStringIsNull" size="small" type="warning" effect="plain">
-              空字符串按 NULL
-            </el-tag>
             <span class="result-action-divider" aria-hidden="true" />
           </template>
           <el-tooltip v-if="showRestoreLayout" :content="restoreLayoutTitle">
@@ -186,8 +195,10 @@
 <script setup lang="ts">
 import { computed, h, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { ElMessage, TableV2FixedDir } from "element-plus";
-import { CircleCheck, CopyDocument, DataAnalysis, Delete, Document, Download, EditPen, Plus,
-  Postcard, RefreshLeft } from "@element-plus/icons-vue";
+import {
+  CircleCheck, CopyDocument, DataAnalysis, Document, Download, EditPen, Minus, Plus,
+  Postcard, RefreshLeft
+} from "@element-plus/icons-vue";
 import type { Column } from "element-plus";
 import type { QueryExecutionState, SelectedResultColumn } from "../types";
 import { matchesColumnQuery, resultColumnOptions, type ColumnOption } from "../columnFilter";
@@ -1580,7 +1591,56 @@ onBeforeUnmount(() => {
 .result-actions :deep(.el-button) { width: 28px; min-height: 28px; padding: 0; }
 .result-actions :deep(.result-edit-mode) { width: auto; padding: 0 8px; font-size: 11px; }
 .result-actions :deep(.el-dropdown) { display: inline-flex; }
-.result-edit-counts { color: var(--db-muted); font-size: 10px; white-space: nowrap; }
+.result-edit-operations {
+  width: 148px;
+  max-width: 148px;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  overflow: hidden;
+  transform-origin: right center;
+}
+.result-edit-operation { width: 28px; display: inline-flex; flex: none; }
+.result-edit-actions-enter-active {
+  animation: result-edit-actions-expand 504ms cubic-bezier(.22, 1.35, .36, 1) both;
+}
+.result-edit-actions-enter-active .result-edit-operation {
+  animation: result-edit-operation-in 360ms cubic-bezier(.22, 1.35, .36, 1) both;
+}
+.result-edit-actions-enter-active .result-edit-operation:nth-child(5) { animation-delay: 0ms; }
+.result-edit-actions-enter-active .result-edit-operation:nth-child(4) { animation-delay: 36ms; }
+.result-edit-actions-enter-active .result-edit-operation:nth-child(3) { animation-delay: 72ms; }
+.result-edit-actions-enter-active .result-edit-operation:nth-child(2) { animation-delay: 108ms; }
+.result-edit-actions-enter-active .result-edit-operation:nth-child(1) { animation-delay: 144ms; }
+.result-edit-actions-leave-active {
+  transition: max-width 260ms cubic-bezier(.4, 0, .7, .2);
+}
+.result-edit-actions-leave-active .result-edit-operation {
+  animation: result-edit-operation-out 140ms ease-in both;
+}
+.result-edit-actions-leave-active .result-edit-operation:nth-child(1) { animation-delay: 0ms; }
+.result-edit-actions-leave-active .result-edit-operation:nth-child(2) { animation-delay: 24ms; }
+.result-edit-actions-leave-active .result-edit-operation:nth-child(3) { animation-delay: 48ms; }
+.result-edit-actions-leave-active .result-edit-operation:nth-child(4) { animation-delay: 72ms; }
+.result-edit-actions-leave-active .result-edit-operation:nth-child(5) { animation-delay: 96ms; }
+.result-edit-actions-leave-to { max-width: 0; }
+@keyframes result-edit-actions-expand {
+  0% { max-width: 0; }
+  68% { max-width: 148px; }
+  84% { transform: scaleX(1.025); }
+  100% { max-width: 148px; transform: scaleX(1); }
+}
+@keyframes result-edit-operation-in {
+  0% { opacity: 0; transform: translateX(12px) scale(.82); }
+  68% { opacity: 1; transform: translateX(-2px) scale(1.08); }
+  84% { transform: translateX(1px) scale(.98); }
+  100% { opacity: 1; transform: translateX(0) scale(1); }
+}
+@keyframes result-edit-operation-out {
+  from { opacity: 1; transform: translateX(0) scale(1); }
+  to { opacity: 0; transform: translateX(8px) scale(.88); }
+}
 .result-action-divider { width: 1px; height: 18px; margin: 0 4px; background: var(--db-border-soft); }
 .result-change-summary { display: flex; gap: 18px; margin-bottom: 12px; color: var(--db-muted); font-size: 12px; }
 .result-change-preview-error { margin-top: 12px; }
@@ -1720,6 +1780,17 @@ onBeforeUnmount(() => {
 @media (max-width: 1080px) {
   .result-meta { display: none; }
   .result-tabs { max-width: 45%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .result-edit-actions-enter-active,
+  .result-edit-actions-leave-active {
+    animation: none !important;
+    transition: max-width 100ms linear, opacity 100ms linear !important;
+  }
+  .result-edit-actions-enter-active .result-edit-operation,
+  .result-edit-actions-leave-active .result-edit-operation { animation: none !important; }
+  .result-edit-actions-enter-from,
+  .result-edit-actions-leave-to { max-width: 0; opacity: 0; }
 }
 </style>
 

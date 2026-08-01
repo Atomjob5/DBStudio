@@ -657,10 +657,20 @@ test("edits a FOR UPDATE result in two stages before committing", async ({ page 
   const unlock = page.getByRole("button", { name: "切换结果编辑模式", exact: true });
   const post = page.getByRole("button", { name: "应用更改", exact: true });
   await expect(unlock).toBeEnabled();
-  await expect(post).toBeDisabled();
+  await expect(post).toHaveCount(0);
   await unlock.click();
   await expect(unlock).toHaveAttribute("aria-pressed", "true");
+  await expect(post).toBeDisabled();
   await expect(page.getByRole("button", { name: "新增行", exact: true })).toBeEnabled();
+  const editOperations = page.getByRole("group", { name: "结果编辑操作", exact: true });
+  await expect.poll(() => editOperations.evaluate((element) => getComputedStyle(element).animationName))
+    .toBe("none");
+  const editActionPositions = await Promise.all([
+    "应用更改", "撤销结果草稿", "新增行", "删除行", "变更清单", "切换结果编辑模式"
+  ].map(async (label) => (await page.getByRole("button", { name: label, exact: true }).boundingBox())?.x));
+  expect(editActionPositions.every((value) => value !== undefined)).toBe(true);
+  expect(editActionPositions).toEqual([...editActionPositions].sort((left, right) => Number(left) - Number(right)));
+  await expect(page.locator(".result-header")).toHaveScreenshot("result-edit-actions-expanded-light.png");
 
   await page.locator(".result-cell").filter({ hasText: /^Apple Studio 1 ✨$/ }).first().dblclick();
   const cellEditor = page.getByRole("textbox", { name: "编辑结果值", exact: true });
@@ -670,6 +680,10 @@ test("edits a FOR UPDATE result in two stages before committing", async ({ page 
   await expect(page.locator(".result-cell-pending").filter({ hasText: "Edited locally" })).toBeVisible();
   await expect(post).toBeEnabled();
 
+  await unlock.click();
+  await expect(page.getByText("仍有未应用的修改，请先应用或撤销后再退出编辑模式", { exact: true })).toBeVisible();
+  await expect(unlock).toHaveAttribute("aria-pressed", "true");
+
   await page.getByRole("button", { name: "变更清单", exact: true }).click();
   const changes = page.getByRole("dialog", { name: "结果变更清单", exact: true });
   await expect(changes).toContainText("UPDATE `demo`.`sample` SET `name` = ? WHERE `id` = ?");
@@ -678,6 +692,9 @@ test("edits a FOR UPDATE result in two stages before committing", async ({ page 
   await post.click();
   await expect(page.locator(".result-cell-posted").filter({ hasText: "Edited locally" })).toBeVisible();
   await expect(post).toBeDisabled();
+  await unlock.click();
+  await expect(unlock).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByRole("group", { name: "结果编辑操作", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "提交事务", exact: true }).click();
   await expect(page.locator(".result-cell-pending, .result-cell-posted")).toHaveCount(0);
   await expect(unlock).toBeDisabled();
@@ -964,6 +981,7 @@ test("sorts, filters, selects cells and copies safe row SQL", async ({ page, con
   await page.mouse.down();
   await page.mouse.move(end.x + end.width / 2, end.y + end.height / 2, { steps: 5 });
   await page.mouse.up();
+  await expect(page.locator(".execution-status")).toHaveText("已选中 2 行");
   await page.keyboard.press("ControlOrMeta+C");
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()))
     .toBe("1,Apple Studio 1 ✨\n2,Apple Studio 2 ✨");
@@ -1007,6 +1025,9 @@ test("sorts, filters, selects cells and copies safe row SQL", async ({ page, con
   await page.getByRole("menuitem", { name: "复制为 UPDATE 语句", exact: true }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()))
     .toContain("UPDATE `demo`.`sample` SET `name` = 'Apple Studio 1 ✨' WHERE `id` = 1;");
+  await page.locator(".table-host").focus();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".execution-status")).toHaveText("执行完成 · 38 ms");
 });
 
 test("supports Apple appearance, system theme settings and compact windows", async ({ page }) => {
@@ -1101,4 +1122,18 @@ test("follows the system color scheme and reduces nonessential motion", async ({
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   const duration = await page.locator(".connection-pill").evaluate((element) => getComputedStyle(element).transitionDuration);
   expect(Number.parseFloat(duration)).toBeLessThan(0.01);
+
+  await connectMock(page);
+  await dismissCompletionSchemaDialog(page);
+  await replaceSql(page, "select id, name from sample for update");
+  await page.getByRole("button", { name: "执行", exact: true }).click();
+  await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "切换结果编辑模式", exact: true }).click();
+  const editMotion = await page.getByRole("group", { name: "结果编辑操作", exact: true })
+    .evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { animationName: style.animationName, transitionDuration: style.transitionDuration };
+    });
+  expect(editMotion.animationName).toBe("none");
+  expect(editMotion.transitionDuration.split(", ").every((value) => Number.parseFloat(value) <= 0.1)).toBe(true);
 });

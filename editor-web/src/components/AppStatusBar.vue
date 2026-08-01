@@ -4,10 +4,7 @@
     <div class="status-execution-zone">
       <span class="status-item execution-status">
         <Loading v-if="busy" class="is-loading" />
-        <span>{{ executionText }}</span>
-      </span>
-      <span v-if="selectedRowCount > 0" class="status-item selected-row-count">
-        已选中 {{ selectedRowCount }} 行
+        <span>{{ primaryStatusText }}</span>
       </span>
     </div>
 
@@ -110,6 +107,8 @@ let rotationTimer: number | undefined;
 const statusBarStyle = computed(() => ({
   "--status-result-offset": `${Math.max(MIN_EXECUTION_ZONE_WIDTH, props.resultContentOffset)}px`
 }));
+const primaryStatusText = computed(() => props.busy || props.selectedRowCount <= 0
+  ? props.executionText : `已选中 ${props.selectedRowCount} 行`);
 const visibleColumnRemarks = computed(() => props.showSelectedColumnRemarks && Boolean(props.selectedColumn?.remarks));
 const columnPath = computed(() => props.selectedColumn
   ? [props.selectedColumn.catalog, props.selectedColumn.schema, props.selectedColumn.table, props.selectedColumn.name]
@@ -225,10 +224,6 @@ async function copyRemarks(): Promise<void> {
 .execution-status span {
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.selected-row-count {
-  padding-left: 8px;
-  border-left: 1px solid var(--db-border-soft);
 }
 .status-item svg,
 .system-status-summary svg {

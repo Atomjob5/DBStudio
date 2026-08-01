@@ -982,6 +982,11 @@ function toggleResultEdit(): void {
   const execution = activeExecution.value;
   const result = activeResult.value;
   if (!tab || !execution || !result || !canToggleResultEdit.value) return;
+  if (resultEditUnlocked.value && activeResultEditSession.value
+      && resultEdits.operations(activeResultEditSession.value).length > 0) {
+    ElMessage.warning("仍有未应用的修改，请先应用或撤销后再退出编辑模式");
+    return;
+  }
   resultEdits.setUnlocked(tab.id, execution.executionId, result.resultIndex, !resultEditUnlocked.value);
 }
 async function postActiveResultChanges(): Promise<void> {

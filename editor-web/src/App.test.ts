@@ -328,6 +328,35 @@ describe("App result loading status toolbar", () => {
     expect(rpcRequest).toHaveBeenCalledWith("query.execute", expect.any(Object));
   });
 
+  it("keeps edit mode open until pending drafts are applied or undone", async () => {
+    const edits = seedEditableResult(true);
+    const warning = vi.spyOn(ElMessage, "warning").mockImplementation(() => undefined as never);
+    await nextTick();
+
+    await wrapper.get('button[aria-label="切换结果编辑模式"]').trigger("click");
+    expect(warning).toHaveBeenCalledWith("仍有未应用的修改，请先应用或撤销后再退出编辑模式");
+    expect(edits.session("bootstrap-editor", "execution-edit", 0)?.unlocked).toBe(true);
+    expect(wrapper.find('[aria-label="结果编辑操作"]').exists()).toBe(true);
+
+    await wrapper.get('button[aria-label="撤销结果草稿"]').trigger("click");
+    await wrapper.get('button[aria-label="切换结果编辑模式"]').trigger("click");
+    expect(edits.session("bootstrap-editor", "execution-edit", 0)?.unlocked).toBe(false);
+    expect(wrapper.find('[aria-label="结果编辑操作"]').exists()).toBe(false);
+  });
+
+  it("allows edit mode to close after changes are applied without changing the transaction", async () => {
+    const edits = seedEditableResult(true);
+    edits.markPosted("bootstrap-editor", "execution-edit", 0);
+    useEditorStore().patch("bootstrap-editor", { resultChangesDirty: true });
+    await nextTick();
+
+    await wrapper.get('button[aria-label="切换结果编辑模式"]').trigger("click");
+    expect(edits.session("bootstrap-editor", "execution-edit", 0)?.unlocked).toBe(false);
+    expect(useEditorStore().active).toMatchObject({ transactionDirty: true, resultChangesDirty: true });
+    expect(rpcRequest.mock.calls.map(([type]) => type)).not.toContain("transaction.commit");
+    expect(rpcRequest.mock.calls.map(([type]) => type)).not.toContain("transaction.rollback");
+  });
+
   it("persists scroll optimization and rolls the switch back when saving fails", async () => {
     const settings = useSettingsStore();
     const vm = wrapper.vm as unknown as {
@@ -1255,7 +1284,8 @@ describe("App result loading status toolbar", () => {
     expect(wrapper.get(".execution-status").text()).not.toContain("99");
     wrapper.findComponent({ name: "ResultPanel" }).vm.$emit("selected-row-count", 3);
     await nextTick();
-    expect(wrapper.get(".status-execution-zone").text()).toContain("已选中 3 行");
+    expect(wrapper.get(".status-execution-zone").text()).toBe("已选中 3 行");
+    expect(wrapper.get(".status-execution-zone").text()).not.toContain("执行完成");
     expect(wrapper.get(".status-system-zone").text()).toContain("未选择链接");
   });
 

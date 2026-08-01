@@ -28,8 +28,8 @@ describe("AppStatusBar", () => {
         tone: "success", updatedAt: 1 }] },
     global: { plugins: [ElementPlus], stubs: { teleport: true } } });
     expect(wrapper.get(".status-bar").attributes("style")).toContain("--status-result-offset: 312px");
-    expect(wrapper.get(".status-execution-zone").text()).toContain("执行完成 · 12 ms");
-    expect(wrapper.get(".status-execution-zone").text()).toContain("已选中 3 行");
+    expect(wrapper.get(".status-execution-zone").text()).toBe("已选中 3 行");
+    expect(wrapper.find(".selected-row-count").exists()).toBe(false);
     expect(wrapper.get(".status-execution-zone").text()).not.toContain("自动提交关闭");
     expect(wrapper.get(".status-result-zone").find('[aria-label="下一页数据"]').exists()).toBe(true);
     expect(wrapper.get(".status-system-zone").text()).toContain("链接正常 · 自动提交关闭");
@@ -37,6 +37,23 @@ describe("AppStatusBar", () => {
     expect(wrapper.get(".status-bar").attributes("style")).toContain("--status-result-offset: 240px");
     await wrapper.setProps({ resultContentOffset: 0 });
     expect(wrapper.get(".status-bar").classes()).toContain("alignment-pending");
+    wrapper.unmount();
+  });
+
+  it("prioritizes running state, then selection, then execution duration", async () => {
+    const wrapper = mount(AppStatusBar, {
+      props: { ...baseProps, selectedRowCount: 3, busy: true, executionText: "正在加载下一页数据…" },
+      global: { plugins: [ElementPlus], stubs: { teleport: true } }
+    });
+    expect(wrapper.get(".execution-status").text()).toBe("正在加载下一页数据…");
+    expect(wrapper.get(".execution-status").find(".is-loading").exists()).toBe(true);
+
+    await wrapper.setProps({ busy: false });
+    expect(wrapper.get(".execution-status").text()).toBe("已选中 3 行");
+    expect(wrapper.get(".execution-status").find(".is-loading").exists()).toBe(false);
+
+    await wrapper.setProps({ selectedRowCount: 0 });
+    expect(wrapper.get(".execution-status").text()).toBe("正在加载下一页数据…");
     wrapper.unmount();
   });
 

@@ -168,12 +168,23 @@ describe("ResultPanel streaming rendering", () => {
       }]
     };
     const edits = useResultEditStore();
-    edits.setUnlocked("editor-1", "execution-edit", 0, true);
     const wrapper = mount(ResultPanel, {
       props: { activeResultIndex: 0, execution, showResultEditActions: true,
-        resultEditUnlocked: true, canToggleResultEdit: true, canApplyResultChanges: true },
+        canToggleResultEdit: true, canApplyResultChanges: true },
       global: { plugins: [ElementPlus] }
     });
+    expect(wrapper.get('[aria-label="切换结果编辑模式"]').attributes("aria-pressed")).toBe("false");
+    expect(wrapper.find('[aria-label="结果编辑操作"]').exists()).toBe(false);
+    expect(wrapper.find('[aria-label="应用更改"]').exists()).toBe(false);
+
+    edits.setUnlocked("editor-1", "execution-edit", 0, true);
+    await nextTick();
+    expect(wrapper.get('[aria-label="切换结果编辑模式"]').attributes("aria-pressed")).toBe("true");
+    expect(wrapper.findAll(".result-edit-operation button").map((button) => button.attributes("aria-label")))
+      .toEqual(["应用更改", "撤销结果草稿", "新增行", "删除行", "变更清单"]);
+    expect(wrapper.find('[aria-label="结果变更数量"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("空字符串按 NULL");
+
     const table = wrapper.findComponent({ name: "ElTableV2" });
     const columns = table.props("columns") as Column[];
     const row = (table.props("data") as Array<{ sourceIndex: number; cells: string[] }>)[0];
@@ -195,7 +206,6 @@ describe("ResultPanel streaming rendering", () => {
       .cellRenderer?.({ rowData: row, rowIndex: 0 } as never) as VNode;
     expect(pending.props?.class).toContain("result-cell-pending");
     expect(wrapper.get('[aria-label="应用更改"]').classes()).toContain("el-button--success");
-    expect(wrapper.get('[aria-label="结果变更数量"]').text()).toContain("草稿 1");
     expect(wrapper.find('[aria-label="确认结果修改"]').exists()).toBe(false);
   });
 
