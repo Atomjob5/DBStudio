@@ -365,6 +365,7 @@ const completionSchemaDialog = ref(false);
 const completionSchemaNamespaces = ref<CompletionNamespaceDescriptor[]>([]);
 const completionSchemaInitialKeys = ref<string[]>([]);
 const completionSchemaRefresh = ref(false);
+const resultExecutionDecisionPending = ref(false);
 interface SchemaSelectionRequest {
   namespaces: CompletionNamespaceDescriptor[];
   initialKeys: string[];
@@ -420,7 +421,7 @@ const activeConnectionTooltip = computed(() => `${activeConnectionPath.value}${e
 const connectionCascaderProps: CascaderProps = { emitPath: false };
 const activeDatabaseBusy = computed(() => Boolean(editors.active?.busy || activeResultLoading.value));
 const canExecute = computed(() => Boolean(activeConnected.value && !activeDatabaseBusy.value
-  && app.transportState === "ready"));
+  && !resultExecutionDecisionPending.value && app.transportState === "ready"));
 const canTransformSql = computed(() => Boolean(activeConnected.value && !activeDatabaseBusy.value
   && app.transportState === "ready"));
 const canEditSelection = computed(() => Boolean(editors.active && editorHasSelection.value));
@@ -674,10 +675,12 @@ function installEventHandlers(): void {
   }));
   disposers.push(rpc.on("query.started", (raw) => {
     const data = raw as { editorId: string; executionId: string };
+    resultEdits.finishEditor(data.editorId);
     queries.start(data.editorId, data.executionId);
     const tab = editors.tabs.find((item) => item.id === data.editorId);
     if (tab?.busy && tab.executionPhase !== "cancelling") {
-      editors.patch(data.editorId, { activeExecutionId: data.executionId, executionPhase: "running" });
+      editors.patch(data.editorId, { activeExecutionId: data.executionId,
+        executionPhase: "running", resultChangesDirty: false });
     }
   }));
   disposers.push(rpc.on("query.pageStarted", (raw) => {
@@ -1036,23 +1039,24 @@ function restoreResultEditValues(editorId: string, mode: "confirmed" | "original
   }
   for (const [resultIndex, cells] of byResult) queries.updateCells(editorId, resultIndex, cells);
 }
-async function resultChangesActionForExecution(): Promise<"commit" | "rollback" | "cancel"> {
+async function resultChangesActionForExecution(editorId: string): Promise<"apply" | "ignore" | "cancel"> {
   return new Promise((resolve) => {
     let settled = false;
-    const choose = (action: "commit" | "rollback" | "cancel"): void => {
+    const choose = (action: "apply" | "ignore" | "cancel"): void => {
       if (settled) return;
       settled = true;
       resolve(action);
       ElMessageBox.close();
     };
     void ElMessageBox({
-      title: "当前数据已被修改",
+      title: "未应用的数据修改",
       message: h("div", { class: "result-transaction-decision" }, [
-        h("p", "当前数据已被修改，是否提交事务？"),
+        h("p", "似乎还有数据修改后没有应用，请先确认"),
+        h("p", { class: "result-transaction-decision__hint" },
+          `${resultEdits.pendingOperationCount(editorId)} 项修改尚未应用；应用只会写入当前事务，不会提交事务。`),
         h("div", { class: "result-transaction-decision__actions" }, [
-          h(ElButton, { type: "primary", onClick: () => choose("commit") },
-            () => "提交并执行"),
-          h(ElButton, { onClick: () => choose("rollback") }, () => "回滚并执行"),
+          h(ElButton, { type: "primary", onClick: () => choose("apply") }, () => "应用"),
+          h(ElButton, { type: "warning", onClick: () => choose("ignore") }, () => "忽略"),
           h(ElButton, { onClick: () => choose("cancel") }, () => "取消")
         ])
       ]),
@@ -1064,6 +1068,20 @@ async function resultChangesActionForExecution(): Promise<"commit" | "rollback" 
       closeOnPressEscape: false
     }).catch(() => choose("cancel"));
   });
+}
+
+async function discardEditorPendingChanges(editorId: string): Promise<void> {
+  const discarded = resultEdits.discardPending(editorId);
+  const cellsByResult = new Map<number, Array<{ rowIndex: number; columnIndex: number; value: string | null }>>();
+  for (const cell of discarded.cells) {
+    const cells = cellsByResult.get(cell.resultIndex) ?? [];
+    cells.push({ rowIndex: cell.rowIndex, columnIndex: cell.columnIndex, value: cell.value });
+    cellsByResult.set(cell.resultIndex, cells);
+  }
+  for (const [resultIndex, cells] of cellsByResult) queries.updateCells(editorId, resultIndex, cells);
+  for (const insert of discarded.inserts) queries.removeRowById(editorId, insert.resultIndex, insert.rowId);
+  await Promise.all(discarded.largeValues.map((value) => rpc.deleteResultLargeValueDraft(
+    editorId, value.executionId, value.resultIndex, value.columnIndex, value.token).catch(() => undefined)));
 }
 function executeFromEditor(scope: "current" | "script", selectedText: string, cursorOffset: number): void { void executeActive(scope, selectedText, cursorOffset); }
 function triggerEditorExecution(scope: "current" | "script"): void {
@@ -1088,23 +1106,25 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
   try {
     await rpc.ensureOperational();
     if (!await ensureEditorCredentials(tab)) return;
-    let resultTransactionAction = "";
-    if (resultEdits.hasChanges(tab.id) || tab.resultChangesDirty) {
-      const action = await resultChangesActionForExecution();
-      if (action === "cancel") return;
-      if (action === "commit") await postEditorPendingChanges(tab.id);
-      resultTransactionAction = action;
+    if (resultEdits.hasPending(tab.id)) {
+      if (resultExecutionDecisionPending.value) return;
+      resultExecutionDecisionPending.value = true;
+      try {
+        const action = await resultChangesActionForExecution(tab.id);
+        if (action === "cancel") return;
+        if (action === "apply") await postEditorPendingChanges(tab.id);
+        else await discardEditorPendingChanges(tab.id);
+      } finally {
+        resultExecutionDecisionPending.value = false;
+      }
     }
     editors.patch(tab.id, { busy: true, activeExecutionId: undefined, executionPhase: "starting" }); app.status = "正在执行…";
     const response = await rpc.request<{ executionId: string }>("query.execute", {
       editorId: tab.id, text: monacoEditor.value?.getValue(tab.id) ?? tab.content,
-      selectedText, cursorOffset, scope, stopOnError: true, resultTransactionAction
+      selectedText, cursorOffset, scope, stopOnError: true
     });
-    if (resultTransactionAction) {
-      if (resultTransactionAction === "rollback") restoreResultEditValues(tab.id, "original");
-      resultEdits.finishEditor(tab.id);
-      editors.patch(tab.id, { resultChangesDirty: false });
-    }
+    resultEdits.finishEditor(tab.id);
+    editors.patch(tab.id, { resultChangesDirty: false });
     queries.start(tab.id, response.executionId);
     const current = editors.tabs.find((item) => item.id === tab.id);
     if (current?.busy && current.executionPhase !== "cancelling") {
@@ -2267,6 +2287,10 @@ function message(error: unknown): string { return error instanceof Error ? error
 .dirty-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--db-accent); }
 .editor-widget { flex: 1; min-height: 0; }
 :global(.result-transaction-decision p) { margin: 0 0 16px; }
+:global(.result-transaction-decision__hint) {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
 :global(.result-transaction-decision__actions) {
   display: flex;
   flex-wrap: wrap;

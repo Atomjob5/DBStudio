@@ -102,6 +102,19 @@ class OracleResultEditIntegrationTest {
                     update.setString(3, rowId);
                     assertEquals(1, update.executeUpdate());
                 }
+                try (Statement continued = owner.createStatement();
+                     ResultSet result = continued.executeQuery("SELECT 1 FROM DUAL")) {
+                    assertTrue(result.next());
+                    assertEquals(1, result.getInt(1));
+                }
+                try (PreparedStatement invisible = contender.prepareStatement("SELECT name FROM " + table
+                        + " WHERE ROWID = CHARTOROWID(?)")) {
+                    invisible.setString(1, rowId);
+                    try (ResultSet result = invisible.executeQuery()) {
+                        assertTrue(result.next());
+                        assertEquals("initial", result.getString(1));
+                    }
+                }
                 owner.rollback();
                 try (PreparedStatement query = owner.prepareStatement("SELECT name, happened_at FROM " + table
                         + " WHERE ROWID = CHARTOROWID(?)")) {
@@ -118,6 +131,27 @@ class OracleResultEditIntegrationTest {
                     assertThrows(SQLException.class, empty::executeUpdate);
                 }
                 owner.rollback();
+
+                try (PreparedStatement update = owner.prepareStatement("UPDATE " + table
+                        + " SET name = ? WHERE ROWID = CHARTOROWID(?)")) {
+                    update.setString(1, "committed-after-query");
+                    update.setString(2, rowId);
+                    assertEquals(1, update.executeUpdate());
+                }
+                try (Statement continued = owner.createStatement();
+                     ResultSet result = continued.executeQuery("SELECT COUNT(*) FROM " + table)) {
+                    assertTrue(result.next());
+                    assertEquals(1, result.getInt(1));
+                }
+                owner.commit();
+                try (PreparedStatement committed = contender.prepareStatement("SELECT name FROM " + table
+                        + " WHERE ROWID = CHARTOROWID(?)")) {
+                    committed.setString(1, rowId);
+                    try (ResultSet result = committed.executeQuery()) {
+                        assertTrue(result.next());
+                        assertEquals("committed-after-query", result.getString(1));
+                    }
+                }
             } finally {
                 owner.rollback();
                 try (Statement statement = owner.createStatement()) {

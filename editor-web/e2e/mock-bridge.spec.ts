@@ -82,6 +82,28 @@ async function dismissCompletionSchemaDialog(page: Page): Promise<void> {
   }
 }
 
+async function stageForUpdateDraft(page: Page, value: string): Promise<void> {
+  const editor = page.locator(".monaco-editor .view-lines");
+  await editor.click();
+  await page.keyboard.press("ControlOrMeta+A");
+  await page.keyboard.insertText("select id, name from sample for update");
+  await page.getByRole("button", { name: "执行", exact: true }).click();
+  await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "切换结果编辑模式", exact: true }).click();
+  await page.locator(".result-cell").filter({ hasText: /^Apple Studio 1 ✨$/ }).first().dblclick();
+  const cellEditor = page.getByRole("textbox", { name: "编辑结果值", exact: true });
+  await cellEditor.fill(value);
+  await cellEditor.press("Enter");
+  await expect(page.locator(".result-cell-pending").filter({ hasText: value })).toBeVisible();
+}
+
+async function replaceSql(page: Page, sql: string): Promise<void> {
+  const editor = page.locator(".monaco-editor .view-lines");
+  await editor.click();
+  await page.keyboard.press("ControlOrMeta+A");
+  await page.keyboard.insertText(sql);
+}
+
 async function expectCompletionUpdated(page: Page): Promise<void> {
   await page.getByRole("button", { name: "系统状态和通知", exact: true }).hover();
   await expect(page.getByLabel("所有系统状态和通知")).toContainText("补全已更新");
@@ -659,6 +681,55 @@ test("edits a FOR UPDATE result in two stages before committing", async ({ page 
   await page.getByRole("button", { name: "提交事务", exact: true }).click();
   await expect(page.locator(".result-cell-pending, .result-cell-posted")).toHaveCount(0);
   await expect(unlock).toBeDisabled();
+});
+
+test("applies pending result edits into the transaction before executing more SQL", async ({ page }) => {
+  await connectMock(page);
+  await dismissCompletionSchemaDialog(page);
+  await stageForUpdateDraft(page, "Apply before next query");
+  await replaceSql(page, "select 1");
+
+  await page.getByRole("button", { name: "执行", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "未应用的数据修改", exact: true });
+  await expect(dialog).toContainText("似乎还有数据修改后没有应用，请先确认");
+  await expect(dialog).toContainText("不会提交事务");
+  await dialog.getByRole("button", { name: "应用", exact: true }).click();
+
+  await expect(dialog).toBeHidden();
+  await expect(page.locator(".result-cell-pending, .result-cell-posted")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "提交事务", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "回滚事务", exact: true })).toBeEnabled();
+});
+
+test("ignores pending result edits and executes more SQL without applying them", async ({ page }) => {
+  await connectMock(page);
+  await dismissCompletionSchemaDialog(page);
+  await stageForUpdateDraft(page, "Ignore before next query");
+  await replaceSql(page, "select 1");
+
+  await page.getByRole("button", { name: "执行", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "未应用的数据修改", exact: true });
+  await dialog.getByRole("button", { name: "忽略", exact: true }).click();
+
+  await expect(dialog).toBeHidden();
+  await expect(page.getByText("Ignore before next query", { exact: true })).toBeHidden();
+  await expect(page.locator(".result-cell-pending, .result-cell-posted")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "提交事务", exact: true })).toBeEnabled();
+});
+
+test("cancels SQL execution while preserving pending result edits", async ({ page }) => {
+  await connectMock(page);
+  await dismissCompletionSchemaDialog(page);
+  await stageForUpdateDraft(page, "Keep pending result");
+  await replaceSql(page, "select 1");
+
+  await page.getByRole("button", { name: "执行", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "未应用的数据修改", exact: true });
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
+
+  await expect(dialog).toBeHidden();
+  await expect(page.locator(".result-cell-pending").filter({ hasText: "Keep pending result" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "应用更改", exact: true })).toBeEnabled();
 });
 
 test("filters duplicate column names by the SQL alias at the cursor", async ({ page }) => {

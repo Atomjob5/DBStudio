@@ -76,4 +76,33 @@ describe("result edit store", () => {
       largeValues: [{ columnIndex: 2, token: "insert-token" }]
     });
   });
+
+  it("discards only local drafts while preserving applied transaction changes", () => {
+    const store = useResultEditStore();
+    store.stage("editor-1", "execution-1", 0, 0, 1, "before", "applied", "row-1");
+    store.markPosted("editor-1", "execution-1", 0);
+    store.stageMutation("editor-1", "execution-1", 0, 0, 1, "applied",
+      { kind: "largeValueToken", value: "cell-token" }, "row-1");
+    store.addInsert("editor-1", "execution-1", 0, "draft:new", 1, [0, 2]);
+    store.stageMutation("editor-1", "execution-1", 0, 1, 2, null,
+      { kind: "largeValueToken", value: "insert-token" }, "draft:new");
+    store.markDelete("editor-1", "execution-1", 0, "row-2", 2, ["2", "remove"]);
+    store.stage("editor-2", "execution-2", 0, 0, 0, "other", "pending");
+
+    expect(store.discardPending("editor-1")).toEqual({
+      cells: [{ executionId: "execution-1", resultIndex: 0,
+        rowIndex: 0, columnIndex: 1, value: "applied" }],
+      inserts: [{ executionId: "execution-1", resultIndex: 0, rowId: "draft:new" }],
+      largeValues: [
+        { executionId: "execution-1", resultIndex: 0, columnIndex: 1, token: "cell-token" },
+        { executionId: "execution-1", resultIndex: 0, columnIndex: 2, token: "insert-token" }
+      ]
+    });
+    expect(store.hasPending("editor-1")).toBe(false);
+    expect(store.hasChanges("editor-1")).toBe(true);
+    expect(store.cellState("editor-1", "execution-1", 0, 0, 1)).toBe("posted");
+    expect(store.session("editor-1", "execution-1", 0)?.inserts).toEqual([]);
+    expect(store.session("editor-1", "execution-1", 0)?.deletes).toEqual([]);
+    expect(store.hasPending("editor-2")).toBe(true);
+  });
 });

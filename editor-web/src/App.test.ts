@@ -26,6 +26,7 @@ const rpcMock = vi.hoisted(() => ({
     state: "available", recoveryState: "none", unsavedEditorCount: 0, transactionCount: 0 }]),
   openWorkspace: vi.fn(async () => ({ workspaceId: "workspace-1", recoveryDecisionRequired: false, editors: [] })),
   closeWorkspace: vi.fn(async () => undefined),
+  deleteResultLargeValueDraft: vi.fn(async () => undefined),
   listeners: new Map<string, Set<(payload: unknown) => void>>()
 }));
 const rpcRequest = rpcMock.request;
@@ -47,6 +48,7 @@ vi.mock("./bridge/rpc", () => ({
     request: rpcMock.request,
     saveEditorDraft: vi.fn(async () => undefined),
     ensureOperational: rpcMock.ensureOperational,
+    deleteResultLargeValueDraft: rpcMock.deleteResultLargeValueDraft,
     on: vi.fn((type: string, handler: (payload: unknown) => void) => {
       const listeners = rpcMock.listeners.get(type) ?? new Set();
       listeners.add(handler); rpcMock.listeners.set(type, listeners);
@@ -97,6 +99,7 @@ describe("App result loading status toolbar", () => {
     completionMock.enrichQuery.mockReset().mockResolvedValue(undefined);
     completionMock.invalidateStructure.mockReset().mockResolvedValue(undefined);
     rpcMock.ensureOperational.mockClear();
+    rpcMock.deleteResultLargeValueDraft.mockClear();
     rpcMock.listeners.clear();
     rpcRequest.mockImplementation(async (type: string, payload: Record<string, unknown>) => {
       if (type === "app.bootstrap") return { providers: [], profiles: [], recentFiles: [], settings: {} };
@@ -124,7 +127,12 @@ describe("App result loading status toolbar", () => {
     await flushPromises();
   });
 
-  afterEach(() => { wrapper.unmount(); vi.restoreAllMocks(); });
+  afterEach(() => {
+    ElMessageBox.close();
+    document.body.querySelectorAll(".el-overlay").forEach((element) => element.remove());
+    wrapper.unmount();
+    vi.restoreAllMocks();
+  });
 
   it("keeps SVG actions in the footer and loads the selected result", async () => {
     await flushPromises();
@@ -204,6 +212,120 @@ describe("App result loading status toolbar", () => {
       operations: [{ operationId: "update:row:0", kind: "update", rowId: undefined, rowIndex: 0,
         values: [{ columnIndex: 1, value: { kind: "text", value: "UNKNOWN" } }] }]
     }, 30_000);
+  });
+
+  it("applies local result drafts before executing without committing the transaction", async () => {
+    const edits = seedEditableResult(true);
+    rpcRequest.mockImplementation(async (type: string) => {
+      if (type === "query.applyChanges") return {
+        appliedOperationIds: ["update:row-1"], hiddenOperationIds: [],
+        rowPatches: [{ operationId: "update:row-1", kind: "update", rowIndex: 0,
+          rowId: "row-1", row: ["1", "after"] }]
+      };
+      if (type === "query.execute") return { executionId: "execution-next" };
+      return {};
+    });
+
+    const execution = executeFromApp(wrapper);
+    await expectResultDecision("1 项修改尚未应用");
+    clickMessageBoxButton("应用");
+    await execution;
+    await flushPromises();
+
+    const requestTypes = rpcRequest.mock.calls.map(([type]) => type);
+    expect(requestTypes.indexOf("query.applyChanges")).toBeLessThan(requestTypes.indexOf("query.execute"));
+    expect(requestTypes).not.toContain("transaction.commit");
+    const executePayload = rpcRequest.mock.calls.find(([type]) => type === "query.execute")?.[1];
+    expect(executePayload).not.toHaveProperty("resultTransactionAction");
+    expect(edits.hasChanges("bootstrap-editor")).toBe(false);
+    expect(useEditorStore().active).toMatchObject({ transactionDirty: true, resultChangesDirty: false });
+  });
+
+  it("ignores local drafts, cleans large values and executes without applying them", async () => {
+    const edits = seedEditableResult(true);
+    edits.stageMutation("bootstrap-editor", "execution-edit", 0, 0, 1, "before",
+      { kind: "largeValueToken", value: "cell-token" }, "row-1");
+    edits.addInsert("bootstrap-editor", "execution-edit", 0, "draft:new", 1, [0, 1]);
+    edits.stageMutation("bootstrap-editor", "execution-edit", 0, 1, 1, null,
+      { kind: "largeValueToken", value: "insert-token" }, "draft:new");
+    useQueryStore().appendDraftRow("bootstrap-editor", 0, "draft:new", [null, null]);
+    rpcRequest.mockImplementation(async (type: string) => type === "query.execute"
+      ? { executionId: "execution-next" } : {});
+
+    const execution = executeFromApp(wrapper);
+    await expectResultDecision("2 项修改尚未应用");
+    clickMessageBoxButton("忽略");
+    await execution;
+    await flushPromises();
+
+    expect(rpcRequest.mock.calls.map(([type]) => type)).not.toContain("query.applyChanges");
+    expect(rpcRequest).toHaveBeenCalledWith("query.execute", expect.any(Object));
+    expect(rpcMock.deleteResultLargeValueDraft).toHaveBeenCalledTimes(2);
+    expect(edits.hasChanges("bootstrap-editor")).toBe(false);
+    expect(useEditorStore().active?.transactionDirty).toBe(true);
+  });
+
+  it("keeps local drafts and does not execute when result confirmation is cancelled", async () => {
+    const edits = seedEditableResult(true);
+    const execution = executeFromApp(wrapper);
+    await expectResultDecision("似乎还有数据修改后没有应用，请先确认");
+    clickMessageBoxButton("取消");
+    await execution;
+    await flushPromises();
+
+    expect(rpcRequest.mock.calls.map(([type]) => type)).not.toContain("query.execute");
+    expect(edits.hasPending("bootstrap-editor")).toBe(true);
+    expect(useEditorStore().active?.busy).toBe(false);
+  });
+
+  it("does not execute when applying drafts fails", async () => {
+    const edits = seedEditableResult(true);
+    rpcRequest.mockImplementation(async (type: string) => {
+      if (type === "query.applyChanges") throw new Error("应用失败");
+      if (type === "query.execute") return { executionId: "must-not-run" };
+      return {};
+    });
+    const error = vi.spyOn(ElMessage, "error").mockImplementation(() => undefined as never);
+
+    const execution = executeFromApp(wrapper);
+    await expectResultDecision("未应用的数据修改");
+    clickMessageBoxButton("应用");
+    await execution;
+    await flushPromises();
+
+    expect(error).toHaveBeenCalledWith("应用失败");
+    expect(rpcRequest.mock.calls.map(([type]) => type)).not.toContain("query.execute");
+    expect(edits.hasPending("bootstrap-editor")).toBe(true);
+  });
+
+  it("executes directly when result changes are already applied", async () => {
+    const edits = seedEditableResult(true);
+    edits.markPosted("bootstrap-editor", "execution-edit", 0);
+    useEditorStore().patch("bootstrap-editor", { resultChangesDirty: true });
+    rpcRequest.mockImplementation(async (type: string) => type === "query.execute"
+      ? { executionId: "execution-next" } : {});
+
+    await executeFromApp(wrapper);
+    await flushPromises();
+
+    expect(document.body.querySelector(".result-transaction-decision")).toBeNull();
+    expect(rpcRequest).toHaveBeenCalledWith("query.execute", expect.not.objectContaining({
+      resultTransactionAction: expect.anything()
+    }));
+    expect(rpcRequest.mock.calls.map(([type]) => type)).not.toContain("transaction.commit");
+    expect(useEditorStore().active?.transactionDirty).toBe(true);
+  });
+
+  it("executes directly when the result has no modifications", async () => {
+    seedEditableResult(false);
+    rpcRequest.mockImplementation(async (type: string) => type === "query.execute"
+      ? { executionId: "execution-next" } : {});
+
+    await executeFromApp(wrapper);
+    await flushPromises();
+
+    expect(document.body.querySelector(".result-transaction-decision")).toBeNull();
+    expect(rpcRequest).toHaveBeenCalledWith("query.execute", expect.any(Object));
   });
 
   it("persists scroll optimization and rolls the switch back when saving fails", async () => {
@@ -1268,6 +1390,59 @@ describe("App result loading status toolbar", () => {
     expect(metadata.completeCompletion("system-1:environment-dev", "load-refresh", completionSummary("profile-1"))).toBe(false);
   });
 });
+
+function seedEditableResult(withDraft: boolean) {
+  const editors = useEditorStore();
+  const queries = useQueryStore();
+  const edits = useResultEditStore();
+  editors.patch("bootstrap-editor", {
+    connection: completionProfile(), connectionState: "active",
+    transactionDirty: true, transactionState: "active", resultChangesDirty: false,
+    busy: false, executionPhase: "idle", transactionOperation: "idle"
+  });
+  queries.start("bootstrap-editor", "execution-edit");
+  queries.addResult("bootstrap-editor", {
+    resultIndex: 0, sql: "select id, name from sample for update", type: "QUERY",
+    columns: ["id", "name"], rows: [["1", "before"]], rowIds: ["row-1"],
+    mutationTarget: {
+      qualifiedName: "`sample`", editableForUpdate: true, mode: "editable",
+      columns: [
+        { resultIndex: 0, name: "id", quotedName: "`id`", jdbcType: -5 },
+        { resultIndex: 1, name: "name", quotedName: "`name`", jdbcType: 12 }
+      ],
+      uniqueKeys: [{ name: "PRIMARY", primary: true, resultColumnIndices: [0] }]
+    },
+    updateCount: -1, truncated: false, durationMs: 3, complete: true
+  });
+  queries.complete("bootstrap-editor", { durationMs: 3 });
+  edits.setUnlocked("bootstrap-editor", "execution-edit", 0, true);
+  if (withDraft) edits.stage("bootstrap-editor", "execution-edit", 0,
+    0, 1, "before", "after", "row-1");
+  return edits;
+}
+
+function executeFromApp(wrapper: VueWrapper): Promise<void> {
+  return (wrapper.vm as unknown as {
+    executeActive: (scope: "current" | "script") => Promise<void>
+  }).executeActive("current");
+}
+
+async function expectResultDecision(text: string): Promise<void> {
+  await flushPromises();
+  await nextTick();
+  const dialogs = document.body.querySelectorAll(".el-message-box");
+  const dialog = dialogs.item(dialogs.length - 1);
+  expect(dialog?.textContent).toContain(text);
+}
+
+function clickMessageBoxButton(label: string): void {
+  const dialogs = document.body.querySelectorAll(".el-message-box");
+  const dialog = dialogs.item(dialogs.length - 1);
+  const button = Array.from(dialog?.querySelectorAll<HTMLButtonElement>("button") ?? [])
+    .find((value) => value.textContent?.trim() === label);
+  expect(button).toBeDefined();
+  button?.click();
+}
 
 function completionProfile(): SavedProfile {
   return { id: "profile-completion", providerId: "mysql", name: "业务库", settings: {}, rememberPassword: false,

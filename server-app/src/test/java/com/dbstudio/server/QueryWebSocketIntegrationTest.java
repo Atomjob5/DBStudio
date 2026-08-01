@@ -364,16 +364,15 @@ class QueryWebSocketIntegrationTest {
             assertEquals(Boolean.TRUE, changed.get("resultChangesDirty"));
             assertDatabaseValue(table, "before");
 
-            Map<String, Object> rejectedBody = new HashMap<String, Object>();
-            rejectedBody.put("editorId", editorId); rejectedBody.put("scope", "script");
-            rejectedBody.put("stopOnError", true); rejectedBody.put("text", "SELECT 1");
-            ResponseEntity<Map> rejected = http.exchange(url("/api/v1/workspaces/" + workspaceId
-                    + "/editors/" + editorId + "/executions"), HttpMethod.POST,
-                    new HttpEntity<Map<String, Object>>(rejectedBody, authenticatedJsonHeaders(cookie)), Map.class);
-            assertEquals(org.springframework.http.HttpStatus.BAD_REQUEST, rejected.getStatusCode());
-            assertEquals("RESULT_CHANGES_DECISION_REQUIRED", rejected.getBody().get("code"));
-
-            executeSql(editorId, workspaceId, cookie, events, "SELECT 1", "rollback");
+            Map<String, Object> continued = executionComplete(
+                    executeSql(editorId, workspaceId, cookie, events, "SELECT 1"));
+            assertEquals(Boolean.TRUE, continued.get("transactionDirty"));
+            assertEquals(Boolean.FALSE, continued.get("resultChangesDirty"));
+            assertDatabaseValue(table, "before");
+            Map<String, Object> continuedRollback = exchange(HttpMethod.POST,
+                    "/api/v1/workspaces/" + workspaceId + "/editors/" + editorId + "/transaction/rollback",
+                    Collections.<String, Object>emptyMap(), cookie);
+            assertEquals(1, ((List<?>) continuedRollback.get("resultSnapshots")).size());
             assertDatabaseValue(table, "before");
 
             locked = executeSql(editorId, workspaceId, cookie, events,

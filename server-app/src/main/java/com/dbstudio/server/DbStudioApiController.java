@@ -749,7 +749,7 @@ public final class DbStudioApiController {
         ensureEditorContext(workspace, editor);
         final DatabaseContext context = workspace.requireEditorDatabase(editor);
         final List<SqlStatement> statements = selectStatements(context.provider(), body);
-        resolveResultChangesBeforeExecution(workspace, editor,
+        resolveLegacyResultChangesBeforeExecution(workspace, editor,
                 ApiPayloads.text(body, "resultTransactionAction"));
         boolean stopOnError = ApiPayloads.bool(body, "stopOnError", true);
         LOG.info("SQL执行请求开始 workspace={} editor={} statements={} stopOnError={}",
@@ -791,8 +791,12 @@ public final class DbStudioApiController {
         };
 
         final UUID executionId = workspace.execute(editor, statements, stopOnError,
-                id -> workspace.events().emit("query.started", ApiPayloads.map(
-                        "editorId", editorId, "executionId", id.toString())), listener,
+                id -> {
+                    workspace.events().emit("query.started", ApiPayloads.map(
+                            "editorId", editorId, "executionId", id.toString()));
+                    editor.retireResultChanges();
+                    workspace.removeLargeValueDrafts(editorId);
+                }, listener,
                 (id, execution, failure) -> finishExecution(workspace, context, editorId, id, execution, failure));
         LOG.info("SQL执行任务已创建 workspace={} editor={} execution={}", workspaceId, editorId, executionId);
         return ApiPayloads.map("executionId", executionId.toString());
@@ -1702,12 +1706,8 @@ public final class DbStudioApiController {
         else throw new ApiException("TRANSACTION_DECISION_REQUIRED", "切换链接前必须提交或回滚事务");
     }
 
-    private void resolveResultChangesBeforeExecution(Workspace workspace, EditorSession editor, String action)
+    private void resolveLegacyResultChangesBeforeExecution(Workspace workspace, EditorSession editor, String action)
             throws Exception {
-        if (editor.resultChangesDirty() && !"commit".equals(action) && !"rollback".equals(action)) {
-            throw new ApiException("RESULT_CHANGES_DECISION_REQUIRED",
-                    "当前数据已被修改，请先提交或回滚事务");
-        }
         if (!"commit".equals(action) && !"rollback".equals(action)) return;
         if (!editor.transactionDirty()) return;
         if ("commit".equals(action)) workspace.commit(editor).get(30, TimeUnit.SECONDS);

@@ -64,6 +64,13 @@ export type UndoResult =
   | { kind: "delete"; rowId: string }
   | undefined;
 
+export interface DiscardedResultDrafts {
+  cells: Array<{ executionId: string; resultIndex: number; rowIndex: number;
+    columnIndex: number; value: string | null }>;
+  inserts: Array<{ executionId: string; resultIndex: number; rowId: string }>;
+  largeValues: Array<{ executionId: string; resultIndex: number; columnIndex: number; token: string }>;
+}
+
 export const useResultEditStore = defineStore("result-edits", () => {
   const sessions = ref<Record<string, ResultEditSession>>({});
 
@@ -299,6 +306,38 @@ export const useResultEditStore = defineStore("result-edits", () => {
     return { kind: "delete", rowId: deletion.rowId };
   }
 
+  function discardPending(editorId: string): DiscardedResultDrafts {
+    const discarded: DiscardedResultDrafts = { cells: [], inserts: [], largeValues: [] };
+    for (const current of Object.values(sessions.value)) {
+      if (current.editorId !== editorId) continue;
+      for (const cell of current.cells) {
+        if (!cell.draftMutation && cell.draftValue === cell.confirmedValue) continue;
+        discarded.cells.push({ executionId: current.executionId, resultIndex: current.resultIndex,
+          rowIndex: cell.rowIndex, columnIndex: cell.columnIndex, value: cell.confirmedValue });
+        if (cell.draftMutation?.kind === "largeValueToken") discarded.largeValues.push({
+          executionId: current.executionId, resultIndex: current.resultIndex,
+          columnIndex: cell.columnIndex, token: cell.draftMutation.value
+        });
+        cell.draftMutation = undefined;
+        cell.draftValue = cell.confirmedValue;
+        cell.error = undefined;
+      }
+      current.cells = current.cells.filter((cell) => cell.appliedMutation
+        || cell.confirmedValue !== cell.originalValue);
+      for (const insert of current.inserts.filter((item) => item.status === "draft")) {
+        discarded.inserts.push({ executionId: current.executionId,
+          resultIndex: current.resultIndex, rowId: insert.rowId });
+        for (const value of insert.values) if (value.value.kind === "largeValueToken") {
+          discarded.largeValues.push({ executionId: current.executionId,
+            resultIndex: current.resultIndex, columnIndex: value.columnIndex, token: value.value.value });
+        }
+      }
+      current.inserts = current.inserts.filter((item) => item.status === "applied");
+      current.deletes = current.deletes.filter((item) => item.status === "applied");
+    }
+    return discarded;
+  }
+
   function restore(editorId: string, mode: "confirmed" | "original"):
     Array<{ resultIndex: number; rowIndex: number; columnIndex: number; value: string | null }> {
     const restored: Array<{ resultIndex: number; rowIndex: number; columnIndex: number; value: string | null }> = [];
@@ -319,5 +358,5 @@ export const useResultEditStore = defineStore("result-edits", () => {
 
   return { sessions, session, setUnlocked, stage, stageMutation, addInsert, markDelete, isDeleted, cellState,
     operations, pending, pendingOperationCount, appliedOperationCount, hasPending, hasChanges,
-    markPosted, setOperationError, undo, restore, finishEditor, clear };
+    markPosted, setOperationError, undo, discardPending, restore, finishEditor, clear };
 });

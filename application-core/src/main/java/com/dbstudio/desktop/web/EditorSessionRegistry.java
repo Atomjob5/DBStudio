@@ -341,6 +341,14 @@ public final class EditorSessionRegistry implements AutoCloseable {
         }
 
         public synchronized void commitResultChanges() {
+            retireResultChanges();
+        }
+
+        /**
+         * 新执行替换当前结果时，仅结束旧结果的展示与回滚快照生命周期。
+         * JDBC 事务中的已应用 DML 仍由显式提交或回滚决定。
+         */
+        public synchronized void retireResultChanges() {
             originalResultValues.clear();
             originalResultSnapshots.clear();
             touch();

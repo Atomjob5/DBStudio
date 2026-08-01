@@ -34,6 +34,7 @@ const profiles = [{ id: "c5d49b11-47bc-4c64-a31e-a17633e68a73", providerId: "mys
   settings: { host: "127.0.0.1", port: "3306", database: "eastwealthcrawler", username: "root", timeoutSeconds: "10" }, rememberPassword: true }];
 let editorSequence = 0;
 const editorProfiles = new Map<string, string>();
+const transactionDirtyEditors = new Set<string>();
 const mockSettings: Record<string, string> = {
   "ui.theme": "system",
   "result.maxRows": "1000",
@@ -125,7 +126,11 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
   if (type === "editor.bind") { const profile = profiles.find((item) => item.id === payload.profileId);
     if (profile) editorProfiles.set(String(payload.editorId), profile.id);
     return { connection: profile, connectionState: "suspended" }; }
-  if (type === "editor.unbind") { editorProfiles.delete(String(payload.editorId)); return { connectionState: "unbound" }; }
+  if (type === "editor.unbind") {
+    const editorId = String(payload.editorId);
+    editorProfiles.delete(editorId); transactionDirtyEditors.delete(editorId);
+    return { connectionState: "unbound" };
+  }
   if (type === "metadata.completionNamespaces") {
     const profileId = String(payload.profileId ?? editorProfiles.get(String(payload.editorId)) ?? profiles[0]?.id ?? "");
     return { providerId: "mysql", sourceProfileId: profileId, namespaces: [
@@ -184,6 +189,7 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
       emit("editor.connectionState", { editorId, state: "active" });
       emit("query.started", { editorId, executionId });
       const editableForUpdate = /\bfor\s+update\b/i.test(String(payload.text ?? ""));
+      if (editableForUpdate) transactionDirtyEditors.add(editorId);
       emit("query.resultMeta", { editorId, resultIndex: 0, sql: payload.text, type: "QUERY", columns: resultColumns,
         columnDetails: resultDetails, mutationTarget: { qualifiedName: "`demo`.`sample`", columns: [
           { resultIndex: 0, name: "id", quotedName: "`id`", jdbcType: -5,
@@ -205,7 +211,7 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
       emit("query.rows", { editorId, resultIndex: 0, rowIds: rowIds.slice(100), rows: rows.slice(100) });
       emit("query.resultComplete", { editorId, resultIndex: 0, durationMs: 38, truncated: true });
       emit("query.executionComplete", { editorId, executionId, cancelled: false, failed: false, durationMs: 38,
-        transactionDirty: editableForUpdate, resultChangesDirty: false });
+        transactionDirty: transactionDirtyEditors.has(editorId), resultChangesDirty: false });
     }, 0);
     return { executionId };
   }
@@ -224,6 +230,7 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
       hasMore: end < total, nextOffset: end, cancelled: false };
   }
   if (type === "query.applyChanges") {
+    transactionDirtyEditors.add(String(payload.editorId));
     if (Array.isArray(payload.operations)) {
       return { appliedOperationIds: payload.operations.map((operation: any) => operation.operationId),
         rowPatches: payload.operations.map((operation: any) => ({ operationId: operation.operationId,
@@ -245,6 +252,7 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
   })) };
   if (type === "transaction.commit" || type === "transaction.rollback") {
     const message = type === "transaction.commit" ? "事务已提交" : "事务已回滚";
+    transactionDirtyEditors.delete(String(payload.editorId));
     emit("transaction.status", { editorId: payload.editorId, dirty: false,
       resultChangesDirty: false, message });
     return { dirty: false, resultChangesDirty: false, message };
