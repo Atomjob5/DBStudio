@@ -474,18 +474,25 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
   await page.setViewportSize({ width: 1440, height: 900 });
   await expect(optimizedGrid.locator(".result-column-title").first()).toHaveText("column_1");
 
-  await page.getByRole("button", { name: "筛选 column_1", exact: true }).click();
-  await page.locator(".result-filter-popover .el-select").first().click();
+  const virtualFilterButton = page.getByRole("button", { name: "筛选 column_1", exact: true });
+  const virtualFilterPopover = page.locator(".result-filter-popover:visible").filter({ hasText: "筛选 column_1" });
+  await virtualFilterButton.click();
+  await virtualFilterPopover.locator(".el-select").first().click();
   await page.getByRole("option", { name: "大于", exact: true }).click();
+  await page.waitForTimeout(250);
+  await expect(virtualFilterPopover).toBeVisible();
+  await expect(virtualFilterPopover.getByRole("textbox", { name: "筛选值", exact: true })).toBeVisible();
   await page.getByRole("textbox", { name: "筛选值", exact: true }).fill("199");
   await page.getByRole("button", { name: "应用", exact: true }).click();
+  await expect(virtualFilterPopover).toHaveCount(0);
   await expect(page.getByText("显示 1 / 已加载 200 行 · 38 ms", { exact: true })).toBeVisible();
   await expect(optimizedGrid.locator(".result-virtual-grid__header")).toBeVisible();
   await expect(optimizedGrid.locator(".result-column-title").first()).toHaveText("column_1");
   await expect.poll(() => grid.evaluate((element) => element.scrollTop)).toBe(0);
 
-  await page.getByRole("button", { name: "筛选 column_1", exact: true }).click();
-  await page.getByRole("button", { name: "清除", exact: true }).click();
+  await virtualFilterButton.click();
+  await virtualFilterPopover.getByRole("button", { name: "清除", exact: true }).click();
+  await expect(virtualFilterPopover).toHaveCount(0);
   await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
 
   const nativeScrollStart = await grid.evaluate((element) => element.scrollTop);
@@ -779,12 +786,36 @@ test("sorts, filters, selects cells and copies safe row SQL", async ({ page, con
   await page.getByRole("button", { name: "按 id 降序", exact: true }).click();
   await expect(page.locator(".result-cell").filter({ hasText: /^200$/ }).first()).toBeVisible();
 
-  await page.getByRole("button", { name: "筛选 id", exact: true }).click();
-  await page.locator(".result-filter-popover .el-select").first().click();
+  const idFilterButton = page.getByRole("button", { name: "筛选 id", exact: true });
+  const idFilterPopover = page.locator(".result-filter-popover:visible").filter({ hasText: "筛选 id" });
+  await idFilterButton.click();
+  await expect(idFilterPopover).toBeVisible();
+  await idFilterPopover.locator(".el-select").first().click();
   await page.getByRole("option", { name: "包含", exact: true }).click();
+  await page.waitForTimeout(250);
+  await expect(idFilterPopover).toBeVisible();
+  await expect(idFilterPopover.getByRole("textbox", { name: "筛选值", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(idFilterPopover).toHaveCount(0);
+
+  await idFilterButton.click();
+  await idFilterPopover.locator(".el-select").first().click();
+  await page.getByRole("option", { name: "包含", exact: true }).click();
+  await page.waitForTimeout(250);
   await page.getByRole("textbox", { name: "筛选值", exact: true }).fill("00");
   await page.getByRole("button", { name: "应用", exact: true }).click();
+  await expect(idFilterPopover).toHaveCount(0);
   await expect(page.getByText("显示 2 / 已加载 200 行 · 38 ms", { exact: true })).toBeVisible();
+
+  await idFilterButton.click();
+  await expect(idFilterPopover).toBeVisible();
+  await page.getByRole("tab", { name: "结果 1", exact: true }).click();
+  await expect(idFilterPopover).toHaveCount(0);
+
+  await idFilterButton.click();
+  await idFilterPopover.getByRole("button", { name: "清除", exact: true }).click();
+  await expect(idFilterPopover).toHaveCount(0);
+  await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
 
   // Re-execution resets sort/filter and gives the selection tests a predictable row order.
   await page.getByRole("button", { name: "执行", exact: true }).click();

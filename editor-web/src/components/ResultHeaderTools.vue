@@ -10,12 +10,13 @@
         <el-button text circle size="small" :class="{ active: !!filter }" :icon="Filter"
                    :aria-label="`筛选 ${column.label}`" />
       </template>
-      <div class="result-filter-editor">
+      <div class="result-filter-editor" @keydown.capture="filterEditorKeydown">
         <strong>筛选 {{ column.label }}</strong>
-        <el-select v-model="operator" size="small" aria-label="筛选条件">
+        <el-select v-model="operator" size="small" aria-label="筛选条件" :teleported="false">
           <el-option v-for="option in operatorOptions" :key="option.value" :label="option.label" :value="option.value" />
         </el-select>
-        <el-select v-if="category === 'boolean' && needsValue" v-model="value" size="small" aria-label="筛选值">
+        <el-select v-if="category === 'boolean' && needsValue" v-model="value" size="small" aria-label="筛选值"
+                   :teleported="false">
           <el-option label="TRUE" value="true" /><el-option label="FALSE" value="false" />
         </el-select>
         <el-input v-else-if="needsValue" v-model="value" size="small" clearable aria-label="筛选值"
@@ -67,6 +68,12 @@ function apply(): void {
   visible.value = false;
 }
 function clear(): void { emit("clear"); visible.value = false; }
+function filterEditorKeydown(event: KeyboardEvent): void {
+  if (event.key !== "Escape" && event.key !== "Esc") return;
+  event.preventDefault();
+  event.stopPropagation();
+  visible.value = false;
+}
 </script>
 
 <style scoped>
