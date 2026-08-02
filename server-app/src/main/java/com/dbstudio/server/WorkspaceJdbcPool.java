@@ -72,12 +72,14 @@ final class WorkspaceJdbcPool implements AutoCloseable {
         if (!limiter.acquire(created.permitKey, created, new Runnable() {
             @Override public void run() { /* Entry 控制对象已负责关闭对应 JDBC 会话。 */ }
         })) throw new ApiException("CONNECTION_LIMIT_REACHED", "已达到最大活动链接数，请处理事务或等待空闲链接回收");
+        created.slotId = limiter.slotId(created.permitKey);
         try {
             created.session = context.openEditorSession();
             applyAutoCommit(created.session);
             created.borrowed = true;
             created.lastUsed = System.currentTimeMillis();
             entries.add(created);
+            limiter.attachConnection(created.permitKey, created.connectionId);
             changed(created);
             LOG.info("创建JDBC连接 pool={} generation={} physicalCount={}", key, generation, entries.size());
             return new Lease(this, created);
@@ -398,6 +400,7 @@ final class WorkspaceJdbcPool implements AutoCloseable {
         DatabaseSession session() { return entry.session; }
         WorkspaceJdbcPool pool() { return pool; }
         String connectionId() { return entry.connectionId; }
+        String slotId() { return entry.slotId; }
     }
 
     private final class Entry implements EditorConnectionLimiter.SessionControl {
@@ -407,7 +410,7 @@ final class WorkspaceJdbcPool implements AutoCloseable {
         private final long createdAt = System.currentTimeMillis();
         private DatabaseSession session;
         private boolean borrowed, retired, closed;
-        private String pinnedEditorId, editorId, message;
+        private String slotId, pinnedEditorId, editorId, message;
         private Maintenance maintenance = Maintenance.NONE;
         private long stateVersion = 1L;
         private Long lastProbeLatencyMs;
@@ -429,14 +432,17 @@ final class WorkspaceJdbcPool implements AutoCloseable {
     private enum Maintenance { NONE, PROBING, UNRESPONSIVE, ABORTING }
 
     static final class Snapshot {
-        final String connectionId, profileId, profileName, providerId, state, editorId, message;
+        final String slotId, connectionId, profileId, profileName, providerId, databaseName, schemaName;
+        final String state, editorId, message;
         final long stateVersion, createdAt, lastActiveAt;
         final Long lastProbeLatencyMs, disconnectedAt;
-        Snapshot(String connectionId, long stateVersion, String profileId, String profileName,
-                 String providerId, State state, String editorId, long createdAt, long lastActiveAt,
+        Snapshot(String slotId, String connectionId, long stateVersion, String profileId, String profileName,
+                 String providerId, String databaseName, String schemaName, State state, String editorId,
+                 long createdAt, long lastActiveAt,
                  Long lastProbeLatencyMs, Long disconnectedAt, String message) {
-            this.connectionId=connectionId; this.stateVersion=stateVersion; this.profileId=profileId;
-            this.profileName=profileName; this.providerId=providerId; this.state=state.name().toLowerCase();
+            this.slotId=slotId; this.connectionId=connectionId; this.stateVersion=stateVersion; this.profileId=profileId;
+            this.profileName=profileName; this.providerId=providerId; this.databaseName=databaseName;
+            this.schemaName=schemaName; this.state=state.name().toLowerCase();
             this.editorId=editorId; this.createdAt=createdAt; this.lastActiveAt=lastActiveAt;
             this.lastProbeLatencyMs=lastProbeLatencyMs; this.disconnectedAt=disconnectedAt; this.message=message;
         }
@@ -463,12 +469,19 @@ final class WorkspaceJdbcPool implements AutoCloseable {
     private Snapshot terminal(Entry entry, State state, String message) {
         com.dbstudio.spi.ConnectionProfile profile = context.profile();
         long disconnectedAt = state == State.DISCONNECTED || state == State.ERROR ? System.currentTimeMillis() : 0L;
-        return new Snapshot(entry.connectionId, entry.stateVersion, profile.id().toString(), profile.name(),
-                profile.providerId(), state, entry.editorId, entry.createdAt, entry.lastUsed,
+        String databaseName = "oracle".equals(profile.providerId()) ? profile.setting("service")
+                : profile.setting("database");
+        return new Snapshot(entry.slotId, entry.connectionId, entry.stateVersion, profile.id().toString(), profile.name(),
+                profile.providerId(), databaseName, profile.setting("schema"), state, entry.editorId,
+                entry.createdAt, entry.lastUsed,
                 entry.lastProbeLatencyMs, disconnectedAt == 0L ? null : disconnectedAt, message);
     }
 
-    private void changed(Entry entry) { entry.stateVersion++; listener.changed(); }
+    private void changed(Entry entry) {
+        entry.stateVersion++;
+        limiter.connectionChanged(entry.permitKey, entry.connectionId);
+        listener.changed();
+    }
 
     private static ThreadFactory daemonFactory(final String prefix) {
         return new ThreadFactory() {

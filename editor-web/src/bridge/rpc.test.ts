@@ -136,17 +136,25 @@ describe("RpcClient websocket recovery", () => {
     await open(client);
 
     await client.request("jdbc.connections.list");
-    await client.request("jdbc.connections.probe", { connectionId: "connection/a", stateVersion: 12 });
-    await client.request("jdbc.connections.abort", { connectionId: "connection/a", stateVersion: 13 });
+    await client.request("jdbc.connections.executions", { slotId: "slot/a" });
+    await client.request("jdbc.connections.execution", { slotId: "slot/a", executionId: "execution/1" });
+    await client.request("jdbc.connections.probe", { slotId: "slot/a", stateVersion: 12 });
+    await client.request("jdbc.connections.abort", { slotId: "slot/a", stateVersion: 13 });
+    await client.request("jdbc.connections.cleanup");
 
-    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/workspaces/workspace/jdbc-connections"),
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/jdbc-connections$/),
       expect.objectContaining({ method: "GET" }));
     expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/jdbc-connections/connection%2Fa/probe"),
+      expect.stringContaining("/jdbc-connections/slot%2Fa/executions/execution%2F1"),
+      expect.objectContaining({ method: "GET" }));
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/jdbc-connections/slot%2Fa/probe"),
       expect.objectContaining({ method: "POST", body: JSON.stringify({ stateVersion: 12 }) }));
     expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/jdbc-connections/connection%2Fa/abort"),
+      expect.stringContaining("/jdbc-connections/slot%2Fa/abort"),
       expect.objectContaining({ method: "POST", body: JSON.stringify({ stateVersion: 13 }) }));
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/jdbc-connections/expired"),
+      expect.objectContaining({ method: "DELETE" }));
     client.dispose();
   });
 

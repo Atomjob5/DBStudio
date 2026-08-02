@@ -429,15 +429,23 @@ export class RpcClient {
         if (!executionId) throw new Error("尚未取得当前执行编号");
         return { path: `${ws}/executions/${encodeURIComponent(executionId)}`, method: "DELETE" };
       }
-      case "jdbc.connections.list": return { path: `${ws}/jdbc-connections`, method: "GET" };
+      case "jdbc.connections.list": return { path: "/api/v1/jdbc-connections", method: "GET" };
+      case "jdbc.connections.executions": return {
+        path: `/api/v1/jdbc-connections/${encodeURIComponent(String(body.slotId ?? ""))}/executions`, method: "GET"
+      };
+      case "jdbc.connections.execution": return {
+        path: `/api/v1/jdbc-connections/${encodeURIComponent(String(body.slotId ?? ""))}/executions/${encodeURIComponent(String(body.executionId ?? ""))}`,
+        method: "GET"
+      };
       case "jdbc.connections.probe": return {
-        path: `${ws}/jdbc-connections/${encodeURIComponent(String(body.connectionId ?? ""))}/probe`,
+        path: `/api/v1/jdbc-connections/${encodeURIComponent(String(body.slotId ?? ""))}/probe`,
         method: "POST", body: { stateVersion: body.stateVersion }
       };
       case "jdbc.connections.abort": return {
-        path: `${ws}/jdbc-connections/${encodeURIComponent(String(body.connectionId ?? ""))}/abort`,
+        path: `/api/v1/jdbc-connections/${encodeURIComponent(String(body.slotId ?? ""))}/abort`,
         method: "POST", body: { stateVersion: body.stateVersion }
       };
+      case "jdbc.connections.cleanup": return { path: "/api/v1/jdbc-connections/expired", method: "DELETE" };
       case "transaction.commit": return { path: `${ws}/editors/${editorId}/transaction/commit`, method: "POST", body: {} };
       case "transaction.rollback": return { path: `${ws}/editors/${editorId}/transaction/rollback`, method: "POST", body: {} };
       case "sql.format": return { path: `${ws}/sql/format`, method: "POST", body };

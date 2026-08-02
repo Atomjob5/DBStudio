@@ -53,6 +53,11 @@ public final class WorkspaceRegistry implements AutoCloseable {
         this.mapper=mapper; this.settings=settings; this.repository=repository;
         this.machineIdentity=machineIdentity; this.runLifecycle=runLifecycle; this.limiter=limiter;
         limiter.setMaximum(configuredInt("connection.maxActiveSessions", 10, 1, 100));
+        limiter.setChangedListener(new Runnable() {
+            @Override public void run() {
+                broadcast("jdbc.connections.changed", ApiPayloads.map("updatedAt", System.currentTimeMillis()));
+            }
+        });
         idleTimeoutMinutes = configuredInt("connection.idleTimeoutMinutes", 10, 1, 1_440);
         autoCommit = configuredBoolean("connection.autoCommit", false);
         transactionRollbackMinutes = configuredInt(
@@ -84,6 +89,8 @@ public final class WorkspaceRegistry implements AutoCloseable {
     WorkspaceRecord renameCatalog(String id, String name) throws SQLException {
         validateId(id);
         WorkspaceRecord renamed = repository.rename(id, name);
+        Workspace runtime = runtimes.get(id);
+        if (runtime != null) runtime.setName(renamed.name());
         LOG.info("重命名Workspace workspaceId={} name={}", id, name);
         return renamed;
     }
@@ -198,6 +205,150 @@ public final class WorkspaceRegistry implements AutoCloseable {
         limiter.setMaximum(maximum);
         LOG.info("更新最大活动JDBC会话数 maximum={}", limiter.maximum());
     }
+
+    Map<String, Object> jdbcConnectionSlots() {
+        List<Map<String, Object>> values = new ArrayList<Map<String, Object>>();
+        for (EditorConnectionLimiter.SlotSnapshot slot : limiter.snapshots()) values.add(jdbcSlotPayload(slot));
+        return ApiPayloads.map("maximum", limiter.maximum(), "activeCount", limiter.activeCount(),
+                "overLimitCount", limiter.overLimitCount(), "slots", values,
+                "generatedAt", System.currentTimeMillis());
+    }
+
+    List<Map<String, Object>> jdbcSlotExecutions(String slotId) {
+        List<Map<String, Object>> result = new ArrayList<Map<String, Object>>();
+        for (EditorConnectionLimiter.ExecutionSnapshot execution : limiter.executions(slotId)) {
+            result.add(jdbcExecutionPayload(execution, false));
+        }
+        return result;
+    }
+
+    Map<String, Object> jdbcSlotExecution(String slotId, String executionId) {
+        return jdbcExecutionPayload(limiter.executionDetail(slotId, executionId), true);
+    }
+
+    Map<String, Object> probeJdbcSlot(String slotId, long stateVersion) throws Exception {
+        EditorConnectionLimiter.Target target = limiter.target(slotId, stateVersion);
+        JdbcOwner owner = jdbcOwner(target.connectionId);
+        owner.workspace.probeJdbcConnection(target.connectionId,
+                ((Number) owner.connection.get("stateVersion")).longValue());
+        return jdbcSlot(slotId);
+    }
+
+    Map<String, Object> abortJdbcSlot(String slotId, long stateVersion) {
+        EditorConnectionLimiter.Target target = limiter.target(slotId, stateVersion);
+        JdbcOwner owner = jdbcOwner(target.connectionId);
+        Map<String, Object> aborted = owner.workspace.abortJdbcConnection(target.connectionId,
+                ((Number) owner.connection.get("stateVersion")).longValue());
+        Map<String, Object> result = jdbcSlot(slotId);
+        result.put("transactionLost", aborted.get("transactionLost"));
+        result.put("resultChangesLost", aborted.get("resultChangesLost"));
+        result.put("workspaceId", aborted.get("workspaceId"));
+        result.put("editorId", aborted.get("editorId"));
+        return result;
+    }
+
+    Map<String, Object> clearExpiredJdbcData() {
+        int histories = limiter.clearExpiredData();
+        for (Workspace workspace : runtimes.values()) workspace.clearRecentJdbcConnections();
+        return ApiPayloads.map("clearedExecutions", histories, "slots", jdbcConnectionSlots().get("slots"));
+    }
+
+    private Map<String, Object> jdbcSlot(String slotId) {
+        for (EditorConnectionLimiter.SlotSnapshot slot : limiter.snapshots()) {
+            if (slot.slotId.equals(slotId)) return jdbcSlotPayload(slot);
+        }
+        throw new ApiException("JDBC_SLOT_NOT_FOUND", "JDBC 连接槽位不存在");
+    }
+
+    private Map<String, Object> jdbcSlotPayload(EditorConnectionLimiter.SlotSnapshot slot) {
+        Map<String, Object> connection = jdbcConnectionForSlot(slot.slotId);
+        EditorConnectionLimiter.ExecutionSnapshot recent = slot.lastExecution;
+        boolean physical = connection != null && Boolean.TRUE.equals(connection.get("physicalConnected"));
+        String state = connection == null ? "idle" : String.valueOf(connection.get("state"));
+        Map<String, Object> result = ApiPayloads.map(
+                "slotId", slot.slotId, "slotNumber", slot.slotNumber,
+                "stateVersion", slot.stateVersion, "state", state,
+                "physicalConnected", physical, "overLimit", slot.overLimit,
+                "historyCount", slot.historyCount,
+                "connectionId", connection == null ? null : connection.get("connectionId"),
+                "profileId", value(connection, "profileId", recent == null ? null : recent.profileId),
+                "profileName", value(connection, "profileName", recent == null ? null : recent.profileName),
+                "providerId", value(connection, "providerId", recent == null ? null : recent.providerId),
+                "databaseName", value(connection, "databaseName", recent == null ? null : recent.databaseName),
+                "schemaName", value(connection, "schemaName", recent == null ? null : recent.schemaName),
+                "workspaceId", value(connection, "workspaceId", recent == null ? null : recent.workspaceId),
+                "workspaceName", value(connection, "workspaceName", recent == null ? null : recent.workspaceName),
+                "editorId", value(connection, "editorId", recent == null ? null : recent.editorId),
+                "editorTitle", value(connection, "editorTitle", recent == null ? null : recent.editorTitle),
+                "executionId", connection == null ? null : connection.get("executionId"),
+                "transactionDirty", connection != null && Boolean.TRUE.equals(connection.get("transactionDirty")),
+                "transactionOperationActive", connection != null
+                        && Boolean.TRUE.equals(connection.get("transactionOperationActive")),
+                "createdAt", connection == null ? null : connection.get("createdAt"),
+                "lastActiveAt", connection == null ? null : connection.get("lastActiveAt"),
+                "lastExecutionAt", recent == null ? null : recent.startedAt,
+                "lastProbeLatencyMs", connection == null ? null : connection.get("lastProbeLatencyMs"),
+                "disconnectedAt", connection == null ? null : connection.get("disconnectedAt"),
+                "message", connection == null ? null : connection.get("message"));
+        return result;
+    }
+
+    private Map<String, Object> jdbcConnectionForSlot(String slotId) {
+        Map<String, Object> selected = null;
+        for (Workspace workspace : runtimes.values()) {
+            for (Map<String, Object> connection : workspace.jdbcConnections()) {
+                if (!slotId.equals(connection.get("slotId"))) continue;
+                boolean connected = Boolean.TRUE.equals(connection.get("physicalConnected"));
+                boolean selectedConnected = selected != null
+                        && Boolean.TRUE.equals(selected.get("physicalConnected"));
+                if (selected == null || connected && !selectedConnected
+                        || !connected && !selectedConnected
+                        && jdbcConnectionTimestamp(connection) > jdbcConnectionTimestamp(selected)) {
+                    selected = connection;
+                }
+            }
+        }
+        return selected;
+    }
+
+    private static long jdbcConnectionTimestamp(Map<String, Object> connection) {
+        Object disconnectedAt = connection.get("disconnectedAt");
+        if (disconnectedAt instanceof Number) return ((Number) disconnectedAt).longValue();
+        Object lastActiveAt = connection.get("lastActiveAt");
+        return lastActiveAt instanceof Number ? ((Number) lastActiveAt).longValue() : 0L;
+    }
+
+    private JdbcOwner jdbcOwner(String connectionId) {
+        for (Workspace workspace : runtimes.values()) {
+            for (Map<String, Object> connection : workspace.jdbcConnections()) {
+                if (connectionId.equals(connection.get("connectionId"))
+                        && Boolean.TRUE.equals(connection.get("physicalConnected"))) {
+                    return new JdbcOwner(workspace, connection);
+                }
+            }
+        }
+        throw new ApiException("JDBC_CONNECTION_NOT_FOUND", "JDBC 连接不存在或已经断开");
+    }
+
+    private static Object value(Map<String, Object> source, String key, Object fallback) {
+        if (source == null) return fallback;
+        Object value = source.get(key);
+        return value == null || String.valueOf(value).isEmpty() ? fallback : value;
+    }
+
+    private static Map<String, Object> jdbcExecutionPayload(
+            EditorConnectionLimiter.ExecutionSnapshot execution, boolean includeSql) {
+        return ApiPayloads.map("executionId", execution.executionId,
+                "workspaceId", execution.workspaceId, "workspaceName", execution.workspaceName,
+                "editorId", execution.editorId, "editorTitle", execution.editorTitle,
+                "profileId", execution.profileId, "profileName", execution.profileName,
+                "providerId", execution.providerId, "databaseName", execution.databaseName,
+                "schemaName", execution.schemaName, "startedAt", execution.startedAt,
+                "completedAt", execution.completedAt == 0L ? null : execution.completedAt,
+                "durationMs", execution.completedAt == 0L ? null : execution.durationMs,
+                "status", execution.status, "rowCount", execution.rowCount,
+                "message", execution.message, "sql", includeSql ? execution.sql : null);
+    }
     synchronized void setAutoCommit(boolean enabled) {
         if (autoCommit == enabled) return;
         for (Workspace workspace : runtimes.values()) {
@@ -236,7 +387,15 @@ public final class WorkspaceRegistry implements AutoCloseable {
 
     private Workspace runtime(final String id) {
         Workspace existing=runtimes.get(id); if(existing!=null)return existing;
-        Workspace created=new Workspace(id,configuredInt("result.maxRows",QueryRunner.DEFAULT_MAX_ROWS,1,100_000),
+        String workspaceName = id;
+        try {
+            java.util.Optional<WorkspaceRecord> record = repository.find(id);
+            if (record.isPresent()) workspaceName = record.get().name();
+        } catch (SQLException exception) {
+            LOG.debug("读取Workspace名称失败 workspaceId={}", id, exception);
+        }
+        Workspace created=new Workspace(id,workspaceName,
+                configuredInt("result.maxRows",QueryRunner.DEFAULT_MAX_ROWS,1,100_000),
                 configuredInt("result.streamBatchRows",QueryRunner.DEFAULT_STREAM_BATCH_ROWS,1,1_000),autoCommit,mapper,
                 AppDirectories.dataDirectory().resolve("tmp").resolve(id),limiter);
         created.events().onDisconnected(new WorkspaceEventChannel.DisconnectListener() {
@@ -315,5 +474,13 @@ public final class WorkspaceRegistry implements AutoCloseable {
         private final Workspace workspace;private final boolean created;
         private WorkspaceRegistration(Workspace workspace,boolean created){this.workspace=workspace;this.created=created;}
         Workspace workspace(){return workspace;} boolean created(){return created;}
+    }
+
+    private static final class JdbcOwner {
+        private final Workspace workspace;
+        private final Map<String, Object> connection;
+        private JdbcOwner(Workspace workspace, Map<String, Object> connection) {
+            this.workspace=workspace; this.connection=connection;
+        }
     }
 }

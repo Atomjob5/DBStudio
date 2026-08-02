@@ -315,7 +315,7 @@ test("connects and renders a streamed query result with the development bridge",
   expect(darkSpectrum.innerContent).toBe("none");
 });
 
-test("manages workspace JDBC connections, probes idle sessions and aborts a transaction session", async ({ page }) => {
+test("manages global JDBC slots, execution history, probing, abort and cleanup", async ({ page }) => {
   await connectMock(page);
   await replaceSql(page, "select id, name from sample for update");
   await page.getByRole("button", { name: "执行", exact: true }).click();
@@ -335,18 +335,31 @@ test("manages workspace JDBC connections, probes idle sessions and aborts a tran
   const drawer = page.getByRole("dialog", { name: "任务管理器", exact: true });
   await expect(drawer).toBeVisible();
   expect((await drawer.boundingBox())?.width).toBeCloseTo(760, 0);
-  const idleRow = drawer.locator(".jdbc-connection-row.state-idle").first();
+  await expect(drawer.locator(".jdbc-slot-row")).toHaveCount(10);
+  await expect(drawer).toContainText("10 个槽位");
+  const idleRow = drawer.locator(".jdbc-slot-row.state-idle").filter({ hasText: "本地开发库" }).first();
   await idleRow.getByRole("button", { name: /探活/ }).click();
   await expect(idleRow).toContainText("探活 8 ms");
 
-  const transactionRow = drawer.locator(".jdbc-connection-row.state-transaction");
+  const transactionRow = drawer.locator(".jdbc-slot-row.state-transaction");
   await expect(transactionRow).toContainText("未提交事务");
+  await transactionRow.getByRole("button", { name: /展开槽位/ }).click();
+  await expect(transactionRow).toContainText("当前查询");
+  await transactionRow.getByRole("button", { name: /查看SQL/ }).click();
+  const sqlDialog = page.getByRole("dialog", { name: "完整 SQL", exact: true });
+  await expect(sqlDialog.getByLabel("完整SQL内容")).toContainText("select id, name from sample for update");
+  await page.keyboard.press("Escape");
   await transactionRow.getByRole("button", { name: /强制断开/ }).click();
   const confirmation = page.getByRole("dialog", { name: "强制断开 JDBC 连接", exact: true });
   await expect(confirmation).toContainText("全部未提交修改");
   await confirmation.getByRole("button", { name: "强制断开", exact: true }).click();
   await expect(page.getByText("JDBC 连接已强制断开", { exact: true })).toBeVisible();
-  await expect(drawer.locator(".jdbc-connection-row.state-disconnected")).toHaveCount(1);
+  await expect(drawer.locator(".jdbc-slot-row.state-disconnected")).toHaveCount(1);
+
+  await drawer.getByRole("button", { name: "清理过期数据", exact: true }).click();
+  const cleanup = page.getByRole("dialog", { name: "清理过期数据", exact: true });
+  await cleanup.getByRole("button", { name: "清理", exact: true }).click();
+  await expect(drawer.locator(".jdbc-slot-row.state-disconnected")).toHaveCount(0);
 
   await page.keyboard.press("Escape");
   await expect(drawer).toBeHidden();

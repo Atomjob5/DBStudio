@@ -175,6 +175,7 @@
               <el-splitter-panel :min="150" collapsible>
                 <ResultPanel ref="resultPanel" v-model:active-result-index="activeResultIndex" :execution="activeExecution"
                              :executing="editors.active?.busy === true"
+                             :execution-started-at="editors.active?.executionStartedAt"
                              :show-result-edit-actions="showResultEditActions"
                              :result-edit-unlocked="resultEditUnlocked"
                              :can-toggle-result-edit="canToggleResultEdit"
@@ -675,6 +676,7 @@ function installEventHandlers(): void {
         transactionState: state.transactionState, connectionState: state.connectionState,
         activeExecutionId: state.activeExecutionId ?? undefined,
         executionPhase: state.busy && state.activeExecutionId ? "running" : state.busy ? "starting" : "idle",
+        executionStartedAt: state.busy ? tab.executionStartedAt ?? Date.now() : undefined,
         transactionOperation: "idle" });
     }
   }));
@@ -685,7 +687,8 @@ function installEventHandlers(): void {
     const tab = editors.tabs.find((item) => item.id === data.editorId);
     if (tab?.busy && tab.executionPhase !== "cancelling") {
       editors.patch(data.editorId, { activeExecutionId: data.executionId,
-        executionPhase: "running", resultChangesDirty: false, transactionState: "none" });
+        executionStartedAt: tab.executionStartedAt ?? Date.now(), executionPhase: "running",
+        resultChangesDirty: false, transactionState: "none" });
     }
   }));
   disposers.push(rpc.on("query.pageStarted", (raw) => {
@@ -724,7 +727,7 @@ function installEventHandlers(): void {
     editors.patch(data.editorId, {
       busy: false, transactionDirty: data.transactionDirty, resultChangesDirty: data.resultChangesDirty,
       transactionState: data.transactionDirty ? "active" : "none",
-      activeExecutionId: undefined, executionPhase: "idle"
+      activeExecutionId: undefined, executionStartedAt: undefined, executionPhase: "idle"
     });
     if (!data.cancelled && !data.failed) {
       for (const result of completedResults) void enrichCompletionStructure(data.editorId, result.resultIndex);
@@ -739,7 +742,8 @@ function installEventHandlers(): void {
     resultEdits.finishEditor(data.editorId);
     queries.markHistorical(data.editorId);
     if (resultLoading.value?.editorId === data.editorId) resultLoading.value = undefined;
-    editors.patch(data.editorId, { busy: false, activeExecutionId: undefined, executionPhase: "idle",
+    editors.patch(data.editorId, { busy: false, activeExecutionId: undefined, executionStartedAt: undefined,
+      executionPhase: "idle",
       transactionOperation: "idle", transactionDirty: false, resultChangesDirty: false,
       transactionState: data.transactionLost ? "lost" : "none", connectionState: "ready" });
     scheduleDraft(data.editorId);
@@ -1148,7 +1152,8 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
         resultExecutionDecisionPending.value = false;
       }
     }
-    editors.patch(tab.id, { busy: true, activeExecutionId: undefined, executionPhase: "starting" }); app.status = "正在执行…";
+    editors.patch(tab.id, { busy: true, activeExecutionId: undefined,
+      executionStartedAt: Date.now(), executionPhase: "starting" }); app.status = "正在执行…";
     const response = await rpc.request<{ executionId: string }>("query.execute", {
       editorId: tab.id, text: monacoEditor.value?.getValue(tab.id) ?? tab.content,
       selectedText, cursorOffset, scope, stopOnError: true
@@ -1163,7 +1168,8 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
   } catch (error) {
     const current = editors.tabs.find((item) => item.id === tab.id);
     if (!current?.activeExecutionId) {
-      editors.patch(tab.id, { busy: false, activeExecutionId: undefined, executionPhase: "idle" });
+      editors.patch(tab.id, { busy: false, activeExecutionId: undefined,
+        executionStartedAt: undefined, executionPhase: "idle" });
     }
     if ((error as { code?: string }).code === "WORKSPACE_RECOVERED_RETRY_REQUIRED" && !recoveryRetried) {
       if (editors.activeId !== tab.id) return;

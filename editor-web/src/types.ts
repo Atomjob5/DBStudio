@@ -71,6 +71,61 @@ export interface JdbcConnectionSnapshot {
   disconnectedAt?: number | null;
   message?: string;
 }
+export type JdbcExecutionState = "running" | "success" | "failed" | "cancelled" | "connection-aborted";
+export interface JdbcExecutionSummary {
+  executionId: string;
+  workspaceId: string;
+  workspaceName: string;
+  editorId: string;
+  editorTitle: string;
+  profileId: string;
+  profileName: string;
+  providerId: string;
+  databaseName?: string;
+  schemaName?: string;
+  startedAt: number;
+  completedAt?: number | null;
+  durationMs?: number | null;
+  status: JdbcExecutionState;
+  rowCount: number;
+  message?: string | null;
+}
+export interface JdbcExecutionDetail extends JdbcExecutionSummary { sql: string; }
+export interface JdbcConnectionSlotSnapshot {
+  slotId: string;
+  slotNumber: number;
+  stateVersion: number;
+  state: JdbcConnectionState;
+  physicalConnected: boolean;
+  overLimit: boolean;
+  historyCount: number;
+  connectionId?: string | null;
+  profileId?: string | null;
+  profileName?: string | null;
+  providerId?: string | null;
+  databaseName?: string | null;
+  schemaName?: string | null;
+  workspaceId?: string | null;
+  workspaceName?: string | null;
+  editorId?: string | null;
+  editorTitle?: string | null;
+  executionId?: string | null;
+  transactionDirty: boolean;
+  transactionOperationActive?: boolean;
+  createdAt?: number | null;
+  lastActiveAt?: number | null;
+  lastExecutionAt?: number | null;
+  lastProbeLatencyMs?: number | null;
+  disconnectedAt?: number | null;
+  message?: string | null;
+}
+export interface JdbcConnectionSlotsResponse {
+  maximum: number;
+  activeCount: number;
+  overLimitCount: number;
+  slots: JdbcConnectionSlotSnapshot[];
+  generatedAt: number;
+}
 export type TransportState = "connecting" | "ready" | "reconnecting" | "recovering" | "offline";
 export type TransactionState = "none" | "active" | "disconnected-protected" | "auto-rolled-back" | "lost";
 export type WorkspaceState = "available" | "in-use" | "disconnected" | "disconnected-transaction";
@@ -365,6 +420,7 @@ export interface EditorTab {
   transactionState?: TransactionState;
   busy: boolean;
   activeExecutionId?: string;
+  executionStartedAt?: number;
   executionPhase: "idle" | "starting" | "running" | "cancelling";
   transactionOperation: "idle" | "committing" | "rolling-back";
   connection?: EditorConnectionBinding;

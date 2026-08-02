@@ -3,6 +3,7 @@ package com.dbstudio.server;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -76,6 +77,70 @@ class EditorConnectionLimiterTest {
 
         assertEquals(10, admitted.get());
         assertEquals(10, limiter.activeCount());
+    }
+
+    @Test
+    void exposesLazyCapacitySlotsAndKeepsBusyOverflowUntilItIsReleased() {
+        EditorConnectionLimiter limiter = new EditorConnectionLimiter();
+        limiter.setMaximum(3);
+        assertEquals(3, limiter.snapshots().size());
+        assertTrue(limiter.snapshots().stream().noneMatch(value -> value.assigned));
+
+        assertTrue(limiter.acquire("one", new FakeSession(false, 1L), () -> { }));
+        assertTrue(limiter.acquire("two", new FakeSession(false, 2L), () -> { }));
+        assertTrue(limiter.acquire("three", new FakeSession(false, 3L), () -> { }));
+        limiter.attachConnection("one", "connection-one");
+        limiter.attachConnection("two", "connection-two");
+        limiter.attachConnection("three", "connection-three");
+
+        limiter.setMaximum(1);
+        assertEquals(3, limiter.snapshots().size());
+        assertEquals(2, limiter.overLimitCount());
+        assertEquals(3, limiter.activeCount());
+
+        limiter.release("two");
+        limiter.release("three");
+        assertEquals(1, limiter.snapshots().size());
+        assertEquals(0, limiter.overLimitCount());
+        assertEquals(1, limiter.activeCount());
+    }
+
+    @Test
+    void retainsOnlyTenExecutionsReturnsSqlOnDemandAndCleansCompletedHistory() {
+        EditorConnectionLimiter limiter = new EditorConnectionLimiter();
+        limiter.setMaximum(1);
+        assertTrue(limiter.acquire("one", new FakeSession(false, 1L), () -> { }));
+        limiter.attachConnection("one", "connection-one");
+        String slotId = limiter.slotId("one");
+        for (int index = 0; index < 12; index++) {
+            String executionId = "execution-" + index;
+            limiter.startExecution(slotId, new EditorConnectionLimiter.ExecutionSnapshot(
+                    executionId, "workspace", "工作区", "editor", "查询 1", "profile", "开发库",
+                    "mysql", "orders", "", "select " + index, index));
+            limiter.completeExecution(slotId, executionId, "success", index + 1L, 1L, index, null);
+        }
+        assertEquals(10, limiter.executions(slotId).size());
+        assertEquals("execution-11", limiter.executions(slotId).get(0).executionId);
+        assertEquals("select 11", limiter.executionDetail(slotId, "execution-11").sql);
+
+        limiter.startExecution(slotId, new EditorConnectionLimiter.ExecutionSnapshot(
+                "running", "workspace", "工作区", "editor", "查询 1", "profile", "开发库",
+                "mysql", "orders", "", "select sleep(10)", 20L));
+        assertEquals(9, limiter.clearExpiredData());
+        assertEquals(1, limiter.executions(slotId).size());
+        assertEquals("running", limiter.executions(slotId).get(0).status);
+    }
+
+    @Test
+    void rejectsSlotActionsAfterTheObservedVersionChanges() {
+        EditorConnectionLimiter limiter = new EditorConnectionLimiter();
+        limiter.setMaximum(1);
+        assertTrue(limiter.acquire("one", new FakeSession(false, 1L), () -> { }));
+        EditorConnectionLimiter.SlotSnapshot before = limiter.snapshots().get(0);
+        limiter.attachConnection("one", "connection-one");
+        ApiException stale = assertThrows(ApiException.class,
+                () -> limiter.target(before.slotId, before.stateVersion));
+        assertEquals("JDBC_CONNECTION_STATE_CHANGED", stale.getCode());
     }
 
     private static final class FakeSession implements EditorConnectionLimiter.SessionControl {

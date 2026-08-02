@@ -90,6 +90,8 @@ class QueryWebSocketIntegrationTest {
             List<Map<String, Object>> metadataEvents = executeSql(editorId, workspaceId, cookie, events,
                     "SELECT id AS order_id, amount, amount + 1 AS calculated FROM result_column_comment");
             assertColumnMetadata(metadataEvents);
+            assertJdbcSlotHistory(editorId, workspaceId, cookie,
+                    "SELECT id AS order_id, amount, amount + 1 AS calculated FROM result_column_comment");
             assertMutationTarget(executeSql(editorId, workspaceId, cookie, events,
                     "SELECT id AS order_id, amount FROM result_column_comment"));
 
@@ -431,6 +433,32 @@ class QueryWebSocketIntegrationTest {
             socket.close();
             workspaces.expireNow(workspaceId);
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void assertJdbcSlotHistory(String editorId, String workspaceId, String cookie, String sql) {
+        Map<String, Object> manager = exchange(HttpMethod.GET, "/api/v1/jdbc-connections", null, cookie);
+        List<Map<String, Object>> slots = (List<Map<String, Object>>) manager.get("slots");
+        assertEquals(((Number) manager.get("maximum")).intValue(),
+                (int) slots.stream().filter(value -> !Boolean.TRUE.equals(value.get("overLimit"))).count());
+        Map<String, Object> used = slots.stream().filter(value -> editorId.equals(value.get("editorId")))
+                .findFirst().orElseThrow(() -> new AssertionError("executed JDBC slot missing"));
+        assertEquals(workspaceId, used.get("workspaceId"));
+        assertEquals(Boolean.TRUE, used.get("physicalConnected"));
+        assertTrue(((Number) used.get("historyCount")).intValue() >= 1);
+
+        String slotId = String.valueOf(used.get("slotId"));
+        Map<String, Object> history = exchange(HttpMethod.GET,
+                "/api/v1/jdbc-connections/" + slotId + "/executions", null, cookie);
+        List<Map<String, Object>> executions = (List<Map<String, Object>>) history.get("executions");
+        assertEquals("success", executions.get(0).get("status"));
+        assertEquals(editorId, executions.get(0).get("editorId"));
+        assertEquals("mysql", executions.get(0).get("providerId"));
+        assertEquals(null, executions.get(0).get("sql"));
+        Map<String, Object> detail = exchange(HttpMethod.GET,
+                "/api/v1/jdbc-connections/" + slotId + "/executions/"
+                        + executions.get(0).get("executionId"), null, cookie);
+        assertEquals(sql, ((Map<String, Object>) detail.get("execution")).get("sql"));
     }
 
     @SuppressWarnings("unchecked")

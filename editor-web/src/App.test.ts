@@ -1406,7 +1406,10 @@ describe("App result loading status toolbar", () => {
     const executing = vm.executeActive("current");
     await flushPromises();
     expect(editors.active).toMatchObject({ busy: true, executionPhase: "starting" });
+    expect(editors.active?.executionStartedAt).toEqual(expect.any(Number));
     expect(wrapper.findComponent({ name: "ResultPanel" }).props("executing")).toBe(true);
+    expect(wrapper.findComponent({ name: "ResultPanel" }).props("executionStartedAt"))
+      .toBe(editors.active?.executionStartedAt);
     expect(wrapper.find(".result-loading").exists()).toBe(true);
 
     let cancel = wrapper.get('button[aria-label="取消执行"]');
@@ -1443,6 +1446,7 @@ describe("App result loading status toolbar", () => {
     await executing;
     await nextTick();
     expect(editors.active).toMatchObject({ busy: false, executionPhase: "idle" });
+    expect(editors.active?.executionStartedAt).toBeUndefined();
     expect(wrapper.findComponent({ name: "ResultPanel" }).props("executing")).toBe(false);
     expect(wrapper.find(".result-loading").exists()).toBe(false);
     expect(wrapper.find('button[aria-label="取消执行"]').exists()).toBe(false);

@@ -1,9 +1,10 @@
 <template>
   <section class="result-panel fill">
-    <div v-if="showExecutionLoading" class="result-loading" role="status" aria-live="polite">
+    <div v-if="showExecutionLoading" class="result-loading" role="status" aria-live="polite"
+         aria-label="正在执行 SQL">
       <img class="result-loading__image" :src="executionLoadingImage"
            alt="" aria-hidden="true" />
-      <span>正在执行 SQL…</span>
+      <SqlExecutionTimer :started-at="executionStartedAt" />
     </div>
     <template v-else-if="execution?.results.length">
       <div class="result-header">
@@ -227,6 +228,7 @@ import ResultSummaryFooter from "./ResultSummaryFooter.vue";
 import ResultValueDialog from "./ResultValueDialog.vue";
 import ResultValueCompareDialog from "./ResultValueCompareDialog.vue";
 import ResultLargeValueDialog from "./ResultLargeValueDialog.vue";
+import SqlExecutionTimer from "./SqlExecutionTimer.vue";
 import { displayShortcut, shortcutTooltip } from "../shortcuts";
 import { rpc } from "../bridge/rpc";
 
@@ -234,6 +236,7 @@ const props = withDefaults(defineProps<{
   execution?: QueryExecutionState;
   activeResultIndex: number;
   executing?: boolean;
+  executionStartedAt?: number;
   showResultEditActions?: boolean;
   resultEditUnlocked?: boolean;
   canToggleResultEdit?: boolean;

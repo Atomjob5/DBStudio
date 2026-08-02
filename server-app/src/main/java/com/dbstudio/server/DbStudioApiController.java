@@ -909,6 +909,54 @@ public final class DbStudioApiController {
         return ApiPayloads.map("accepted", true, "connection", connection);
     }
 
+    @GetMapping("/jdbc-connections")
+    public Map<String, Object> jdbcConnectionSlots() {
+        return workspaces.jdbcConnectionSlots();
+    }
+
+    @GetMapping("/jdbc-connections/{slotId}/executions")
+    public Map<String, Object> jdbcSlotExecutions(@PathVariable String slotId) {
+        return ApiPayloads.map("executions", workspaces.jdbcSlotExecutions(slotId));
+    }
+
+    @GetMapping("/jdbc-connections/{slotId}/executions/{executionId}")
+    public Map<String, Object> jdbcSlotExecution(@PathVariable String slotId,
+                                                 @PathVariable String executionId) {
+        return ApiPayloads.map("execution", workspaces.jdbcSlotExecution(slotId, executionId));
+    }
+
+    @PostMapping("/jdbc-connections/{slotId}/probe")
+    public Map<String, Object> probeJdbcSlot(@PathVariable String slotId,
+                                             @RequestBody Map<String, Object> body) throws Exception {
+        Map<String, Object> slot = workspaces.probeJdbcSlot(slotId, longValue(body, "stateVersion"));
+        LOG.info("JDBC槽位探活 slot={}", slotId);
+        return ApiPayloads.map("slot", slot);
+    }
+
+    @PostMapping("/jdbc-connections/{slotId}/abort")
+    public Map<String, Object> abortJdbcSlot(@PathVariable String slotId,
+                                             @RequestBody Map<String, Object> body) {
+        Map<String, Object> slot = workspaces.abortJdbcSlot(slotId, longValue(body, "stateVersion"));
+        Object workspaceId = slot.get("workspaceId");
+        Object editorId = slot.get("editorId");
+        if (workspaceId != null && editorId != null && Boolean.TRUE.equals(slot.get("transactionLost"))) {
+            try { workspaceRepository.updateTransactionState(workspaceId.toString(), editorId.toString(), "lost"); }
+            catch (SQLException exception) {
+                LOG.warn("持久化槽位强制断开后的事务未知状态失败 workspace={} editor={}",
+                        workspaceId, editorId, exception);
+            }
+        }
+        LOG.warn("用户从任务管理器强制断开JDBC槽位 slot={}", slotId);
+        return ApiPayloads.map("accepted", true, "slot", slot);
+    }
+
+    @DeleteMapping("/jdbc-connections/expired")
+    public Map<String, Object> clearExpiredJdbcData() {
+        Map<String, Object> result = workspaces.clearExpiredJdbcData();
+        LOG.info("清理JDBC任务管理器过期数据 clearedExecutions={}", result.get("clearedExecutions"));
+        return result;
+    }
+
     @PostMapping("/workspaces/{workspaceId}/editors/{editorId}/results/{resultIndex}/page")
     public Map<String, Object> fetchResultPage(@PathVariable String workspaceId,
                                                @PathVariable String editorId,

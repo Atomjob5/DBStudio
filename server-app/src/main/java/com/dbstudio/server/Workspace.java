@@ -46,6 +46,7 @@ import org.slf4j.LoggerFactory;
 final class Workspace implements AutoCloseable {
     private static final Logger LOG = LoggerFactory.getLogger(Workspace.class);
     private final String id;
+    private volatile String name;
     private final EditorSessionRegistry editors;
     private final WorkspaceEventChannel events;
     private final Path temporaryDirectory;
@@ -69,7 +70,14 @@ final class Workspace implements AutoCloseable {
     Workspace(String id, int maxRows, int streamBatchRows, boolean autoCommit,
               ObjectMapper mapper, Path temporaryDirectory,
               EditorConnectionLimiter limiter) {
+        this(id, id, maxRows, streamBatchRows, autoCommit, mapper, temporaryDirectory, limiter);
+    }
+
+    Workspace(String id, String name, int maxRows, int streamBatchRows, boolean autoCommit,
+              ObjectMapper mapper, Path temporaryDirectory,
+              EditorConnectionLimiter limiter) {
         this.id = id;
+        this.name = name;
         this.editors = new EditorSessionRegistry(maxRows, streamBatchRows);
         this.autoCommit = autoCommit;
         this.events = new WorkspaceEventChannel(mapper, id);
@@ -87,6 +95,8 @@ final class Workspace implements AutoCloseable {
     }
 
     String id() { return id; }
+    String name() { return name; }
+    void setName(String value) { name = value == null || value.trim().isEmpty() ? id : value.trim(); }
     EditorSessionRegistry editors() { return editors; }
     WorkspaceEventChannel events() { return events; }
     int activeTasks() { return activeTasks.get(); }
@@ -202,12 +212,23 @@ final class Workspace implements AutoCloseable {
         LOG.info("Workspace开始执行SQL workspaceId={} editorId={} statements={} stopOnError={}", id,
                 editor.id(), statements.size(), stopOnError);
         final ActiveLease active = acquireRunner(editor);
+        final String slotId = active.lease.slotId();
+        final SavedProfile savedProfile = binding(editor);
+        final String executedSql = executedSql(statements);
         try {
             Consumer<UUID> guardedStarted = new Consumer<UUID>() {
                 @Override public void accept(UUID executionId) {
                     synchronized (Workspace.this) {
                         if (activeLeases.get(editor.id().toString()) != active) {
                             throw new ApiException("JDBC_CONNECTION_ABORTED", "JDBC 连接已被任务管理器强制断开");
+                        }
+                        if (savedProfile != null) {
+                            com.dbstudio.spi.ConnectionProfile profile = savedProfile.profile();
+                            limiter.startExecution(slotId, new EditorConnectionLimiter.ExecutionSnapshot(
+                                    executionId.toString(), id, name, editor.id().toString(), editor.title(),
+                                    profile.id().toString(), profile.name(), profile.providerId(),
+                                    databaseName(profile), profile.setting("schema"), executedSql,
+                                    System.currentTimeMillis()));
                         }
                         started.accept(executionId);
                     }
@@ -225,6 +246,7 @@ final class Workspace implements AutoCloseable {
                                     editor.id().toString(), executionId.toString())) {
                                 try {
                                     if (ownsLease(editor, active) && executionId.equals(editor.lastExecutionId())) {
+                                        completeSlotExecution(slotId, executionId, execution, failure);
                                         callback.completed(executionId, execution, failure);
                                     } else {
                                         LOG.info("忽略已退休JDBC执行的迟到完成事件 workspaceId={} editorId={} executionId={}",
@@ -488,19 +510,23 @@ final class Workspace implements AutoCloseable {
 
     List<Map<String, Object>> jdbcConnections() {
         purgeRecentJdbcConnections();
-        Map<String, WorkspaceJdbcPool.Snapshot> combined =
-                new java.util.LinkedHashMap<String, WorkspaceJdbcPool.Snapshot>();
+        Map<String, Map<String, Object>> combined =
+                new java.util.LinkedHashMap<String, Map<String, Object>>();
         for (ContextReference reference : contexts.values()) {
             for (WorkspaceJdbcPool.Snapshot snapshot : reference.pool.snapshots()) {
-                combined.put(snapshot.connectionId, snapshot);
+                Map<String, Object> payload = jdbcConnectionPayload(snapshot);
+                payload.put("physicalConnected", true);
+                combined.put(snapshot.connectionId, payload);
             }
         }
         for (WorkspaceJdbcPool.Snapshot snapshot : recentJdbcConnections.values()) {
-            if (!combined.containsKey(snapshot.connectionId)) combined.put(snapshot.connectionId, snapshot);
+            if (!combined.containsKey(snapshot.connectionId)) {
+                Map<String, Object> payload = jdbcConnectionPayload(snapshot);
+                payload.put("physicalConnected", false);
+                combined.put(snapshot.connectionId, payload);
+            }
         }
-        List<Map<String, Object>> result = new ArrayList<Map<String, Object>>();
-        for (WorkspaceJdbcPool.Snapshot snapshot : combined.values()) result.add(jdbcConnectionPayload(snapshot));
-        return result;
+        return new ArrayList<Map<String, Object>>(combined.values());
     }
 
     Map<String, Object> probeJdbcConnection(String connectionId, long expectedVersion) throws Exception {
@@ -508,7 +534,9 @@ final class Workspace implements AutoCloseable {
         WorkspaceJdbcPool.Snapshot current = pool.snapshot(connectionId);
         if (current != null && isProbeRetry(current, expectedVersion)) return jdbcConnectionPayload(current);
         WorkspaceJdbcPool.Snapshot snapshot = pool.probe(connectionId, expectedVersion).get(4, TimeUnit.SECONDS);
-        return jdbcConnectionPayload(snapshot);
+        Map<String, Object> payload = jdbcConnectionPayload(snapshot);
+        payload.put("physicalConnected", !"disconnected".equals(snapshot.state) && !"error".equals(snapshot.state));
+        return payload;
     }
 
     synchronized Map<String, Object> abortJdbcConnection(String connectionId, long expectedVersion) {
@@ -547,6 +575,9 @@ final class Workspace implements AutoCloseable {
             editor.retireResultChanges();
             removeLargeValueDrafts(before.editorId);
             if (executionId != null) {
+                limiter.completeExecution(active.lease.slotId(), executionId.toString(),
+                        "connection-aborted", System.currentTimeMillis(), 0L, 0L,
+                        "连接已被任务管理器强制断开");
                 events.emit("query.executionComplete", ApiPayloads.map("editorId", before.editorId,
                         "executionId", executionId.toString(), "cancelled", true, "failed", false,
                         "durationMs", 0, "transactionDirty", false, "resultChangesDirty", false,
@@ -559,6 +590,7 @@ final class Workspace implements AutoCloseable {
             emitConnectionState(editor, "ready", "旧连接已丢弃，下次执行时将建立新连接");
         }
         Map<String, Object> payload = jdbcConnectionPayload(aborting);
+        payload.put("physicalConnected", false);
         payload.put("transactionLost", transactionLost);
         payload.put("resultChangesLost", resultChangesLost);
         return payload;
@@ -602,17 +634,59 @@ final class Workspace implements AutoCloseable {
         boolean running = editor != null && (editor.activeExecutionId() != null
                 || editor.transactionOperationActive() || (sameConnection && active.runner.isRunning()));
         String state = running && !"aborting".equals(snapshot.state) ? "busy" : snapshot.state;
-        return ApiPayloads.map("connectionId", snapshot.connectionId, "stateVersion", snapshot.stateVersion,
+        return ApiPayloads.map("slotId", snapshot.slotId,
+                "connectionId", snapshot.connectionId, "stateVersion", snapshot.stateVersion,
                 "profileId", snapshot.profileId, "profileName", snapshot.profileName,
                 "providerId", snapshot.providerId, "state", state,
+                "workspaceId", id, "workspaceName", name,
                 "editorId", snapshot.editorId, "editorTitle", editor == null ? null : editor.title(),
                 "executionId", editor == null || editor.activeExecutionId() == null
                         ? null : editor.activeExecutionId().toString(),
                 "transactionDirty", sameConnection && active.runner.isTransactionDirty(),
                 "transactionOperationActive", editor != null && editor.transactionOperationActive(),
                 "createdAt", snapshot.createdAt, "lastActiveAt", snapshot.lastActiveAt,
+                "databaseName", snapshot.databaseName, "schemaName", snapshot.schemaName,
                 "lastProbeLatencyMs", snapshot.lastProbeLatencyMs,
                 "disconnectedAt", snapshot.disconnectedAt, "message", snapshot.message);
+    }
+
+    void clearRecentJdbcConnections() {
+        recentJdbcConnections.clear();
+        emitJdbcConnectionsChanged();
+    }
+
+    private void completeSlotExecution(String slotId, UUID executionId,
+                                       QueryExecution execution, Throwable failure) {
+        boolean failed = failure != null || (execution != null && execution.failed());
+        boolean cancelled = execution != null && execution.cancelled();
+        String status = cancelled ? "cancelled" : failed ? "failed" : "success";
+        long duration = execution == null ? 0L : execution.duration().toMillis();
+        long rows = execution == null ? 0L : execution.affectedRows();
+        limiter.completeExecution(slotId, executionId.toString(), status, System.currentTimeMillis(),
+                duration, rows, executionError(execution, failure));
+    }
+
+    private static String executedSql(List<SqlStatement> statements) {
+        StringBuilder result = new StringBuilder();
+        for (SqlStatement statement : statements) {
+            if (result.length() > 0) result.append('\n');
+            result.append(statement.text());
+        }
+        return result.toString();
+    }
+
+    private static String databaseName(com.dbstudio.spi.ConnectionProfile profile) {
+        if ("oracle".equals(profile.providerId())) return profile.setting("service");
+        return profile.setting("database");
+    }
+
+    private static String executionError(QueryExecution execution, Throwable failure) {
+        if (failure != null) return safeMessage(failure);
+        if (execution == null) return null;
+        for (com.dbstudio.desktop.query.StatementResult result : execution.results()) {
+            if (result.failed()) return result.errorMessage();
+        }
+        return null;
     }
 
     private void emitJdbcConnectionsChanged() {
