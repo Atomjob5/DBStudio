@@ -20,11 +20,72 @@ import java.sql.Types;
 import java.time.OffsetDateTime;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 /** Optional Oracle Free/19c/21c release-gate suite configured with DBSTUDIO_ORACLE_* variables. */
 class OracleResultEditIntegrationTest {
+    @Test void abortsABlockedForUpdateWithoutPreventingANewPhysicalConnection() throws Exception {
+        String url = System.getenv("DBSTUDIO_ORACLE_JDBC_URL");
+        String user = System.getenv("DBSTUDIO_ORACLE_USERNAME");
+        String password = System.getenv("DBSTUDIO_ORACLE_PASSWORD");
+        Assumptions.assumeTrue(url != null && !url.trim().isEmpty()
+                && user != null && !user.trim().isEmpty() && password != null,
+                "set DBSTUDIO_ORACLE_JDBC_URL/USERNAME/PASSWORD to run the Oracle abort gate");
+        String table = "DBS_ABORT_" + UUID.randomUUID().toString().replace("-", "")
+                .substring(0, 12).toUpperCase(Locale.ROOT);
+        ExecutorService blockedWorker = Executors.newSingleThreadExecutor();
+        ExecutorService abortWorker = Executors.newCachedThreadPool();
+        try (Connection locker = DriverManager.getConnection(url, user, password);
+             Connection blocked = DriverManager.getConnection(url, user, password)) {
+            locker.setAutoCommit(false);
+            blocked.setAutoCommit(false);
+            try (Statement statement = locker.createStatement()) {
+                statement.execute("CREATE TABLE " + table + " (id NUMBER PRIMARY KEY, name VARCHAR2(40))");
+                statement.executeUpdate("INSERT INTO " + table + " VALUES (1, 'locked')");
+            }
+            locker.commit();
+            try {
+                try (Statement statement = locker.createStatement();
+                     ResultSet result = statement.executeQuery(
+                             "SELECT id FROM " + table + " WHERE id = 1 FOR UPDATE")) {
+                    assertTrue(result.next());
+                }
+                Future<?> waiting = blockedWorker.submit(() -> {
+                    try (Statement statement = blocked.createStatement();
+                         ResultSet ignored = statement.executeQuery(
+                                 "SELECT id FROM " + table + " WHERE id = 1 FOR UPDATE")) {
+                        return null;
+                    }
+                });
+                assertThrows(TimeoutException.class, () -> waiting.get(300, TimeUnit.MILLISECONDS));
+                blocked.abort(abortWorker);
+                assertThrows(ExecutionException.class, () -> waiting.get(10, TimeUnit.SECONDS));
+
+                try (Connection replacement = DriverManager.getConnection(url, user, password);
+                     Statement statement = replacement.createStatement();
+                     ResultSet result = statement.executeQuery("SELECT 1 FROM DUAL")) {
+                    assertTrue(result.next());
+                    assertEquals(1, result.getInt(1));
+                }
+            } finally {
+                locker.rollback();
+                try (Statement statement = locker.createStatement()) {
+                    statement.execute("DROP TABLE " + table + " PURGE");
+                }
+            }
+        } finally {
+            blockedWorker.shutdownNow();
+            abortWorker.shutdownNow();
+        }
+    }
+
     @Test void supportsRowIdTypesAtomicRollbackAndLockConflicts() throws Exception {
         String url = System.getenv("DBSTUDIO_ORACLE_JDBC_URL");
         String user = System.getenv("DBSTUDIO_ORACLE_USERNAME");

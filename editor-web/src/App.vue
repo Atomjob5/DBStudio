@@ -110,6 +110,7 @@
           <el-dropdown-menu>
             <el-dropdown-item command="import" :icon="Upload" :disabled="!activeConnected || app.transportState !== 'ready'"><span>导入 CSV / TSV</span><kbd v-if="settings.shortcuts['data.import']">{{ displayShortcut(settings.shortcuts["data.import"]) }}</kbd></el-dropdown-item>
             <el-dropdown-item command="history" :icon="Clock"><span>查询历史</span><kbd v-if="settings.shortcuts['history.open']">{{ displayShortcut(settings.shortcuts["history.open"]) }}</kbd></el-dropdown-item>
+            <el-dropdown-item command="tasks" :icon="Monitor"><span>任务管理器</span></el-dropdown-item>
             <el-dropdown-item divided command="settings" :icon="Setting"><span>设置</span><kbd v-if="settings.shortcuts['settings.open']">{{ displayShortcut(settings.shortcuts["settings.open"]) }}</kbd></el-dropdown-item>
             <el-dropdown-item divided command="exit" :icon="SwitchButton"><span>退出 DBStudio</span><kbd v-if="settings.shortcuts['app.exit']">{{ displayShortcut(settings.shortcuts["app.exit"]) }}</kbd></el-dropdown-item>
           </el-dropdown-menu>
@@ -204,6 +205,7 @@
                     :environments="connections.environments" :profile="editingProfile" :initial-environment-id="profileEnvironmentId"
                     @saved="profileSaved" />
   <HistoryDrawer v-model="historyDrawer" @open="openHistory" />
+  <JdbcTaskManagerDrawer v-model="jdbcTaskManagerDrawer" />
   <SettingsDrawer v-model="settingsDrawer" :theme="app.themePreference" :resolved-theme="app.theme" :max-rows="settings.maxResultRows"
                   :stream-batch-rows="settings.streamBatchRows" :max-lob-bytes="settings.maxResultLobBytes"
                   :column-layout-scope="settings.columnLayoutScope"
@@ -270,6 +272,7 @@ import {
   Fold,
   FolderOpened,
   MagicStick,
+  Monitor,
   Moon,
   MoreFilled,
   Plus,
@@ -288,6 +291,7 @@ import ConnectionManagerPanel from "./components/ConnectionManagerPanel.vue";
 import CompletionSchemaDialog from "./components/CompletionSchemaDialog.vue";
 import CsvImportDialog from "./components/CsvImportDialog.vue";
 import HistoryDrawer from "./components/HistoryDrawer.vue";
+import JdbcTaskManagerDrawer from "./components/JdbcTaskManagerDrawer.vue";
 import MonacoEditor from "./components/MonacoEditor.vue";
 import ObjectExplorer from "./components/ObjectExplorer.vue";
 import ResultPanel from "./components/ResultPanel.vue";
@@ -329,7 +333,8 @@ const app = useAppStore(); const connections = useConnectionStore(); const metad
 const editors = useEditorStore(); const queries = useQueryStore(); const settings = useSettingsStore();
 const resultEdits = useResultEditStore();
 const statusBar = useStatusBarStore();
-const connectionDialog = ref(false); const historyDrawer = ref(false); const settingsDrawer = ref(false);
+const connectionDialog = ref(false); const historyDrawer = ref(false); const jdbcTaskManagerDrawer = ref(false);
+const settingsDrawer = ref(false);
 const shortcutDrawer = ref(false); const shortcutSaving = ref(false); const csvDialog = ref(false);
 const completionSnippetDrawer = ref(false); const completionSnippetSaving = ref(false);
 const leftWidth = ref(248); const lastLeftWidth = ref(248); const editorHeight = ref("62%");
@@ -490,8 +495,8 @@ const activeExecutionText = computed(() => {
 });
 const activeTransactionText = computed(() => editors.active?.transactionState === "disconnected-protected" ? "事务断连保护中"
   : editors.active?.transactionDirty ? "未提交事务"
-    : editors.active?.transactionState === "auto-rolled-back" || editors.active?.transactionState === "lost"
-      ? "上次事务已回滚" : undefined);
+    : editors.active?.transactionState === "auto-rolled-back" ? "上次事务已回滚"
+      : editors.active?.transactionState === "lost" ? "上次事务状态未知" : undefined);
 const systemStatusItems = computed<StatusBarSystemItem[]>(() => {
   const connectionState = editors.active?.connectionState;
   const values: StatusBarSystemItem[] = [{
@@ -680,7 +685,7 @@ function installEventHandlers(): void {
     const tab = editors.tabs.find((item) => item.id === data.editorId);
     if (tab?.busy && tab.executionPhase !== "cancelling") {
       editors.patch(data.editorId, { activeExecutionId: data.executionId,
-        executionPhase: "running", resultChangesDirty: false });
+        executionPhase: "running", resultChangesDirty: false, transactionState: "none" });
     }
   }));
   disposers.push(rpc.on("query.pageStarted", (raw) => {
@@ -691,26 +696,32 @@ function installEventHandlers(): void {
     resultLoading.value = { ...loading, phase: "running" };
   }));
   disposers.push(rpc.on("query.resultMeta", (raw) => {
-    const data = raw as QueryResult & { editorId: string };
+    const data = raw as QueryResult & { editorId: string; executionId?: string };
+    if (data.executionId && queries.executions[data.editorId]?.executionId !== data.executionId) return;
     queries.addResult(data.editorId, { ...data, rows: [], rowIds: [], complete: false });
     void resolveResultColumnRemarks(data.editorId, data.resultIndex, data.sql, data.columnDetails);
   }));
   disposers.push(rpc.on("query.rows", (raw) => {
-    const data = raw as { editorId: string; resultIndex: number; rows: Array<Array<string | null>>; rowIds?: string[] };
+    const data = raw as { editorId: string; executionId?: string; resultIndex: number;
+      rows: Array<Array<string | null>>; rowIds?: string[] };
+    if (data.executionId && queries.executions[data.editorId]?.executionId !== data.executionId) return;
     queries.appendRows(data.editorId, data.resultIndex, data.rows, data.rowIds);
   }));
   disposers.push(rpc.on("query.resultComplete", (raw) => {
-    const data = raw as { editorId: string; resultIndex: number } & Partial<QueryResult>;
+    const data = raw as { editorId: string; executionId?: string; resultIndex: number } & Partial<QueryResult>;
+    if (data.executionId && queries.executions[data.editorId]?.executionId !== data.executionId) return;
     queries.completeResult(data.editorId, data.resultIndex, data);
   }));
   disposers.push(rpc.on("query.executionComplete", (raw) => {
     const data = raw as { editorId: string; executionId: string; cancelled: boolean; failed: boolean;
-      durationMs: number; transactionDirty: boolean; resultChangesDirty?: boolean };
+      durationMs: number; transactionDirty: boolean; resultChangesDirty?: boolean; terminationReason?: string };
     const tab = editors.tabs.find((item) => item.id === data.editorId);
     if (!tab || tab.activeExecutionId !== data.executionId) return;
     const completedResults = queries.executions[data.editorId]?.results
       .filter((result) => result.complete && !result.errorMessage) ?? [];
-    queries.complete(data.editorId, data); editors.patch(data.editorId, {
+    queries.complete(data.editorId, data);
+    if (data.terminationReason === "connection-aborted") queries.markHistorical(data.editorId);
+    editors.patch(data.editorId, {
       busy: false, transactionDirty: data.transactionDirty, resultChangesDirty: data.resultChangesDirty,
       transactionState: data.transactionDirty ? "active" : "none",
       activeExecutionId: undefined, executionPhase: "idle"
@@ -719,7 +730,21 @@ function installEventHandlers(): void {
       for (const result of completedResults) void enrichCompletionStructure(data.editorId, result.resultIndex);
     }
     scheduleDraft(data.editorId);
-    app.status = `${data.cancelled ? "执行已取消" : data.failed ? "执行失败" : "执行完成"} · ${data.durationMs} ms`;
+    app.status = data.terminationReason === "connection-aborted" ? "连接已被任务管理器强制断开"
+      : `${data.cancelled ? "执行已取消" : data.failed ? "执行失败" : "执行完成"} · ${data.durationMs} ms`;
+  }));
+  disposers.push(rpc.on("jdbc.connectionAborted", (raw) => {
+    const data = raw as { editorId: string; executionId?: string; transactionLost?: boolean;
+      resultChangesLost?: boolean; message?: string };
+    resultEdits.finishEditor(data.editorId);
+    queries.markHistorical(data.editorId);
+    if (resultLoading.value?.editorId === data.editorId) resultLoading.value = undefined;
+    editors.patch(data.editorId, { busy: false, activeExecutionId: undefined, executionPhase: "idle",
+      transactionOperation: "idle", transactionDirty: false, resultChangesDirty: false,
+      transactionState: data.transactionLost ? "lost" : "none", connectionState: "ready" });
+    scheduleDraft(data.editorId);
+    ElNotification.warning({ title: "JDBC 连接已强制断开",
+      message: data.message ?? "旧连接已丢弃，下次执行时将建立新连接" });
   }));
   disposers.push(rpc.on("transaction.status", (raw) => {
     const data = raw as { editorId: string; dirty: boolean; resultChangesDirty?: boolean; message: string };
@@ -1997,6 +2022,7 @@ function dismissStatusTask(id: string): void {
 function dataCommand(command: string): void {
   if (command === "import" && editors.active?.connection) csvDialog.value = true;
   else if (command === "history") historyDrawer.value = true;
+  else if (command === "tasks") jdbcTaskManagerDrawer.value = true;
   else if (command === "exit") void closeApplication();
   else settingsDrawer.value = true;
 }

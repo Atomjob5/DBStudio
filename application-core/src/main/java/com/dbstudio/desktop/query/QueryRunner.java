@@ -1326,6 +1326,16 @@ public final class QueryRunner implements AutoCloseable {
 
     public boolean isRunning() { return executionActive.get() || activeStatement.get() != null; }
     public boolean isTransactionDirty() { return transactionDirty.get(); }
+    /**
+     * 物理 JDBC 连接已被连接池从外部 abort 后，只退休本地执行器状态。
+     * 这里不得再次调用 cancel、rollback 或 close，避免在已失效驱动会话上二次阻塞。
+     */
+    public void retireAborted() {
+        cancelRequested.set(true);
+        transactionDirty.set(false);
+        executor.shutdownNow();
+        LOG.warn("SQL执行器因物理JDBC连接被强制断开而退休");
+    }
     public void setMaxRows(int maxRows) { this.maxRows = Math.max(1, maxRows); }
     public void setStreamBatchRows(int streamBatchRows) { this.streamBatchRows = Math.max(1, streamBatchRows); }
 

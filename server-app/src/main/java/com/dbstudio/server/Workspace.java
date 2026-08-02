@@ -23,12 +23,14 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
@@ -55,9 +57,14 @@ final class Workspace implements AutoCloseable {
     private final Map<String, ContextReference> contexts = new ConcurrentHashMap<String, ContextReference>();
     private final Map<String, SavedProfile> bindings = new ConcurrentHashMap<String, SavedProfile>();
     private final Map<String, ActiveLease> activeLeases = new ConcurrentHashMap<String, ActiveLease>();
+    private final Set<String> lostTransactionEditors = java.util.Collections.newSetFromMap(
+            new ConcurrentHashMap<String, Boolean>());
+    private final Map<String, WorkspaceJdbcPool.Snapshot> recentJdbcConnections =
+            new ConcurrentHashMap<String, WorkspaceJdbcPool.Snapshot>();
     private final Map<UUID, char[]> credentials = new ConcurrentHashMap<UUID, char[]>();
     private volatile boolean disconnected;
     private volatile boolean autoCommit;
+    private static final long JDBC_TERMINAL_RETENTION_MILLIS = TimeUnit.MINUTES.toMillis(5);
 
     Workspace(String id, int maxRows, int streamBatchRows, boolean autoCommit,
               ObjectMapper mapper, Path temporaryDirectory,
@@ -95,7 +102,8 @@ final class Workspace implements AutoCloseable {
                             ? null : editor.activeExecutionId().toString(),
                     "transactionDirty", transaction,
                     "resultChangesDirty", editor.resultChangesDirty(),
-                    "transactionState", transaction ? (disconnected ? "disconnected-protected" : "active") : "none",
+                    "transactionState", transaction ? (disconnected ? "disconnected-protected" : "active")
+                            : lostTransactionEditors.contains(editor.id().toString()) ? "lost" : "none",
                     "connectionState", !editor.bound() ? "unbound" : editor.hasContext() ? "ready" : "credentials-required"));
         }
         return result;
@@ -110,7 +118,13 @@ final class Workspace implements AutoCloseable {
         ContextReference existing = contexts.get(key);
         if (existing != null) { created.close(); return existing.context; }
         ContextReference reference = new ContextReference(created,
-                new WorkspaceJdbcPool(id + ":" + key, created, limiter, autoCommit));
+                new WorkspaceJdbcPool(id + ":" + key, created, limiter, autoCommit,
+                        new WorkspaceJdbcPool.Listener() {
+                            @Override public void changed() { emitJdbcConnectionsChanged(); }
+                            @Override public void terminal(WorkspaceJdbcPool.Snapshot snapshot) {
+                                recentJdbcConnections.put(snapshot.connectionId, snapshot);
+                            }
+                        }));
         contexts.put(key, reference);
         LOG.info("注册Workspace数据库上下文 workspaceId={} bindingKey={}", id, key);
         return created;
@@ -189,7 +203,17 @@ final class Workspace implements AutoCloseable {
                 editor.id(), statements.size(), stopOnError);
         final ActiveLease active = acquireRunner(editor);
         try {
-            return editors.execute(editor, statements, stopOnError, started, listener,
+            Consumer<UUID> guardedStarted = new Consumer<UUID>() {
+                @Override public void accept(UUID executionId) {
+                    synchronized (Workspace.this) {
+                        if (activeLeases.get(editor.id().toString()) != active) {
+                            throw new ApiException("JDBC_CONNECTION_ABORTED", "JDBC 连接已被任务管理器强制断开");
+                        }
+                        started.accept(executionId);
+                    }
+                }
+            };
+            return editors.execute(editor, statements, stopOnError, guardedStarted, listener,
                     new EditorSessionRegistry.ExecutionCallback() {
                         @Override public void completed(UUID executionId, QueryExecution execution, Throwable failure) {
                             /*
@@ -200,7 +224,12 @@ final class Workspace implements AutoCloseable {
                             try (LoggingContext ignored = LoggingContext.open(null, id, null,
                                     editor.id().toString(), executionId.toString())) {
                                 try {
-                                    callback.completed(executionId, execution, failure);
+                                    if (ownsLease(editor, active) && executionId.equals(editor.lastExecutionId())) {
+                                        callback.completed(executionId, execution, failure);
+                                    } else {
+                                        LOG.info("忽略已退休JDBC执行的迟到完成事件 workspaceId={} editorId={} executionId={}",
+                                                id, editor.id(), executionId);
+                                    }
                                 } finally {
                                     finishExecutionLease(editor, active);
                                     LOG.info("Workspace SQL执行回调完成 workspaceId={} editorId={} executionId={} failed={}",
@@ -225,16 +254,21 @@ final class Workspace implements AutoCloseable {
         final ActiveLease active = acquireRunner(editor);
         try {
             return active.runner.fetchPage(sql, offset, limit, () -> {
-                if (!editor.beginExecution(executionId)) {
-                    throw new ApiException(editor.transactionOperationActive() ? "TRANSACTION_BUSY" : "QUERY_BUSY",
-                            editor.transactionOperationActive()
-                                    ? "当前标签正在提交或回滚事务" : "当前标签已有查询正在执行");
-                }
-                try {
-                    started.run();
-                } catch (RuntimeException exception) {
-                    editor.endExecution(executionId);
-                    throw exception;
+                synchronized (Workspace.this) {
+                    if (activeLeases.get(editor.id().toString()) != active) {
+                        throw new ApiException("JDBC_CONNECTION_ABORTED", "JDBC 连接已被任务管理器强制断开");
+                    }
+                    if (!editor.beginExecution(executionId)) {
+                        throw new ApiException(editor.transactionOperationActive() ? "TRANSACTION_BUSY" : "QUERY_BUSY",
+                                editor.transactionOperationActive()
+                                        ? "当前标签正在提交或回滚事务" : "当前标签已有查询正在执行");
+                    }
+                    try {
+                        started.run();
+                    } catch (RuntimeException exception) {
+                        editor.endExecution(executionId);
+                        throw exception;
+                    }
                 }
             }).whenComplete((result, failure) -> {
                 editor.endExecution(executionId);
@@ -289,6 +323,10 @@ final class Workspace implements AutoCloseable {
         try {
             return active.runner.commit().whenComplete((ignored, failure) -> {
                 editor.endTransactionOperation();
+                if (!ownsLease(editor, active)) {
+                    throw new java.util.concurrent.CompletionException(
+                            new ApiException("JDBC_CONNECTION_ABORTED", "JDBC 连接已被任务管理器强制断开，提交结果未知"));
+                }
                 if (failure == null) {
                     editor.commitResultChanges();
                     removeLargeValueDrafts(editor.id().toString());
@@ -309,6 +347,10 @@ final class Workspace implements AutoCloseable {
         try {
             return active.runner.rollback().whenComplete((ignored, failure) -> {
                 editor.endTransactionOperation();
+                if (!ownsLease(editor, active)) {
+                    throw new java.util.concurrent.CompletionException(
+                            new ApiException("JDBC_CONNECTION_ABORTED", "JDBC 连接已被任务管理器强制断开，回滚结果未知"));
+                }
                 if (failure == null) {
                     editor.rollbackResultChanges();
                     removeLargeValueDrafts(editor.id().toString());
@@ -335,6 +377,10 @@ final class Workspace implements AutoCloseable {
                     editor.activeExecutionId() == null ? "当前标签正在提交或回滚事务" : "SQL执行期间不能提交或回滚事务");
         }
         return active;
+    }
+
+    private synchronized boolean ownsLease(EditorSession editor, ActiveLease active) {
+        return activeLeases.get(editor.id().toString()) == active;
     }
 
     synchronized void browserDisconnected() {
@@ -402,6 +448,7 @@ final class Workspace implements AutoCloseable {
 
     void reapIdle(long cutoffMillis) {
         for (ContextReference reference : contexts.values()) reference.pool.reap(cutoffMillis);
+        purgeRecentJdbcConnections();
         synchronized (this) {
             for (Map.Entry<String, ContextReference> entry : new ArrayList<Map.Entry<String, ContextReference>>(contexts.entrySet())) {
                 ContextReference reference = entry.getValue();
@@ -417,6 +464,7 @@ final class Workspace implements AutoCloseable {
     synchronized void closeEditor(String editorId) {
         EditorSession editor = editors.require(editorId);
         SavedProfile previous = bindings.remove(editorId);
+        lostTransactionEditors.remove(editorId);
         releaseEditorLease(editor, true);
         editors.close(editorId);
         if (previous != null) releaseContext(bindingKey(previous));
@@ -438,8 +486,155 @@ final class Workspace implements AutoCloseable {
         return profile.profile().id().toString() + "@" + profile.revision();
     }
 
+    List<Map<String, Object>> jdbcConnections() {
+        purgeRecentJdbcConnections();
+        Map<String, WorkspaceJdbcPool.Snapshot> combined =
+                new java.util.LinkedHashMap<String, WorkspaceJdbcPool.Snapshot>();
+        for (ContextReference reference : contexts.values()) {
+            for (WorkspaceJdbcPool.Snapshot snapshot : reference.pool.snapshots()) {
+                combined.put(snapshot.connectionId, snapshot);
+            }
+        }
+        for (WorkspaceJdbcPool.Snapshot snapshot : recentJdbcConnections.values()) {
+            if (!combined.containsKey(snapshot.connectionId)) combined.put(snapshot.connectionId, snapshot);
+        }
+        List<Map<String, Object>> result = new ArrayList<Map<String, Object>>();
+        for (WorkspaceJdbcPool.Snapshot snapshot : combined.values()) result.add(jdbcConnectionPayload(snapshot));
+        return result;
+    }
+
+    Map<String, Object> probeJdbcConnection(String connectionId, long expectedVersion) throws Exception {
+        WorkspaceJdbcPool pool = jdbcPool(connectionId);
+        WorkspaceJdbcPool.Snapshot current = pool.snapshot(connectionId);
+        if (current != null && isProbeRetry(current, expectedVersion)) return jdbcConnectionPayload(current);
+        WorkspaceJdbcPool.Snapshot snapshot = pool.probe(connectionId, expectedVersion).get(4, TimeUnit.SECONDS);
+        return jdbcConnectionPayload(snapshot);
+    }
+
+    synchronized Map<String, Object> abortJdbcConnection(String connectionId, long expectedVersion) {
+        WorkspaceJdbcPool pool = jdbcPoolOrNull(connectionId);
+        if (pool == null) {
+            WorkspaceJdbcPool.Snapshot terminal = recentJdbcConnections.get(connectionId);
+            if (terminal != null && isAbortRetry(terminal, expectedVersion)) {
+                Map<String, Object> repeated = jdbcConnectionPayload(terminal);
+                repeated.put("transactionLost", false);
+                repeated.put("resultChangesLost", false);
+                return repeated;
+            }
+            throw new ApiException("JDBC_CONNECTION_NOT_FOUND", "JDBC 连接不存在或已经断开");
+        }
+        WorkspaceJdbcPool.Snapshot before = pool.snapshot(connectionId);
+        if (before == null) throw new ApiException("JDBC_CONNECTION_NOT_FOUND", "JDBC 连接不存在或已经断开");
+        EditorSession editor = before.editorId == null ? null : editorOrNull(before.editorId);
+        ActiveLease active = editor == null ? null : activeLeases.get(before.editorId);
+        boolean attached = active != null && connectionId.equals(active.lease.connectionId());
+        boolean transactionLost = attached && active.runner.isTransactionDirty();
+        boolean resultChangesLost = editor != null && editor.resultChangesDirty();
+        UUID executionId = editor == null ? null : editor.activeExecutionId();
+        boolean leaseDetached = attached && activeLeases.remove(before.editorId, active);
+        final WorkspaceJdbcPool.Snapshot aborting;
+        try {
+            aborting = pool.abort(connectionId, expectedVersion);
+        } catch (RuntimeException exception) {
+            if (leaseDetached) activeLeases.put(before.editorId, active);
+            throw exception;
+        }
+        if (leaseDetached) {
+            if (transactionLost || editor.transactionOperationActive()) lostTransactionEditors.add(before.editorId);
+            editor.forceRetireDatabaseWork(executionId);
+            editor.detachRunner();
+            active.runner.retireAborted();
+            editor.retireResultChanges();
+            removeLargeValueDrafts(before.editorId);
+            if (executionId != null) {
+                events.emit("query.executionComplete", ApiPayloads.map("editorId", before.editorId,
+                        "executionId", executionId.toString(), "cancelled", true, "failed", false,
+                        "durationMs", 0, "transactionDirty", false, "resultChangesDirty", false,
+                        "terminationReason", "connection-aborted"));
+            }
+            events.emit("jdbc.connectionAborted", ApiPayloads.map("editorId", before.editorId,
+                    "executionId", executionId == null ? null : executionId.toString(),
+                    "transactionLost", transactionLost, "resultChangesLost", resultChangesLost,
+                    "message", "连接已被任务管理器强制断开"));
+            emitConnectionState(editor, "ready", "旧连接已丢弃，下次执行时将建立新连接");
+        }
+        Map<String, Object> payload = jdbcConnectionPayload(aborting);
+        payload.put("transactionLost", transactionLost);
+        payload.put("resultChangesLost", resultChangesLost);
+        return payload;
+    }
+
+    private WorkspaceJdbcPool jdbcPool(String connectionId) {
+        WorkspaceJdbcPool pool = jdbcPoolOrNull(connectionId);
+        if (pool != null) return pool;
+        throw new ApiException("JDBC_CONNECTION_NOT_FOUND", "JDBC 连接不存在或已经断开");
+    }
+
+    private WorkspaceJdbcPool jdbcPoolOrNull(String connectionId) {
+        for (ContextReference reference : contexts.values()) {
+            if (reference.pool.snapshot(connectionId) != null) return reference.pool;
+        }
+        return null;
+    }
+
+    private static boolean isProbeRetry(WorkspaceJdbcPool.Snapshot snapshot, long expectedVersion) {
+        if (snapshot.stateVersion == expectedVersion + 1L) return "probing".equals(snapshot.state);
+        if (snapshot.stateVersion != expectedVersion + 2L) return false;
+        return "unresponsive".equals(snapshot.state)
+                || ("idle".equals(snapshot.state) && "探活成功".equals(snapshot.message));
+    }
+
+    private static boolean isAbortRetry(WorkspaceJdbcPool.Snapshot snapshot, long expectedVersion) {
+        if (snapshot.stateVersion != expectedVersion + 1L && snapshot.stateVersion != expectedVersion) return false;
+        return "aborting".equals(snapshot.state) || "disconnected".equals(snapshot.state)
+                || "error".equals(snapshot.state);
+    }
+
+    private EditorSession editorOrNull(String editorId) {
+        try { return editors.require(editorId); }
+        catch (RuntimeException ignored) { return null; }
+    }
+
+    private Map<String, Object> jdbcConnectionPayload(WorkspaceJdbcPool.Snapshot snapshot) {
+        EditorSession editor = snapshot.editorId == null ? null : editorOrNull(snapshot.editorId);
+        ActiveLease active = snapshot.editorId == null ? null : activeLeases.get(snapshot.editorId);
+        boolean sameConnection = active != null && snapshot.connectionId.equals(active.lease.connectionId());
+        boolean running = editor != null && (editor.activeExecutionId() != null
+                || editor.transactionOperationActive() || (sameConnection && active.runner.isRunning()));
+        String state = running && !"aborting".equals(snapshot.state) ? "busy" : snapshot.state;
+        return ApiPayloads.map("connectionId", snapshot.connectionId, "stateVersion", snapshot.stateVersion,
+                "profileId", snapshot.profileId, "profileName", snapshot.profileName,
+                "providerId", snapshot.providerId, "state", state,
+                "editorId", snapshot.editorId, "editorTitle", editor == null ? null : editor.title(),
+                "executionId", editor == null || editor.activeExecutionId() == null
+                        ? null : editor.activeExecutionId().toString(),
+                "transactionDirty", sameConnection && active.runner.isTransactionDirty(),
+                "transactionOperationActive", editor != null && editor.transactionOperationActive(),
+                "createdAt", snapshot.createdAt, "lastActiveAt", snapshot.lastActiveAt,
+                "lastProbeLatencyMs", snapshot.lastProbeLatencyMs,
+                "disconnectedAt", snapshot.disconnectedAt, "message", snapshot.message);
+    }
+
+    private void emitJdbcConnectionsChanged() {
+        events.emit("jdbc.connections.changed", ApiPayloads.map("updatedAt", System.currentTimeMillis()));
+    }
+
+    private void purgeRecentJdbcConnections() {
+        long cutoff = System.currentTimeMillis() - JDBC_TERMINAL_RETENTION_MILLIS;
+        for (Map.Entry<String, WorkspaceJdbcPool.Snapshot> entry
+                : new ArrayList<Map.Entry<String, WorkspaceJdbcPool.Snapshot>>(recentJdbcConnections.entrySet())) {
+            Long disconnectedAt = entry.getValue().disconnectedAt;
+            if ((disconnectedAt != null && disconnectedAt < cutoff)
+                    || (disconnectedAt == null && "aborting".equals(entry.getValue().state)
+                    && entry.getValue().lastActiveAt < cutoff)) {
+                recentJdbcConnections.remove(entry.getKey(), entry.getValue());
+            }
+        }
+    }
+
     private synchronized ActiveLease acquireRunner(EditorSession editor) {
         String editorId = editor.id().toString();
+        lostTransactionEditors.remove(editorId);
         ActiveLease existing = activeLeases.get(editorId);
         if (existing != null) return existing;
         ContextReference reference = contexts.get(editor.bindingKey());
@@ -452,6 +647,7 @@ final class Workspace implements AutoCloseable {
                 editor.attachRunner(runner);
                 ActiveLease created = new ActiveLease(reference.pool, lease, runner);
                 activeLeases.put(editorId, created);
+                reference.pool.associate(editorId, lease);
                 LOG.debug("借用编辑器JDBC会话 workspaceId={} editorId={} bindingKey={}", id, editorId, editor.bindingKey());
                 return created;
             } catch (RuntimeException exception) {
@@ -466,6 +662,7 @@ final class Workspace implements AutoCloseable {
 
     private synchronized void finishExecutionLease(EditorSession editor, ActiveLease active) {
         String editorId = editor.id().toString();
+        if (activeLeases.get(editorId) != active) return;
         if (active.runner.isTransactionDirty()) {
             active.pool.pin(editorId, active.lease);
             emitConnectionState(editor, "ready", "事务连接已固定到当前编辑器");
@@ -480,7 +677,7 @@ final class Workspace implements AutoCloseable {
 
     private synchronized void releasePinned(EditorSession editor, ActiveLease active) {
         String editorId = editor.id().toString();
-        activeLeases.remove(editorId, active);
+        if (!activeLeases.remove(editorId, active)) return;
         editor.detachRunner(); active.runner.close(); active.pool.unpinAndRelease(editorId);
         emitConnectionState(editor, "ready", "事务已结束，数据库连接已归还队列");
         LOG.info("事务JDBC会话解除固定 workspaceId={} editorId={}", id, editorId);

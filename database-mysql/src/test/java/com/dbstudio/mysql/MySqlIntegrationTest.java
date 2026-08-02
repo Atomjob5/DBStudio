@@ -11,6 +11,12 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.sql.SQLException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -86,6 +92,37 @@ class MySqlIntegrationTest {
                             "UPDATE contract_test SET name = 'after-release' WHERE id = 1"));
                 }
                 contender.rollback();
+            }
+
+            ExecutorService blockedWorker = Executors.newSingleThreadExecutor();
+            ExecutorService abortWorker = Executors.newCachedThreadPool();
+            try (com.dbstudio.spi.DatabaseSession blocked = provider.connections().connect(profile, password)) {
+                try (java.sql.Statement locker = session.jdbcConnection().createStatement();
+                     java.sql.ResultSet locked = locker.executeQuery(
+                             "SELECT id FROM contract_test WHERE id = 1 FOR UPDATE")) {
+                    assertTrue(locked.next());
+                }
+                Future<?> waiting = blockedWorker.submit(() -> {
+                    try (java.sql.Statement statement = blocked.jdbcConnection().createStatement();
+                         java.sql.ResultSet ignored = statement.executeQuery(
+                                 "SELECT id FROM contract_test WHERE id = 1 FOR UPDATE")) {
+                        return null;
+                    }
+                });
+                assertThrows(TimeoutException.class, () -> waiting.get(300, TimeUnit.MILLISECONDS));
+                blocked.jdbcConnection().abort(abortWorker);
+                assertThrows(ExecutionException.class, () -> waiting.get(10, TimeUnit.SECONDS));
+                session.rollback();
+                try (com.dbstudio.spi.DatabaseSession replacement = provider.connections().connect(profile, password);
+                     java.sql.Statement statement = replacement.jdbcConnection().createStatement();
+                     java.sql.ResultSet result = statement.executeQuery("SELECT 1")) {
+                    assertTrue(result.next());
+                    assertEquals(1, result.getInt(1));
+                }
+            } finally {
+                session.rollback();
+                blockedWorker.shutdownNow();
+                abortWorker.shutdownNow();
             }
         } finally {
             java.util.Arrays.fill(password, '\0');

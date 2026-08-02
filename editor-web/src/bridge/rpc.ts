@@ -429,6 +429,15 @@ export class RpcClient {
         if (!executionId) throw new Error("尚未取得当前执行编号");
         return { path: `${ws}/executions/${encodeURIComponent(executionId)}`, method: "DELETE" };
       }
+      case "jdbc.connections.list": return { path: `${ws}/jdbc-connections`, method: "GET" };
+      case "jdbc.connections.probe": return {
+        path: `${ws}/jdbc-connections/${encodeURIComponent(String(body.connectionId ?? ""))}/probe`,
+        method: "POST", body: { stateVersion: body.stateVersion }
+      };
+      case "jdbc.connections.abort": return {
+        path: `${ws}/jdbc-connections/${encodeURIComponent(String(body.connectionId ?? ""))}/abort`,
+        method: "POST", body: { stateVersion: body.stateVersion }
+      };
       case "transaction.commit": return { path: `${ws}/editors/${editorId}/transaction/commit`, method: "POST", body: {} };
       case "transaction.rollback": return { path: `${ws}/editors/${editorId}/transaction/rollback`, method: "POST", body: {} };
       case "sql.format": return { path: `${ws}/sql/format`, method: "POST", body };

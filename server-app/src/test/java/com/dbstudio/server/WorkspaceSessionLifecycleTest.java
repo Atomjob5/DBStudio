@@ -35,8 +35,10 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -178,7 +180,109 @@ class WorkspaceSessionLifecycleTest {
         }
     }
 
+    @Test
+    void exposesIdleConnectionsProbesAndAbortsWithOptimisticVersions() throws Exception {
+        AtomicInteger opened = new AtomicInteger();
+        AtomicInteger aborted = new AtomicInteger();
+        DatabaseProvider provider = provider(opened, aborted);
+        ConnectionProfile profile = new ConnectionProfile(
+                UUID.randomUUID(), "fake", "连接池测试", Collections.<String, String>emptyMap(), "test-secret");
+        EditorConnectionLimiter limiter = new EditorConnectionLimiter();
+        DatabaseContext context = new DatabaseContext(provider, profile, new char[0]);
+        final List<WorkspaceJdbcPool.Snapshot> terminal = new java.util.concurrent.CopyOnWriteArrayList<WorkspaceJdbcPool.Snapshot>();
+        WorkspaceJdbcPool pool = new WorkspaceJdbcPool("workspace:manager", context, limiter, false,
+                new WorkspaceJdbcPool.Listener() {
+                    @Override public void changed() { }
+                    @Override public void terminal(WorkspaceJdbcPool.Snapshot snapshot) { terminal.add(snapshot); }
+                });
+        try {
+            WorkspaceJdbcPool.Lease lease = pool.borrow();
+            pool.release(lease);
+            WorkspaceJdbcPool.Snapshot idle = pool.snapshots().get(0);
+            assertEquals("idle", idle.state);
+
+            WorkspaceJdbcPool.Snapshot healthy = pool.probe(idle.connectionId, idle.stateVersion)
+                    .get(4, TimeUnit.SECONDS);
+            assertEquals("idle", healthy.state);
+            assertTrue(healthy.lastProbeLatencyMs >= 0);
+            ApiException stale = assertThrows(ApiException.class,
+                    () -> pool.abort(healthy.connectionId, healthy.stateVersion - 1));
+            assertEquals("JDBC_CONNECTION_STATE_CHANGED", stale.getCode());
+
+            WorkspaceJdbcPool.Snapshot aborting = pool.abort(healthy.connectionId, healthy.stateVersion);
+            assertEquals("aborting", aborting.state);
+            for (int retry = 0; retry < 20
+                    && terminal.stream().noneMatch(value -> "disconnected".equals(value.state)); retry++) Thread.sleep(10L);
+            assertEquals(1, aborted.get());
+            assertEquals(0, limiter.activeCount());
+            assertTrue(terminal.stream().anyMatch(value -> "disconnected".equals(value.state)));
+        } finally {
+            pool.close();
+        }
+    }
+
+    @Test
+    void isolatesAProbedConnectionAndNeverHoldsThePoolLockWhileAborting() throws Exception {
+        AtomicInteger opened = new AtomicInteger();
+        AtomicInteger aborted = new AtomicInteger();
+        AtomicBoolean blockProbe = new AtomicBoolean(true);
+        CountDownLatch probeEntered = new CountDownLatch(1);
+        CountDownLatch releaseProbe = new CountDownLatch(1);
+        CountDownLatch abortEntered = new CountDownLatch(1);
+        CountDownLatch releaseAbort = new CountDownLatch(1);
+        DatabaseProvider provider = provider(opened, aborted, () -> {
+            if (!blockProbe.get()) return;
+            probeEntered.countDown();
+            await(releaseProbe);
+        }, () -> {
+            abortEntered.countDown();
+            await(releaseAbort);
+        });
+        ConnectionProfile profile = new ConnectionProfile(
+                UUID.randomUUID(), "fake", "并发连接池测试", Collections.<String, String>emptyMap(), "test-secret");
+        EditorConnectionLimiter limiter = new EditorConnectionLimiter();
+        limiter.setMaximum(4);
+        WorkspaceJdbcPool pool = new WorkspaceJdbcPool("workspace:manager-concurrency",
+                new DatabaseContext(provider, profile, new char[0]), limiter, false);
+        try {
+            WorkspaceJdbcPool.Lease original = pool.borrow();
+            pool.release(original);
+            WorkspaceJdbcPool.Snapshot idle = pool.snapshots().get(0);
+            java.util.concurrent.CompletableFuture<WorkspaceJdbcPool.Snapshot> probing =
+                    pool.probe(idle.connectionId, idle.stateVersion);
+            assertTrue(probeEntered.await(1, TimeUnit.SECONDS));
+            assertEquals("probing", pool.snapshot(idle.connectionId).state);
+
+            WorkspaceJdbcPool.Lease replacement = pool.borrow();
+            assertEquals(2, opened.get(), "探活连接不得被查询借用");
+            pool.release(replacement);
+            blockProbe.set(false);
+            releaseProbe.countDown();
+            WorkspaceJdbcPool.Snapshot healthy = probing.get(1, TimeUnit.SECONDS);
+
+            pool.abort(healthy.connectionId, healthy.stateVersion);
+            assertTrue(abortEntered.await(1, TimeUnit.SECONDS));
+            WorkspaceJdbcPool.Lease duringAbort = pool.borrow();
+            assertTrue(duringAbort.session() != original.session(), "abort 不得占用连接池锁");
+            pool.release(duringAbort);
+            releaseAbort.countDown();
+        } finally {
+            releaseProbe.countDown();
+            releaseAbort.countDown();
+            pool.close();
+        }
+    }
+
     private static DatabaseProvider provider(final AtomicInteger opened) {
+        return provider(opened, new AtomicInteger());
+    }
+
+    private static DatabaseProvider provider(final AtomicInteger opened, final AtomicInteger aborted) {
+        return provider(opened, aborted, null, null);
+    }
+
+    private static DatabaseProvider provider(final AtomicInteger opened, final AtomicInteger aborted,
+                                             final Runnable isValidHook, final Runnable abortHook) {
         final MetadataAdapter metadata = new MetadataAdapter() {
             @Override public List<String> listCatalogs(DatabaseSession session) { return Collections.emptyList(); }
             @Override public List<DatabaseObject> listObjects(DatabaseSession session, String catalog,
@@ -217,7 +321,10 @@ class WorkspaceSessionLifecycleTest {
                                 (proxy, method, args) -> {
                                     String name = method.getName();
                                     if ("isClosed".equals(name)) return closed.get();
-                                    if ("isValid".equals(name)) return !closed.get();
+                                    if ("isValid".equals(name)) {
+                                        if (isValidHook != null) isValidHook.run();
+                                        return !closed.get();
+                                    }
                                     if ("getAutoCommit".equals(name)) return autoCommit.get();
                                     if ("setAutoCommit".equals(name)) {
                                         autoCommit.set((Boolean) args[0]);
@@ -225,6 +332,11 @@ class WorkspaceSessionLifecycleTest {
                                     }
                                     if ("rollback".equals(name) && autoCommit.get()) {
                                         throw new SQLException("rollback is not allowed while auto-commit is enabled");
+                                    }
+                                    if ("abort".equals(name)) {
+                                        aborted.incrementAndGet();
+                                        if (abortHook != null) abortHook.run();
+                                        closed.set(true); return null;
                                     }
                                     if ("close".equals(name)) { closed.set(true); return null; }
                                     if (method.getReturnType() == boolean.class) return false;
@@ -243,5 +355,10 @@ class WorkspaceSessionLifecycleTest {
             @Override public MetadataAdapter metadata() { return metadata; }
             @Override public SqlDialect dialect() { return dialect; }
         };
+    }
+
+    private static void await(CountDownLatch latch) {
+        try { latch.await(); }
+        catch (InterruptedException exception) { Thread.currentThread().interrupt(); }
     }
 }

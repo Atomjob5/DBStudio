@@ -1136,6 +1136,62 @@ describe("App result loading status toolbar", () => {
     expect(rpcRequest).not.toHaveBeenCalledWith("metadata.completionNamespaces", expect.anything(), expect.anything());
   });
 
+  it("ignores rows and completion events from a retired JDBC execution", async () => {
+    const queries = useQueryStore();
+    queries.start("bootstrap-editor", "execution-current");
+
+    rpcMock.listeners.get("query.resultMeta")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-retired", resultIndex: 0,
+      sql: "select 'old'", type: "QUERY", columns: ["value"], rows: [],
+      updateCount: -1, truncated: false, durationMs: 0, complete: false
+    }));
+    expect(queries.executions["bootstrap-editor"].results).toHaveLength(0);
+
+    rpcMock.listeners.get("query.resultMeta")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-current", resultIndex: 0,
+      sql: "select 'new'", type: "QUERY", columns: ["value"], rows: [],
+      updateCount: -1, truncated: false, durationMs: 0, complete: false
+    }));
+    rpcMock.listeners.get("query.rows")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-retired", resultIndex: 0, rows: [["old"]]
+    }));
+    rpcMock.listeners.get("query.resultComplete")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-retired", resultIndex: 0, durationMs: 99
+    }));
+    expect(queries.executions["bootstrap-editor"].results[0].rows).toEqual([]);
+    expect(queries.executions["bootstrap-editor"].results[0].complete).toBe(false);
+
+    rpcMock.listeners.get("query.rows")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-current", resultIndex: 0, rows: [["new"]]
+    }));
+    expect(queries.executions["bootstrap-editor"].results[0].rows).toEqual([["new"]]);
+  });
+
+  it("retires result editing and marks the transaction unknown after a task-manager abort", async () => {
+    const editors = useEditorStore();
+    const queries = useQueryStore();
+    const edits = useResultEditStore();
+    editors.patch("bootstrap-editor", { busy: true, activeExecutionId: "execution-aborted",
+      executionPhase: "running", transactionDirty: true, transactionState: "active",
+      resultChangesDirty: true, connectionState: "active" });
+    queries.start("bootstrap-editor", "execution-aborted");
+    queries.addResult("bootstrap-editor", { resultIndex: 0, sql: "select 1 for update", type: "QUERY",
+      columns: ["value"], rows: [["1"]], updateCount: -1, truncated: false,
+      durationMs: 1, complete: true });
+    edits.setUnlocked("bootstrap-editor", "execution-aborted", 0, true);
+
+    rpcMock.listeners.get("jdbc.connectionAborted")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-aborted", transactionLost: true,
+      resultChangesLost: true, message: "连接已被任务管理器强制断开"
+    }));
+    await nextTick();
+
+    expect(editors.active).toMatchObject({ busy: false, transactionDirty: false,
+      transactionState: "lost", connectionState: "ready" });
+    expect(queries.executions["bootstrap-editor"].historical).toBe(true);
+    expect(edits.session("bootstrap-editor", "execution-aborted", 0)).toBeUndefined();
+  });
+
   it("resolves Oracle result remarks when JDBC omits table and schema metadata", async () => {
     const connections = useConnectionStore();
     const editors = useEditorStore();

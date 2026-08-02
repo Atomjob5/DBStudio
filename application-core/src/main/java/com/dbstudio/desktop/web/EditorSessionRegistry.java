@@ -104,10 +104,7 @@ public final class EditorSessionRegistry implements AutoCloseable {
                 throw exception;
             }
         }).whenComplete((execution, failure) -> {
-            session.endExecution(executionId);
-            session.lastExecutionId = executionId;
-            if (execution != null) session.lastExecution = execution;
-            session.touch();
+            session.completeExecution(executionId, execution);
             callback.completed(executionId, execution, failure);
         });
         return executionId;
@@ -201,6 +198,20 @@ public final class EditorSessionRegistry implements AutoCloseable {
         }
         public synchronized void endExecution(UUID executionId) {
             if (executionId.equals(activeExecutionId)) activeExecutionId = null;
+        }
+        private synchronized boolean completeExecution(UUID executionId, QueryExecution execution) {
+            if (!executionId.equals(activeExecutionId)) return false;
+            activeExecutionId = null;
+            lastExecutionId = executionId;
+            if (execution != null) lastExecution = execution;
+            touch(); return true;
+        }
+        public synchronized void forceRetireDatabaseWork(UUID executionId) {
+            if (executionId == null || executionId.equals(activeExecutionId)) activeExecutionId = null;
+            transactionOperation.set(false);
+            originalResultValues.clear();
+            originalResultSnapshots.clear();
+            touch();
         }
         public void touch() { lastTouched = System.currentTimeMillis(); }
 

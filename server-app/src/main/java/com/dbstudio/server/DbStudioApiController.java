@@ -63,6 +63,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.http.HttpHeaders;
@@ -755,9 +756,10 @@ public final class DbStudioApiController {
         LOG.info("SQL执行请求开始 workspace={} editor={} statements={} stopOnError={}",
                 workspaceId, editorId, statements.size(), stopOnError);
 
+        final AtomicReference<UUID> executionReference = new AtomicReference<UUID>();
         final QueryResultListener listener = new QueryResultListener() {
             @Override public void resultStarted(int resultIndex, String sql, StatementType type, List<String> columns) {
-                emitResultMetadata(workspace, editorId, resultIndex, sql, type, columns,
+                emitResultMetadata(workspace, editorId, executionReference.get(), resultIndex, sql, type, columns,
                         basicColumnDetails(columns), null, context.provider().dialect().id());
             }
             @Override public void resultMetadata(int resultIndex, String sql, StatementType type,
@@ -771,20 +773,23 @@ public final class DbStudioApiController {
                             "table", column.table(), "typeName", column.typeName(), "jdbcType", column.jdbcType(),
                             "quotedLabel", column.quotedLabel()));
                 }
-                emitResultMetadata(workspace, editorId, resultIndex, sql, type, labels, details,
+                emitResultMetadata(workspace, editorId, executionReference.get(), resultIndex, sql, type, labels, details,
                         mutationTargetPayload(mutationTarget), context.provider().dialect().id());
             }
             @Override public void rows(int resultIndex, List<List<String>> rows) {
                 workspace.events().emit("query.rows", ApiPayloads.map(
-                        "editorId", editorId, "resultIndex", resultIndex, "rows", rows));
+                        "editorId", editorId, "executionId", executionId(executionReference),
+                        "resultIndex", resultIndex, "rows", rows));
             }
             @Override public void rows(int resultIndex, List<String> rowIds, List<List<String>> rows) {
                 workspace.events().emit("query.rows", ApiPayloads.map(
-                        "editorId", editorId, "resultIndex", resultIndex, "rowIds", rowIds, "rows", rows));
+                        "editorId", editorId, "executionId", executionId(executionReference),
+                        "resultIndex", resultIndex, "rowIds", rowIds, "rows", rows));
             }
             @Override public void resultCompleted(int resultIndex, StatementResult result) {
                 workspace.events().emit("query.resultComplete", ApiPayloads.map("editorId", editorId,
-                        "resultIndex", resultIndex, "updateCount", result.updateCount(),
+                        "executionId", executionId(executionReference), "resultIndex", resultIndex,
+                        "updateCount", result.updateCount(),
                         "truncated", result.truncated(), "durationMs", result.duration().toMillis(),
                         "errorMessage", result.errorMessage(), "complete", true));
             }
@@ -792,6 +797,7 @@ public final class DbStudioApiController {
 
         final UUID executionId = workspace.execute(editor, statements, stopOnError,
                 id -> {
+                    executionReference.set(id);
                     workspace.events().emit("query.started", ApiPayloads.map(
                             "editorId", editorId, "executionId", id.toString()));
                     editor.retireResultChanges();
@@ -802,16 +808,22 @@ public final class DbStudioApiController {
         return ApiPayloads.map("executionId", executionId.toString());
     }
 
-    private void emitResultMetadata(Workspace workspace, String editorId, int resultIndex, String sql,
+    private void emitResultMetadata(Workspace workspace, String editorId, UUID executionId, int resultIndex, String sql,
                                     StatementType type, List<String> columns,
                                     List<Map<String, Object>> columnDetails, Map<String, Object> mutationTarget,
                                     String dialectId) {
         workspace.events().emit("query.resultMeta", ApiPayloads.map("editorId", editorId,
+                "executionId", executionId == null ? null : executionId.toString(),
                 "resultIndex", resultIndex, "sql", sql, "type", type.name(), "columns", columns,
                 "columnDetails", columnDetails, "mutationTarget", mutationTarget, "editCapability", mutationTarget,
                 "dialectId", dialectId,
                 "rows", Collections.emptyList(), "updateCount", -1,
                 "truncated", false, "durationMs", 0, "complete", false));
+    }
+
+    private static String executionId(AtomicReference<UUID> reference) {
+        UUID value = reference.get();
+        return value == null ? null : value.toString();
     }
 
     private List<Map<String, Object>> basicColumnDetails(List<String> columns) {
@@ -861,6 +873,40 @@ public final class DbStudioApiController {
             }
         }
         return ApiPayloads.map("cancelled", false);
+    }
+
+    @GetMapping("/workspaces/{workspaceId}/jdbc-connections")
+    public Map<String, Object> jdbcConnections(@PathVariable String workspaceId) {
+        Workspace workspace = workspaces.require(workspaceId);
+        return ApiPayloads.map("connections", workspace.jdbcConnections(), "generatedAt", System.currentTimeMillis());
+    }
+
+    @PostMapping("/workspaces/{workspaceId}/jdbc-connections/{connectionId}/probe")
+    public Map<String, Object> probeJdbcConnection(@PathVariable String workspaceId,
+                                                    @PathVariable String connectionId,
+                                                    @RequestBody Map<String, Object> body) throws Exception {
+        Workspace workspace = workspaces.require(workspaceId);
+        Map<String, Object> connection = workspace.probeJdbcConnection(connectionId, longValue(body, "stateVersion"));
+        LOG.info("JDBC连接探活 workspace={} connection={}", workspaceId, connectionId);
+        return ApiPayloads.map("connection", connection);
+    }
+
+    @PostMapping("/workspaces/{workspaceId}/jdbc-connections/{connectionId}/abort")
+    public Map<String, Object> abortJdbcConnection(@PathVariable String workspaceId,
+                                                    @PathVariable String connectionId,
+                                                    @RequestBody Map<String, Object> body) {
+        Workspace workspace = workspaces.require(workspaceId);
+        Map<String, Object> connection = workspace.abortJdbcConnection(connectionId, longValue(body, "stateVersion"));
+        Object editorId = connection.get("editorId");
+        if (editorId != null && Boolean.TRUE.equals(connection.get("transactionLost"))) {
+            try { workspaceRepository.updateTransactionState(workspaceId, editorId.toString(), "lost"); }
+            catch (SQLException exception) {
+                LOG.warn("持久化强制断开后的事务未知状态失败 workspace={} editor={}",
+                        workspaceId, editorId, exception);
+            }
+        }
+        LOG.warn("用户从任务管理器强制断开JDBC连接 workspace={} connection={}", workspaceId, connectionId);
+        return ApiPayloads.map("accepted", true, "connection", connection);
     }
 
     @PostMapping("/workspaces/{workspaceId}/editors/{editorId}/results/{resultIndex}/page")
@@ -2284,6 +2330,15 @@ public final class DbStudioApiController {
         if (value == null) return defaultValue;
         if (value instanceof Number) return ((Number) value).intValue();
         try { return Integer.parseInt(String.valueOf(value)); }
+        catch (NumberFormatException exception) {
+            throw new ApiException("INVALID_NUMBER", key + " 必须是整数");
+        }
+    }
+
+    private static long longValue(Map<String, Object> body, String key) {
+        Object value = body == null ? null : body.get(key);
+        if (value instanceof Number) return ((Number) value).longValue();
+        try { return Long.parseLong(String.valueOf(value)); }
         catch (NumberFormatException exception) {
             throw new ApiException("INVALID_NUMBER", key + " 必须是整数");
         }

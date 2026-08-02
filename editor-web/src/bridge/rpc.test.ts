@@ -127,6 +127,29 @@ describe("RpcClient websocket recovery", () => {
     client.dispose();
   });
 
+  it("routes JDBC task manager operations with an optimistic state version", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).includes("/open")
+      ? jsonResponse({ workspaceId: "workspace", recoveryDecisionRequired: false, editors: [] })
+      : jsonResponse({ accepted: true, connections: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new RpcClient();
+    await open(client);
+
+    await client.request("jdbc.connections.list");
+    await client.request("jdbc.connections.probe", { connectionId: "connection/a", stateVersion: 12 });
+    await client.request("jdbc.connections.abort", { connectionId: "connection/a", stateVersion: 13 });
+
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/workspaces/workspace/jdbc-connections"),
+      expect.objectContaining({ method: "GET" }));
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/jdbc-connections/connection%2Fa/probe"),
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ stateVersion: 12 }) }));
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/jdbc-connections/connection%2Fa/abort"),
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ stateVersion: 13 }) }));
+    client.dispose();
+  });
+
   it("routes SQL compaction through the active workspace", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).includes("/open")
       ? jsonResponse({ workspaceId: "workspace", recoveryDecisionRequired: false, editors: [] })

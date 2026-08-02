@@ -35,6 +35,11 @@ const profiles = [{ id: "c5d49b11-47bc-4c64-a31e-a17633e68a73", providerId: "mys
 let editorSequence = 0;
 const editorProfiles = new Map<string, string>();
 const transactionDirtyEditors = new Set<string>();
+const mockJdbcConnections: Array<Record<string, unknown>> = [{
+  connectionId: "mock-jdbc-idle-0001", stateVersion: 1, profileId: profiles[0].id,
+  profileName: profiles[0].name, providerId: profiles[0].providerId, state: "idle",
+  transactionDirty: false, createdAt: Date.now() - 60_000, lastActiveAt: Date.now() - 5_000
+}];
 const mockSettings: Record<string, string> = {
   "ui.theme": "system",
   "result.maxRows": "1000",
@@ -120,6 +125,27 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
         operation: row.operation, name: row.name })) };
   }
   if (type === "connection.test") return { success: true, message: "连接成功", serverVersion: "MySQL 8.4.9" };
+  if (type === "jdbc.connections.list") return { connections: mockJdbcConnections.map((item) => ({ ...item })),
+    generatedAt: Date.now() };
+  if (type === "jdbc.connections.probe") {
+    const connection = mockJdbcConnections.find((item) => item.connectionId === payload.connectionId);
+    if (!connection) throw new Error("JDBC 连接不存在或已经断开");
+    connection.state = "idle"; connection.stateVersion = Number(connection.stateVersion) + 1;
+    connection.lastProbeLatencyMs = 8; connection.lastActiveAt = Date.now(); connection.message = "探活成功";
+    emit("jdbc.connections.changed", { updatedAt: Date.now() });
+    return { connection: { ...connection } };
+  }
+  if (type === "jdbc.connections.abort") {
+    const connection = mockJdbcConnections.find((item) => item.connectionId === payload.connectionId);
+    if (!connection) throw new Error("JDBC 连接不存在或已经断开");
+    connection.state = "disconnected"; connection.stateVersion = Number(connection.stateVersion) + 1;
+    connection.disconnectedAt = Date.now(); connection.message = "连接已强制断开";
+    if (connection.editorId) emit("jdbc.connectionAborted", { editorId: connection.editorId,
+      executionId: connection.executionId, transactionLost: connection.transactionDirty,
+      resultChangesLost: false, message: "连接已被任务管理器强制断开" });
+    emit("jdbc.connections.changed", { updatedAt: Date.now() });
+    return { accepted: true, connection: { ...connection } };
+  }
   if (type === "editor.create") { const profile = profiles.find((item) => item.id === payload.profileId); const id = crypto.randomUUID();
     if (profile) editorProfiles.set(id, profile.id);
     return { id, title: `查询 ${++editorSequence}`, connection: profile, connectionState: profile ? "suspended" : "unbound" }; }
@@ -171,6 +197,19 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
   if (type === "history.list") return [];
   if (type === "query.execute") {
     const editorId = String(payload.editorId); const executionId = crypto.randomUUID();
+    let jdbc = mockJdbcConnections.find((item) => item.editorId === editorId && item.state !== "disconnected");
+    if (!jdbc) {
+      const profile = profiles.find((item) => item.id === editorProfiles.get(editorId)) ?? profiles[0];
+      jdbc = { connectionId: crypto.randomUUID(), stateVersion: 1, profileId: profile.id,
+        profileName: profile.name, providerId: profile.providerId, state: "busy", editorId,
+        editorTitle: "当前查询", executionId, transactionDirty: false,
+        createdAt: Date.now(), lastActiveAt: Date.now() };
+      mockJdbcConnections.push(jdbc);
+    } else {
+      jdbc.state = "busy"; jdbc.editorId = editorId; jdbc.executionId = executionId;
+      jdbc.stateVersion = Number(jdbc.stateVersion) + 1;
+    }
+    emit("jdbc.connections.changed", { updatedAt: Date.now() });
     const wideResult = String(payload.text ?? "").includes("wide_result");
     const resultColumns = wideResult ? Array.from({ length: 30 }, (_, index) => `column_${index + 1}`) : ["id", "name"];
     const resultDetails = wideResult ? resultColumns.map((label, index) => ({
@@ -190,7 +229,7 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
       emit("query.started", { editorId, executionId });
       const editableForUpdate = /\bfor\s+update\b/i.test(String(payload.text ?? ""));
       if (editableForUpdate) transactionDirtyEditors.add(editorId);
-      emit("query.resultMeta", { editorId, resultIndex: 0, sql: payload.text, type: "QUERY", columns: resultColumns,
+      emit("query.resultMeta", { editorId, executionId, resultIndex: 0, sql: payload.text, type: "QUERY", columns: resultColumns,
         columnDetails: resultDetails, mutationTarget: { qualifiedName: "`demo`.`sample`", columns: [
           { resultIndex: 0, name: "id", quotedName: "`id`", jdbcType: -5,
             typeFamily: "number", editable: true, nullable: false, autoIncrement: true },
@@ -207,11 +246,16 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
         ? resultColumns.map((_, column) => column === 0 ? String(index + 1) : `R${index + 1} C${column + 1}`)
         : [String(index + 1), `Apple Studio ${index + 1} ✨`]);
       const rowIds = rows.map(() => crypto.randomUUID());
-      emit("query.rows", { editorId, resultIndex: 0, rowIds: rowIds.slice(0, 100), rows: rows.slice(0, 100) });
-      emit("query.rows", { editorId, resultIndex: 0, rowIds: rowIds.slice(100), rows: rows.slice(100) });
-      emit("query.resultComplete", { editorId, resultIndex: 0, durationMs: 38, truncated: true });
+      emit("query.rows", { editorId, executionId, resultIndex: 0, rowIds: rowIds.slice(0, 100), rows: rows.slice(0, 100) });
+      emit("query.rows", { editorId, executionId, resultIndex: 0, rowIds: rowIds.slice(100), rows: rows.slice(100) });
+      emit("query.resultComplete", { editorId, executionId, resultIndex: 0, durationMs: 38, truncated: true });
       emit("query.executionComplete", { editorId, executionId, cancelled: false, failed: false, durationMs: 38,
         transactionDirty: transactionDirtyEditors.has(editorId), resultChangesDirty: false });
+      jdbc!.state = editableForUpdate ? "transaction" : "idle";
+      jdbc!.transactionDirty = editableForUpdate; jdbc!.executionId = undefined;
+      if (!editableForUpdate) { jdbc!.editorId = undefined; jdbc!.editorTitle = undefined; }
+      jdbc!.stateVersion = Number(jdbc!.stateVersion) + 1; jdbc!.lastActiveAt = Date.now();
+      emit("jdbc.connections.changed", { updatedAt: Date.now() });
     }, 0);
     return { executionId };
   }

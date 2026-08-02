@@ -51,6 +51,26 @@ export interface SavedProfile {
 export interface ConnectionSystem { id: string; name: string; revision: string; }
 export interface ConnectionEnvironment { id: string; systemId: string; name: string; revision: string; }
 export type EditorConnectionState = "unbound" | "ready" | "active" | "suspended" | "credentials-required" | "unavailable";
+export type JdbcConnectionState = "idle" | "busy" | "transaction" | "probing" | "unresponsive"
+  | "aborting" | "disconnected" | "error";
+export interface JdbcConnectionSnapshot {
+  connectionId: string;
+  stateVersion: number;
+  profileId: string;
+  profileName: string;
+  providerId: string;
+  state: JdbcConnectionState;
+  editorId?: string;
+  editorTitle?: string;
+  executionId?: string;
+  transactionDirty: boolean;
+  transactionOperationActive?: boolean;
+  createdAt: number;
+  lastActiveAt: number;
+  lastProbeLatencyMs?: number | null;
+  disconnectedAt?: number | null;
+  message?: string;
+}
 export type TransportState = "connecting" | "ready" | "reconnecting" | "recovering" | "offline";
 export type TransactionState = "none" | "active" | "disconnected-protected" | "auto-rolled-back" | "lost";
 export type WorkspaceState = "available" | "in-use" | "disconnected" | "disconnected-transaction";
