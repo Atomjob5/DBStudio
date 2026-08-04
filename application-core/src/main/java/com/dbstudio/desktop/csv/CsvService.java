@@ -4,6 +4,8 @@ import com.dbstudio.desktop.query.QueryRunner;
 import com.dbstudio.desktop.query.StatementResult;
 import com.dbstudio.spi.DatabaseSession;
 import com.dbstudio.spi.SqlDialect;
+import com.dbstudio.spi.SqlLogCategory;
+import com.dbstudio.spi.SqlLogging;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.IOException;
@@ -82,6 +84,7 @@ public final class CsvService {
     public long importFile(DatabaseSession session, SqlDialect dialect, String catalog, String schema, String table,
                            Path file, Charset charset, char delimiter, Map<String, String> sourceToTarget,
                            LongConsumer progress) throws SQLException, IOException {
+        try (SqlLogging.Scope ignored = SqlLogging.scope(SqlLogCategory.TRANSFER)) {
         if (sourceToTarget.isEmpty()) throw new IllegalArgumentException("至少映射一个字段");
         long started = System.nanoTime();
         LOG.info("CSV导入开始 target={} file={} mappingCount={} delimiter={}",
@@ -135,6 +138,7 @@ public final class CsvService {
             session.jdbcConnection().rollback(savepoint);
             throw exception;
         }
+        }
     }
 
     public void exportLoadedResult(StatementResult result, Path file, Charset charset, char delimiter)
@@ -178,6 +182,7 @@ public final class CsvService {
     /** 直接流式写入 HTTP 输出，不把完整结果集保留在内存。 */
     public long exportQuery(DatabaseSession session, String sql, Writer writer, char delimiter,
                             LongConsumer progress) throws SQLException, IOException {
+        try (SqlLogging.Scope ignored = SqlLogging.scope(SqlLogCategory.TRANSFER)) {
         long started = System.nanoTime();
         LOG.info("CSV完整导出开始 sqlFingerprint={} delimiter={}",
                 com.dbstudio.desktop.logging.SqlLogSupport.fingerprint(sql), delimiter);
@@ -207,6 +212,7 @@ public final class CsvService {
                         (System.nanoTime() - started) / 1_000_000L);
                 return rows;
             }
+        }
         }
     }
 

@@ -6,6 +6,8 @@ import com.dbstudio.spi.ConnectionAdapter;
 import com.dbstudio.spi.ConnectionProfile;
 import com.dbstudio.spi.ConnectionTestResult;
 import com.dbstudio.spi.DatabaseSession;
+import com.dbstudio.spi.SqlLogCategory;
+import com.dbstudio.spi.SqlLogging;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
@@ -50,7 +52,8 @@ public final class OracleConnectionAdapter implements ConnectionAdapter {
         properties.setProperty("oracle.net.CONNECT_TIMEOUT", Integer.toString(
                 profile.intSetting("timeoutSeconds", DEFAULT_TIMEOUT_SECONDS) * 1000));
         long started = System.nanoTime();
-        Connection connection = DriverManager.getConnection(buildJdbcUrl(profile), properties);
+        Connection connection = SqlLogging.wrap(
+                DriverManager.getConnection(buildJdbcUrl(profile), properties), SqlLogCategory.CONNECTION);
         OracleJdbcSession session = new OracleJdbcSession(connection);
         try {
             OracleSessionSupport.initialize(session, profile);

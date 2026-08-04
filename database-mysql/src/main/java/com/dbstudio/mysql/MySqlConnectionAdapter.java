@@ -4,6 +4,8 @@ import com.dbstudio.spi.ConnectionAdapter;
 import com.dbstudio.spi.ConnectionProfile;
 import com.dbstudio.spi.ConnectionTestResult;
 import com.dbstudio.spi.DatabaseSession;
+import com.dbstudio.spi.SqlLogCategory;
+import com.dbstudio.spi.SqlLogging;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -66,7 +68,8 @@ public final class MySqlConnectionAdapter implements ConnectionAdapter {
         properties.setProperty("sslMode", "DISABLED");
 
         long started = System.nanoTime();
-        java.sql.Connection connection = DriverManager.getConnection(buildJdbcUrl(profile), properties);
+        java.sql.Connection connection = SqlLogging.wrap(
+                DriverManager.getConnection(buildJdbcUrl(profile), properties), SqlLogCategory.CONNECTION);
         connection.setAutoCommit(false);
         String catalog = profile.setting("database");
         if (!catalog.trim().isEmpty()) {

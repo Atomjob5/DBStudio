@@ -3,6 +3,8 @@ package com.dbstudio.desktop;
 import com.dbstudio.spi.ConnectionProfile;
 import com.dbstudio.spi.DatabaseProvider;
 import com.dbstudio.spi.DatabaseSession;
+import com.dbstudio.spi.SqlLogCategory;
+import com.dbstudio.spi.SqlLogging;
 import com.dbstudio.desktop.query.MetadataResultColumnResolver;
 import com.dbstudio.desktop.query.ResultColumnResolver;
 import java.sql.SQLException;
@@ -54,7 +56,9 @@ public final class DatabaseContext implements AutoCloseable {
 
     public DatabaseSession openEditorSession() throws SQLException {
         LOG.info("创建编辑器JDBC连接 provider={} profileId={}", provider.id(), profile.id());
-        return provider.connections().connect(profile, password);
+        DatabaseSession opened = provider.connections().connect(profile, password);
+        SqlLogging.categorize(opened.jdbcConnection(), SqlLogCategory.BUSINESS);
+        return opened;
     }
 
     /** 释放辅助元数据连接；下一次访问元数据时按需重新创建。 */
@@ -72,6 +76,7 @@ public final class DatabaseContext implements AutoCloseable {
 
     private void openMetadataSession() throws SQLException {
         DatabaseSession opened = provider.connections().connect(profile, password);
+        SqlLogging.categorize(opened.jdbcConnection(), SqlLogCategory.METADATA);
         metadataSession = opened;
         resultColumnResolver = new MetadataResultColumnResolver(provider.metadata(), opened, provider.dialect());
     }

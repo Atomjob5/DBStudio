@@ -21,6 +21,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import org.slf4j.MDC;
 
 /**
  * 编辑器会话注册表。
@@ -93,20 +94,27 @@ public final class EditorSessionRegistry implements AutoCloseable {
         final UUID executionId = UUID.randomUUID();
         session.lastSql = statements.isEmpty() ? null : statements.get(statements.size() - 1).text();
         session.touch();
-        runner.execute(statements, stopOnError, resultListener, () -> {
-            if (!session.beginExecution(executionId)) {
-                throw new RpcException("TRANSACTION_BUSY", "当前标签正在提交或回滚事务");
-            }
-            try {
-                startedCallback.accept(executionId);
-            } catch (RuntimeException exception) {
-                session.endExecution(executionId);
-                throw exception;
-            }
-        }).whenComplete((execution, failure) -> {
-            session.completeExecution(executionId, execution);
-            callback.completed(executionId, execution, failure);
-        });
+        String previousExecutionId = MDC.get("executionId");
+        MDC.put("executionId", executionId.toString());
+        try {
+            runner.execute(statements, stopOnError, resultListener, () -> {
+                if (!session.beginExecution(executionId)) {
+                    throw new RpcException("TRANSACTION_BUSY", "当前标签正在提交或回滚事务");
+                }
+                try {
+                    startedCallback.accept(executionId);
+                } catch (RuntimeException exception) {
+                    session.endExecution(executionId);
+                    throw exception;
+                }
+            }).whenComplete((execution, failure) -> {
+                session.completeExecution(executionId, execution);
+                callback.completed(executionId, execution, failure);
+            });
+        } finally {
+            if (previousExecutionId == null) MDC.remove("executionId");
+            else MDC.put("executionId", previousExecutionId);
+        }
         return executionId;
     }
 

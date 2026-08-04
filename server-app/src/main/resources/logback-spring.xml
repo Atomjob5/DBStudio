@@ -27,6 +27,67 @@
         </rollingPolicy>
     </appender>
 
+    <appender name="BUSINESS_SQL_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/business-sql.log</file>
+        <encoder><charset>UTF-8</charset><pattern>${LOG_PATTERN}</pattern></encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/archive/business-sql.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>20MB</maxFileSize><maxHistory>14</maxHistory><totalSizeCap>200MB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <appender name="RESULT_EDIT_SQL_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/result-edit-sql.log</file>
+        <encoder><charset>UTF-8</charset><pattern>${LOG_PATTERN}</pattern></encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/archive/result-edit-sql.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>20MB</maxFileSize><maxHistory>14</maxHistory><totalSizeCap>200MB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <appender name="METADATA_SQL_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/metadata-sql.log</file>
+        <encoder><charset>UTF-8</charset><pattern>${LOG_PATTERN}</pattern></encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/archive/metadata-sql.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>20MB</maxFileSize><maxHistory>14</maxHistory><totalSizeCap>200MB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <appender name="TRANSFER_SQL_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/transfer-sql.log</file>
+        <encoder><charset>UTF-8</charset><pattern>${LOG_PATTERN}</pattern></encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/archive/transfer-sql.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>20MB</maxFileSize><maxHistory>14</maxHistory><totalSizeCap>200MB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <appender name="CONNECTION_SQL_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/connection-sql.log</file>
+        <encoder><charset>UTF-8</charset><pattern>${LOG_PATTERN}</pattern></encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/archive/connection-sql.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>20MB</maxFileSize><maxHistory>14</maxHistory><totalSizeCap>200MB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <appender name="PERSISTENCE_SQL_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/persistence-sql.log</file>
+        <encoder><charset>UTF-8</charset><pattern>${LOG_PATTERN}</pattern></encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/archive/persistence-sql.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>20MB</maxFileSize><maxHistory>14</maxHistory><totalSizeCap>200MB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <logger name="com.dbstudio.sql.business" level="INFO" additivity="false"><appender-ref ref="BUSINESS_SQL_FILE"/></logger>
+    <logger name="com.dbstudio.sql.result-edit" level="INFO" additivity="false"><appender-ref ref="RESULT_EDIT_SQL_FILE"/></logger>
+    <logger name="com.dbstudio.sql.metadata" level="INFO" additivity="false"><appender-ref ref="METADATA_SQL_FILE"/></logger>
+    <logger name="com.dbstudio.sql.transfer" level="INFO" additivity="false"><appender-ref ref="TRANSFER_SQL_FILE"/></logger>
+    <logger name="com.dbstudio.sql.connection" level="INFO" additivity="false"><appender-ref ref="CONNECTION_SQL_FILE"/></logger>
+    <logger name="com.dbstudio.sql.persistence" level="INFO" additivity="false"><appender-ref ref="PERSISTENCE_SQL_FILE"/></logger>
+
     <logger name="com.dbstudio" level="${appLogLevel}"/>
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>

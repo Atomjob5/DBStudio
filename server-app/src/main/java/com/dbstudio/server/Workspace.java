@@ -36,6 +36,7 @@ import java.util.function.Consumer;
 import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 
 /**
  * 单个持久化 Workspace 的进程内运行时。
@@ -275,7 +276,7 @@ final class Workspace implements AutoCloseable {
                 id, editor.id(), executionId, offset, limit);
         final ActiveLease active = acquireRunner(editor);
         try {
-            return active.runner.fetchPage(sql, offset, limit, () -> {
+            return withExecutionId(executionId, () -> active.runner.fetchPage(sql, offset, limit, () -> {
                 synchronized (Workspace.this) {
                     if (activeLeases.get(editor.id().toString()) != active) {
                         throw new ApiException("JDBC_CONNECTION_ABORTED", "JDBC 连接已被任务管理器强制断开");
@@ -295,11 +296,23 @@ final class Workspace implements AutoCloseable {
             }).whenComplete((result, failure) -> {
                 editor.endExecution(executionId);
                 if (!active.runner.isTransactionDirty()) finishExecutionLease(editor, active);
-            });
+            }));
         } catch (RuntimeException exception) {
             editor.endExecution(executionId);
             finishExecutionLease(editor, active);
             throw exception;
+        }
+    }
+
+    private static <T> T withExecutionId(UUID executionId, java.util.function.Supplier<T> action) {
+        String previous = MDC.get("executionId");
+        if (executionId == null) MDC.remove("executionId");
+        else MDC.put("executionId", executionId.toString());
+        try {
+            return action.get();
+        } finally {
+            if (previous == null) MDC.remove("executionId");
+            else MDC.put("executionId", previous);
         }
     }
 
@@ -319,7 +332,8 @@ final class Workspace implements AutoCloseable {
         if (active == null || !active.runner.isTransactionDirty()) {
             throw new ApiException("RESULT_EDIT_TRANSACTION_ENDED", "事务已经结束，请重新执行 FOR UPDATE");
         }
-        return active.runner.applyResultChanges(target, rows, changes);
+        return withExecutionId(editor.lastExecutionId(),
+                () -> active.runner.applyResultChanges(target, rows, changes));
     }
 
     CompletableFuture<QueryRunner.MutationBatchResult> applyResultOperations(
@@ -336,7 +350,8 @@ final class Workspace implements AutoCloseable {
         if (active == null || !active.runner.isTransactionDirty()) {
             throw new ApiException("RESULT_EDIT_TRANSACTION_ENDED", "事务已经结束，请重新执行 FOR UPDATE");
         }
-        return active.runner.applyResultOperations(target, rows, rowLocators, operations);
+        return withExecutionId(editor.lastExecutionId(),
+                () -> active.runner.applyResultOperations(target, rows, rowLocators, operations));
     }
 
     CompletableFuture<Void> commit(final EditorSession editor) {
@@ -894,7 +909,8 @@ final class Workspace implements AutoCloseable {
         if (active == null || !active.runner.isTransactionDirty()) {
             throw new ApiException("RESULT_EDIT_TRANSACTION_ENDED", "事务已经结束，请重新执行 FOR UPDATE");
         }
-        return active.runner.streamResultValue(target, row, rowLocator, columnIndex, output, maximumBytes);
+        return withExecutionId(editor.lastExecutionId(),
+                () -> active.runner.streamResultValue(target, row, rowLocator, columnIndex, output, maximumBytes));
     }
 
     private static final class LargeValueDraft {

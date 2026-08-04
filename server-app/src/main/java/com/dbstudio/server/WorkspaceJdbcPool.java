@@ -3,6 +3,8 @@ package com.dbstudio.server;
 import com.dbstudio.desktop.DatabaseContext;
 import com.dbstudio.desktop.logging.SqlLogSupport;
 import com.dbstudio.spi.DatabaseSession;
+import com.dbstudio.spi.SqlLogCategory;
+import com.dbstudio.spi.SqlLogging;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -355,7 +357,7 @@ final class WorkspaceJdbcPool implements AutoCloseable {
     }
 
     private boolean reset(DatabaseSession session) {
-        try {
+        try (SqlLogging.Scope ignored = SqlLogging.scope(SqlLogCategory.CONNECTION)) {
             Connection connection = session.jdbcConnection();
             if (connection.getAutoCommit()) connection.setAutoCommit(false);
             context.provider().connections().resetSession(session, context.profile());

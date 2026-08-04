@@ -10,6 +10,8 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Instant;
 import java.util.UUID;
+import com.dbstudio.spi.SqlLogCategory;
+import com.dbstudio.spi.SqlLogging;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -26,7 +28,8 @@ public final class AppDatabase implements AutoCloseable {
 
     public AppDatabase(Path dataDirectory) throws SQLException, IOException {
         Files.createDirectories(dataDirectory);
-        connection = DriverManager.getConnection("jdbc:sqlite:" + dataDirectory.resolve("dbstudio.db"));
+        connection = SqlLogging.wrap(DriverManager.getConnection(
+                "jdbc:sqlite:" + dataDirectory.resolve("dbstudio.db")), SqlLogCategory.PERSISTENCE);
         LOG.info("打开本地SQLite数据库 path={}", dataDirectory.resolve("dbstudio.db"));
         try (Statement statement = connection.createStatement()) {
             statement.execute("PRAGMA foreign_keys = ON");

@@ -6,6 +6,8 @@ import com.dbstudio.spi.SqlStatement;
 import com.dbstudio.spi.StatementType;
 import com.dbstudio.spi.SqlDialect;
 import com.dbstudio.spi.TransactionEffect;
+import com.dbstudio.spi.SqlLogCategory;
+import com.dbstudio.spi.SqlLogging;
 import java.io.IOException;
 import java.io.Closeable;
 import java.io.InputStream;
@@ -191,7 +193,8 @@ public final class QueryRunner implements AutoCloseable {
         }
         final Map<String, String> loggingContext = MDC.getCopyOfContextMap();
         return CompletableFuture.supplyAsync(() -> withLoggingContext(loggingContext,
-                () -> applyResultChangesBlocking(target, rows, changes)), executor)
+                () -> withSqlCategory(SqlLogCategory.RESULT_EDIT,
+                        () -> applyResultChangesBlocking(target, rows, changes))), executor)
                 .whenComplete((ignored, failure) -> executionActive.set(false));
     }
 
@@ -264,7 +267,8 @@ public final class QueryRunner implements AutoCloseable {
         }
         final Map<String, String> loggingContext = MDC.getCopyOfContextMap();
         return CompletableFuture.supplyAsync(() -> withLoggingContext(loggingContext,
-                () -> applyResultOperationsBlocking(target, rows, rowLocators, operations)), executor)
+                () -> withSqlCategory(SqlLogCategory.RESULT_EDIT,
+                        () -> applyResultOperationsBlocking(target, rows, rowLocators, operations))), executor)
                 .whenComplete((ignored, failure) -> executionActive.set(false));
     }
 
@@ -279,13 +283,14 @@ public final class QueryRunner implements AutoCloseable {
             throw new QueryExecutionException("当前已有数据库操作正在执行", null);
         }
         final Map<String, String> loggingContext = MDC.getCopyOfContextMap();
-        return CompletableFuture.supplyAsync(() -> withLoggingContext(loggingContext, () -> {
+        return CompletableFuture.supplyAsync(() -> withLoggingContext(loggingContext,
+                () -> withSqlCategory(SqlLogCategory.RESULT_EDIT, () -> {
             try {
                 return streamResultValueBlocking(target, row, rowLocator, columnIndex, output, maximumBytes);
             } catch (SQLException | IOException exception) {
                 throw new QueryExecutionException("读取大字段失败：" + resultChangeFailureDetail(exception), exception);
             }
-        }), executor).whenComplete((ignored, failure) -> {
+        })), executor).whenComplete((ignored, failure) -> {
             activeStatement.set(null);
             executionActive.set(false);
         });
@@ -1352,7 +1357,7 @@ public final class QueryRunner implements AutoCloseable {
 
     private PageResult fetchPageBlocking(String sql, int offset, int limit) {
         Instant started = Instant.now();
-        LOG.info("分页查询开始 offset={} limit={} {}", offset, limit, SqlLogSupport.summary(sql));
+        LOG.info("分页查询开始 offset={} limit={}", offset, limit);
         if (cancelRequested.get()) return PageResult.cancelledResult();
         PreparedResultQuery prepared = columnResolver.prepare(sql);
         try (Statement statement = session.jdbcConnection().createStatement()) {
@@ -1442,10 +1447,7 @@ public final class QueryRunner implements AutoCloseable {
         Instant started = Instant.now();
         final int statementMaxRows = maxRows;
         final int statementBatchRows = streamBatchRows;
-        LOG.info("SQL语句开始 index={} type={} {}", firstResultIndex, sqlStatement.type(),
-                SqlLogSupport.summary(sqlStatement.text()));
-        String preview = SqlLogSupport.preview(sqlStatement.text());
-        if (!preview.isEmpty()) LOG.debug("SQL语句预览 index={} text={}", firstResultIndex, preview);
+        LOG.info("SQL语句开始 index={} type={}", firstResultIndex, sqlStatement.type());
         if (cancelRequested.get()) return Collections.emptyList();
         PreparedResultQuery prepared = columnResolver.prepare(sqlStatement.text());
         try (Statement statement = session.jdbcConnection().createStatement()) {
@@ -1676,6 +1678,12 @@ public final class QueryRunner implements AutoCloseable {
         } finally {
             MDC.clear();
             if (previous != null) MDC.setContextMap(previous);
+        }
+    }
+
+    private static <T> T withSqlCategory(SqlLogCategory category, Supplier<T> action) {
+        try (SqlLogging.Scope ignored = SqlLogging.scope(category)) {
+            return action.get();
         }
     }
 

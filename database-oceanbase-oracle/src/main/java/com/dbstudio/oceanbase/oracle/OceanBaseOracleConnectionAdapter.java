@@ -6,6 +6,8 @@ import com.dbstudio.spi.ConnectionAdapter;
 import com.dbstudio.spi.ConnectionProfile;
 import com.dbstudio.spi.ConnectionTestResult;
 import com.dbstudio.spi.DatabaseSession;
+import com.dbstudio.spi.SqlLogCategory;
+import com.dbstudio.spi.SqlLogging;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
@@ -53,7 +55,8 @@ public final class OceanBaseOracleConnectionAdapter implements ConnectionAdapter
         properties.setProperty("useUnicode", "true");
         properties.setProperty("characterEncoding", "UTF-8");
         long started = System.nanoTime();
-        Connection connection = DriverManager.getConnection(buildJdbcUrl(profile), properties);
+        Connection connection = SqlLogging.wrap(
+                DriverManager.getConnection(buildJdbcUrl(profile), properties), SqlLogCategory.CONNECTION);
         OracleJdbcSession session = new OracleJdbcSession(connection);
         try {
             verifyOracleMode(session);
