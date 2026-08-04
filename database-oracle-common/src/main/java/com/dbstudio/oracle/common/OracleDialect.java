@@ -9,14 +9,17 @@ import com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr;
 import com.alibaba.druid.sql.ast.expr.SQLAggregateExpr;
 import com.alibaba.druid.sql.ast.expr.SQLDbLinkExpr;
 import com.alibaba.druid.sql.ast.expr.SQLPropertyExpr;
+import com.alibaba.druid.sql.ast.statement.SQLDeleteStatement;
 import com.alibaba.druid.sql.ast.statement.SQLExprTableSource;
 import com.alibaba.druid.sql.ast.statement.SQLSelectItem;
 import com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock;
 import com.alibaba.druid.sql.ast.statement.SQLSelectStatement;
+import com.alibaba.druid.sql.ast.statement.SQLUpdateStatement;
 import com.dbstudio.spi.DatabaseObject;
 import com.dbstudio.spi.ResultMutationSource;
 import com.dbstudio.spi.ResultEditPlan;
 import com.dbstudio.spi.SqlDialect;
+import com.dbstudio.spi.SqlDmlRiskAnalyzer;
 import com.dbstudio.spi.SqlStatement;
 import com.dbstudio.spi.SqlTextCompactor;
 import com.dbstudio.spi.StatementType;
@@ -133,6 +136,24 @@ public class OracleDialect implements SqlDialect {
         if (Arrays.asList("CREATE", "ALTER", "DROP", "TRUNCATE", "RENAME", "GRANT", "REVOKE").contains(keyword)) return StatementType.DDL;
         if (Arrays.asList("COMMIT", "ROLLBACK", "SAVEPOINT", "SET").contains(keyword)) return StatementType.TRANSACTION;
         return StatementType.OTHER;
+    }
+
+    @Override public boolean requiresWhereClauseConfirmation(SqlStatement statement) {
+        if (statement == null || statement.text() == null || statement.text().trim().isEmpty()) return false;
+        try {
+            SQLStatement parsed = SQLUtils.parseSingleStatement(statement.text(), DbType.oracle);
+            if (parsed instanceof SQLUpdateStatement) {
+                return ((SQLUpdateStatement) parsed).getWhere() == null
+                        && SqlDmlRiskAnalyzer.requiresWhereClauseConfirmation(statement.text());
+            }
+            if (parsed instanceof SQLDeleteStatement) {
+                return ((SQLDeleteStatement) parsed).getWhere() == null
+                        && SqlDmlRiskAnalyzer.requiresWhereClauseConfirmation(statement.text());
+            }
+            return SqlDmlRiskAnalyzer.requiresWhereClauseConfirmation(statement.text());
+        } catch (RuntimeException ignored) {
+            return SqlDmlRiskAnalyzer.requiresWhereClauseConfirmation(statement.text());
+        }
     }
 
     @Override public String format(String sql) {

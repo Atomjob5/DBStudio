@@ -1,16 +1,11 @@
 <template>
   <section class="result-panel fill">
-    <div v-if="showExecutionLoading" class="result-loading" role="status" aria-live="polite"
-         aria-label="正在执行 SQL">
-      <img class="result-loading__image" :src="executionLoadingImage"
-           alt="" aria-hidden="true" />
-      <SqlExecutionTimer :started-at="executionStartedAt" />
-    </div>
-    <template v-else-if="execution?.results.length">
+    <template v-if="resultTabs.length">
       <div class="result-header">
-        <el-tabs v-model="activeIndex" class="result-tabs">
-          <el-tab-pane v-for="result in execution.results" :key="result.resultIndex" :name="result.resultIndex"
-                       :label="result.errorMessage ? `错误 ${result.resultIndex + 1}` : `结果 ${result.resultIndex + 1}`" />
+        <el-tabs v-model="activeIndex" class="result-tabs" @tab-remove="closeResultTab">
+          <el-tab-pane v-for="(tab, index) in resultTabs" :key="tab.key" :name="tab.key"
+                       :closable="tab.execution.temporary === true && !tab.execution.busy" :label="tab.result?.errorMessage
+                         ? `错误 ${index + 1}` : `结果 ${index + 1}`" />
         </el-tabs>
         <div class="result-meta" aria-live="polite">
           <span>{{ summary }}</span>
@@ -102,7 +97,12 @@
           </el-dropdown>
         </div>
       </div>
-      <el-alert v-if="activeResult?.errorMessage" :title="activeResult.errorMessage" type="error" show-icon :closable="false" />
+      <div v-if="showExecutionLoading" class="result-loading" role="status" aria-live="polite"
+           aria-label="正在执行 SQL">
+        <img class="result-loading__image" :src="executionLoadingImage" alt="" aria-hidden="true" />
+        <SqlExecutionTimer :started-at="executionStartedAt" />
+      </div>
+      <el-alert v-else-if="activeResult?.errorMessage" :title="activeResult.errorMessage" type="error" show-icon :closable="false" />
       <div v-else-if="activeResult?.columns.length" ref="tableHost" class="table-host" tabindex="0"
            @keydown="tableKeydown" @pointermove="autoScrollSelection">
         <ResultSingleRecordView v-if="singleRecordMode && selectedRecordRow"
@@ -150,6 +150,11 @@
       </div>
       <el-result v-else icon="success" title="语句执行完成" :sub-title="`影响行数：${activeResult?.updateCount ?? 0}`" />
     </template>
+    <div v-else-if="showExecutionLoading" class="result-loading" role="status" aria-live="polite"
+         aria-label="正在执行 SQL">
+      <img class="result-loading__image" :src="executionLoadingImage" alt="" aria-hidden="true" />
+      <SqlExecutionTimer :started-at="executionStartedAt" />
+    </div>
     <el-empty v-else class="result-empty" description="执行查询后在这里查看结果">
       <template #image><el-icon><DataAnalysis /></el-icon></template>
     </el-empty>
@@ -234,7 +239,8 @@ import { rpc } from "../bridge/rpc";
 
 const props = withDefaults(defineProps<{
   execution?: QueryExecutionState;
-  activeResultIndex: number;
+  executions?: QueryExecutionState[];
+  activeResultIndex: string | number;
   executing?: boolean;
   executionStartedAt?: number;
   showResultEditActions?: boolean;
@@ -247,9 +253,10 @@ const props = withDefaults(defineProps<{
   canToggleResultEdit: false, resultEditTooltip: "当前结果不可编辑",
   canApplyResultChanges: false, applyResultChangesTooltip: "没有待应用的本地草稿" });
 const emit = defineEmits<{
-  "export-loaded": [resultIndex: number];
-  "export-full": [resultIndex: number];
-  "update:active-result-index": [resultIndex: number];
+  "export-loaded": [executionId: string, resultIndex: number];
+  "export-full": [executionId: string, resultIndex: number];
+  "close-result": [executionId: string];
+  "update:active-result-index": [resultIndex: string | number];
   "selected-column": [column: SelectedResultColumn | undefined];
   "selected-row-count": [count: number];
   "toggle-result-edit": [];
@@ -283,7 +290,11 @@ let measureContext: CanvasRenderingContext2D | null | undefined;
 let singleRecordReturnPosition: ResultGridScrollPosition | undefined;
 const activeIndex = computed({
   get: () => props.activeResultIndex,
-  set: (value: number) => emit("update:active-result-index", value)
+  set: (value: string | number) => {
+    const tab = resultTabs.value.find((item) => item.key === String(value));
+    emit("update:active-result-index", !props.executions?.length && visibleExecutions.value.length === 1
+      ? tab?.result?.resultIndex ?? value : value);
+  }
 });
 const selectedColumns = ref<Record<string, number[]>>({});
 const columnQuery = ref("");
@@ -318,14 +329,28 @@ const sumSummary = ref<{ total: string; count: number }>();
 const executionLoadingImage = computed(() => app.theme === "dark"
   ? "/assets/branding/dbstudio-sql-loading-v4-dark.webp"
   : "/assets/branding/dbstudio-sql-loading-v4.webp");
-const showExecutionLoading = computed(() => props.executing
-  && (!props.execution?.busy || props.execution.results.length === 0));
-const activeResult = computed(() => props.execution?.results.find((item) => item.resultIndex === activeIndex.value) ?? props.execution?.results[0]);
+const visibleExecutions = computed(() => props.executions?.length ? props.executions
+  : props.execution ? [props.execution] : []);
+interface ResultTab { key: string; execution: QueryExecutionState; result?: QueryExecutionState["results"][number]; }
+const resultTabs = computed<ResultTab[]>(() => visibleExecutions.value.flatMap((item) => item.results.length
+  ? item.results.map((result) => ({ key: result.resultIndex === 0 ? item.executionId : `${item.executionId}:${result.resultIndex}`,
+    execution: item, result }))
+  : item.busy ? [{ key: item.executionId, execution: item }] : []));
+const activeTab = computed(() => resultTabs.value.find((item) => item.key === String(activeIndex.value))
+  ?? (visibleExecutions.value.length === 1
+    ? resultTabs.value.find((item) => item.result?.resultIndex === Number(activeIndex.value)) : undefined)
+  ?? resultTabs.value[0]);
+const execution = computed(() => activeTab.value?.execution);
+const showExecutionLoading = computed(() => props.executions?.length
+  ? Boolean((props.executing && !activeTab.value?.execution.busy)
+    || (activeTab.value?.execution.busy && !activeTab.value?.result))
+  : Boolean(props.executing && (!props.execution?.busy || props.execution.results.length === 0)));
+const activeResult = computed(() => activeTab.value?.result);
 const activeEditSession = computed(() => {
-  const execution = props.execution;
+  const currentExecution = execution.value;
   const result = activeResult.value;
-  return execution && result
-    ? resultEdits.session(execution.editorId, execution.executionId, result.resultIndex)
+  return currentExecution && result
+    ? resultEdits.session(currentExecution.editorId, currentExecution.executionId, result.resultIndex)
     : undefined;
 });
 const resultEditUnlocked = computed(() => activeEditSession.value?.unlocked === true);
@@ -340,15 +365,15 @@ const editAppliedCount = computed(() => {
       .map((cell) => cell.rowId || cell.rowIndex)).size;
 });
 const resultRowClasses = computed<Record<number, string>>(() => {
-  const execution = props.execution;
+  const currentExecution = execution.value;
   const result = activeResult.value;
-  if (!execution || !result) return {};
+  if (!currentExecution || !result) return {};
   const values: Record<number, string> = {};
   for (let rowIndex = 0; rowIndex < result.rows.length; rowIndex++) {
     const rowId = result.rowIds?.[rowIndex];
     const inserted = activeEditSession.value?.inserts.find((item) => item.rowId === rowId);
     if (inserted) values[rowIndex] = inserted.status === "applied" ? "result-row-inserted-applied" : "result-row-inserted";
-    if (resultEdits.isDeleted(execution.editorId, execution.executionId, result.resultIndex, rowId)) {
+    if (resultEdits.isDeleted(currentExecution.editorId, currentExecution.executionId, result.resultIndex, rowId)) {
       values[rowIndex] = "result-row-deleted";
     }
   }
@@ -357,12 +382,12 @@ const resultRowClasses = computed<Record<number, string>>(() => {
 const canDeleteSelectedRows = computed(() => Boolean(resultEditUnlocked.value
   && activeResult.value?.mutationTarget?.deleteSupported && selectedRowSources.value.length));
 const canCloneSelectedRows = computed(() => {
-  const execution = props.execution;
+  const currentExecution = execution.value;
   const result = activeResult.value;
-  if (!execution || !result || !resultEditUnlocked.value || !result.mutationTarget?.insertSupported
+  if (!currentExecution || !result || !resultEditUnlocked.value || !result.mutationTarget?.insertSupported
       || cloneBusy.value || !selectedRowsInDisplayOrder.value.length) return false;
   return selectedRowsInDisplayOrder.value.every((row) => !resultEdits.isDeleted(
-    execution.editorId, execution.executionId, result.resultIndex, resultRowId(row.sourceIndex)));
+    currentExecution.editorId, currentExecution.executionId, result.resultIndex, resultRowId(row.sourceIndex)));
 });
 const changesDialogVisible = ref(false);
 const changePreviews = ref<Array<{ operationId: string; sql: string; binds: string[] }>>([]);
@@ -391,19 +416,19 @@ const changeListRows = computed(() => {
   });
 });
 const resultCellStates = computed<Record<string, "pending" | "posted" | "error">>(() => {
-  const execution = props.execution;
+  const currentExecution = execution.value;
   const result = activeResult.value;
-  if (!execution || !result) return {};
+  if (!currentExecution || !result) return {};
   const values: Record<string, "pending" | "posted" | "error"> = {};
   for (const cell of activeEditSession.value?.cells ?? []) {
-    const state = resultEdits.cellState(execution.editorId, execution.executionId,
+    const state = resultEdits.cellState(currentExecution.editorId, currentExecution.executionId,
       result.resultIndex, cell.rowIndex, cell.columnIndex);
     if (state) values[`${cell.rowIndex}:${cell.columnIndex}`] = state;
   }
   return values;
 });
 const headerHeight = computed(() => settings.showColumnRemarksInHeader ? 48 : 32);
-const resultKey = computed(() => String(activeResult.value?.resultIndex ?? 0));
+const resultKey = computed(() => `${execution.value?.executionId ?? "result"}:${activeResult.value?.resultIndex ?? 0}`);
 const activeSort = computed(() => sorts.value[resultKey.value]);
 const activeFilters = computed(() => filters.value[resultKey.value] ?? []);
 const selectedColumnIndices = computed<number[]>({
@@ -431,13 +456,13 @@ const visibleColumnOptions = computed(() => {
 const summary = computed(() => {
   const result = activeResult.value;
   if (!result) return "";
-  if (props.execution?.busy) return "正在执行…";
+  if (execution.value?.busy) return "正在执行…";
   if (!result.columns.length) return `${result.updateCount} 行受影响 · ${result.durationMs} ms`;
   return displayRows.value.length === result.rows.length ? `${result.rows.length} 行 · ${result.durationMs} ms`
     : `显示 ${displayRows.value.length} / 已加载 ${result.rows.length} 行 · ${result.durationMs} ms`;
 });
 
-watch(() => props.execution?.executionId, () => {
+watch(() => execution.value?.executionId, () => {
   editingCell.value = undefined;
   clearSelection();
   sumSummary.value = undefined;
@@ -455,8 +480,8 @@ watch(activeIndex, () => {
 });
 watch(() => activeResult.value?.columnDetails, () => emitSelectedColumn());
 watch([
-  () => props.execution?.executionId,
-  () => props.execution?.editorId,
+  () => execution.value?.executionId,
+  () => execution.value?.editorId,
   () => activeResult.value?.resultIndex,
   () => activeResult.value?.columns,
   () => activeResult.value?.columnDetails,
@@ -599,10 +624,10 @@ function rowSelectorColumn(): Column {
 
 function activateLayout(): void {
   const result = activeResult.value;
-  const execution = props.execution;
-  if (!result || !execution) { activeLayout.value = undefined; return; }
+  const currentExecution = execution.value;
+  if (!result || !currentExecution) { activeLayout.value = undefined; return; }
   activeLayout.value = columnLayouts.ensure({
-    scope: settings.columnLayoutScope, executionId: execution.executionId, editorId: execution.editorId,
+    scope: settings.columnLayoutScope, executionId: currentExecution.executionId, editorId: currentExecution.editorId,
     result, defaultWidths: result.columns.map((label) => defaultColumnWidth(label))
   });
   syncVisibleFilter();
@@ -1344,7 +1369,7 @@ function handleSingleRecordDoubleClick(row: ViewRow, columnIndex: number): void 
 
 function resultRowId(rowIndex: number): string {
   const result = activeResult.value;
-  return result?.rowIds?.[rowIndex] ?? `${props.execution?.executionId ?? "result"}:${result?.resultIndex ?? 0}:${rowIndex}`;
+  return result?.rowIds?.[rowIndex] ?? `${execution.value?.executionId ?? "result"}:${result?.resultIndex ?? 0}:${rowIndex}`;
 }
 
 function mutationValueText(value: { kind: string; value?: string }): string {
@@ -1377,10 +1402,10 @@ async function cleanupPreparedCloneValues(editorId: string, executionId: string,
 }
 
 async function cloneSelectedResultRows(): Promise<void> {
-  const execution = props.execution;
+  const currentExecution = execution.value;
   const result = activeResult.value;
   const target = result?.mutationTarget;
-  if (!execution || !result || !target || !canCloneSelectedRows.value || cloneBusy.value) return;
+  if (!currentExecution || !result || !target || !canCloneSelectedRows.value || cloneBusy.value) return;
   const selected = selectedRowsInDisplayOrder.value.map((row) => ({
     sourceIndex: row.sourceIndex, cells: [...row.cells]
   }));
@@ -1426,7 +1451,7 @@ async function cloneSelectedResultRows(): Promise<void> {
     typeFamily: string }> = [];
   try {
     if (largeSources.length) {
-      prepared = (await rpc.cloneResultLargeValues(execution.editorId, execution.executionId,
+      prepared = (await rpc.cloneResultLargeValues(currentExecution.editorId, currentExecution.executionId,
         result.resultIndex, largeSources)).values;
     }
     const preparedByCell = new Map(prepared.map((item) => [`${item.cloneId}:${item.columnIndex}`, item]));
@@ -1437,7 +1462,7 @@ async function cloneSelectedResultRows(): Promise<void> {
       seed?.values.push({ columnIndex: source.columnIndex,
         value: { kind: "largeValueToken", value: value.token } });
     }
-    if (props.execution?.executionId !== execution.executionId
+    if (execution.value?.executionId !== currentExecution.executionId
         || activeResult.value?.resultIndex !== result.resultIndex || !resultEditUnlocked.value) {
       throw new Error("结果编辑状态已经变化，请重新选择需要克隆的行");
     }
@@ -1447,16 +1472,16 @@ async function cloneSelectedResultRows(): Promise<void> {
       const seed = seeds[index];
       seed.values.sort((left, right) => left.columnIndex - right.columnIndex);
       const rowIndex = firstRowIndex + index;
-      resultEdits.addInsert(execution.editorId, execution.executionId, result.resultIndex,
+      resultEdits.addInsert(currentExecution.editorId, currentExecution.executionId, result.resultIndex,
         seed.rowId, rowIndex, editableIndices, { origin: "clone", values: seed.values });
-      queries.appendDraftRow(execution.editorId, result.resultIndex, seed.rowId, seed.row);
+      queries.appendDraftRow(currentExecution.editorId, result.resultIndex, seed.rowId, seed.row, currentExecution.executionId);
     }
     selectedRowSources.value = seeds.map((_, index) => firstRowIndex + index);
     selectionMode.value = "rows";
     rowAnchor.value = selectedRowSources.value[0];
     ElMessage.success(`已克隆 ${seeds.length} 行`);
   } catch (error) {
-    await cleanupPreparedCloneValues(execution.editorId, execution.executionId, result.resultIndex, prepared);
+    await cleanupPreparedCloneValues(currentExecution.editorId, currentExecution.executionId, result.resultIndex, prepared);
     ElMessage.error(error instanceof Error ? error.message : String(error));
   } finally {
     cloneBusy.value = false;
@@ -1464,73 +1489,73 @@ async function cloneSelectedResultRows(): Promise<void> {
 }
 
 function addResultRow(): void {
-  const execution = props.execution;
+  const currentExecution = execution.value;
   const result = activeResult.value;
   const target = result?.mutationTarget;
-  if (!execution || !result || !resultEditUnlocked.value || !target?.insertSupported) return;
+  if (!currentExecution || !result || !resultEditUnlocked.value || !target?.insertSupported) return;
   const rowId = `draft:${crypto.randomUUID()}`;
   const rowIndex = result.rows.length;
   const editable = target.columns.filter((column) => !column.generated && (column.editable !== false || column.autoIncrement))
     .map((column) => column.resultIndex);
-  resultEdits.addInsert(execution.editorId, execution.executionId, result.resultIndex, rowId, rowIndex, editable);
-  queries.appendDraftRow(execution.editorId, result.resultIndex, rowId,
-    Array.from({ length: result.columns.length }, () => null));
+  resultEdits.addInsert(currentExecution.editorId, currentExecution.executionId, result.resultIndex, rowId, rowIndex, editable);
+  queries.appendDraftRow(currentExecution.editorId, result.resultIndex, rowId,
+    Array.from({ length: result.columns.length }, () => null), currentExecution.executionId);
   selectedRowSources.value = [rowIndex];
   selectionMode.value = "rows";
   if (editable.length) nextTick(() => startEditCell(rowIndex, editable[0]));
 }
 
 function deleteSelectedResultRows(): void {
-  const execution = props.execution;
+  const currentExecution = execution.value;
   const result = activeResult.value;
-  if (!execution || !result || !canDeleteSelectedRows.value) return;
+  if (!currentExecution || !result || !canDeleteSelectedRows.value) return;
   const selected = [...selectedRowSources.value].sort((left, right) => right - left);
   for (const rowIndex of selected) {
     const rowId = resultRowId(rowIndex);
     const insertedLargeValues = activeEditSession.value?.inserts.find((item) => item.rowId === rowId)?.values
       .flatMap((item) => item.value.kind === "largeValueToken"
         ? [{ columnIndex: item.columnIndex, token: item.value.value }] : []) ?? [];
-    const action = resultEdits.markDelete(execution.editorId, execution.executionId, result.resultIndex,
+    const action = resultEdits.markDelete(currentExecution.editorId, currentExecution.executionId, result.resultIndex,
       rowId, rowIndex, result.rows[rowIndex] ?? []);
     if (action === "cancelled-insert") {
-      queries.removeRowById(execution.editorId, result.resultIndex, rowId);
+      queries.removeRowById(currentExecution.editorId, result.resultIndex, rowId, currentExecution.executionId);
       for (const value of insertedLargeValues) void rpc.deleteResultLargeValueDraft(
-        execution.editorId, execution.executionId, result.resultIndex, value.columnIndex, value.token);
+        currentExecution.editorId, currentExecution.executionId, result.resultIndex, value.columnIndex, value.token);
     }
   }
   clearSelection();
 }
 
 function undoResultDraft(): void {
-  const execution = props.execution;
+  const currentExecution = execution.value;
   const result = activeResult.value;
-  if (!execution || !result) return;
-  const undone = resultEdits.undo(execution.editorId, execution.executionId, result.resultIndex);
+  if (!currentExecution || !result) return;
+  const undone = resultEdits.undo(currentExecution.editorId, currentExecution.executionId, result.resultIndex);
   if (!undone) return;
-  if (undone.kind === "cell") queries.updateCells(execution.editorId, result.resultIndex, [{
+  if (undone.kind === "cell") queries.updateCells(currentExecution.editorId, result.resultIndex, [{
     rowIndex: undone.rowIndex, columnIndex: undone.columnIndex, value: undone.value
-  }]);
+  }], currentExecution.executionId);
   if (undone.kind === "cell" && undone.largeValueToken) void rpc.deleteResultLargeValueDraft(
-    execution.editorId, execution.executionId, result.resultIndex, undone.columnIndex, undone.largeValueToken);
+    currentExecution.editorId, currentExecution.executionId, result.resultIndex, undone.columnIndex, undone.largeValueToken);
   else if (undone.kind === "insert") {
-    queries.removeRowById(execution.editorId, result.resultIndex, undone.rowId);
+    queries.removeRowById(currentExecution.editorId, result.resultIndex, undone.rowId, currentExecution.executionId);
     for (const value of undone.largeValues) void rpc.deleteResultLargeValueDraft(
-      execution.editorId, execution.executionId, result.resultIndex, value.columnIndex, value.token);
+      currentExecution.editorId, currentExecution.executionId, result.resultIndex, value.columnIndex, value.token);
   }
 }
 
 async function openChangesDialog(): Promise<void> {
-  const execution = props.execution;
+  const currentExecution = execution.value;
   const result = activeResult.value;
   const current = activeEditSession.value;
-  if (!execution || !result || !current) return;
+  if (!currentExecution || !result || !current) return;
   changesDialogVisible.value = true;
   previewError.value = "";
   const operations = resultEdits.operations(current);
   if (!operations.length) { changePreviews.value = []; return; }
   try {
     const response = await rpc.request<{ previews: Array<{ operationId: string; sql: string; binds: string[] }> }>(
-      "query.previewChanges", { editorId: execution.editorId, executionId: execution.executionId,
+      "query.previewChanges", { editorId: currentExecution.editorId, executionId: currentExecution.executionId,
         resultIndex: result.resultIndex,
         operations: operations.map(({ sequence: _sequence, ...operation }) => operation) });
     changePreviews.value = response.previews;
@@ -1557,9 +1582,9 @@ function startEditCell(rowIndex: number, columnIndex: number): void {
 
 function saveLargeValueDraft(value: ResultMutationValue): void {
   const edit = largeValueEditor.value;
-  const execution = props.execution;
+  const currentExecution = execution.value;
   const result = activeResult.value;
-  if (!edit || !execution || !result) return;
+  if (!edit || !currentExecution || !result) return;
   const current = result.rows[edit.rowIndex]?.[edit.columnIndex] ?? null;
   const rowId = resultRowId(edit.rowIndex);
   const previousMutation = activeEditSession.value?.inserts.find((item) => item.rowId === rowId)?.values
@@ -1567,17 +1592,17 @@ function saveLargeValueDraft(value: ResultMutationValue): void {
     ?? activeEditSession.value?.cells.find((item) => item.rowId === rowId
       && item.columnIndex === edit.columnIndex)?.draftMutation;
   if (value.kind === "text") {
-    resultEdits.stage(execution.editorId, execution.executionId, result.resultIndex,
+    resultEdits.stage(currentExecution.editorId, currentExecution.executionId, result.resultIndex,
       edit.rowIndex, edit.columnIndex, current, value.value, rowId);
-    queries.updateCells(execution.editorId, result.resultIndex, [{ rowIndex: edit.rowIndex,
-      columnIndex: edit.columnIndex, value: value.value }]);
+    queries.updateCells(currentExecution.editorId, result.resultIndex, [{ rowIndex: edit.rowIndex,
+      columnIndex: edit.columnIndex, value: value.value }], currentExecution.executionId);
   } else {
-    resultEdits.stageMutation(execution.editorId, execution.executionId, result.resultIndex,
+    resultEdits.stageMutation(currentExecution.editorId, currentExecution.executionId, result.resultIndex,
       edit.rowIndex, edit.columnIndex, current, value, rowId);
   }
   if (previousMutation?.kind === "largeValueToken"
       && (value.kind !== "largeValueToken" || value.value !== previousMutation.value)) {
-    void rpc.deleteResultLargeValueDraft(execution.editorId, execution.executionId,
+    void rpc.deleteResultLargeValueDraft(currentExecution.editorId, currentExecution.executionId,
       result.resultIndex, edit.columnIndex, previousMutation.value);
   }
 }
@@ -1588,17 +1613,17 @@ function updateEditingValue(value: string): void {
 
 function commitCellEdit(reason: "enter" | "blur" | "viewport" = "blur"): void {
   const edit = editingCell.value;
-  const execution = props.execution;
+  const currentExecution = execution.value;
   const result = activeResult.value;
-  if (!edit || !execution || !result) return;
+  if (!edit || !currentExecution || !result) return;
   editingCell.value = undefined;
   if (reason === "enter") restoreTableFocusAfterEdit();
   if (edit.value === edit.valueAtOpen) return;
-  resultEdits.stage(execution.editorId, execution.executionId, result.resultIndex,
+  resultEdits.stage(currentExecution.editorId, currentExecution.executionId, result.resultIndex,
     edit.rowIndex, edit.columnIndex, edit.valueAtOpen, edit.value, resultRowId(edit.rowIndex));
-  queries.updateCells(execution.editorId, result.resultIndex, [{
+  queries.updateCells(currentExecution.editorId, result.resultIndex, [{
     rowIndex: edit.rowIndex, columnIndex: edit.columnIndex, value: edit.value
-  }]);
+  }], currentExecution.executionId);
 }
 
 function restoreTableFocusAfterEdit(): void {
@@ -1611,18 +1636,18 @@ function restoreTableFocusAfterEdit(): void {
 function cancelCellEdit(): void { editingCell.value = undefined; }
 
 function setSelectedCellsNull(): void {
-  const execution = props.execution;
+  const currentExecution = execution.value;
   const result = activeResult.value;
-  if (!execution || !result || !canSetSelectedCellNull.value) return;
+  if (!currentExecution || !result || !canSetSelectedCellNull.value) return;
   const updates: Array<{ rowIndex: number; columnIndex: number; value: null }> = [];
   for (const cell of selectedCellsInView.value) {
     const current = result.rows[cell.sourceRow]?.[cell.sourceColumn] ?? null;
     if (current === null) continue;
-    resultEdits.stage(execution.editorId, execution.executionId, result.resultIndex,
+    resultEdits.stage(currentExecution.editorId, currentExecution.executionId, result.resultIndex,
       cell.sourceRow, cell.sourceColumn, current, null, resultRowId(cell.sourceRow));
     updates.push({ rowIndex: cell.sourceRow, columnIndex: cell.sourceColumn, value: null });
   }
-  queries.updateCells(execution.editorId, result.resultIndex, updates);
+  queries.updateCells(currentExecution.editorId, result.resultIndex, updates, currentExecution.executionId);
 }
 
 function isCellEditable(rowIndex: number, columnIndex: number): boolean {
@@ -1632,7 +1657,7 @@ function isCellEditable(rowIndex: number, columnIndex: number): boolean {
   const column = target?.columns.find((item) => item.resultIndex === columnIndex);
   if (!(target?.mode === "editable" || target?.editableForUpdate) || !row || !column || column.editable === false
       || !editableJdbcType(column.jdbcType)) return false;
-  if (resultEdits.isDeleted(props.execution?.editorId ?? "", props.execution?.executionId ?? "",
+  if (resultEdits.isDeleted(execution.value?.editorId ?? "", execution.value?.executionId ?? "",
       result?.resultIndex ?? -1, resultRowId(rowIndex))) return false;
   return Boolean(target.updateSupported !== false || activeEditSession.value?.inserts
     .some((item) => item.rowId === resultRowId(rowIndex) && item.status === "draft"));
@@ -1775,12 +1800,18 @@ async function copyText(text: string, successMessage: string): Promise<void> {
   }
 }
 
+function closeResultTab(key: string | number): void {
+  const tab = resultTabs.value.find((item) => item.key === String(key));
+  if (tab?.execution.temporary) emit("close-result", tab.execution.executionId);
+}
+
 function exportCommand(command: string): void {
-  if (props.execution?.historical || !activeResult.value?.columns.length) return;
+  if (execution.value?.historical || !activeResult.value?.columns.length) return;
+  const executionId = execution.value?.executionId;
   const resultIndex = activeResult.value?.resultIndex;
-  if (resultIndex === undefined) return;
-  if (command === "loaded") emit("export-loaded", resultIndex);
-  else if (command === "full") emit("export-full", resultIndex);
+  if (!executionId || resultIndex === undefined) return;
+  if (command === "loaded") emit("export-loaded", executionId, resultIndex);
+  else if (command === "full") emit("export-full", executionId, resultIndex);
 }
 
 defineExpose({

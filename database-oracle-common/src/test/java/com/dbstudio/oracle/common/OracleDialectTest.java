@@ -44,6 +44,18 @@ class OracleDialectTest {
                 new SqlStatement("SELECT * FROM x", 0, 15, StatementType.QUERY), true));
     }
 
+    @Test void identifiesUpdateAndDeleteWithoutTopLevelWhereAsRisky() {
+        assertTrue(dialect.requiresWhereClauseConfirmation(statement("UPDATE orders SET status = 'CLOSED'")));
+        assertTrue(dialect.requiresWhereClauseConfirmation(statement("DELETE FROM orders")));
+        assertTrue(dialect.requiresWhereClauseConfirmation(statement(
+                "WITH source AS (SELECT 1 id FROM dual) UPDATE orders SET status = 'CLOSED'")));
+        assertFalse(dialect.requiresWhereClauseConfirmation(statement(
+                "UPDATE orders SET note = q'[WHERE]' WHERE id = 1")));
+        assertFalse(dialect.requiresWhereClauseConfirmation(statement("DELETE FROM orders WHERE id = 1")));
+        assertFalse(dialect.requiresWhereClauseConfirmation(statement(
+                "MERGE INTO orders d USING source s ON (d.id = s.id) WHEN MATCHED THEN UPDATE SET d.status = 'CLOSED'")));
+    }
+
     @Test void compactsOracleSqlWithoutChangingStringsOrDroppingComments() {
         String sql = "select /*+ index(o orders_pk) */ o.id, 'a  b' as value /* keep block */\n"
                 + "from orders o -- keep line\nwhere o.id = 1";
@@ -116,5 +128,9 @@ class OracleDialectTest {
         assertTrue(refresh.toUpperCase().contains("CHARTOROWID(?)"));
         assertTrue(refresh.toUpperCase().contains("AMOUNT > 10"));
         assertFalse(refresh.toUpperCase().contains("FETCH FIRST"));
+    }
+
+    private SqlStatement statement(String sql) {
+        return new SqlStatement(sql, 0, sql.length(), dialect.classify(sql));
     }
 }

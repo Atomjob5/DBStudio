@@ -5,16 +5,31 @@ import type { QueryExecutionState, QueryResult } from "../types";
 export const useQueryStore = defineStore("query", () => {
   // Result cells remain plain arrays. Vue observes only batch-level mutations.
   const executions = shallowRef<Record<string, QueryExecutionState>>({});
+  const retained = shallowRef<Record<string, QueryExecutionState[]>>({});
 
-  function start(editorId: string, executionId: string): void {
+  function executionList(editorId: string): QueryExecutionState[] {
+    const current = executions.value[editorId];
+    return [...(retained.value[editorId] ?? []), ...(current ? [current] : [])];
+  }
+
+  function execution(editorId: string, executionId?: string): QueryExecutionState | undefined {
+    const current = executions.value[editorId];
+    if (!executionId || current?.executionId === executionId) return current;
+    return (retained.value[editorId] ?? []).find((item) => item.executionId === executionId);
+  }
+
+  function start(editorId: string, executionId: string, presentation: "replace" | "append" = "replace"): void {
     if (executions.value[editorId]?.executionId === executionId) return;
+    const previous = executionList(editorId);
+    retained.value = { ...retained.value, [editorId]: presentation === "append" ? previous : [] };
     executions.value = { ...executions.value, [editorId]: {
-      executionId, editorId, results: [], busy: true, cancelled: false, failed: false, durationMs: 0
+      executionId, editorId, results: [], busy: true, cancelled: false, failed: false, durationMs: 0,
+      temporary: presentation === "append"
     } };
   }
 
-  function addResult(editorId: string, result: QueryResult): void {
-    const execution = executions.value[editorId];
+  function addResult(editorId: string, result: QueryResult, executionId?: string): void {
+    const execution = executionFor(editorId, executionId);
     if (!execution) {
       if (import.meta.env.DEV) console.warn(`Ignoring late query result for ${editorId}`);
       return;
@@ -23,18 +38,20 @@ export const useQueryStore = defineStore("query", () => {
   }
 
   function appendRows(editorId: string, resultIndex: number, rows: Array<Array<string | null>>,
-                      rowIds: string[] = []): void {
-    const execution = executions.value[editorId];
+                      executionIdOrRowIds?: string | string[], rowIds: string[] = []): void {
+    const executionId = typeof executionIdOrRowIds === "string" ? executionIdOrRowIds : undefined;
+    const resolvedRowIds = Array.isArray(executionIdOrRowIds) ? executionIdOrRowIds : rowIds;
+    const execution = executionFor(editorId, executionId);
     const result = execution?.results.find((item) => item.resultIndex === resultIndex);
     if (!execution || !result) { warnLate(editorId, resultIndex); return; }
-    const ids = rowIds.length === rows.length ? rowIds
+    const ids = resolvedRowIds.length === rows.length ? resolvedRowIds
       : rows.map(() => crypto.randomUUID());
     const updated = { ...result, rows: [...result.rows, ...rows], rowIds: [...(result.rowIds ?? []), ...ids] };
     replaceExecution(editorId, { ...execution, results: execution.results.map((item) => item === result ? updated : item) });
   }
 
-  function completeResult(editorId: string, resultIndex: number, values: Partial<QueryResult>): void {
-    const execution = executions.value[editorId];
+  function completeResult(editorId: string, resultIndex: number, values: Partial<QueryResult>, executionId?: string): void {
+    const execution = executionFor(editorId, executionId);
     const result = execution?.results.find((item) => item.resultIndex === resultIndex);
     if (!execution || !result) { warnLate(editorId, resultIndex); return; }
     const updated = { ...result, ...values, complete: true };
@@ -42,8 +59,9 @@ export const useQueryStore = defineStore("query", () => {
   }
 
   function updateCells(editorId: string, resultIndex: number,
-                       cells: Array<{ rowIndex: number; columnIndex: number; value: string | null }>): void {
-    const execution = executions.value[editorId];
+                       cells: Array<{ rowIndex: number; columnIndex: number; value: string | null }>,
+                       executionId?: string): void {
+    const execution = executionFor(editorId, executionId);
     const result = execution?.results.find((item) => item.resultIndex === resultIndex);
     if (!execution || !result || !cells.length) return;
     const rows = [...result.rows];
@@ -65,8 +83,8 @@ export const useQueryStore = defineStore("query", () => {
   }
 
   function appendDraftRow(editorId: string, resultIndex: number, rowId: string,
-                          row: Array<string | null>): void {
-    const execution = executions.value[editorId];
+                          row: Array<string | null>, executionId?: string): void {
+    const execution = executionFor(editorId, executionId);
     const result = execution?.results.find((item) => item.resultIndex === resultIndex);
     if (!execution || !result) return;
     const updated = { ...result, rows: [...result.rows, row], rowIds: [...(result.rowIds ?? []), rowId] };
@@ -74,8 +92,8 @@ export const useQueryStore = defineStore("query", () => {
       results: execution.results.map((item) => item === result ? updated : item) });
   }
 
-  function removeRowById(editorId: string, resultIndex: number, rowId: string): void {
-    const execution = executions.value[editorId];
+  function removeRowById(editorId: string, resultIndex: number, rowId: string, executionId?: string): void {
+    const execution = executionFor(editorId, executionId);
     const result = execution?.results.find((item) => item.resultIndex === resultIndex);
     if (!execution || !result) return;
     const index = (result.rowIds ?? []).indexOf(rowId);
@@ -88,8 +106,9 @@ export const useQueryStore = defineStore("query", () => {
 
   function applyResultPatches(editorId: string, resultIndex: number,
                               patches: Array<{ kind: "update" | "insert" | "delete"; rowId: string;
-                                rowIndex: number; row: Array<string | null>; clientRowId?: string }>): void {
-    const execution = executions.value[editorId];
+                                rowIndex: number; row: Array<string | null>; clientRowId?: string }>,
+                              executionId?: string): void {
+    const execution = executionFor(editorId, executionId);
     const result = execution?.results.find((item) => item.resultIndex === resultIndex);
     if (!execution || !result) return;
     const rows = result.rows.map((row) => [...row]);
@@ -114,8 +133,8 @@ export const useQueryStore = defineStore("query", () => {
   }
 
   function replaceResultSnapshot(editorId: string, resultIndex: number,
-                                 rows: Array<Array<string | null>>, rowIds: string[]): void {
-    const execution = executions.value[editorId];
+                                 rows: Array<Array<string | null>>, rowIds: string[], executionId?: string): void {
+    const execution = executionFor(editorId, executionId);
     const result = execution?.results.find((item) => item.resultIndex === resultIndex);
     if (!execution || !result) return;
     const updated = { ...result, rows: rows.map((row) => [...row]), rowIds: [...rowIds] };
@@ -125,7 +144,7 @@ export const useQueryStore = defineStore("query", () => {
 
   function applyColumnRemarks(editorId: string, executionId: string, resultIndex: number,
                               remarks: Array<{ index: number; remarks: string }>): void {
-    const execution = executions.value[editorId];
+    const execution = executionFor(editorId, executionId);
     const result = execution?.results.find((item) => item.resultIndex === resultIndex);
     if (!execution || execution.executionId !== executionId || !result?.columnDetails || !remarks.length) return;
     const byIndex = new Map(remarks.map((item) => [item.index, item.remarks]));
@@ -135,23 +154,36 @@ export const useQueryStore = defineStore("query", () => {
     replaceExecution(editorId, { ...execution, results: execution.results.map((item) => item === result ? updated : item) });
   }
 
-  function complete(editorId: string, values: Partial<QueryExecutionState>): void {
-    const execution = executions.value[editorId];
+  function complete(editorId: string, values: Partial<QueryExecutionState>, executionId?: string): void {
+    const execution = executionFor(editorId, executionId);
     if (!execution) { if (import.meta.env.DEV) console.warn(`Ignoring late query completion for ${editorId}`); return; }
     replaceExecution(editorId, { ...execution, ...values, busy: false });
   }
 
+  function executionFor(editorId: string, executionId?: string): QueryExecutionState | undefined {
+    return execution(editorId, executionId);
+  }
+
   function replaceExecution(editorId: string, execution: QueryExecutionState): void {
-    executions.value = { ...executions.value, [editorId]: execution };
+    if (executions.value[editorId]?.executionId === execution.executionId) {
+      executions.value = { ...executions.value, [editorId]: execution };
+      return;
+    }
+    const current = retained.value[editorId] ?? [];
+    if (!current.some((item) => item.executionId === execution.executionId)) return;
+    retained.value = { ...retained.value, [editorId]: current.map((item) =>
+      item.executionId === execution.executionId ? execution : item) };
   }
 
   function clearEditor(editorId: string): void {
     const { [editorId]: _removed, ...remaining } = executions.value;
     executions.value = remaining;
+    const { [editorId]: _retained, ...remainingRetained } = retained.value;
+    retained.value = remainingRetained;
   }
 
-  function markHistorical(editorId: string): void {
-    const execution = executions.value[editorId];
+  function markHistorical(editorId: string, executionId?: string): void {
+    const execution = executionFor(editorId, executionId);
     if (!execution) return;
     replaceExecution(editorId, { ...execution, busy: false, historical: true,
       results: execution.results.map((result) => ({ ...result, complete: true })) });
@@ -161,8 +193,23 @@ export const useQueryStore = defineStore("query", () => {
     if (import.meta.env.DEV) console.warn(`Ignoring late query rows for ${editorId}/${resultIndex}`);
   }
 
-  function clear(): void { executions.value = {}; }
+  function removeExecution(editorId: string, executionId: string): void {
+    const current = executions.value[editorId];
+    if (current?.executionId === executionId) {
+      const previous = retained.value[editorId] ?? [];
+      const next = previous[previous.length - 1];
+      const remaining = previous.slice(0, -1);
+      const { [editorId]: _removed, ...other } = executions.value;
+      executions.value = next ? { ...other, [editorId]: next } : other;
+      retained.value = { ...retained.value, [editorId]: remaining };
+      return;
+    }
+    retained.value = { ...retained.value, [editorId]: (retained.value[editorId] ?? [])
+      .filter((item) => item.executionId !== executionId) };
+  }
+
+  function clear(): void { executions.value = {}; retained.value = {}; }
   return { executions, start, addResult, appendRows, completeResult, updateCells, appendDraftRow,
     removeRowById, applyResultPatches, replaceResultSnapshot, applyColumnRemarks,
-    complete, markHistorical, clearEditor, clear };
+    complete, markHistorical, clearEditor, clear, execution, executionList, removeExecution };
 });

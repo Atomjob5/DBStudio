@@ -539,6 +539,7 @@ export interface QueryExecutionState {
   failed: boolean;
   durationMs: number;
   historical?: boolean;
+  temporary?: boolean;
 }
 
 export interface HistoryEntry {

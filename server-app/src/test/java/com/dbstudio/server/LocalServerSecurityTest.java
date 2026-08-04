@@ -316,6 +316,7 @@ class LocalServerSecurityTest {
                 new HttpEntity<String>(headers), String.class);
         assertEquals(HttpStatus.OK, defaults.getStatusCode());
         assertTrue(defaults.getBody().contains("\\\"query.executeCurrent\\\":\\\"F8\\\""));
+        assertTrue(defaults.getBody().contains("\\\"query.executeCurrentNewTab\\\":null"));
         assertTrue(defaults.getBody().contains("\\\"query.executeAll\\\":\\\"F7\\\""));
         assertTrue(defaults.getBody().contains("\\\"query.cancel\\\":\\\"Shift+Escape\\\""));
         assertTrue(defaults.getBody().contains("\\\"editor.uppercase\\\":null"));
@@ -325,7 +326,7 @@ class LocalServerSecurityTest {
 
         Map<String, String> setting = new HashMap<String, String>();
         setting.put("key", "keyboard.shortcuts");
-        setting.put("value", "{\"query.executeCurrent\":\"Mod+8\",\"query.executeAll\":null,"
+        setting.put("value", "{\"query.executeCurrent\":\"Mod+8\",\"query.executeCurrentNewTab\":\"Mod+Alt+8\",\"query.executeAll\":null,"
                 + "\"query.cancel\":\"Shift+Escape\",\"editor.compact\":\"Mod+Alt+M\","
                 + "\"editor.toggleMinimap\":null,\"editor.toggleWordWrap\":null,"
                 + "\"editor.uppercase\":\"Mod+Alt+U\",\"editor.lowercase\":null,"

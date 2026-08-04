@@ -246,9 +246,9 @@ export class RpcClient {
       "PUT", payload, 30_000, true, keepalive);
   }
 
-  async downloadCsv(kind: "loaded" | "full", editorId: string, resultIndex: number): Promise<void> {
+  async downloadCsv(kind: "loaded" | "full", editorId: string, executionId: string, resultIndex: number): Promise<void> {
     await this.ensureOperational();
-    const query = new URLSearchParams({ editorId, resultIndex: String(resultIndex), clientId: this.browserClientId });
+    const query = new URLSearchParams({ editorId, executionId, resultIndex: String(resultIndex), clientId: this.browserClientId });
     const anchor = document.createElement("a");
     anchor.href = `/api/v1/workspaces/${this.workspaceId}/csv/export/${kind}?${query}`;
     anchor.download = kind === "full" ? "dbstudio-full-result.csv" : "dbstudio-result.csv";
@@ -411,6 +411,10 @@ export class RpcClient {
       case "editor.close": return { path: `${ws}/editors/${editorId}/close`, method: "POST", body };
       case "editor.draft": return { path: `${ws}/editors/${editorId}/draft`, method: "PUT", body };
       case "query.execute": return { path: `${ws}/editors/${editorId}/executions`, method: "POST", body };
+      case "query.closeResult": return {
+        path: `${ws}/editors/${editorId}/executions/${encodeURIComponent(String(body.executionId ?? ""))}`,
+        method: "DELETE", body: undefined
+      };
       case "query.fetchRows": return { path: `${ws}/editors/${editorId}/results/${encodeURIComponent(String(body.resultIndex ?? 0))}/page`, method: "POST", body };
       case "query.applyChanges": return {
         path: `${ws}/editors/${editorId}/results/${encodeURIComponent(String(body.resultIndex ?? 0))}/changes`,

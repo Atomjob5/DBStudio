@@ -71,7 +71,7 @@ const MonacoEditorStub = defineComponent({
     expose({
       getValue: () => props.initialValue,
       setValue: () => undefined,
-      triggerExecute: (scope: "current" | "script") => emit("execute", scope, "", 0),
+      triggerExecute: (scope: "current" | "script" | "current-new-tab") => emit("execute", scope, "", 0),
       triggerCompletion: () => undefined,
       captureSqlTransformTarget,
       applySqlTransform,
@@ -708,6 +708,7 @@ describe("App result loading status toolbar", () => {
     });
     await nextTick();
     expect(useSettingsStore().shortcuts["query.executeCurrent"]).toBe("F8");
+    expect(useSettingsStore().shortcuts["query.executeCurrentNewTab"]).toBeNull();
     expect((wrapper.vm as unknown as { canExecute: boolean }).canExecute).toBe(true);
 
     const f8Event = new KeyboardEvent("keydown", { key: "F8", code: "F8", bubbles: true, cancelable: true });
@@ -746,6 +747,57 @@ describe("App result loading status toolbar", () => {
     expect(document.body.dispatchEvent(new KeyboardEvent("keydown", {
       key: "F5", code: "F5", bubbles: true, cancelable: true,
     }))).toBe(false);
+  });
+
+  it("executes the current statement in a new result tab without replacing the original result", async () => {
+    const connections = useConnectionStore();
+    const editors = useEditorStore();
+    const queries = useQueryStore();
+    const profile = completionProfile();
+    connections.initialize([], [profile], [{ id: "system-1", name: "核心系统", revision: "1" }],
+      [{ id: "environment-dev", systemId: "system-1", name: "DEV", revision: "1" }]);
+    editors.patch("bootstrap-editor", { content: "SELECT 1;\nSELECT 2;", connection: profile,
+      connectionState: "active", busy: false, executionPhase: "idle" });
+    queries.start("bootstrap-editor", "execution-original");
+    queries.addResult("bootstrap-editor", { resultIndex: 0, sql: "SELECT 1", type: "QUERY", columns: ["id"],
+      rows: [["1"]], updateCount: -1, truncated: false, durationMs: 1, complete: true });
+    queries.complete("bootstrap-editor", { durationMs: 1 });
+    Object.assign(wrapper.findComponent({ name: "MonacoEditor" }).vm, {
+      getValue: () => "SELECT 1;\nSELECT 2;"
+    });
+    rpcRequest.mockImplementation(async (type: string) => {
+      if (type === "query.execute") return { executionId: "execution-temporary" };
+      if (type === "metadata.completionNamespaces") return completionNamespaces();
+      return {};
+    });
+
+    await (wrapper.vm as unknown as {
+      executeCurrentInNewTab: (selectedText: string, cursorOffset: number) => Promise<void>
+    }).executeCurrentInNewTab("", 12);
+    await flushPromises();
+
+    expect(rpcRequest).toHaveBeenCalledWith("query.execute", expect.objectContaining({
+      editorId: "bootstrap-editor", text: "SELECT 1;\nSELECT 2;", scope: "current", cursorOffset: 12,
+      resultPresentation: "append"
+    }));
+    expect(editors.activeId).toBe("bootstrap-editor");
+    expect(queries.executionList("bootstrap-editor").map((item) => item.executionId))
+      .toEqual(["execution-original", "execution-temporary"]);
+  });
+
+  it("shows a warning and resets loading when risk SQL requires a second execution", async () => {
+    const editors = useEditorStore();
+    editors.patch("bootstrap-editor", { content: "UPDATE orders SET status = 'closed'", connection: completionProfile(),
+      connectionState: "active", busy: false, executionPhase: "idle" });
+    rpcRequest.mockRejectedValueOnce(Object.assign(new Error("risk"), { code: "RISK_REEXECUTION_REQUIRED" }));
+    const warning = vi.spyOn(ElMessage, "warning").mockImplementation(() => undefined as never);
+    const error = vi.spyOn(ElMessage, "error").mockImplementation(() => undefined as never);
+
+    await executeFromApp(wrapper);
+
+    expect(warning).toHaveBeenCalledWith("当前语句未包含 WHERE，可能影响大量数据；请再次执行以继续");
+    expect(error).not.toHaveBeenCalled();
+    expect(editors.active).toMatchObject({ busy: false, executionPhase: "idle", executionStartedAt: undefined });
   });
 
   it("applies a changed shortcut immediately and rolls back a failed save", async () => {

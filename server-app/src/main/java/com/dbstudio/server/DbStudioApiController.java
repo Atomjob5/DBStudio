@@ -41,6 +41,7 @@ import com.dbstudio.spi.DatabaseObject;
 import com.dbstudio.spi.DatabaseObjectType;
 import com.dbstudio.spi.DatabaseProvider;
 import com.dbstudio.spi.DatabaseSession;
+import com.dbstudio.spi.SqlDmlRiskAnalyzer;
 import com.dbstudio.spi.SqlStatement;
 import com.dbstudio.spi.StatementType;
 import java.io.OutputStreamWriter;
@@ -48,6 +49,8 @@ import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -111,7 +114,7 @@ public final class DbStudioApiController {
             "id", "trigger", "remarks", "sql"));
     private static final Set<String> SHORTCUT_ACTION_IDS = new LinkedHashSet<String>(Arrays.asList(
             "file.newQuery", "file.openSql", "file.saveSql",
-            "query.executeCurrent", "query.executeAll", "query.cancel",
+            "query.executeCurrent", "query.executeCurrentNewTab", "query.executeAll", "query.cancel",
             "transaction.commit", "transaction.rollback", "data.import", "history.open",
             "settings.open", "ui.toggleTheme", "app.exit",
             "workspace.objects", "workspace.connections", "workspace.refreshObjects",
@@ -129,7 +132,7 @@ public final class DbStudioApiController {
             "Quote", "Comma", "Period", "Slash", "Backquote"));
     private static final String DEFAULT_SHORTCUTS =
             "{\"file.newQuery\":null,\"file.openSql\":null,\"file.saveSql\":null,"
-            + "\"query.executeCurrent\":\"F8\",\"query.executeAll\":\"F7\",\"query.cancel\":\"Shift+Escape\","
+            + "\"query.executeCurrent\":\"F8\",\"query.executeCurrentNewTab\":null,\"query.executeAll\":\"F7\",\"query.cancel\":\"Shift+Escape\","
             + "\"transaction.commit\":null,\"transaction.rollback\":null,\"data.import\":null,"
             + "\"history.open\":null,\"settings.open\":null,\"ui.toggleTheme\":null,\"app.exit\":null,"
             + "\"workspace.objects\":null,\"workspace.connections\":null,\"workspace.refreshObjects\":null,"
@@ -750,6 +753,9 @@ public final class DbStudioApiController {
         ensureEditorContext(workspace, editor);
         final DatabaseContext context = workspace.requireEditorDatabase(editor);
         final List<SqlStatement> statements = selectStatements(context.provider(), body);
+        final boolean appendResult = "append".equals(ApiPayloads.text(body, "resultPresentation"));
+        if (appendResult) requireTemporaryReadOnlySelect(statements);
+        requireRiskReexecution(workspace, editor, context, statements);
         resolveLegacyResultChangesBeforeExecution(workspace, editor,
                 ApiPayloads.text(body, "resultTransactionAction"));
         boolean stopOnError = ApiPayloads.bool(body, "stopOnError", true);
@@ -795,17 +801,34 @@ public final class DbStudioApiController {
             }
         };
 
-        final UUID executionId = workspace.execute(editor, statements, stopOnError,
+        final UUID executionId = workspace.execute(editor, statements, stopOnError, appendResult,
                 id -> {
                     executionReference.set(id);
                     workspace.events().emit("query.started", ApiPayloads.map(
-                            "editorId", editorId, "executionId", id.toString()));
-                    editor.retireResultChanges();
-                    workspace.removeLargeValueDrafts(editorId);
+                            "editorId", editorId, "executionId", id.toString(),
+                            "resultPresentation", appendResult ? "append" : "replace"));
+                    if (!appendResult) {
+                        editor.retireResultChanges();
+                        workspace.removeLargeValueDrafts(editorId);
+                    }
                 }, listener,
                 (id, execution, failure) -> finishExecution(workspace, context, editorId, id, execution, failure));
         LOG.info("SQL执行任务已创建 workspace={} editor={} execution={}", workspaceId, editorId, executionId);
         return ApiPayloads.map("executionId", executionId.toString());
+    }
+
+    @DeleteMapping("/workspaces/{workspaceId}/editors/{editorId}/executions/{executionId}")
+    public Map<String, Object> closeResultExecution(@PathVariable String workspaceId,
+                                                     @PathVariable String editorId,
+                                                     @PathVariable String executionId) {
+        Workspace workspace = workspaces.require(workspaceId);
+        EditorSession editor = workspace.editors().require(editorId);
+        UUID id = resultExecution(editor, executionId);
+        if (!editor.removeExecution(id)) {
+            throw new ApiException("RESULT_BUSY", "正在执行的结果不能关闭");
+        }
+        workspace.removeLargeValueDrafts(editorId, id);
+        return ApiPayloads.map("closed", true);
     }
 
     private void emitResultMetadata(Workspace workspace, String editorId, UUID executionId, int resultIndex, String sql,
@@ -971,36 +994,37 @@ public final class DbStudioApiController {
             throw new ApiException("RESULT_CHANGES_PENDING",
                     "请先提交或回滚结果修改后再继续加载数据");
         }
-        StatementResult source = result(editor, resultIndex);
-        if (!source.hasRows() || source.type() != StatementType.QUERY) {
-            throw new ApiException("RESULT_NOT_PAGEABLE", "只有只读查询结果支持继续加载数据");
-        }
         int offset = integer(body, "offset", 0);
         int limit = integer(body, "limit", 1_000);
         if (offset < 0) throw new ApiException("INVALID_RESULT_OFFSET", "结果偏移量不能小于 0");
-        if (offset != source.rows().size()) {
-            throw new ApiException("STALE_RESULT_OFFSET", "结果数据已变化，请使用当前已加载行数继续获取");
-        }
         if (limit < 1 || limit > 100_000) {
             throw new ApiException("INVALID_RESULT_LIMIT", "单次加载行数必须在 1 到 100000 之间");
         }
         String rawExecutionId = ApiPayloads.text(body, "executionId").trim();
-        final UUID executionId;
+        final UUID pageExecutionId;
         try {
-            executionId = rawExecutionId.isEmpty() ? UUID.randomUUID() : UUID.fromString(rawExecutionId);
+            pageExecutionId = rawExecutionId.isEmpty() ? UUID.randomUUID() : UUID.fromString(rawExecutionId);
         } catch (IllegalArgumentException exception) {
             throw new ApiException("INVALID_EXECUTION_ID", "分页执行编号无效");
         }
-        PageResult page = workspace.fetchPage(editor, executionId, source.sql(), offset, limit,
+        UUID resultExecutionId = resultExecution(editor, ApiPayloads.text(body, "resultExecutionId"));
+        StatementResult source = result(editor, resultExecutionId, resultIndex);
+        if (!source.hasRows() || source.type() != StatementType.QUERY) {
+            throw new ApiException("RESULT_NOT_PAGEABLE", "只有只读查询结果支持继续加载数据");
+        }
+        if (offset != source.rows().size()) {
+            throw new ApiException("STALE_RESULT_OFFSET", "结果数据已变化，请使用当前已加载行数继续获取");
+        }
+        PageResult page = workspace.fetchPage(editor, pageExecutionId, source.sql(), offset, limit,
                 () -> workspace.events().emit("query.pageStarted", ApiPayloads.map(
-                        "editorId", editorId, "executionId", executionId.toString(),
+                        "editorId", editorId, "executionId", pageExecutionId.toString(),
                         "resultIndex", resultIndex))).get(120, TimeUnit.SECONDS);
-        if (!page.cancelled()) editor.appendResultRows(resultIndex, page.rows(), page.rowIds(),
+        if (!page.cancelled()) editor.appendResultRows(resultExecutionId, resultIndex, page.rows(), page.rowIds(),
                 page.rowLocators(), page.hasMore());
         LOG.info("结果分页完成 workspace={} editor={} execution={} resultIndex={} offset={} rows={} hasMore={} cancelled={}",
-                workspaceId, editorId, executionId, resultIndex, offset, page.rows().size(),
+                workspaceId, editorId, pageExecutionId, resultIndex, offset, page.rows().size(),
                 page.hasMore(), page.cancelled());
-        return ApiPayloads.map("executionId", executionId.toString(), "resultIndex", resultIndex,
+        return ApiPayloads.map("executionId", pageExecutionId.toString(), "resultExecutionId", resultExecutionId.toString(), "resultIndex", resultIndex,
                 "offset", offset, "rows", page.rows(), "rowIds", page.rowIds(), "hasMore", page.hasMore(),
                 "nextOffset", offset + page.rows().size(), "cancelled", page.cancelled());
     }
@@ -1018,10 +1042,7 @@ public final class DbStudioApiController {
         catch (IllegalArgumentException exception) {
             throw new ApiException("INVALID_EXECUTION_ID", "结果执行编号无效");
         }
-        if (!executionId.equals(editor.lastExecutionId())) {
-            throw new ApiException("STALE_RESULT", "查询结果已经过期，请重新执行");
-        }
-        StatementResult source = result(editor, resultIndex);
+        StatementResult source = result(editor, executionId, resultIndex);
         ResultMutationTarget target = source.mutationTarget();
         if (target == null || !target.editableForUpdate()) {
             throw new ApiException("RESULT_NOT_EDITABLE", target == null || target.reason().isEmpty()
@@ -1034,7 +1055,7 @@ public final class DbStudioApiController {
         List<QueryRunner.RowChange> applied;
         try {
             applied = workspace.applyResultChanges(
-                    editor, target, source.rows(), requested).get(30, TimeUnit.SECONDS);
+                    editor, executionId, target, source.rows(), requested).get(30, TimeUnit.SECONDS);
         } catch (ExecutionException exception) {
             Throwable cause = exception.getCause();
             if (cause instanceof QueryExecutionException) {
@@ -1070,10 +1091,7 @@ public final class DbStudioApiController {
         catch (IllegalArgumentException exception) {
             throw new ApiException("INVALID_EXECUTION_ID", "结果执行编号无效");
         }
-        if (!executionId.equals(editor.lastExecutionId())) {
-            throw new ApiException("STALE_RESULT", "查询结果已经过期，请重新执行");
-        }
-        StatementResult source = result(editor, resultIndex);
+        StatementResult source = result(editor, executionId, resultIndex);
         ResultMutationTarget target = source.mutationTarget();
         if (target == null || !target.editableForUpdate()) {
             throw new ApiException("RESULT_NOT_EDITABLE", target == null ? "当前结果不可编辑" : target.reason());
@@ -1099,7 +1117,7 @@ public final class DbStudioApiController {
         Workspace workspace = workspaces.require(workspaceId);
         EditorSession editor = workspace.editors().require(editorId);
         UUID execution = resultExecution(editor, executionId);
-        StatementResult source = result(editor, resultIndex);
+        StatementResult source = result(editor, execution, resultIndex);
         ResultMutationTarget.Column column = editableLargeValueColumn(source, columnIndex);
         long maximum = resultEditMaxLobBytes();
         if (file.getSize() > maximum) throw new ApiException(
@@ -1121,7 +1139,7 @@ public final class DbStudioApiController {
         Workspace workspace = workspaces.require(workspaceId);
         EditorSession editor = workspace.editors().require(editorId);
         UUID execution = resultExecution(editor, ApiPayloads.required(body, "executionId"));
-        StatementResult result = result(editor, resultIndex);
+        StatementResult result = result(editor, execution, resultIndex);
         Object rawSources = body.get("sources");
         if (!(rawSources instanceof List)) {
             throw new ApiException("INVALID_RESULT_LOB_CLONE", "sources 必须是数组");
@@ -1156,7 +1174,7 @@ public final class DbStudioApiController {
                         throw new ApiException("STALE_RESULT", "查询结果行已经过期，请重新执行");
                     }
                     token = workspace.storeLargeValueDraft(editorId, execution, resultIndex, columnIndex,
-                            output -> workspace.streamResultValue(editor, result.mutationTarget(),
+                            output -> workspace.streamResultValue(editor, execution, result.mutationTarget(),
                                     result.rows().get(rowIndex), result.rowLocators().get(rowIndex),
                                     columnIndex, output, maximum).get(120, TimeUnit.SECONDS), maximum);
                 } else if ("draft".equals(kind)) {
@@ -1186,8 +1204,8 @@ public final class DbStudioApiController {
                                                                            @RequestParam String executionId) {
         Workspace workspace = workspaces.require(workspaceId);
         EditorSession editor = workspace.editors().require(editorId);
-        resultExecution(editor, executionId);
-        StatementResult source = result(editor, resultIndex);
+        UUID execution = resultExecution(editor, executionId);
+        StatementResult source = result(editor, execution, resultIndex);
         ResultMutationTarget.Column column = editableLargeValueColumn(source, columnIndex);
         int rowIndex = source.rowIds().indexOf(rowId);
         if (rowIndex < 0) throw new ApiException("STALE_RESULT", "查询结果行已经过期，请重新执行");
@@ -1195,7 +1213,7 @@ public final class DbStudioApiController {
                 ? new MediaType("text", "plain", StandardCharsets.UTF_8) : MediaType.APPLICATION_OCTET_STREAM;
         StreamingResponseBody body = output -> {
             try {
-                workspace.streamResultValue(editor, source.mutationTarget(), source.rows().get(rowIndex),
+                workspace.streamResultValue(editor, execution, source.mutationTarget(), source.rows().get(rowIndex),
                         source.rowLocators().get(rowIndex), columnIndex, output, resultEditMaxLobBytes())
                         .get(120, TimeUnit.SECONDS);
             } catch (Exception exception) {
@@ -1233,7 +1251,7 @@ public final class DbStudioApiController {
                 requested, largeValueTokens);
         QueryRunner.MutationBatchResult applied;
         try {
-            applied = workspace.applyResultOperations(editor, target, source.rows(), source.rowLocators(), requested)
+            applied = workspace.applyResultOperations(editor, executionId, target, source.rows(), source.rowLocators(), requested)
                     .get(120, TimeUnit.SECONDS);
         } catch (ExecutionException exception) {
             Throwable cause = exception.getCause();
@@ -1276,12 +1294,15 @@ public final class DbStudioApiController {
         workspaceRepository.updateTransactionState(workspaceId, editorId, "none");
         LOG.info("事务操作完成 workspace={} editor={} action={}", workspaceId, editorId, action);
         List<Map<String, Object>> resultSnapshots = new ArrayList<Map<String, Object>>();
-        if ("rollback".equals(action) && editor.lastExecution() != null) {
-            List<StatementResult> results = editor.lastExecution().results();
-            for (int index = 0; index < results.size(); index++) {
-                StatementResult snapshot = results.get(index);
-                if (snapshot.hasRows()) resultSnapshots.add(ApiPayloads.map(
-                        "resultIndex", index, "rows", snapshot.rows(), "rowIds", snapshot.rowIds()));
+        if ("rollback".equals(action)) {
+            for (Map.Entry<UUID, QueryExecution> execution : editor.retainedExecutions().entrySet()) {
+                List<StatementResult> results = execution.getValue().results();
+                for (int index = 0; index < results.size(); index++) {
+                    StatementResult snapshot = results.get(index);
+                    if (snapshot.hasRows()) resultSnapshots.add(ApiPayloads.map(
+                            "executionId", execution.getKey().toString(), "resultIndex", index,
+                            "rows", snapshot.rows(), "rowIds", snapshot.rowIds()));
+                }
             }
         }
         return ApiPayloads.map("dirty", false, "resultChangesDirty", false, "message", message,
@@ -1665,11 +1686,12 @@ public final class DbStudioApiController {
     @GetMapping("/workspaces/{workspaceId}/csv/export/loaded")
     public ResponseEntity<StreamingResponseBody> exportLoaded(@PathVariable String workspaceId,
                                                                @RequestParam String editorId,
+                                                               @RequestParam(defaultValue = "") String executionId,
                                                                @RequestParam int resultIndex) {
         Workspace workspace = workspaces.require(workspaceId);
         EditorSession editor = workspace.editors().require(editorId);
         rejectPendingResultChanges(editor, "导出");
-        StatementResult result = result(editor, resultIndex);
+        StatementResult result = result(editor, resultExecution(editor, executionId), resultIndex);
         StreamingResponseBody body = output -> csv.exportLoadedResult(result,
                 new OutputStreamWriter(output, StandardCharsets.UTF_8), ',');
         return csvResponse("dbstudio-result.csv", body);
@@ -1678,11 +1700,12 @@ public final class DbStudioApiController {
     @GetMapping("/workspaces/{workspaceId}/csv/export/full")
     public ResponseEntity<StreamingResponseBody> exportFull(@PathVariable String workspaceId,
                                                              @RequestParam String editorId,
+                                                             @RequestParam(defaultValue = "") String executionId,
                                                              @RequestParam int resultIndex) {
         final Workspace workspace = workspaces.require(workspaceId);
         final EditorSession editor = workspace.editors().require(editorId);
         rejectPendingResultChanges(editor, "导出");
-        final String sql = result(editor, resultIndex).sql();
+        final String sql = result(editor, resultExecution(editor, executionId), resultIndex).sql();
         StreamingResponseBody body = output -> {
             DatabaseContext context = workspace.requireEditorDatabase(editor);
             try (DatabaseSession session = context.openEditorSession()) {
@@ -1764,6 +1787,59 @@ public final class DbStudioApiController {
         }
         if (result.isEmpty()) throw new ApiException("EMPTY_SQL", "没有可执行的 SQL 语句");
         return result;
+    }
+
+    private static void requireTemporaryReadOnlySelect(List<SqlStatement> statements) {
+        for (SqlStatement statement : statements) {
+            if (statement.type() != StatementType.QUERY
+                    || !SqlDmlRiskAnalyzer.isTopLevelReadOnlySelect(statement.text())
+                    || SqlDmlRiskAnalyzer.hasTopLevelForUpdate(statement.text())) {
+                throw new ApiException("TEMPORARY_RESULT_READ_ONLY",
+                        "在新结果集执行当前语句仅支持不含 FOR UPDATE 的只读 SELECT");
+            }
+        }
+    }
+
+    private static void requireRiskReexecution(Workspace workspace, EditorSession editor,
+                                               DatabaseContext context, List<SqlStatement> statements) {
+        boolean risky = false;
+        for (SqlStatement statement : statements) {
+            if (context.provider().dialect().requiresWhereClauseConfirmation(statement)) {
+                risky = true;
+                break;
+            }
+        }
+        if (!risky) {
+            workspace.clearRiskConfirmation(editor.id().toString());
+            return;
+        }
+        String fingerprint = riskFingerprint(context, statements);
+        if (workspace.confirmRiskExecution(editor.id().toString(), fingerprint)) return;
+        throw new ApiException("RISK_REEXECUTION_REQUIRED",
+                "当前语句未包含 WHERE，可能影响大量数据；请再次执行以继续");
+    }
+
+    private static String riskFingerprint(DatabaseContext context, List<SqlStatement> statements) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            updateFingerprint(digest, context.provider().id());
+            updateFingerprint(digest, context.profile().id().toString());
+            for (SqlStatement statement : statements) updateFingerprint(digest, statement.text());
+            StringBuilder result = new StringBuilder(64);
+            for (byte value : digest.digest()) result.append(String.format(Locale.ROOT, "%02x", value & 0xff));
+            return result.toString();
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
+    }
+
+    private static void updateFingerprint(MessageDigest digest, String value) {
+        byte[] bytes = (value == null ? "" : value).getBytes(StandardCharsets.UTF_8);
+        digest.update((byte) (bytes.length >>> 24));
+        digest.update((byte) (bytes.length >>> 16));
+        digest.update((byte) (bytes.length >>> 8));
+        digest.update((byte) bytes.length);
+        digest.update(bytes);
     }
 
     private ConnectionProfile profileFrom(Map<String, Object> body) {
@@ -1991,7 +2067,7 @@ public final class DbStudioApiController {
             Workspace workspace, EditorSession editor, UUID executionId, int resultIndex,
             List<QueryRunner.ResultOperation> operations, List<String> usedTokens) {
         List<QueryRunner.ResultOperation> result = new ArrayList<QueryRunner.ResultOperation>();
-        StatementResult source = result(editor, resultIndex);
+        StatementResult source = result(editor, executionId, resultIndex);
         for (QueryRunner.ResultOperation operation : operations) {
             List<QueryRunner.ValueChange> values = new ArrayList<QueryRunner.ValueChange>();
             for (QueryRunner.ValueChange value : operation.values()) {
@@ -2012,11 +2088,13 @@ public final class DbStudioApiController {
 
     private static UUID resultExecution(EditorSession editor, String rawExecutionId) {
         final UUID executionId;
-        try { executionId = UUID.fromString(rawExecutionId); }
+        if (rawExecutionId == null || rawExecutionId.trim().isEmpty()) {
+            executionId = editor.lastExecutionId();
+        } else try { executionId = UUID.fromString(rawExecutionId); }
         catch (IllegalArgumentException exception) {
             throw new ApiException("INVALID_EXECUTION_ID", "结果执行编号无效");
         }
-        if (!executionId.equals(editor.lastExecutionId())) {
+        if (!editor.hasExecution(executionId)) {
             throw new ApiException("STALE_RESULT", "查询结果已经过期，请重新执行");
         }
         return executionId;
@@ -2392,8 +2470,8 @@ public final class DbStudioApiController {
         }
     }
 
-    private static StatementResult result(EditorSession editor, int index) {
-        QueryExecution execution = editor.lastExecution();
+    private static StatementResult result(EditorSession editor, UUID executionId, int index) {
+        QueryExecution execution = editor.execution(executionId);
         if (execution == null || index < 0 || index >= execution.results().size()) {
             throw new ApiException("RESULT_NOT_FOUND", "查询结果不存在或已经过期");
         }

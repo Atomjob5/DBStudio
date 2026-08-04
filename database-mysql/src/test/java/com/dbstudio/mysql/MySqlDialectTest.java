@@ -47,6 +47,18 @@ class MySqlDialectTest {
     }
 
     @Test
+    void identifiesUpdateAndDeleteWithoutTopLevelWhereAsRisky() {
+        assertTrue(dialect.requiresWhereClauseConfirmation(statement("UPDATE orders SET status = 'closed'")));
+        assertTrue(dialect.requiresWhereClauseConfirmation(statement("DELETE FROM orders")));
+        assertTrue(dialect.requiresWhereClauseConfirmation(statement(
+                "UPDATE orders SET note = (SELECT 'WHERE') /* WHERE */")));
+        assertFalse(dialect.requiresWhereClauseConfirmation(statement(
+                "UPDATE orders SET note = 'WHERE' WHERE id = 1")));
+        assertFalse(dialect.requiresWhereClauseConfirmation(statement("DELETE FROM orders WHERE id = 1")));
+        assertFalse(dialect.requiresWhereClauseConfirmation(statement("SELECT 'UPDATE orders'")));
+    }
+
+    @Test
     void compactsSqlWithoutChangingStringsOrDroppingComments() {
         String sql = "select /*+ MAX_EXECUTION_TIME(1000) */ id, 'a  b' as value /* keep block */\n"
                 + "from demo -- keep line\nwhere id = 1;";
@@ -100,5 +112,9 @@ class MySqlDialectTest {
         assertTrue(refresh.contains("`id` = ?"));
         assertTrue(refresh.toUpperCase().contains("AMOUNT > 10"));
         assertFalse(refresh.toUpperCase().contains("LIMIT"));
+    }
+
+    private com.dbstudio.spi.SqlStatement statement(String sql) {
+        return new com.dbstudio.spi.SqlStatement(sql, 0, sql.length(), dialect.classify(sql));
     }
 }

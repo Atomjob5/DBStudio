@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -81,11 +82,11 @@ public final class EditorSessionRegistry implements AutoCloseable {
 
     public UUID execute(EditorSession session, List<SqlStatement> statements, boolean stopOnError,
                         Consumer<UUID> startedCallback, ExecutionCallback callback) {
-        return execute(session, statements, stopOnError, startedCallback, QueryResultListener.NONE, callback);
+        return execute(session, statements, stopOnError, false, startedCallback, QueryResultListener.NONE, callback);
     }
 
     public UUID execute(final EditorSession session, final List<SqlStatement> statements,
-                        boolean stopOnError, Consumer<UUID> startedCallback,
+                        boolean stopOnError, boolean retainPreviousResults, Consumer<UUID> startedCallback,
                         QueryResultListener resultListener, final ExecutionCallback callback) {
         QueryRunner runner = session.runner();
         if (runner.isRunning() || session.activeExecutionId() != null) {
@@ -98,7 +99,7 @@ public final class EditorSessionRegistry implements AutoCloseable {
         MDC.put("executionId", executionId.toString());
         try {
             runner.execute(statements, stopOnError, resultListener, () -> {
-                if (!session.beginExecution(executionId)) {
+                if (!session.beginExecution(executionId, retainPreviousResults)) {
                     throw new RpcException("TRANSACTION_BUSY", "当前标签正在提交或回滚事务");
                 }
                 try {
@@ -165,8 +166,12 @@ public final class EditorSessionRegistry implements AutoCloseable {
         private volatile QueryExecution lastExecution;
         private volatile String lastSql;
         private final AtomicBoolean transactionOperation = new AtomicBoolean();
-        private final Map<String, String> originalResultValues = new HashMap<String, String>();
-        private final Map<Integer, StatementResult> originalResultSnapshots = new HashMap<Integer, StatementResult>();
+        /** 已完成结果按 executionId 保存，临时 SELECT 不会替换此前的结果。 */
+        private final Map<UUID, QueryExecution> retainedExecutions = new LinkedHashMap<UUID, QueryExecution>();
+        private final Map<UUID, Map<String, String>> originalResultValues =
+                new HashMap<UUID, Map<String, String>>();
+        private final Map<UUID, Map<Integer, StatementResult>> originalResultSnapshots =
+                new HashMap<UUID, Map<Integer, StatementResult>>();
 
         private EditorSession(UUID id, String title) { this.id = id; this.title = title; }
         public UUID id() { return id; }
@@ -187,6 +192,15 @@ public final class EditorSessionRegistry implements AutoCloseable {
         public UUID activeExecutionId() { return activeExecutionId; }
         public UUID lastExecutionId() { return lastExecutionId; }
         public QueryExecution lastExecution() { return lastExecution; }
+        public synchronized QueryExecution execution(UUID executionId) {
+            return executionId == null ? null : retainedExecutions.get(executionId);
+        }
+        public synchronized Map<UUID, QueryExecution> retainedExecutions() {
+            return Collections.unmodifiableMap(new LinkedHashMap<UUID, QueryExecution>(retainedExecutions));
+        }
+        public synchronized boolean hasExecution(UUID executionId) {
+            return executionId != null && retainedExecutions.containsKey(executionId);
+        }
         public String lastSql() { return lastSql; }
         public long lastTouched() { return lastTouched; }
         public boolean transactionOperationActive() { return transactionOperation.get(); }
@@ -200,7 +214,11 @@ public final class EditorSessionRegistry implements AutoCloseable {
         }
         public void endTransactionOperation() { transactionOperation.set(false); }
         public synchronized boolean beginExecution(UUID executionId) {
+            return beginExecution(executionId, true);
+        }
+        public synchronized boolean beginExecution(UUID executionId, boolean retainPreviousResults) {
             if (activeExecutionId != null || transactionOperation.get()) return false;
+            if (!retainPreviousResults) clearRetainedResults();
             activeExecutionId = executionId;
             return true;
         }
@@ -211,14 +229,16 @@ public final class EditorSessionRegistry implements AutoCloseable {
             if (!executionId.equals(activeExecutionId)) return false;
             activeExecutionId = null;
             lastExecutionId = executionId;
-            if (execution != null) lastExecution = execution;
+            if (execution != null) {
+                lastExecution = execution;
+                retainedExecutions.put(executionId, execution);
+            }
             touch(); return true;
         }
         public synchronized void forceRetireDatabaseWork(UUID executionId) {
             if (executionId == null || executionId.equals(activeExecutionId)) activeExecutionId = null;
             transactionOperation.set(false);
-            originalResultValues.clear();
-            originalResultSnapshots.clear();
+            clearResultChanges();
             touch();
         }
         public void touch() { lastTouched = System.currentTimeMillis(); }
@@ -244,6 +264,7 @@ public final class EditorSessionRegistry implements AutoCloseable {
             lastExecution = null;
             lastExecutionId = null;
             lastSql = null;
+            clearRetainedResults();
             touch();
         }
 
@@ -288,6 +309,7 @@ public final class EditorSessionRegistry implements AutoCloseable {
             lastExecution = null;
             lastExecutionId = null;
             lastSql = null;
+            clearRetainedResults();
             touch();
         }
 
@@ -309,10 +331,10 @@ public final class EditorSessionRegistry implements AutoCloseable {
         public void setMaxRows(int maxRows) { QueryRunner current = runner; if (current != null) current.setMaxRows(maxRows); }
         public void setStreamBatchRows(int rows) { QueryRunner current = runner; if (current != null) current.setStreamBatchRows(rows); }
 
-        public synchronized void appendResultRows(int resultIndex, List<List<String>> rows,
+        public synchronized void appendResultRows(UUID executionId, int resultIndex, List<List<String>> rows,
                                                   List<String> rowIds, List<List<String>> rowLocators,
                                                   boolean hasMore) {
-            QueryExecution execution = lastExecution;
+            QueryExecution execution = retainedExecutions.get(executionId);
             if (execution == null || resultIndex < 0 || resultIndex >= execution.results().size()) return;
             List<StatementResult> results = new ArrayList<StatementResult>(execution.results());
             StatementResult source = results.get(resultIndex);
@@ -325,18 +347,20 @@ public final class EditorSessionRegistry implements AutoCloseable {
             results.set(resultIndex, new StatementResult(source.sql(), source.type(), source.columns(), source.columnDetails(),
                     source.mutationTarget(), combined, combinedIds, combinedLocators, source.updateCount(), hasMore,
                     source.duration(), source.errorMessage()));
-            lastExecution = new QueryExecution(results, execution.duration(), execution.cancelled());
+            replaceExecution(executionId, new QueryExecution(results, execution.duration(), execution.cancelled()));
             touch();
         }
 
         public synchronized void recordResultChanges(UUID executionId, int resultIndex,
                                                      List<QueryRunner.RowChange> changes) {
-            if (executionId == null || !executionId.equals(lastExecutionId) || lastExecution == null
-                    || resultIndex < 0 || resultIndex >= lastExecution.results().size()) {
+            QueryExecution execution = retainedExecutions.get(executionId);
+            if (execution == null || resultIndex < 0 || resultIndex >= execution.results().size()) {
                 throw new RpcException("STALE_RESULT", "查询结果已经过期，请重新执行");
             }
-            List<StatementResult> results = new ArrayList<StatementResult>(lastExecution.results());
+            List<StatementResult> results = new ArrayList<StatementResult>(execution.results());
             StatementResult source = results.get(resultIndex);
+            Map<String, String> originals = originalResultValues.computeIfAbsent(executionId,
+                    ignored -> new HashMap<String, String>());
             List<List<String>> rows = mutableRows(source.rows());
             for (QueryRunner.RowChange rowChange : changes) {
                 if (rowChange.rowIndex() < 0 || rowChange.rowIndex() >= rows.size()) {
@@ -348,14 +372,14 @@ public final class EditorSessionRegistry implements AutoCloseable {
                         throw new RpcException("STALE_RESULT", "查询结果字段已经过期，请重新执行");
                     }
                     String key = resultCellKey(resultIndex, rowChange.rowIndex(), cell.columnIndex());
-                    if (!originalResultValues.containsKey(key)) {
-                        originalResultValues.put(key, row.get(cell.columnIndex()));
+                    if (!originals.containsKey(key)) {
+                        originals.put(key, row.get(cell.columnIndex()));
                     }
                     row.set(cell.columnIndex(), cell.value());
                 }
             }
             results.set(resultIndex, resultWithRows(source, rows));
-            lastExecution = new QueryExecution(results, lastExecution.duration(), lastExecution.cancelled());
+            replaceExecution(executionId, new QueryExecution(results, execution.duration(), execution.cancelled()));
             touch();
         }
 
@@ -363,60 +387,62 @@ public final class EditorSessionRegistry implements AutoCloseable {
             retireResultChanges();
         }
 
-        /**
-         * 新执行替换当前结果时，仅结束旧结果的展示与回滚快照生命周期。
-         * JDBC 事务中的已应用 DML 仍由显式提交或回滚决定。
-         */
         public synchronized void retireResultChanges() {
-            originalResultValues.clear();
-            originalResultSnapshots.clear();
+            clearResultChanges();
             touch();
         }
 
         public synchronized void rollbackResultChanges() {
-            if ((originalResultValues.isEmpty() && originalResultSnapshots.isEmpty()) || lastExecution == null) return;
-            List<StatementResult> results = new ArrayList<StatementResult>(lastExecution.results());
-            for (Map.Entry<Integer, StatementResult> snapshot : originalResultSnapshots.entrySet()) {
-                if (snapshot.getKey() >= 0 && snapshot.getKey() < results.size()) {
-                    results.set(snapshot.getKey(), snapshot.getValue());
+            if (originalResultValues.isEmpty() && originalResultSnapshots.isEmpty()) return;
+            for (UUID executionId : new ArrayList<UUID>(retainedExecutions.keySet())) {
+                QueryExecution execution = retainedExecutions.get(executionId);
+                if (execution == null) continue;
+                List<StatementResult> results = new ArrayList<StatementResult>(execution.results());
+                Map<Integer, StatementResult> snapshots = originalResultSnapshots.get(executionId);
+                if (snapshots != null) for (Map.Entry<Integer, StatementResult> snapshot : snapshots.entrySet()) {
+                    if (snapshot.getKey() >= 0 && snapshot.getKey() < results.size()) {
+                        results.set(snapshot.getKey(), snapshot.getValue());
+                    }
                 }
-            }
-            Map<Integer, List<List<String>>> rowsByResult = new HashMap<Integer, List<List<String>>>();
-            for (Map.Entry<String, String> entry : originalResultValues.entrySet()) {
-                String[] parts = entry.getKey().split(":", 3);
-                int resultIndex = Integer.parseInt(parts[0]);
-                int rowIndex = Integer.parseInt(parts[1]);
-                int columnIndex = Integer.parseInt(parts[2]);
-                if (resultIndex < 0 || resultIndex >= results.size()) continue;
-                List<List<String>> rows = rowsByResult.get(resultIndex);
-                if (rows == null) {
-                    rows = mutableRows(results.get(resultIndex).rows());
-                    rowsByResult.put(resultIndex, rows);
+                Map<Integer, List<List<String>>> rowsByResult = new HashMap<Integer, List<List<String>>>();
+                Map<String, String> originals = originalResultValues.get(executionId);
+                if (originals != null) for (Map.Entry<String, String> entry : originals.entrySet()) {
+                    String[] parts = entry.getKey().split(":", 3);
+                    int resultIndex = Integer.parseInt(parts[0]);
+                    int rowIndex = Integer.parseInt(parts[1]);
+                    int columnIndex = Integer.parseInt(parts[2]);
+                    if (resultIndex < 0 || resultIndex >= results.size()) continue;
+                    List<List<String>> rows = rowsByResult.get(resultIndex);
+                    if (rows == null) {
+                        rows = mutableRows(results.get(resultIndex).rows());
+                        rowsByResult.put(resultIndex, rows);
+                    }
+                    if (rowIndex >= 0 && rowIndex < rows.size()
+                            && columnIndex >= 0 && columnIndex < rows.get(rowIndex).size()) {
+                        rows.get(rowIndex).set(columnIndex, entry.getValue());
+                    }
                 }
-                if (rowIndex >= 0 && rowIndex < rows.size()
-                        && columnIndex >= 0 && columnIndex < rows.get(rowIndex).size()) {
-                    rows.get(rowIndex).set(columnIndex, entry.getValue());
+                for (Map.Entry<Integer, List<List<String>>> entry : rowsByResult.entrySet()) {
+                    StatementResult source = results.get(entry.getKey());
+                    results.set(entry.getKey(), resultWithRows(source, entry.getValue()));
                 }
+                replaceExecution(executionId, new QueryExecution(results, execution.duration(), execution.cancelled()));
             }
-            for (Map.Entry<Integer, List<List<String>>> entry : rowsByResult.entrySet()) {
-                StatementResult source = results.get(entry.getKey());
-                results.set(entry.getKey(), resultWithRows(source, entry.getValue()));
-            }
-            lastExecution = new QueryExecution(results, lastExecution.duration(), lastExecution.cancelled());
-            originalResultValues.clear();
-            originalResultSnapshots.clear();
+            clearResultChanges();
             touch();
         }
 
         public synchronized List<ResultPatch> recordResultOperations(UUID executionId, int resultIndex,
                                                                        QueryRunner.MutationBatchResult batch) {
-            if (executionId == null || !executionId.equals(lastExecutionId) || lastExecution == null
-                    || resultIndex < 0 || resultIndex >= lastExecution.results().size()) {
+            QueryExecution execution = retainedExecutions.get(executionId);
+            if (execution == null || resultIndex < 0 || resultIndex >= execution.results().size()) {
                 throw new RpcException("STALE_RESULT", "查询结果已经过期，请重新执行");
             }
-            List<StatementResult> results = new ArrayList<StatementResult>(lastExecution.results());
+            List<StatementResult> results = new ArrayList<StatementResult>(execution.results());
             StatementResult source = results.get(resultIndex);
-            if (!originalResultSnapshots.containsKey(resultIndex)) originalResultSnapshots.put(resultIndex, source);
+            Map<Integer, StatementResult> snapshots = originalResultSnapshots.computeIfAbsent(executionId,
+                    ignored -> new HashMap<Integer, StatementResult>());
+            if (!snapshots.containsKey(resultIndex)) snapshots.put(resultIndex, source);
             List<List<String>> rows = mutableRows(source.rows());
             List<String> rowIds = new ArrayList<String>(source.rowIds());
             List<List<String>> rowLocators = new ArrayList<List<String>>(source.rowLocators());
@@ -464,9 +490,41 @@ public final class EditorSessionRegistry implements AutoCloseable {
             results.set(resultIndex, new StatementResult(source.sql(), source.type(), source.columns(),
                     source.columnDetails(), source.mutationTarget(), rows, rowIds, rowLocators,
                     source.updateCount(), source.truncated(), source.duration(), source.errorMessage()));
-            lastExecution = new QueryExecution(results, lastExecution.duration(), lastExecution.cancelled());
+            replaceExecution(executionId, new QueryExecution(results, execution.duration(), execution.cancelled()));
             touch();
             return Collections.unmodifiableList(patches);
+        }
+
+        public synchronized boolean removeExecution(UUID executionId) {
+            if (executionId == null || executionId.equals(activeExecutionId)
+                    || retainedExecutions.remove(executionId) == null) return false;
+            originalResultValues.remove(executionId);
+            originalResultSnapshots.remove(executionId);
+            if (executionId.equals(lastExecutionId)) {
+                lastExecutionId = null;
+                lastExecution = null;
+                for (Map.Entry<UUID, QueryExecution> item : retainedExecutions.entrySet()) {
+                    lastExecutionId = item.getKey();
+                    lastExecution = item.getValue();
+                }
+            }
+            touch();
+            return true;
+        }
+
+        private void replaceExecution(UUID executionId, QueryExecution execution) {
+            retainedExecutions.put(executionId, execution);
+            if (executionId.equals(lastExecutionId)) lastExecution = execution;
+        }
+
+        private void clearResultChanges() {
+            originalResultValues.clear();
+            originalResultSnapshots.clear();
+        }
+
+        private void clearRetainedResults() {
+            retainedExecutions.clear();
+            clearResultChanges();
         }
 
         public static final class ResultPatch {
@@ -509,8 +567,8 @@ public final class EditorSessionRegistry implements AutoCloseable {
         }
 
         @Override public synchronized void close() {
-            closeRunner(); context = null; bindingKey = null; originalResultValues.clear();
-            originalResultSnapshots.clear();
+            closeRunner(); context = null; bindingKey = null; clearRetainedResults();
+            lastExecution = null; lastExecutionId = null;
         }
     }
 

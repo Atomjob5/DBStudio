@@ -25,7 +25,7 @@ const props = defineProps<{ modelKey: string; initialValue: string; theme: "dark
   minimapEnabled: boolean; wordWrapEnabled: boolean }>();
 const emit = defineEmits<{
   dirty: [];
-  execute: [scope: "current" | "script", selection: string, cursorOffset: number];
+  execute: [scope: "current" | "script" | "current-new-tab", selection: string, cursorOffset: number];
   "selection-change": [selected: boolean];
 }>();
 const container = ref<HTMLElement>();
@@ -285,7 +285,7 @@ function synchronizeInBackground(key: string, model: monaco.editor.ITextModel): 
   modelSynchronizer.synchronizeInBackground(key, model);
 }
 
-function trigger(scope: "current" | "script"): void {
+function trigger(scope: "current" | "script" | "current-new-tab"): void {
   const editor = instance.value;
   const model = editor?.getModel();
   if (!editor || !model) return;

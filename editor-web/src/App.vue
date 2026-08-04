@@ -82,6 +82,7 @@
           <template #dropdown>
             <el-dropdown-menu>
               <el-dropdown-item command="current"><span>执行当前语句</span><kbd v-if="settings.shortcuts['query.executeCurrent']">{{ displayShortcut(settings.shortcuts["query.executeCurrent"]) }}</kbd></el-dropdown-item>
+              <el-dropdown-item command="current-new-tab"><span>在新结果集执行当前语句</span><kbd v-if="settings.shortcuts['query.executeCurrentNewTab']">{{ displayShortcut(settings.shortcuts["query.executeCurrentNewTab"]) }}</kbd></el-dropdown-item>
               <el-dropdown-item command="script"><span>执行整个脚本</span><kbd v-if="settings.shortcuts['query.executeAll']">{{ displayShortcut(settings.shortcuts["query.executeAll"]) }}</kbd></el-dropdown-item>
             </el-dropdown-menu>
           </template>
@@ -173,7 +174,7 @@
                 </section>
               </el-splitter-panel>
               <el-splitter-panel :min="150" collapsible>
-                <ResultPanel ref="resultPanel" v-model:active-result-index="activeResultIndex" :execution="activeExecution"
+                <ResultPanel ref="resultPanel" v-model:active-result-index="activeResultIndex" :executions="activeExecutions"
                              :executing="editors.active?.busy === true"
                              :execution-started-at="editors.active?.executionStartedAt"
                              :show-result-edit-actions="showResultEditActions"
@@ -182,7 +183,7 @@
                              :result-edit-tooltip="resultEditTooltip"
                              :can-apply-result-changes="canPostResultChanges"
                              :apply-result-changes-tooltip="postResultChangesTooltip"
-                             @export-loaded="exportLoaded" @export-full="exportFull"
+                             @export-loaded="exportLoaded" @export-full="exportFull" @close-result="closeTemporaryResult"
                              @toggle-result-edit="toggleResultEdit" @apply-result-changes="postActiveResultChanges"
                              @selected-column="selectedResultColumn = $event"
                              @selected-row-count="selectedResultRowCount = $event" />
@@ -347,7 +348,7 @@ const objectExplorer = ref<InstanceType<typeof ObjectExplorer>>();
 const monacoEditor = ref<{
   getValue(key?: string): string;
   setValue(value: string, key?: string): void;
-  triggerExecute(scope: "current" | "script"): void;
+  triggerExecute(scope: "current" | "script" | "current-new-tab"): void;
   triggerCompletion(): void;
   runSelectionAction(action: SqlEditorSelectionAction): boolean;
   captureSqlTransformTarget(key?: string): SqlTransformTarget | undefined;
@@ -382,9 +383,18 @@ const schemaSelectionQueue: SchemaSelectionRequest[] = [];
 let activeSchemaSelection: SchemaSelectionRequest | undefined;
 const completionLoads = new Map<string, Promise<void>>();
 const draftSaveTimers = new Map<string, number>();
-const activeExecution = computed(() => editors.activeId ? queries.executions[editors.activeId] : undefined);
-const activeResultIndex = ref(0);
-const activeResult = computed(() => activeExecution.value?.results.find((result) => result.resultIndex === activeResultIndex.value)
+const activeExecutions = computed(() => editors.activeId ? queries.executionList(editors.activeId) : []);
+const activeResultIndex = ref<string | number>(0);
+const activeExecution = computed(() => {
+  const key = String(activeResultIndex.value);
+  return activeExecutions.value.find((execution) => execution.executionId === key
+    || execution.results.some((result) => `${execution.executionId}:${result.resultIndex}` === key))
+    ?? queries.executions[editors.activeId ?? ""];
+});
+const activeResult = computed(() => activeExecution.value?.results.find((result) =>
+  activeExecution.value && (`${activeExecution.value.executionId}:${result.resultIndex}` === String(activeResultIndex.value)
+    || (activeExecution.value.executionId === String(activeResultIndex.value) && result.resultIndex === 0)
+    || (activeExecutions.value.length === 1 && result.resultIndex === activeResultIndex.value)))
   ?? activeExecution.value?.results[0]);
 interface ResultLoadingState {
   editorId: string;
@@ -588,8 +598,12 @@ onBeforeUnmount(() => {
 });
 
 watch(() => app.theme, (theme) => applyDocumentTheme(theme), { immediate: true });
-watch(() => activeExecution.value?.executionId, () => {
-  activeResultIndex.value = activeExecution.value?.results[0]?.resultIndex ?? 0;
+watch(activeExecutions, (items) => {
+  const key = String(activeResultIndex.value);
+  const selectedExists = items.some((execution) => execution.executionId === key
+    || execution.results.some((result) => `${execution.executionId}:${result.resultIndex}` === key)
+    || (items.length === 1 && execution.results.some((result) => result.resultIndex === activeResultIndex.value)));
+  if (!selectedExists) activeResultIndex.value = items.length ? items[items.length - 1].executionId : 0;
   selectedResultColumn.value = undefined;
   selectedResultRowCount.value = 0;
 });
@@ -681,14 +695,16 @@ function installEventHandlers(): void {
     }
   }));
   disposers.push(rpc.on("query.started", (raw) => {
-    const data = raw as { editorId: string; executionId: string };
-    resultEdits.finishEditor(data.editorId);
-    queries.start(data.editorId, data.executionId);
+    const data = raw as { editorId: string; executionId: string; resultPresentation?: "replace" | "append" };
+    const presentation = data.resultPresentation ?? "replace";
+    if (presentation === "replace") resultEdits.finishEditor(data.editorId);
+    queries.start(data.editorId, data.executionId, presentation);
     const tab = editors.tabs.find((item) => item.id === data.editorId);
     if (tab?.busy && tab.executionPhase !== "cancelling") {
       editors.patch(data.editorId, { activeExecutionId: data.executionId,
         executionStartedAt: tab.executionStartedAt ?? Date.now(), executionPhase: "running",
-        resultChangesDirty: false, transactionState: "none" });
+        resultChangesDirty: presentation === "replace" ? false : tab.resultChangesDirty,
+        transactionState: presentation === "replace" ? "none" : tab.transactionState });
     }
   }));
   disposers.push(rpc.on("query.pageStarted", (raw) => {
@@ -700,37 +716,37 @@ function installEventHandlers(): void {
   }));
   disposers.push(rpc.on("query.resultMeta", (raw) => {
     const data = raw as QueryResult & { editorId: string; executionId?: string };
-    if (data.executionId && queries.executions[data.editorId]?.executionId !== data.executionId) return;
-    queries.addResult(data.editorId, { ...data, rows: [], rowIds: [], complete: false });
-    void resolveResultColumnRemarks(data.editorId, data.resultIndex, data.sql, data.columnDetails);
+    if (data.executionId && !queries.execution(data.editorId, data.executionId)) return;
+    queries.addResult(data.editorId, { ...data, rows: [], rowIds: [], complete: false }, data.executionId);
+    void resolveResultColumnRemarks(data.editorId, data.executionId, data.resultIndex, data.sql, data.columnDetails);
   }));
   disposers.push(rpc.on("query.rows", (raw) => {
     const data = raw as { editorId: string; executionId?: string; resultIndex: number;
       rows: Array<Array<string | null>>; rowIds?: string[] };
-    if (data.executionId && queries.executions[data.editorId]?.executionId !== data.executionId) return;
-    queries.appendRows(data.editorId, data.resultIndex, data.rows, data.rowIds);
+    if (data.executionId && !queries.execution(data.editorId, data.executionId)) return;
+    queries.appendRows(data.editorId, data.resultIndex, data.rows, data.executionId, data.rowIds);
   }));
   disposers.push(rpc.on("query.resultComplete", (raw) => {
     const data = raw as { editorId: string; executionId?: string; resultIndex: number } & Partial<QueryResult>;
-    if (data.executionId && queries.executions[data.editorId]?.executionId !== data.executionId) return;
-    queries.completeResult(data.editorId, data.resultIndex, data);
+    if (data.executionId && !queries.execution(data.editorId, data.executionId)) return;
+    queries.completeResult(data.editorId, data.resultIndex, data, data.executionId);
   }));
   disposers.push(rpc.on("query.executionComplete", (raw) => {
     const data = raw as { editorId: string; executionId: string; cancelled: boolean; failed: boolean;
       durationMs: number; transactionDirty: boolean; resultChangesDirty?: boolean; terminationReason?: string };
     const tab = editors.tabs.find((item) => item.id === data.editorId);
     if (!tab || tab.activeExecutionId !== data.executionId) return;
-    const completedResults = queries.executions[data.editorId]?.results
+    const completedResults = queries.execution(data.editorId, data.executionId)?.results
       .filter((result) => result.complete && !result.errorMessage) ?? [];
-    queries.complete(data.editorId, data);
-    if (data.terminationReason === "connection-aborted") queries.markHistorical(data.editorId);
+    queries.complete(data.editorId, data, data.executionId);
+    if (data.terminationReason === "connection-aborted") queries.markHistorical(data.editorId, data.executionId);
     editors.patch(data.editorId, {
       busy: false, transactionDirty: data.transactionDirty, resultChangesDirty: data.resultChangesDirty,
       transactionState: data.transactionDirty ? "active" : "none",
       activeExecutionId: undefined, executionStartedAt: undefined, executionPhase: "idle"
     });
     if (!data.cancelled && !data.failed) {
-      for (const result of completedResults) void enrichCompletionStructure(data.editorId, result.resultIndex);
+      for (const result of completedResults) void enrichCompletionStructure(data.editorId, data.executionId, result.resultIndex);
     }
     scheduleDraft(data.editorId);
     app.status = data.terminationReason === "connection-aborted" ? "连接已被任务管理器强制断开"
@@ -890,27 +906,27 @@ async function bootstrapWorkspace(recovered: RecoveredEditor[]): Promise<void> {
   } finally { app.loading = false; }
 }
 
-async function resolveResultColumnRemarks(editorId: string, resultIndex: number, sql: string,
+async function resolveResultColumnRemarks(editorId: string, executionId: string | undefined, resultIndex: number, sql: string,
                                           columnDetails: QueryResult["columnDetails"]): Promise<void> {
-  const executionId = queries.executions[editorId]?.executionId;
+  const resolvedExecutionId = executionId ?? queries.executions[editorId]?.executionId;
   const tab = editors.tabs.find((item) => item.id === editorId);
   const context = connections.completionContext(tab?.connection);
-  if (!executionId || !tab?.connection || !context
+  if (!resolvedExecutionId || !tab?.connection || !context
       || !columnDetails?.some((column) => !column.remarks && column.name)) return;
   try {
     const resolved = await completionClient.resolveResultColumnRemarks(context.key, tab.connection.providerId,
       sql, columnDetails.flatMap((column, index) => column.remarks || !column.name ? [] : [{
         index, catalog: column.catalog, schema: column.schema, table: column.table, name: column.name
       }]));
-    queries.applyColumnRemarks(editorId, executionId, resultIndex, resolved);
+    queries.applyColumnRemarks(editorId, resolvedExecutionId, resultIndex, resolved);
   } catch {
     // 字段备注是可选展示信息；缓存不可用或损坏不能影响查询结果。
   }
 }
 
-async function enrichCompletionStructure(editorId: string, resultIndex: number): Promise<void> {
+async function enrichCompletionStructure(editorId: string, executionId: string, resultIndex: number): Promise<void> {
   const tab = editors.tabs.find((item) => item.id === editorId);
-  const result = queries.executions[editorId]?.results.find((item) => item.resultIndex === resultIndex);
+  const result = queries.execution(editorId, executionId)?.results.find((item) => item.resultIndex === resultIndex);
   const context = connections.completionContext(tab?.connection);
   if (!tab?.connection || !context || !result?.complete || result.errorMessage) return;
   if (tab.connection.providerId !== "oracle" && tab.connection.providerId !== "oceanbase-oracle") return;
@@ -963,7 +979,8 @@ function flushDrafts(): void {
 
 async function newEditor(content = "", filePath?: string, title?: string, fileHandle?: FileSystemFileHandle): Promise<EditorTab | undefined> {
   await rpc.ensureOperational();
-  const inherited = editors.active?.connection && connections.current(editors.active.connection.id) ? editors.active.connection.id : undefined;
+  const inherited = editors.active?.connection && connections.current(editors.active.connection.id)
+    ? editors.active.connection.id : undefined;
   const created = await rpc.request<{ id: string; title: string; connection?: EditorConnectionBinding; connectionState: EditorConnectionState }>("editor.create", inherited ? { profileId: inherited } : {});
   const tab: EditorTab = { id: created.id, title: title ?? created.title, content, filePath, fileHandle,
     dirty: Boolean(content && !filePath), transactionDirty: false, busy: false,
@@ -1049,7 +1066,7 @@ async function postResultEditSession(session: ResultEditSession): Promise<void> 
   }, 30_000);
   queries.applyResultPatches(session.editorId, session.resultIndex, response.rowPatches.map((patch) => ({
     ...patch, clientRowId: clientRowIds.get(patch.operationId)
-  })));
+  })), session.executionId);
   resultEdits.markPosted(session.editorId, session.executionId, session.resultIndex,
     response.appliedOperationIds);
   editors.patch(session.editorId, {
@@ -1065,13 +1082,17 @@ async function postEditorPendingChanges(editorId: string): Promise<void> {
   for (const session of sessions) await postResultEditSession(session);
 }
 function restoreResultEditValues(editorId: string, mode: "confirmed" | "original"): void {
-  const byResult = new Map<number, Array<{ rowIndex: number; columnIndex: number; value: string | null }>>();
-  for (const cell of resultEdits.restore(editorId, mode)) {
-    const cells = byResult.get(cell.resultIndex) ?? [];
+  const byResult = new Map<string, Array<{ rowIndex: number; columnIndex: number; value: string | null }>>();
+  for (const cell of resultEdits.restoreWithExecution(editorId, mode)) {
+    const key = `${cell.executionId}:${cell.resultIndex}`;
+    const cells = byResult.get(key) ?? [];
     cells.push(cell);
-    byResult.set(cell.resultIndex, cells);
+    byResult.set(key, cells);
   }
-  for (const [resultIndex, cells] of byResult) queries.updateCells(editorId, resultIndex, cells);
+  for (const [key, cells] of byResult) {
+    const [executionId, rawResultIndex] = key.split(":");
+    queries.updateCells(editorId, Number(rawResultIndex), cells, executionId);
+  }
 }
 async function resultChangesActionForExecution(editorId: string): Promise<"apply" | "ignore" | "cancel"> {
   return new Promise((resolve) => {
@@ -1106,31 +1127,60 @@ async function resultChangesActionForExecution(editorId: string): Promise<"apply
 
 async function discardEditorPendingChanges(editorId: string): Promise<void> {
   const discarded = resultEdits.discardPending(editorId);
-  const cellsByResult = new Map<number, Array<{ rowIndex: number; columnIndex: number; value: string | null }>>();
+  const cellsByResult = new Map<string, Array<{ rowIndex: number; columnIndex: number; value: string | null }>>();
   for (const cell of discarded.cells) {
-    const cells = cellsByResult.get(cell.resultIndex) ?? [];
+    const key = `${cell.executionId}:${cell.resultIndex}`;
+    const cells = cellsByResult.get(key) ?? [];
     cells.push({ rowIndex: cell.rowIndex, columnIndex: cell.columnIndex, value: cell.value });
-    cellsByResult.set(cell.resultIndex, cells);
+    cellsByResult.set(key, cells);
   }
-  for (const [resultIndex, cells] of cellsByResult) queries.updateCells(editorId, resultIndex, cells);
-  for (const insert of discarded.inserts) queries.removeRowById(editorId, insert.resultIndex, insert.rowId);
+  for (const [key, cells] of cellsByResult) {
+    const [executionId, rawResultIndex] = key.split(":");
+    queries.updateCells(editorId, Number(rawResultIndex), cells, executionId);
+  }
+  for (const insert of discarded.inserts) queries.removeRowById(editorId, insert.resultIndex, insert.rowId, insert.executionId);
   await Promise.all(discarded.largeValues.map((value) => rpc.deleteResultLargeValueDraft(
     editorId, value.executionId, value.resultIndex, value.columnIndex, value.token).catch(() => undefined)));
 }
-function executeFromEditor(scope: "current" | "script", selectedText: string, cursorOffset: number): void { void executeActive(scope, selectedText, cursorOffset); }
-function triggerEditorExecution(scope: "current" | "script"): void {
+type EditorExecutionScope = "current" | "script" | "current-new-tab";
+
+function executeFromEditor(scope: EditorExecutionScope, selectedText: string, cursorOffset: number): void {
+  if (scope === "current-new-tab") {
+    void executeCurrentInNewTab(selectedText, cursorOffset);
+    return;
+  }
+  void executeActive(scope, selectedText, cursorOffset);
+}
+function triggerEditorExecution(scope: EditorExecutionScope): void {
   if (!canExecute.value) return;
   if (typeof monacoEditor.value?.triggerExecute === "function") {
     monacoEditor.value.triggerExecute(scope);
     return;
   }
-  void executeActive(scope);
+  if (scope === "current-new-tab") void executeCurrentInNewTab();
+  else void executeActive(scope);
 }
 function executeCommand(command: string): void {
   if (command === "current" || command === "script") triggerEditorExecution(command);
+  if (command === "current-new-tab") triggerEditorExecution(command);
+}
+async function executeCurrentInNewTab(selectedText = "", cursorOffset = 0): Promise<void> {
+  const source = editors.active;
+  if (!source || source.busy || resultLoading.value?.editorId === source.id) return;
+  if (!source.connection || source.connectionState === "unbound") {
+    ElMessage.warning(source.connection ? "原数据库链接已不可用，请重新选择链接" : "请先为当前编辑标签选择数据库链接");
+    return;
+  }
+  try {
+    await rpc.ensureOperational();
+    if (!await ensureEditorCredentials(source)) return;
+    await executeActive("current", selectedText, cursorOffset, false, "append");
+  } catch (error) {
+    ElMessage.error(message(error));
+  }
 }
 async function executeActive(scope: "current" | "script", selectedText = "", cursorOffset = 0,
-                             recoveryRetried = false): Promise<void> {
+                             recoveryRetried = false, presentation: "replace" | "append" = "replace"): Promise<void> {
   const tab = editors.active;
   if (!tab || tab.busy || resultLoading.value?.editorId === tab.id) return;
   if (!tab.connection || tab.connectionState === "unbound") {
@@ -1140,7 +1190,7 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
   try {
     await rpc.ensureOperational();
     if (!await ensureEditorCredentials(tab)) return;
-    if (resultEdits.hasPending(tab.id)) {
+    if (presentation === "replace" && resultEdits.hasPending(tab.id)) {
       if (resultExecutionDecisionPending.value) return;
       resultExecutionDecisionPending.value = true;
       try {
@@ -1156,11 +1206,14 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
       executionStartedAt: Date.now(), executionPhase: "starting" }); app.status = "正在执行…";
     const response = await rpc.request<{ executionId: string }>("query.execute", {
       editorId: tab.id, text: monacoEditor.value?.getValue(tab.id) ?? tab.content,
-      selectedText, cursorOffset, scope, stopOnError: true
+      selectedText, cursorOffset, scope, stopOnError: true, resultPresentation: presentation
     });
-    resultEdits.finishEditor(tab.id);
-    editors.patch(tab.id, { resultChangesDirty: false });
-    queries.start(tab.id, response.executionId);
+    if (presentation === "replace") {
+      resultEdits.finishEditor(tab.id);
+      editors.patch(tab.id, { resultChangesDirty: false });
+    }
+    queries.start(tab.id, response.executionId, presentation);
+    activeResultIndex.value = response.executionId;
     const current = editors.tabs.find((item) => item.id === tab.id);
     if (current?.busy && current.executionPhase !== "cancelling") {
       editors.patch(tab.id, { activeExecutionId: response.executionId, executionPhase: "running" });
@@ -1173,7 +1226,11 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
     }
     if ((error as { code?: string }).code === "WORKSPACE_RECOVERED_RETRY_REQUIRED" && !recoveryRetried) {
       if (editors.activeId !== tab.id) return;
-      await executeActive(scope, selectedText, cursorOffset, true);
+      await executeActive(scope, selectedText, cursorOffset, true, presentation);
+      return;
+    }
+    if ((error as { code?: string }).code === "RISK_REEXECUTION_REQUIRED") {
+      ElMessage.warning("当前语句未包含 WHERE，可能影响大量数据；请再次执行以继续");
       return;
     }
     ElMessage.error(message(error));
@@ -1251,10 +1308,10 @@ async function rollbackActive(): Promise<void> {
   try {
     await rpc.ensureOperational();
     const response = await rpc.request<{ dirty: boolean; message: string;
-      resultSnapshots?: Array<{ resultIndex: number; rows: Array<Array<string | null>>; rowIds: string[] }> }>(
+      resultSnapshots?: Array<{ executionId: string; resultIndex: number; rows: Array<Array<string | null>>; rowIds: string[] }> }>(
       "transaction.rollback", { editorId: tab.id });
     if (response.resultSnapshots?.length) for (const snapshot of response.resultSnapshots) {
-      queries.replaceResultSnapshot(tab.id, snapshot.resultIndex, snapshot.rows, snapshot.rowIds);
+      queries.replaceResultSnapshot(tab.id, snapshot.resultIndex, snapshot.rows, snapshot.rowIds, snapshot.executionId);
     } else restoreResultEditValues(tab.id, "original");
     resultEdits.finishEditor(tab.id);
     editors.patch(tab.id, { transactionDirty: response.dirty, resultChangesDirty: false,
@@ -1302,7 +1359,8 @@ function resultLoadTooltip(mode: "next" | "all"): string {
 
 async function loadResultRows(resultIndex: number, initialOffset: number, all: boolean): Promise<void> {
   const tab = editors.active;
-  if (!tab || resultLoading.value || activeExecution.value?.historical) return;
+  const resultExecutionId = activeExecution.value?.executionId;
+  if (!tab || !resultExecutionId || resultLoading.value || activeExecution.value?.historical) return;
   const mode = all ? "all" : "next";
   const executionId = crypto.randomUUID();
   const loading: ResultLoadingState = {
@@ -1315,7 +1373,7 @@ async function loadResultRows(resultIndex: number, initialOffset: number, all: b
     await rpc.ensureOperational();
     do {
       const page = await rpc.request<ResultPageResponse>("query.fetchRows", {
-        editorId: tab.id, resultIndex, offset, limit, executionId
+        editorId: tab.id, resultIndex, offset, limit, executionId, resultExecutionId
       }, 120_000);
       const current = resultLoading.value;
       if (!current || current.executionId !== executionId) break;
@@ -1324,8 +1382,8 @@ async function loadResultRows(resultIndex: number, initialOffset: number, all: b
         app.status = `数据加载已取消 · 已保留 ${offset} 行`;
         break;
       }
-      if (page.rows.length) queries.appendRows(tab.id, resultIndex, page.rows, page.rowIds);
-      queries.completeResult(tab.id, resultIndex, { truncated: page.hasMore });
+      if (page.rows.length) queries.appendRows(tab.id, resultIndex, page.rows, resultExecutionId, page.rowIds);
+      queries.completeResult(tab.id, resultIndex, { truncated: page.hasMore }, resultExecutionId);
       offset = page.nextOffset;
       app.status = page.hasMore ? `已加载 ${offset} 行` : `已获取全部 ${offset} 行`;
       if (current.cancelRequested) {
@@ -1610,6 +1668,7 @@ function runShortcutAction(actionId: ShortcutActionId): void {
     return;
   }
   if (actionId === "query.executeCurrent") { triggerEditorExecution("current"); return; }
+  if (actionId === "query.executeCurrentNewTab") { triggerEditorExecution("current-new-tab"); return; }
   if (actionId === "query.executeAll") { triggerEditorExecution("script"); return; }
   if (actionId === "query.cancel") {
     if (canCancelExecution.value) void cancelActive();
@@ -2032,7 +2091,28 @@ function dataCommand(command: string): void {
   else if (command === "exit") void closeApplication();
   else settingsDrawer.value = true;
 }
-async function exportLoaded(resultIndex: number): Promise<void> {
+async function closeTemporaryResult(executionId: string): Promise<void> {
+  const tab = editors.active;
+  if (!tab) return;
+  const hasPending = Object.values(resultEdits.sessions).some((session) => session.editorId === tab.id
+    && session.executionId === executionId && resultEdits.operations(session).length > 0);
+  if (hasPending) {
+    ElMessage.warning("该结果还有未应用的本地草稿，请先应用或撤销后再关闭");
+    return;
+  }
+  try {
+    await rpc.ensureOperational();
+    await rpc.request("query.closeResult", { editorId: tab.id, executionId });
+    resultEdits.finishExecution(tab.id, executionId);
+    queries.removeExecution(tab.id, executionId);
+    const remaining = queries.executionList(tab.id);
+    const last = remaining[remaining.length - 1];
+    activeResultIndex.value = last?.executionId ?? 0;
+  } catch (error) {
+    ElMessage.error(message(error));
+  }
+}
+async function exportLoaded(executionId: string | number, resultIndex?: number): Promise<void> {
   if (!editors.active || activeExecution.value?.historical) {
     ElMessage.warning("断线前快照不能通过服务端导出，可继续复制已加载内容");
     return;
@@ -2041,10 +2121,13 @@ async function exportLoaded(resultIndex: number): Promise<void> {
     ElMessage.warning("请先确认并提交或回滚结果修改后再导出");
     return;
   }
-  await rpc.downloadCsv("loaded", editors.active.id, resultIndex);
+  const resolvedExecutionId = typeof executionId === "string" ? executionId : activeExecution.value?.executionId;
+  const resolvedResultIndex = typeof executionId === "number" ? executionId : resultIndex;
+  if (!resolvedExecutionId || resolvedResultIndex === undefined) return;
+  await rpc.downloadCsv("loaded", editors.active.id, resolvedExecutionId, resolvedResultIndex);
   ElMessage.success("已开始下载当前已加载结果");
 }
-async function exportFull(resultIndex: number): Promise<void> {
+async function exportFull(executionId: string | number, resultIndex?: number): Promise<void> {
   if (!editors.active || activeExecution.value?.historical) {
     ElMessage.warning("断线前快照不能重新执行完整导出");
     return;
@@ -2053,7 +2136,10 @@ async function exportFull(resultIndex: number): Promise<void> {
     ElMessage.warning("请先确认并提交或回滚结果修改后再导出");
     return;
   }
-  await rpc.downloadCsv("full", editors.active.id, resultIndex);
+  const resolvedExecutionId = typeof executionId === "string" ? executionId : activeExecution.value?.executionId;
+  const resolvedResultIndex = typeof executionId === "number" ? executionId : resultIndex;
+  if (!resolvedExecutionId || resolvedResultIndex === undefined) return;
+  await rpc.downloadCsv("full", editors.active.id, resolvedExecutionId, resolvedResultIndex);
   ElMessage.success("已开始流式导出完整结果");
 }
 function reportError(error: unknown): void { ElMessage.error(message(error)); }

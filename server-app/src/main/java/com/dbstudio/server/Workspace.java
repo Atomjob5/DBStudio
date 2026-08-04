@@ -59,6 +59,7 @@ final class Workspace implements AutoCloseable {
     private final Map<String, ContextReference> contexts = new ConcurrentHashMap<String, ContextReference>();
     private final Map<String, SavedProfile> bindings = new ConcurrentHashMap<String, SavedProfile>();
     private final Map<String, ActiveLease> activeLeases = new ConcurrentHashMap<String, ActiveLease>();
+    private final Map<String, String> pendingRiskConfirmations = new ConcurrentHashMap<String, String>();
     private final Set<String> lostTransactionEditors = java.util.Collections.newSetFromMap(
             new ConcurrentHashMap<String, Boolean>());
     private final Map<String, WorkspaceJdbcPool.Snapshot> recentJdbcConnections =
@@ -162,6 +163,7 @@ final class Workspace implements AutoCloseable {
         editors.bind(editor, context, newKey);
         if (!newKey.equals(oldKey) || !hadContext) target.references++;
         bindings.put(editorId, profile);
+        clearRiskConfirmation(editorId);
         if (hadContext) releaseContext(oldKey);
         emitConnectionState(editor, "ready", "链接已绑定，将在执行时借用数据库连接");
         LOG.info("编辑器绑定数据库链接 workspaceId={} editorId={} profileId={}", id, editorId, profile.profile().id());
@@ -180,6 +182,7 @@ final class Workspace implements AutoCloseable {
         } else if (oldKey != null && !oldKey.equals(newKey)) releaseContext(oldKey);
         bindings.put(editorId, profile);
         editor.bindLogical(newKey);
+        clearRiskConfirmation(editorId);
         emitConnectionState(editor, "credentials-required", "执行时需要数据库密码");
         LOG.info("编辑器建立逻辑数据库绑定 workspaceId={} editorId={} profileId={}", id, editorId,
                 profile.profile().id());
@@ -191,6 +194,7 @@ final class Workspace implements AutoCloseable {
         SavedProfile previous = bindings.remove(editorId);
         releaseEditorLease(editor, true);
         editor.unbind();
+        clearRiskConfirmation(editorId);
         if (previous != null) releaseContext(bindingKey(previous));
         emitConnectionState(editor, "unbound", "已解除数据库链接");
         LOG.info("编辑器解除数据库绑定 workspaceId={} editorId={}", id, editorId);
@@ -205,6 +209,7 @@ final class Workspace implements AutoCloseable {
     }
 
     UUID execute(final EditorSession editor, List<SqlStatement> statements, boolean stopOnError,
+                 boolean retainPreviousResults,
                  Consumer<UUID> started, QueryResultListener listener,
                  final EditorSessionRegistry.ExecutionCallback callback) {
         ensureBound(editor);
@@ -235,7 +240,7 @@ final class Workspace implements AutoCloseable {
                     }
                 }
             };
-            return editors.execute(editor, statements, stopOnError, guardedStarted, listener,
+            return editors.execute(editor, statements, stopOnError, retainPreviousResults, guardedStarted, listener,
                     new EditorSessionRegistry.ExecutionCallback() {
                         @Override public void completed(UUID executionId, QueryExecution execution, Throwable failure) {
                             /*
@@ -317,6 +322,7 @@ final class Workspace implements AutoCloseable {
     }
 
     CompletableFuture<List<QueryRunner.RowChange>> applyResultChanges(final EditorSession editor,
+                                                                      final UUID executionId,
                                                                       final ResultMutationTarget target,
                                                                       final List<List<String>> rows,
                                                                       final List<QueryRunner.RowChange> changes) {
@@ -332,12 +338,12 @@ final class Workspace implements AutoCloseable {
         if (active == null || !active.runner.isTransactionDirty()) {
             throw new ApiException("RESULT_EDIT_TRANSACTION_ENDED", "事务已经结束，请重新执行 FOR UPDATE");
         }
-        return withExecutionId(editor.lastExecutionId(),
+        return withExecutionId(executionId,
                 () -> active.runner.applyResultChanges(target, rows, changes));
     }
 
     CompletableFuture<QueryRunner.MutationBatchResult> applyResultOperations(
-            final EditorSession editor, final ResultMutationTarget target,
+            final EditorSession editor, final UUID executionId, final ResultMutationTarget target,
             final List<List<String>> rows, final List<List<String>> rowLocators,
             final List<QueryRunner.ResultOperation> operations) {
         ensureBound(editor);
@@ -350,7 +356,7 @@ final class Workspace implements AutoCloseable {
         if (active == null || !active.runner.isTransactionDirty()) {
             throw new ApiException("RESULT_EDIT_TRANSACTION_ENDED", "事务已经结束，请重新执行 FOR UPDATE");
         }
-        return withExecutionId(editor.lastExecutionId(),
+        return withExecutionId(executionId,
                 () -> active.runner.applyResultOperations(target, rows, rowLocators, operations));
     }
 
@@ -500,12 +506,29 @@ final class Workspace implements AutoCloseable {
 
     synchronized void closeEditor(String editorId) {
         EditorSession editor = editors.require(editorId);
+        clearRiskConfirmation(editorId);
         SavedProfile previous = bindings.remove(editorId);
         lostTransactionEditors.remove(editorId);
         releaseEditorLease(editor, true);
         editors.close(editorId);
         if (previous != null) releaseContext(bindingKey(previous));
         LOG.info("关闭编辑器 workspaceId={} editorId={}", id, editorId);
+    }
+
+    boolean confirmRiskExecution(String editorId, String fingerprint) {
+        final java.util.concurrent.atomic.AtomicBoolean confirmed = new java.util.concurrent.atomic.AtomicBoolean(false);
+        pendingRiskConfirmations.compute(editorId, (ignored, pending) -> {
+            if (fingerprint.equals(pending)) {
+                confirmed.set(true);
+                return null;
+            }
+            return fingerprint;
+        });
+        return confirmed.get();
+    }
+
+    void clearRiskConfirmation(String editorId) {
+        pendingRiskConfirmations.remove(editorId);
     }
 
     void cachePassword(UUID profileId, char[] password) {
@@ -900,7 +923,17 @@ final class Workspace implements AutoCloseable {
         }
     }
 
-    CompletableFuture<Long> streamResultValue(EditorSession editor, ResultMutationTarget target,
+    void removeLargeValueDrafts(String editorId, UUID executionId) {
+        for (Map.Entry<String, LargeValueDraft> entry
+                : new ArrayList<Map.Entry<String, LargeValueDraft>>(largeValueDrafts.entrySet())) {
+            LargeValueDraft draft = entry.getValue();
+            if (draft.editorId.equals(editorId) && executionId.equals(draft.executionId)) {
+                removeLargeValueDraft(entry.getKey());
+            }
+        }
+    }
+
+    CompletableFuture<Long> streamResultValue(EditorSession editor, UUID executionId, ResultMutationTarget target,
                                                List<String> row, List<String> rowLocator,
                                                int columnIndex, OutputStream output, long maximumBytes) {
         ensureBound(editor);
@@ -909,7 +942,7 @@ final class Workspace implements AutoCloseable {
         if (active == null || !active.runner.isTransactionDirty()) {
             throw new ApiException("RESULT_EDIT_TRANSACTION_ENDED", "事务已经结束，请重新执行 FOR UPDATE");
         }
-        return withExecutionId(editor.lastExecutionId(),
+        return withExecutionId(executionId,
                 () -> active.runner.streamResultValue(target, row, rowLocator, columnIndex, output, maximumBytes));
     }
 

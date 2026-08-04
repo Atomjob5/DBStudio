@@ -345,25 +345,33 @@ export const useResultEditStore = defineStore("result-edits", () => {
     return discarded;
   }
 
-  function restore(editorId: string, mode: "confirmed" | "original"):
-    Array<{ resultIndex: number; rowIndex: number; columnIndex: number; value: string | null }> {
-    const restored: Array<{ resultIndex: number; rowIndex: number; columnIndex: number; value: string | null }> = [];
+  function restoreWithExecution(editorId: string, mode: "confirmed" | "original"):
+    Array<{ executionId: string; resultIndex: number; rowIndex: number; columnIndex: number; value: string | null }> {
+    const restored: Array<{ executionId: string; resultIndex: number; rowIndex: number; columnIndex: number; value: string | null }> = [];
     for (const current of Object.values(sessions.value)) {
       if (current.editorId !== editorId) continue;
-      for (const cell of current.cells) restored.push({ resultIndex: current.resultIndex,
+      for (const cell of current.cells) restored.push({ executionId: current.executionId, resultIndex: current.resultIndex,
         rowIndex: cell.rowIndex, columnIndex: cell.columnIndex,
         value: mode === "confirmed" ? cell.confirmedValue : cell.originalValue });
     }
     return restored;
+  }
+  function restore(editorId: string, mode: "confirmed" | "original"):
+    Array<{ resultIndex: number; rowIndex: number; columnIndex: number; value: string | null }> {
+    return restoreWithExecution(editorId, mode).map(({ executionId: _executionId, ...cell }) => cell);
   }
 
   function finishEditor(editorId: string): void {
     sessions.value = Object.fromEntries(Object.entries(sessions.value)
       .filter(([, current]) => current.editorId !== editorId));
   }
+  function finishExecution(editorId: string, executionId: string): void {
+    sessions.value = Object.fromEntries(Object.entries(sessions.value)
+      .filter(([, current]) => current.editorId !== editorId || current.executionId !== executionId));
+  }
   function clear(): void { sessions.value = {}; }
 
   return { sessions, session, setUnlocked, stage, stageMutation, addInsert, markDelete, isDeleted, cellState,
     operations, pending, pendingOperationCount, appliedOperationCount, hasPending, hasChanges,
-    markPosted, setOperationError, undo, discardPending, restore, finishEditor, clear };
+    markPosted, setOperationError, undo, discardPending, restore, restoreWithExecution, finishEditor, finishExecution, clear };
 });

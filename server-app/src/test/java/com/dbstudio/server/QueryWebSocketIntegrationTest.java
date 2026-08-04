@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.dbstudio.desktop.web.EditorSessionRegistry.EditorSession;
 import java.net.URI;
 import java.sql.Connection;
 import java.sql.ResultSet;
@@ -145,6 +146,109 @@ class QueryWebSocketIntegrationTest {
             List<Map<String, Object>> second = execute(editorId, workspaceId, cookie, events, 250);
             assertEquals(Arrays.asList(100, 100, 50), rowBatchSizes(second));
             assertOrder(second);
+        } finally {
+            socket.close();
+        }
+    }
+
+    @Test
+    void requiresRiskyDmlToBeExecutedTwiceBeforeRunningAnyStatement() throws Exception {
+        String cookie = authenticate();
+        String workspaceId = UUID.randomUUID().toString();
+        exchange(HttpMethod.PUT, "/api/v1/workspaces/" + workspaceId, new HashMap<String, Object>(), cookie);
+        openWorkspace(workspaceId, cookie);
+        updateSetting(cookie, "connection.autoCommit", "true");
+        String profileId = createProfile(workspaceId, cookie);
+        Map<String, Object> editorBody = new HashMap<String, Object>(); editorBody.put("profileId", profileId);
+        String editorId = String.valueOf(exchange(HttpMethod.POST,
+                "/api/v1/workspaces/" + workspaceId + "/editors", editorBody, cookie).get("id"));
+        String table = "risk_dml_" + UUID.randomUUID().toString().replace("-", "");
+
+        final BlockingQueue<Map<String, Object>> events = new LinkedBlockingQueue<Map<String, Object>>();
+        WebSocketHttpHeaders socketHeaders = new WebSocketHttpHeaders();
+        socketHeaders.setOrigin(origin()); socketHeaders.add(HttpHeaders.COOKIE, cookie);
+        WebSocketSession socket = new StandardWebSocketClient().doHandshake(new TextWebSocketHandler() {
+            @Override protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
+                events.add(mapper.readValue(message.getPayload(), new TypeReference<Map<String, Object>>() { }));
+            }
+        }, socketHeaders, URI.create("ws://127.0.0.1:" + port + "/api/v1/events?workspaceId=" + workspaceId
+                + "&clientId=" + clientId)).get(10, TimeUnit.SECONDS);
+        try {
+            awaitType(events, "workspace.ready", 10);
+            try (Connection connection = MYSQL.createConnection(""); Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE " + table + "(id BIGINT PRIMARY KEY, status INT NOT NULL)");
+                statement.execute("INSERT INTO " + table + " VALUES (1, 0)");
+            }
+
+            String updateOne = "UPDATE " + table + " SET status = 1";
+            assertRiskConfirmationRequired(workspaceId, editorId, cookie, updateOne);
+            assertTrue(events.isEmpty(), "risk confirmation must not publish execution events");
+
+            String updateTwo = "UPDATE " + table + " SET status = 2";
+            assertRiskConfirmationRequired(workspaceId, editorId, cookie, updateTwo);
+            assertTrue(events.isEmpty(), "changed SQL must require another confirmation");
+            executionComplete(executeSql(editorId, workspaceId, cookie, events, updateTwo));
+
+            String script = "SELECT 1; UPDATE " + table + " SET status = 3";
+            assertRiskConfirmationRequired(workspaceId, editorId, cookie, script);
+            assertTrue(events.isEmpty(), "a risky script must not execute its preceding statements");
+            List<Map<String, Object>> completed = executeSql(editorId, workspaceId, cookie, events, script);
+            assertEquals(2, completed.stream().filter(event -> "query.resultComplete".equals(event.get("type"))).count());
+        } finally {
+            try (Connection connection = MYSQL.createConnection(""); Statement statement = connection.createStatement()) {
+                statement.execute("DROP TABLE IF EXISTS " + table);
+            }
+            updateSetting(cookie, "connection.autoCommit", "false");
+            socket.close();
+            workspaces.expireNow(workspaceId);
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void appendsReadOnlySelectResultsAndRejectsLockingOrMutatingStatements() throws Exception {
+        String cookie = authenticate();
+        String workspaceId = UUID.randomUUID().toString();
+        exchange(HttpMethod.PUT, "/api/v1/workspaces/" + workspaceId, new HashMap<String, Object>(), cookie);
+        openWorkspace(workspaceId, cookie);
+        String profileId = createProfile(workspaceId, cookie);
+        Map<String, Object> editorBody = new HashMap<String, Object>(); editorBody.put("profileId", profileId);
+        String editorId = String.valueOf(exchange(HttpMethod.POST,
+                "/api/v1/workspaces/" + workspaceId + "/editors", editorBody, cookie).get("id"));
+        final BlockingQueue<Map<String, Object>> events = new LinkedBlockingQueue<Map<String, Object>>();
+        WebSocketHttpHeaders socketHeaders = new WebSocketHttpHeaders();
+        socketHeaders.setOrigin(origin()); socketHeaders.add(HttpHeaders.COOKIE, cookie);
+        WebSocketSession socket = new StandardWebSocketClient().doHandshake(new TextWebSocketHandler() {
+            @Override protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
+                events.add(mapper.readValue(message.getPayload(), new TypeReference<Map<String, Object>>() { }));
+            }
+        }, socketHeaders, URI.create("ws://127.0.0.1:" + port + "/api/v1/events?workspaceId=" + workspaceId
+                + "&clientId=" + clientId)).get(10, TimeUnit.SECONDS);
+        try {
+            awaitType(events, "workspace.ready", 10);
+            Map<String, Object> originalComplete = executionComplete(executeSql(editorId, workspaceId, cookie, events, "SELECT 1"));
+            String originalId = String.valueOf(originalComplete.get("executionId"));
+
+            events.clear();
+            Map<String, Object> appendBody = new HashMap<String, Object>();
+            appendBody.put("scope", "current"); appendBody.put("stopOnError", true);
+            appendBody.put("text", "SELECT 2"); appendBody.put("cursorOffset", 0);
+            appendBody.put("resultPresentation", "append");
+            exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId + "/editors/" + editorId
+                    + "/executions", appendBody, cookie);
+            Map<String, Object> started = awaitType(events, "query.started", 10);
+            Map<String, Object> startedPayload = (Map<String, Object>) started.get("payload");
+            assertEquals("append", startedPayload.get("resultPresentation"));
+            Map<String, Object> appendedComplete = awaitType(events, "query.executionComplete", 10);
+            Map<String, Object> appendedPayload = (Map<String, Object>) appendedComplete.get("payload");
+            String appendedId = String.valueOf(appendedPayload.get("executionId"));
+            EditorSession editor = workspaces.require(workspaceId).editors().require(editorId);
+            assertTrue(editor.hasExecution(UUID.fromString(originalId)));
+            assertTrue(editor.hasExecution(UUID.fromString(appendedId)));
+
+            assertTemporaryReadOnlyRejected(workspaceId, editorId, cookie, "SELECT 1 FOR UPDATE");
+            assertTemporaryReadOnlyRejected(workspaceId, editorId, cookie, "SHOW TABLES");
+            assertTemporaryReadOnlyRejected(workspaceId, editorId, cookie, "UPDATE mysql.user SET host = host");
         } finally {
             socket.close();
         }
@@ -545,6 +649,29 @@ class QueryWebSocketIntegrationTest {
             if ("query.executionComplete".equals(event.get("type"))) return collected;
         }
         throw new AssertionError("Timed out waiting for query.executionComplete; received=" + collected);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void assertRiskConfirmationRequired(String workspaceId, String editorId, String cookie, String sql) {
+        Map<String, Object> body = new HashMap<String, Object>();
+        body.put("scope", "script"); body.put("stopOnError", true); body.put("text", sql);
+        ResponseEntity<Map> response = http.exchange(url("/api/v1/workspaces/" + workspaceId
+                        + "/editors/" + editorId + "/executions"), HttpMethod.POST,
+                new HttpEntity<Map<String, Object>>(body, authenticatedJsonHeaders(cookie)), Map.class);
+        assertEquals(org.springframework.http.HttpStatus.BAD_REQUEST, response.getStatusCode());
+        assertEquals("RISK_REEXECUTION_REQUIRED", response.getBody().get("code"));
+    }
+
+    @SuppressWarnings("unchecked")
+    private void assertTemporaryReadOnlyRejected(String workspaceId, String editorId, String cookie, String sql) {
+        Map<String, Object> body = new HashMap<String, Object>();
+        body.put("scope", "current"); body.put("stopOnError", true); body.put("text", sql);
+        body.put("cursorOffset", 0); body.put("resultPresentation", "append");
+        ResponseEntity<Map> response = http.exchange(url("/api/v1/workspaces/" + workspaceId
+                        + "/editors/" + editorId + "/executions"), HttpMethod.POST,
+                new HttpEntity<Map<String, Object>>(body, authenticatedJsonHeaders(cookie)), Map.class);
+        assertEquals(org.springframework.http.HttpStatus.BAD_REQUEST, response.getStatusCode());
+        assertEquals("TEMPORARY_RESULT_READ_ONLY", response.getBody().get("code"));
     }
 
     @SuppressWarnings("unchecked")

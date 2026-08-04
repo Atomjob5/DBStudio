@@ -25,6 +25,7 @@ function event(key: string, options: Partial<KeyboardEvent> = {}) {
 describe("shortcuts", () => {
   it("uses only the three requested default bindings", () => {
     expect(DEFAULT_SHORTCUT_BINDINGS["query.executeCurrent"]).toBe("F8");
+    expect(DEFAULT_SHORTCUT_BINDINGS["query.executeCurrentNewTab"]).toBeNull();
     expect(DEFAULT_SHORTCUT_BINDINGS["query.executeAll"]).toBe("F7");
     expect(DEFAULT_SHORTCUT_BINDINGS["query.cancel"]).toBe("Shift+Escape");
     expect(DEFAULT_SHORTCUT_BINDINGS["editor.toggleMinimap"]).toBeNull();
@@ -77,6 +78,7 @@ describe("shortcuts", () => {
       "query.cancel": "Escape",
     }));
     expect(parsed["query.executeCurrent"]).toBeNull();
+    expect(parsed["query.executeCurrentNewTab"]).toBeNull();
     expect(parsed["query.executeAll"]).toBe("Mod+7");
     expect(parsed["query.cancel"]).toBe("Shift+Escape");
     expect(parsed["file.newQuery"]).toBeNull();

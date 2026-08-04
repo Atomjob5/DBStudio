@@ -21,6 +21,15 @@ public interface SqlDialect {
 
     String format(String sql);
 
+    /**
+     * Returns whether this statement is an UPDATE or DELETE without a top-level WHERE predicate.
+     * Implementations with an SQL parser should override this method so comments, literals and
+     * nested queries do not affect the assessment.
+     */
+    default boolean requiresWhereClauseConfirmation(SqlStatement statement) {
+        return false;
+    }
+
     default String compact(String sql) {
         return format(sql);
     }
