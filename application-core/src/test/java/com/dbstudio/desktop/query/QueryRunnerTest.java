@@ -11,6 +11,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Types;
 import java.util.ArrayList;
@@ -226,6 +227,34 @@ class QueryRunnerTest {
             runner.rollback().join();
             assertEquals("before", runner.execute(Collections.singletonList(
                     sql("SELECT name FROM oracle_editable", StatementType.QUERY)), true)
+                    .join().results().get(0).rows().get(0).get(0));
+        }
+    }
+
+    @Test
+    void acceptsOceanBaseOracleSavepointReleaseLimitation() throws Exception {
+        final Connection physical = DriverManager.getConnection("jdbc:sqlite::memory:");
+        physical.setAutoCommit(false);
+        AtomicInteger releaseAttempts = new AtomicInteger();
+        SQLException unsupported = new SQLException("conn=1292666 releaseSavepoint is not supported", "99999", 17023);
+        Connection connection = connectionWithSavepointReleaseFailure(physical, releaseAttempts, unsupported);
+        try (QueryRunner runner = new QueryRunner(session(connection), 10, 10)) {
+            runner.execute(Arrays.asList(
+                    sql("CREATE TABLE oceanbase_editable(id INTEGER PRIMARY KEY, name TEXT)", StatementType.DDL),
+                    sql("INSERT INTO oceanbase_editable VALUES (1, 'before')", StatementType.INSERT)), true).join();
+            runner.commit().join();
+            StatementResult result = runner.execute(Collections.singletonList(
+                    sql("SELECT id, name FROM oceanbase_editable", StatementType.QUERY)), true)
+                    .join().results().get(0);
+
+            runner.applyResultChanges(editableTarget("\"oceanbase_editable\""), result.rows(),
+                    Collections.singletonList(new QueryRunner.RowChange(0, Collections.singletonList(
+                            new QueryRunner.CellChange(1, "after"))))).join();
+
+            assertEquals(1, releaseAttempts.get());
+            assertTrue(runner.isTransactionDirty());
+            assertEquals("after", runner.execute(Collections.singletonList(
+                    sql("SELECT name FROM oceanbase_editable", StatementType.QUERY)), true)
                     .join().results().get(0).rows().get(0).get(0));
         }
     }
@@ -454,13 +483,20 @@ class QueryRunnerTest {
 
     private static Connection connectionWithoutSavepointRelease(final Connection delegate,
                                                                 final AtomicInteger attempts) {
+        return connectionWithSavepointReleaseFailure(delegate, attempts,
+                new SQLFeatureNotSupportedException("不支持的特性: releaseSavepoint"));
+    }
+
+    private static Connection connectionWithSavepointReleaseFailure(final Connection delegate,
+                                                                     final AtomicInteger attempts,
+                                                                     final SQLException failure) {
         return (Connection) Proxy.newProxyInstance(
                 QueryRunnerTest.class.getClassLoader(),
                 new Class<?>[] { Connection.class },
                 (proxy, method, arguments) -> {
                     if ("releaseSavepoint".equals(method.getName())) {
                         attempts.incrementAndGet();
-                        throw new SQLFeatureNotSupportedException("不支持的特性: releaseSavepoint");
+                        throw failure;
                     }
                     try {
                         return method.invoke(delegate, arguments);

@@ -11,6 +11,7 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.sql.Connection;
+import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
@@ -98,6 +99,16 @@ class OracleMetadataAdapterCompletionTest {
         assertEquals(Arrays.asList("CBSAC", "CUSTOMERS"), jdbc.parameters.get(sql));
     }
 
+    @Test void fallsBackToUppercaseForUnquotedOracleTableMetadata() throws Exception {
+        FakeJdbc jdbc = new FakeJdbc();
+
+        List<ColumnInfo> columns = adapter.listColumns(session(jdbc.connection()), "", "cbsltdcn1", "kdpa_acct_info");
+
+        assertEquals(Collections.singletonList("LBLTY_ACCT_NUM"), Collections.singletonList(columns.get(0).name()));
+        assertEquals(Arrays.asList(Arrays.asList("cbsltdcn1", "kdpa_acct_info"),
+                Arrays.asList("CBSLTDCN1", "KDPA_ACCT_INFO")), jdbc.columnMetadataRequests);
+    }
+
     @Test void detectsOceanBaseObjectNameColumn() throws Exception {
         FakeJdbc jdbc = new FakeJdbc("OBJECT_NAME");
         adapter.streamCompletionMetadata(session(jdbc.connection()),
@@ -141,6 +152,7 @@ class OracleMetadataAdapterCompletionTest {
     private static final class FakeJdbc {
         private final List<String> sql = new ArrayList<String>();
         private final Map<String, List<String>> parameters = new LinkedHashMap<String, List<String>>();
+        private final List<List<String>> columnMetadataRequests = new ArrayList<List<String>>();
         private final String commentObjectColumn;
         private boolean failAllTables;
 
@@ -156,7 +168,27 @@ class OracleMetadataAdapterCompletionTest {
             return proxy(Connection.class, (proxy, method, arguments) -> {
                 if ("createStatement".equals(method.getName())) return statement();
                 if ("prepareStatement".equals(method.getName())) return prepared(String.valueOf(arguments[0]));
+                if ("getMetaData".equals(method.getName())) return metadata();
                 if ("getSchema".equals(method.getName())) return "CBSAC";
+                return defaultValue(method.getReturnType());
+            });
+        }
+
+        private DatabaseMetaData metadata() {
+            return proxy(DatabaseMetaData.class, (proxy, method, arguments) -> {
+                if ("getColumns".equals(method.getName())) {
+                    String owner = String.valueOf(arguments[1]);
+                    String table = String.valueOf(arguments[2]);
+                    columnMetadataRequests.add(Arrays.asList(owner, table));
+                    if ("CBSLTDCN1".equals(owner) && "KDPA_ACCT_INFO".equals(table)) {
+                        return resultSet(Arrays.asList("COLUMN_NAME", "TYPE_NAME", "COLUMN_SIZE", "DECIMAL_DIGITS",
+                                "NULLABLE", "COLUMN_DEF", "ORDINAL_POSITION", "REMARKS", "IS_AUTOINCREMENT",
+                                "IS_GENERATEDCOLUMN"), Collections.singletonList(Arrays.<Object>asList(
+                                "LBLTY_ACCT_NUM", "VARCHAR2", 64, 0, DatabaseMetaData.columnNullable,
+                                null, 1, "", "NO", "NO")));
+                    }
+                    return resultSet(Collections.<String>emptyList(), Collections.<List<Object>>emptyList());
+                }
                 return defaultValue(method.getReturnType());
             });
         }
@@ -217,6 +249,8 @@ class OracleMetadataAdapterCompletionTest {
                         "DATA_SCALE", "CHAR_LENGTH", "CHAR_USED", "COLUMN_ID");
                 rows.add(Arrays.<Object>asList("AMOUNT", "NUMBER", 22, 18, 2, 0, null, 1));
                 rows.add(Arrays.<Object>asList("NAME", "VARCHAR2", 400, null, 0, 100, "C", 2));
+            } else if (query.startsWith("SELECT c.CONSTRAINT_NAME,c.CONSTRAINT_TYPE,cc.COLUMN_NAME,cc.POSITION")) {
+                labels = Arrays.asList("CONSTRAINT_NAME", "CONSTRAINT_TYPE", "COLUMN_NAME", "POSITION");
             } else {
                 throw new AssertionError("Unexpected SQL: " + query);
             }

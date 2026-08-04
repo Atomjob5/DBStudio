@@ -190,7 +190,7 @@ public final class MetadataResultColumnResolver implements ResultColumnResolver 
                     boolean editable = info != null && !info.generated()
                             && ResultMutationTarget.Column.supportsEditing(column.jdbcType(), column.typeName());
                     targetColumns.add(new ResultMutationTarget.Column(index, column.name(),
-                            info == null ? "" : dialect.quoteIdentifier(column.name()), column.jdbcType(), column.typeName(), "",
+                            info == null ? "" : dialect.quoteIdentifier(info.name()), column.jdbcType(), column.typeName(), "",
                             info == null ? 0 : info.size(), info == null ? 0 : info.scale(),
                             info == null || info.nullable(), info == null ? "" : info.defaultValue(),
                             info != null && info.autoIncrement(), info != null && info.generated(), editable,

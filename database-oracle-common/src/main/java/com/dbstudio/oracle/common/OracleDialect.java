@@ -208,8 +208,8 @@ public class OracleDialect implements SqlDialect {
             SQLSelectQueryBlock block = select.getSelect().getQueryBlock();
             if (block == null || !(block.getFrom() instanceof SQLExprTableSource)) return Optional.empty();
             SQLExprTableSource source = (SQLExprTableSource) block.getFrom();
-            String table = normalize(source.getTableName());
-            String schema = normalize(source.getSchema());
+            String table = normalizeOracleIdentifier(source.getTableName());
+            String schema = normalizeOracleIdentifier(source.getSchema());
             return table.isEmpty() ? Optional.<ResultMutationSource>empty()
                     : Optional.of(new ResultMutationSource("", schema, table,
                             normalize(source.getAlias()), block.isForUpdate()));
@@ -317,6 +317,14 @@ public class OracleDialect implements SqlDialect {
         String result = value.trim();
         return result.length() > 1 && result.startsWith("\"") && result.endsWith("\"")
                 ? result.substring(1, result.length() - 1).replace("\"\"", "\"") : result;
+    }
+    private static String normalizeOracleIdentifier(String value) {
+        if (value == null) return "";
+        String result = value.trim();
+        if (result.length() > 1 && result.startsWith("\"") && result.endsWith("\"")) {
+            return result.substring(1, result.length() - 1).replace("\"\"", "\"");
+        }
+        return result.toUpperCase(Locale.ROOT);
     }
     private void add(List<SqlStatement> result, String script, int rawStart, int rawEnd) {
         int start = rawStart, end = rawEnd;

@@ -60,9 +60,13 @@ class OracleDialectTest {
     @Test void safelyResolvesSingleTableMutationSource() {
         ResultMutationSource source = dialect.resultMutationSource(
                 "SELECT a.id, a.name FROM sales.orders a").orElseThrow(AssertionError::new);
-        assertEquals("SALES", source.schema().toUpperCase());
-        assertEquals("ORDERS", source.table().toUpperCase());
+        assertEquals("SALES", source.schema());
+        assertEquals("ORDERS", source.table());
         assertFalse(source.editableForUpdate());
+        ResultMutationSource quoted = dialect.resultMutationSource(
+                "SELECT a.id FROM \"sales\".\"orders\" a FOR UPDATE").orElseThrow(AssertionError::new);
+        assertEquals("sales", quoted.schema());
+        assertEquals("orders", quoted.table());
         assertTrue(dialect.resultMutationSource(
                 "SELECT a.id, a.name FROM sales.orders a FOR UPDATE").get().editableForUpdate());
         assertTrue(dialect.resultMutationSource(

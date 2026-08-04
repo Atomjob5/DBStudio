@@ -196,8 +196,24 @@ public class OracleMetadataAdapter implements MetadataAdapter {
     @Override public List<ColumnInfo> listColumns(DatabaseSession session, String catalog, String schema,
                                                    String objectName) throws SQLException {
         String owner = schema == null || schema.trim().isEmpty() ? catalog : schema;
-        List<ColumnInfo> columns = new ArrayList<ColumnInfo>();
         Set<String> primary = primaryColumns(session, owner, objectName);
+        List<ColumnInfo> columns = jdbcColumns(session, owner, objectName, primary);
+        String normalizedOwner = upper(owner);
+        String normalizedTable = upper(objectName);
+        if (columns.isEmpty() && (!normalizedOwner.equals(owner) || !normalizedTable.equals(objectName))) {
+            columns = jdbcColumns(session, normalizedOwner, normalizedTable, primary);
+        }
+        Collections.sort(columns, new Comparator<ColumnInfo>() {
+            @Override public int compare(ColumnInfo left, ColumnInfo right) {
+                return Integer.compare(left.ordinal(), right.ordinal());
+            }
+        });
+        return Collections.unmodifiableList(columns);
+    }
+
+    private List<ColumnInfo> jdbcColumns(DatabaseSession session, String owner, String objectName,
+                                         Set<String> primary) throws SQLException {
+        List<ColumnInfo> columns = new ArrayList<ColumnInfo>();
         try (ResultSet result = session.jdbcConnection().getMetaData().getColumns(null, owner, objectName, "%")) {
             while (result.next()) {
                 String name = result.getString("COLUMN_NAME");
@@ -208,12 +224,7 @@ public class OracleMetadataAdapter implements MetadataAdapter {
                         yes(result, "IS_AUTOINCREMENT"), yes(result, "IS_GENERATEDCOLUMN")));
             }
         }
-        Collections.sort(columns, new Comparator<ColumnInfo>() {
-            @Override public int compare(ColumnInfo left, ColumnInfo right) {
-                return Integer.compare(left.ordinal(), right.ordinal());
-            }
-        });
-        return Collections.unmodifiableList(columns);
+        return columns;
     }
 
     private static boolean yes(ResultSet result, String column) {

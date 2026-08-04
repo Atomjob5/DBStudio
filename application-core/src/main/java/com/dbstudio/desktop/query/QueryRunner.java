@@ -753,7 +753,18 @@ public final class QueryRunner implements AutoCloseable {
         } catch (SQLFeatureNotSupportedException unsupported) {
             // Oracle JDBC keeps the savepoint until transaction end but does not implement releaseSavepoint.
             LOG.debug("JDBC 驱动不支持主动释放保存点，将由事务结束时清理");
+        } catch (SQLException unsupported) {
+            if (!oceanBaseOracleSavepointReleaseUnsupported(unsupported)) throw unsupported;
+            // OceanBase Connector/J 2.4.x reports this Oracle-mode limitation as a plain SQLException.
+            LOG.debug("OceanBase Oracle JDBC 不支持主动释放保存点，将由事务结束时清理");
         }
+    }
+
+    private static boolean oceanBaseOracleSavepointReleaseUnsupported(SQLException exception) {
+        String message = exception.getMessage() == null ? ""
+                : exception.getMessage().toLowerCase(java.util.Locale.ROOT);
+        return "99999".equals(exception.getSQLState()) && Math.abs(exception.getErrorCode()) == 17023
+                && message.contains("releasesavepoint") && message.contains("not supported");
     }
 
     private static List<CellChange> effectiveCells(ResultMutationTarget target, List<String> row,
