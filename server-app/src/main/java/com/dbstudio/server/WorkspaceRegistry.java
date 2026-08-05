@@ -201,6 +201,9 @@ public final class WorkspaceRegistry implements AutoCloseable {
         int bounded=Math.max(1,Math.min(1_000,rows));
         for (Workspace workspace:runtimes.values()) workspace.editors().setStreamBatchRows(bounded);
     }
+    void clearRiskConfirmations() {
+        for (Workspace workspace : runtimes.values()) workspace.clearRiskConfirmations();
+    }
     void setMaxActiveSessions(int maximum) {
         limiter.setMaximum(maximum);
         LOG.info("更新最大活动JDBC会话数 maximum={}", limiter.maximum());

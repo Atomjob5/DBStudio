@@ -34,6 +34,7 @@ export const useSettingsStore = defineStore("settings", () => {
   const completionSnippets = ref<SqlCompletionSnippet[]>([]);
   const minimapEnabled = ref(true);
   const wordWrapEnabled = ref(false);
+  const dangerousStatementWarningEnabled = ref(true);
   const shortcuts = ref<ShortcutBindings>({ ...DEFAULT_SHORTCUT_BINDINGS });
   const shortcutRecordingActive = ref(false);
   const recentFiles = ref<string[]>([]);
@@ -71,6 +72,7 @@ export const useSettingsStore = defineStore("settings", () => {
     completionSnippets.value = parseSqlCompletionSnippets(settings["editor.completionSnippets"]);
     minimapEnabled.value = settings["editor.minimapEnabled"] !== "false";
     wordWrapEnabled.value = settings["editor.wordWrapEnabled"] === "true";
+    dangerousStatementWarningEnabled.value = settings["editor.dangerousStatementWarningEnabled"] !== "false";
     shortcuts.value = parseShortcutBindings(settings["keyboard.shortcuts"]);
     recentFiles.value = recent;
   }
@@ -96,7 +98,7 @@ export const useSettingsStore = defineStore("settings", () => {
     scrollOptimizationEnabled, scrollOptimizationBufferScreens,
     maxActiveSessions, autoCommit, idleTimeoutMinutes, transactionDisconnectRollbackMinutes,
     completionCandidateLimit, completionPreciseMatchingEnabled, completionSnippets,
-    minimapEnabled, wordWrapEnabled,
+    minimapEnabled, wordWrapEnabled, dangerousStatementWarningEnabled,
     shortcuts, shortcutRecordingActive,
     recentFiles, initialize, setCompletionSnippets, setShortcuts, setShortcut, resetShortcuts };
 });

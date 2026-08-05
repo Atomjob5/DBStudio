@@ -108,6 +108,7 @@ public final class DbStudioApiController {
             "connection.transactionDisconnectRollbackMinutes",
             "editor.completionCandidateLimit", "editor.completionPreciseMatchingEnabled",
             "editor.completionSnippets", "editor.minimapEnabled", "editor.wordWrapEnabled",
+            "editor.dangerousStatementWarningEnabled",
             "keyboard.shortcuts",
             "layout.leftWidth", "layout.editorHeight");
     private static final Set<String> COMPLETION_SNIPPET_FIELDS = new LinkedHashSet<String>(Arrays.asList(
@@ -1461,13 +1462,15 @@ public final class DbStudioApiController {
                 && !Arrays.asList("true", "false").contains(value)) {
             throw new ApiException("INVALID_SETTING", "精准匹配设置无效");
         }
-        if (("editor.minimapEnabled".equals(key) || "editor.wordWrapEnabled".equals(key))
+        if (("editor.minimapEnabled".equals(key) || "editor.wordWrapEnabled".equals(key)
+                || "editor.dangerousStatementWarningEnabled".equals(key))
                 && !Arrays.asList("true", "false").contains(value)) {
             throw new ApiException("INVALID_SETTING", "编辑器开关设置无效");
         }
         if ("editor.completionSnippets".equals(key)) validateCompletionSnippets(value);
         if ("keyboard.shortcuts".equals(key)) validateShortcutSettings(value);
         settings.put(key, value);
+        if ("editor.dangerousStatementWarningEnabled".equals(key)) workspaces.clearRiskConfirmations();
         return ApiPayloads.map("key", key, "value", value);
     }
 
@@ -1800,8 +1803,12 @@ public final class DbStudioApiController {
         }
     }
 
-    private static void requireRiskReexecution(Workspace workspace, EditorSession editor,
-                                               DatabaseContext context, List<SqlStatement> statements) {
+    private void requireRiskReexecution(Workspace workspace, EditorSession editor,
+                                        DatabaseContext context, List<SqlStatement> statements) throws SQLException {
+        if (!dangerousStatementWarningEnabled()) {
+            workspace.clearRiskConfirmation(editor.id().toString());
+            return;
+        }
         boolean risky = false;
         for (SqlStatement statement : statements) {
             if (context.provider().dialect().requiresWhereClauseConfirmation(statement)) {
@@ -1817,6 +1824,10 @@ public final class DbStudioApiController {
         if (workspace.confirmRiskExecution(editor.id().toString(), fingerprint)) return;
         throw new ApiException("RISK_REEXECUTION_REQUIRED",
                 "当前语句未包含 WHERE，可能影响大量数据；请再次执行以继续");
+    }
+
+    private boolean dangerousStatementWarningEnabled() throws SQLException {
+        return !"false".equals(settings.get("editor.dangerousStatementWarningEnabled").orElse("true"));
     }
 
     private static String riskFingerprint(DatabaseContext context, List<SqlStatement> statements) {
@@ -2213,6 +2224,9 @@ public final class DbStudioApiController {
         if (!result.containsKey("editor.completionSnippets")) result.put("editor.completionSnippets", "[]");
         if (!result.containsKey("editor.minimapEnabled")) result.put("editor.minimapEnabled", "true");
         if (!result.containsKey("editor.wordWrapEnabled")) result.put("editor.wordWrapEnabled", "false");
+        if (!result.containsKey("editor.dangerousStatementWarningEnabled")) {
+            result.put("editor.dangerousStatementWarningEnabled", "true");
+        }
         if (!result.containsKey("keyboard.shortcuts")) result.put("keyboard.shortcuts", DEFAULT_SHORTCUTS);
         if (!result.containsKey("connection.idleTimeoutMinutes")) result.put("connection.idleTimeoutMinutes", "10");
         if (!result.containsKey("connection.transactionDisconnectRollbackMinutes")) {

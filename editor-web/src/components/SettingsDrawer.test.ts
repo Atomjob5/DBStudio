@@ -34,7 +34,8 @@ describe("SettingsDrawer compact result settings", () => {
         completionSnippetCount: 0,
         canClearCompletionCaches: true,
         minimapEnabled: true,
-        wordWrapEnabled: false
+        wordWrapEnabled: false,
+        dangerousStatementWarningEnabled: true
       },
       global: { plugins: [ElementPlus], stubs: { teleport: true } }
     });
@@ -43,7 +44,7 @@ describe("SettingsDrawer compact result settings", () => {
   it("renders compact connection and result settings without the old alert", async () => {
     const wrapper = mountDrawer();
     await flushPromises();
-    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(20);
+    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(21);
     expect(wrapper.findComponent({ name: "ElAlert" }).exists()).toBe(false);
     const separator = wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "comma");
@@ -64,7 +65,8 @@ describe("SettingsDrawer compact result settings", () => {
       expect.stringContaining("字段集合完全一致"),
       expect.stringContaining("自动转义"),
       expect.stringContaining("IndexedDB"),
-      expect.stringContaining("每条DML成功执行即提交")
+      expect.stringContaining("每条DML成功执行即提交"),
+      expect.stringContaining("未包含 WHERE")
     ]));
 
     expect(wrapper.get('[data-testid="completion-cache-stats"]').text()).toContain("约 1.2 MB · 3个环境 · 1项加载中");
@@ -80,14 +82,15 @@ describe("SettingsDrawer compact result settings", () => {
     const switches = wrapper.findAllComponents({ name: "ElSwitch" });
     switches[0].vm.$emit("update:modelValue", false);
     switches[1].vm.$emit("update:modelValue", true);
-    switches[2].vm.$emit("update:modelValue", true);
+    switches[2].vm.$emit("update:modelValue", false);
     switches[3].vm.$emit("update:modelValue", true);
     switches[4].vm.$emit("update:modelValue", true);
-    switches[5].vm.$emit("update:modelValue", false);
+    switches[5].vm.$emit("update:modelValue", true);
     switches[6].vm.$emit("update:modelValue", false);
     switches[7].vm.$emit("update:modelValue", false);
-    switches[8].vm.$emit("update:modelValue", true);
-    switches[9].vm.$emit("update:modelValue", false);
+    switches[8].vm.$emit("update:modelValue", false);
+    switches[9].vm.$emit("update:modelValue", true);
+    switches[10].vm.$emit("update:modelValue", false);
     wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "result")!.vm.$emit("update:modelValue", "editor");
     wrapper.findAllComponents({ name: "ElRadioGroup" })
@@ -103,6 +106,7 @@ describe("SettingsDrawer compact result settings", () => {
     expect(wrapper.emitted("update:completionPreciseMatchingEnabled")?.[0]).toEqual([true]);
     expect(wrapper.emitted("update:minimapEnabled")?.[0]).toEqual([false]);
     expect(wrapper.emitted("update:wordWrapEnabled")?.[0]).toEqual([true]);
+    expect(wrapper.emitted("update:dangerousStatementWarningEnabled")?.[0]).toEqual([false]);
     expect(wrapper.emitted("update:copyHeaderOnDoubleClick")?.[0]).toEqual([false]);
     expect(wrapper.emitted("update:headerSortingEnabled")?.[0]).toEqual([false]);
     expect(wrapper.emitted("update:headerFilteringEnabled")?.[0]).toEqual([false]);

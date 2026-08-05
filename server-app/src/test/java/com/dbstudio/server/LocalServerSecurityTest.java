@@ -200,6 +200,7 @@ class LocalServerSecurityTest {
                 new HttpEntity<String>(headers), String.class);
         assertEquals(HttpStatus.OK, defaults.getStatusCode());
         assertTrue(defaults.getBody().contains("\"result.columnLayoutScope\":\"result\""));
+        assertTrue(defaults.getBody().contains("\"editor.dangerousStatementWarningEnabled\":\"true\""));
         assertTrue(defaults.getBody().contains("\"result.copyHeaderOnDoubleClick\":\"true\""));
         assertTrue(defaults.getBody().contains("\"result.copySeparator\":\"comma\""));
         assertTrue(defaults.getBody().contains("\"result.headerSortingEnabled\":\"true\""));
@@ -248,7 +249,8 @@ class LocalServerSecurityTest {
 
         for (String key : Arrays.asList("result.headerSortingEnabled", "result.headerFilteringEnabled",
                 "result.showColumnRemarksInHeader", "result.scrollOptimizationEnabled",
-                "statusBar.showSelectedColumnRemarks", "editor.minimapEnabled", "editor.wordWrapEnabled")) {
+                "statusBar.showSelectedColumnRemarks", "editor.minimapEnabled", "editor.wordWrapEnabled",
+                "editor.dangerousStatementWarningEnabled")) {
             setting.put("key", key);
             setting.put("value", "false");
             assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,

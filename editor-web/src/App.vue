@@ -224,6 +224,7 @@
                   :completion-precise-matching-enabled="settings.completionPreciseMatchingEnabled"
                   :completion-snippet-count="settings.completionSnippets.length"
                   :minimap-enabled="settings.minimapEnabled" :word-wrap-enabled="settings.wordWrapEnabled"
+                  :dangerous-statement-warning-enabled="settings.dangerousStatementWarningEnabled"
                   :completion-cache-size="completionCacheSize" :completion-cache-environment-count="metadata.completionStats.environmentCount"
                   :completion-cache-loading-count="metadata.completionStats.loadingCount" :can-clear-completion-caches="metadata.canClearCompletions"
                   @update:theme="updateTheme" @update:max-rows="updateMaxRows" @update:max-lob-bytes="updateMaxLobBytes"
@@ -243,6 +244,7 @@
                   @update:completion-precise-matching-enabled="updateCompletionPreciseMatchingEnabled"
                   @update:minimap-enabled="updateMinimapEnabled"
                   @update:word-wrap-enabled="updateWordWrapEnabled"
+                  @update:dangerous-statement-warning-enabled="updateDangerousStatementWarningEnabled"
                   @clear-completion-caches="clearCompletionCaches" @open-shortcuts="openShortcutSettings"
                   @open-completion-snippets="openCompletionSnippetSettings" />
   <ShortcutSettingsDrawer v-model="shortcutDrawer" :bindings="settings.shortcuts" :saving="shortcutSaving"
@@ -1969,6 +1971,18 @@ async function updateWordWrapEnabled(value: boolean): Promise<void> {
   const previous = settings.wordWrapEnabled; settings.wordWrapEnabled = value;
   try { await rpc.request("settings.update", { key: "editor.wordWrapEnabled", value: String(value) }); }
   catch (error) { settings.wordWrapEnabled = previous; reportError(error); }
+}
+async function updateDangerousStatementWarningEnabled(value: boolean): Promise<void> {
+  const previous = settings.dangerousStatementWarningEnabled;
+  settings.dangerousStatementWarningEnabled = value;
+  try {
+    await rpc.request("settings.update", {
+      key: "editor.dangerousStatementWarningEnabled", value: String(value)
+    });
+  } catch (error) {
+    settings.dangerousStatementWarningEnabled = previous;
+    reportError(error);
+  }
 }
 function updateCompletionPreciseMatchingEnabled(value: boolean): void {
   settings.completionPreciseMatchingEnabled = value;

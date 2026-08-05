@@ -531,6 +531,10 @@ final class Workspace implements AutoCloseable {
         pendingRiskConfirmations.remove(editorId);
     }
 
+    void clearRiskConfirmations() {
+        pendingRiskConfirmations.clear();
+    }
+
     void cachePassword(UUID profileId, char[] password) {
         char[] copied = java.util.Arrays.copyOf(password, password.length);
         char[] previous = credentials.put(profileId, copied);

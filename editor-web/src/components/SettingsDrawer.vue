@@ -37,6 +37,17 @@
           <el-switch size="small" aria-label="自动换行" :model-value="wordWrapEnabled"
                      @update:model-value="$emit('update:wordWrapEnabled', $event === true)" />
         </el-form-item>
+        <el-form-item class="compact-setting-row">
+          <template #label>
+            <div class="setting-label"><span>高危语句提醒</span>
+              <el-tooltip content="对未包含 WHERE 的 UPDATE、DELETE，首次执行时提示再次执行确认。" placement="top">
+                <el-icon class="setting-help" tabindex="0" aria-label="高危语句提醒说明"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </div>
+          </template>
+          <el-switch size="small" aria-label="高危语句提醒" :model-value="dangerousStatementWarningEnabled"
+                     @update:model-value="$emit('update:dangerousStatementWarningEnabled', $event === true)" />
+        </el-form-item>
       </section>
 
       <section class="settings-section connection-settings">
@@ -289,9 +300,10 @@ defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: Resolv
   completionCacheSize: string; completionCacheEnvironmentCount: number; completionCacheLoadingCount: number;
   completionCandidateLimit: number; completionPreciseMatchingEnabled: boolean;
   completionSnippetCount: number; canClearCompletionCaches: boolean;
-  minimapEnabled: boolean; wordWrapEnabled: boolean }>();
+  minimapEnabled: boolean; wordWrapEnabled: boolean; dangerousStatementWarningEnabled: boolean }>();
 const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme": [value: ThemePreference];
   "update:minimapEnabled": [value: boolean]; "update:wordWrapEnabled": [value: boolean];
+  "update:dangerousStatementWarningEnabled": [value: boolean];
   "update:maxRows": [value: number]; "update:streamBatchRows": [value: number]; "update:maxLobBytes": [value: number];
   "update:columnLayoutScope": [value: ColumnLayoutScope]; "update:copyHeaderOnDoubleClick": [value: boolean];
   "update:copySeparator": [value: CopySeparator]; "update:maxActiveSessions": [value: number];

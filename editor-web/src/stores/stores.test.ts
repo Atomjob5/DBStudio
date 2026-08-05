@@ -276,6 +276,7 @@ describe("application stores", () => {
       "editor.completionPreciseMatchingEnabled": "true",
       "editor.minimapEnabled": "false",
       "editor.wordWrapEnabled": "true",
+      "editor.dangerousStatementWarningEnabled": "false",
       "editor.completionSnippets": "[{\"id\":\"5d652bad-8dce-4b56-9c94-d62d74a74576\","
         + "\"trigger\":\"sf\",\"remarks\":\"通用查询\",\"sql\":\"select * from\"}]",
       "keyboard.shortcuts": "{\"query.executeCurrent\":null,\"query.executeAll\":\"Mod+7\"}" }, []);
@@ -295,6 +296,7 @@ describe("application stores", () => {
     expect(settings.completionPreciseMatchingEnabled).toBe(true);
     expect(settings.minimapEnabled).toBe(false);
     expect(settings.wordWrapEnabled).toBe(true);
+    expect(settings.dangerousStatementWarningEnabled).toBe(false);
     expect(settings.completionSnippets).toEqual([{
       id: "5d652bad-8dce-4b56-9c94-d62d74a74576",
       trigger: "sf",
@@ -319,6 +321,7 @@ describe("application stores", () => {
     expect(settings.completionPreciseMatchingEnabled).toBe(false);
     expect(settings.minimapEnabled).toBe(true);
     expect(settings.wordWrapEnabled).toBe(false);
+    expect(settings.dangerousStatementWarningEnabled).toBe(true);
     expect(settings.completionSnippets).toEqual([]);
     expect(settings.shortcuts["query.executeCurrent"]).toBe("F8");
     expect(settings.shortcuts["query.executeAll"]).toBe("F7");

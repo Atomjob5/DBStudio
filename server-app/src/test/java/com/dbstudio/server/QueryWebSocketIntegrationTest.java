@@ -194,11 +194,22 @@ class QueryWebSocketIntegrationTest {
             assertTrue(events.isEmpty(), "a risky script must not execute its preceding statements");
             List<Map<String, Object>> completed = executeSql(editorId, workspaceId, cookie, events, script);
             assertEquals(2, completed.stream().filter(event -> "query.resultComplete".equals(event.get("type"))).count());
+
+            updateSetting(cookie, "editor.dangerousStatementWarningEnabled", "false");
+            events.clear();
+            executionComplete(executeSql(editorId, workspaceId, cookie, events,
+                    "UPDATE " + table + " SET status = 4"));
+            try (Connection connection = MYSQL.createConnection(""); Statement statement = connection.createStatement();
+                 ResultSet rows = statement.executeQuery("SELECT status FROM " + table + " WHERE id = 1")) {
+                assertTrue(rows.next());
+                assertEquals(4, rows.getInt(1));
+            }
         } finally {
             try (Connection connection = MYSQL.createConnection(""); Statement statement = connection.createStatement()) {
                 statement.execute("DROP TABLE IF EXISTS " + table);
             }
             updateSetting(cookie, "connection.autoCommit", "false");
+            updateSetting(cookie, "editor.dangerousStatementWarningEnabled", "true");
             socket.close();
             workspaces.expireNow(workspaceId);
         }
