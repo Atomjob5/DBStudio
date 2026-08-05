@@ -153,7 +153,23 @@
                            @tab-remove="(name) => closeTab(String(name))">
                     <el-tab-pane v-for="tab in editors.tabs" :key="tab.id" :name="tab.id">
                       <template #label>
-                        <span class="editor-tab-label"><i v-if="tab.dirty" class="dirty-dot" aria-label="未保存" />{{ tab.title }}</span>
+                        <el-dropdown trigger="contextmenu" :disabled="editorTabMenuBusy"
+                                     @command="(command) => handleEditorTabCommand(String(command), tab.id)">
+                          <span class="editor-tab-label">
+                            <i v-if="tab.dirty" class="dirty-dot" aria-label="未保存" />
+                            <span class="editor-tab-title">{{ tab.title }}</span>
+                          </span>
+                          <template #dropdown>
+                            <el-dropdown-menu>
+                              <el-dropdown-item command="close" :disabled="editorTabMenuBusy">关闭窗口</el-dropdown-item>
+                              <el-dropdown-item command="close-others"
+                                                :disabled="editorTabMenuBusy || editors.tabs.length <= 1">关闭其它窗口</el-dropdown-item>
+                              <el-dropdown-item command="close-all" :disabled="editorTabMenuBusy">关闭所有窗口</el-dropdown-item>
+                              <el-dropdown-item command="duplicate" divided :disabled="editorTabMenuBusy">复制窗口</el-dropdown-item>
+                              <el-dropdown-item command="rename" :disabled="editorTabMenuBusy">重命名</el-dropdown-item>
+                            </el-dropdown-menu>
+                          </template>
+                        </el-dropdown>
                       </template>
                     </el-tab-pane>
                   </el-tabs>
@@ -341,6 +357,7 @@ const connectionDialog = ref(false); const historyDrawer = ref(false); const jdb
 const settingsDrawer = ref(false);
 const shortcutDrawer = ref(false); const shortcutSaving = ref(false); const csvDialog = ref(false);
 const completionSnippetDrawer = ref(false); const completionSnippetSaving = ref(false);
+const editorTabMenuBusy = ref(false);
 const leftWidth = ref(248); const lastLeftWidth = ref(248); const editorHeight = ref("62%");
 const activeTool = ref<"objects" | "connections">("connections"); const panelOpen = ref(true);
 const editingProfile = ref<SavedProfile>(); const profileEnvironmentId = ref("");
@@ -961,27 +978,34 @@ function scheduleDraft(editorId: string): void {
   }, 1_000));
 }
 
-async function persistDraftById(editorId: string, immediate: boolean, keepalive = false): Promise<void> {
-  if (!workspaceOpened.value) return;
-  const tab = editors.tabs.find((item) => item.id === editorId); if (!tab) return;
+async function persistDraftById(editorId: string, immediate: boolean, keepalive = false): Promise<boolean> {
+  if (!workspaceOpened.value) return false;
+  const tab = editors.tabs.find((item) => item.id === editorId); if (!tab) return false;
   const timer = draftSaveTimers.get(editorId);
   if (timer !== undefined) { window.clearTimeout(timer); draftSaveTimers.delete(editorId); }
   const sqlText = typeof monacoEditor.value?.getValue === "function"
     ? monacoEditor.value.getValue(editorId) : tab.content;
   if (immediate) editors.patch(editorId, { content: sqlText });
-  await rpc.saveEditorDraft(editorId, { title: tab.title, sqlText,
-    sortOrder: editors.tabs.findIndex((item) => item.id === editorId), fileName: tab.filePath,
-    filePath: tab.filePath, profileId: tab.connection?.id, dirty: tab.dirty, active: editors.activeId === editorId
-  }, keepalive).catch((error) => { if (immediate) reportError(error); });
+  try {
+    await rpc.saveEditorDraft(editorId, { title: tab.title, sqlText,
+      sortOrder: editors.tabs.findIndex((item) => item.id === editorId), fileName: tab.filePath,
+      filePath: tab.filePath, profileId: tab.connection?.id, dirty: tab.dirty, active: editors.activeId === editorId
+    }, keepalive);
+    return true;
+  } catch (error) {
+    if (immediate) reportError(error);
+    return false;
+  }
 }
 
 function flushDrafts(): void {
   for (const tab of editors.tabs) void persistDraftById(tab.id, false, true);
 }
 
-async function newEditor(content = "", filePath?: string, title?: string, fileHandle?: FileSystemFileHandle): Promise<EditorTab | undefined> {
+async function newEditor(content = "", filePath?: string, title?: string, fileHandle?: FileSystemFileHandle,
+                         inheritActiveConnection = true): Promise<EditorTab | undefined> {
   await rpc.ensureOperational();
-  const inherited = editors.active?.connection && connections.current(editors.active.connection.id)
+  const inherited = inheritActiveConnection && editors.active?.connection && connections.current(editors.active.connection.id)
     ? editors.active.connection.id : undefined;
   const created = await rpc.request<{ id: string; title: string; connection?: EditorConnectionBinding; connectionState: EditorConnectionState }>("editor.create", inherited ? { profileId: inherited } : {});
   const tab: EditorTab = { id: created.id, title: title ?? created.title, content, filePath, fileHandle,
@@ -1779,7 +1803,9 @@ async function saveActive(saveAs: boolean): Promise<boolean> {
   const tab = editors.active; if (!tab) return false;
   const file = await saveSqlFile(monacoEditor.value?.getValue(tab.id) ?? tab.content, tab.title, tab.fileHandle, saveAs);
   if (!file) return false;
-  editors.patch(tab.id, { filePath: file.name, fileHandle: file.handle, title: file.name, dirty: false });
+  const sameFile = !saveAs && tab.fileHandle !== undefined && file.handle === tab.fileHandle;
+  editors.patch(tab.id, { filePath: file.name, fileHandle: file.handle,
+    title: sameFile ? tab.title : file.name, dirty: false });
   await persistDraftById(tab.id, true);
   if (file.handle) { recentHandles.set(file.name, file.handle); if (!settings.recentFiles.includes(file.name)) settings.recentFiles.unshift(file.name); }
   return true;
@@ -1807,6 +1833,74 @@ async function closeTab(id: string): Promise<boolean> {
     await rpc.request("editor.close", { editorId: id, action });
   } else await rpc.request("editor.close", { editorId: id, action: "close" });
   resultEdits.finishEditor(id); queries.clearEditor(id); editors.remove(id); return true;
+}
+
+type EditorTabMenuCommand = "close" | "close-others" | "close-all" | "duplicate" | "rename";
+
+async function closeEditorTabs(ids: string[]): Promise<boolean> {
+  for (const id of ids) {
+    if (!editors.tabs.some((tab) => tab.id === id)) continue;
+    if (!await closeTab(id)) return false;
+  }
+  return true;
+}
+
+async function duplicateEditorTab(id: string): Promise<void> {
+  const tab = editors.tabs.find((item) => item.id === id);
+  if (!tab) return;
+  const content = monacoEditor.value?.getValue(id) ?? tab.content;
+  await newEditor(content, undefined, undefined, undefined, false);
+}
+
+async function renameEditorTab(id: string): Promise<void> {
+  const tab = editors.tabs.find((item) => item.id === id);
+  if (!tab) return;
+  const previousTitle = tab.title;
+  try {
+    const result = await ElMessageBox.prompt("请输入新的窗口名称", "重命名", {
+      inputValue: previousTitle,
+      inputValidator: (value) => Boolean(value.trim()) || "名称不能为空",
+      confirmButtonText: "确定",
+      cancelButtonText: "取消"
+    });
+    const title = result.value.trim();
+    if (title === previousTitle) return;
+    editors.patch(id, { title });
+    if (!await persistDraftById(id, true)) editors.patch(id, { title: previousTitle });
+  } catch (action) {
+    if (action !== "cancel" && action !== "close") reportError(action);
+  }
+}
+
+async function handleEditorTabCommand(rawCommand: string, id: string): Promise<void> {
+  if (editorTabMenuBusy.value) return;
+  const command = rawCommand as EditorTabMenuCommand;
+  if (!["close", "close-others", "close-all", "duplicate", "rename"].includes(command)) return;
+  editorTabMenuBusy.value = true;
+  try {
+    if (command === "close") {
+      await closeTab(id);
+      return;
+    }
+    if (command === "close-others") {
+      const others = editors.tabs.filter((tab) => tab.id !== id).map((tab) => tab.id);
+      if (await closeEditorTabs(others) && editors.tabs.some((tab) => tab.id === id)) editors.activeId = id;
+      return;
+    }
+    if (command === "close-all") {
+      await closeEditorTabs(editors.tabs.map((tab) => tab.id));
+      return;
+    }
+    if (command === "duplicate") {
+      await duplicateEditorTab(id);
+      return;
+    }
+    await renameEditorTab(id);
+  } catch (error) {
+    reportError(error);
+  } finally {
+    editorTabMenuBusy.value = false;
+  }
 }
 
 async function closeApplication(activeTasks = 0): Promise<void> {
@@ -2423,7 +2517,8 @@ function message(error: unknown): string { return error instanceof Error ? error
   background: var(--db-panel-soft);
   border-bottom: 1px solid var(--db-border-soft);
 }
-.editor-tab-label { display: inline-flex; align-items: center; gap: 6px; max-width: 180px; }
+.editor-tab-label { display: inline-flex; align-items: center; gap: 6px; max-width: 180px; min-width: 0; }
+.editor-tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dirty-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--db-accent); }
 .editor-widget { flex: 1; min-height: 0; }
 :global(.result-transaction-decision p) { margin: 0 0 16px; }

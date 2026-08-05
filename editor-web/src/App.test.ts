@@ -26,6 +26,7 @@ const rpcMock = vi.hoisted(() => ({
     state: "available", recoveryState: "none", unsavedEditorCount: 0, transactionCount: 0 }]),
   openWorkspace: vi.fn(async () => ({ workspaceId: "workspace-1", recoveryDecisionRequired: false, editors: [] })),
   closeWorkspace: vi.fn(async () => undefined),
+  saveEditorDraft: vi.fn(async () => undefined),
   deleteResultLargeValueDraft: vi.fn(async () => undefined),
   listeners: new Map<string, Set<(payload: unknown) => void>>()
 }));
@@ -46,7 +47,7 @@ vi.mock("./bridge/rpc", () => ({
     finalizeWorkspace: vi.fn(async () => undefined),
     resolveWorkspaceRecovery: vi.fn(),
     request: rpcMock.request,
-    saveEditorDraft: vi.fn(async () => undefined),
+    saveEditorDraft: rpcMock.saveEditorDraft,
     ensureOperational: rpcMock.ensureOperational,
     deleteResultLargeValueDraft: rpcMock.deleteResultLargeValueDraft,
     on: vi.fn((type: string, handler: (payload: unknown) => void) => {
@@ -99,6 +100,7 @@ describe("App result loading status toolbar", () => {
     completionMock.enrichQuery.mockReset().mockResolvedValue(undefined);
     completionMock.invalidateStructure.mockReset().mockResolvedValue(undefined);
     rpcMock.ensureOperational.mockClear();
+    rpcMock.saveEditorDraft.mockReset().mockResolvedValue(undefined);
     rpcMock.deleteResultLargeValueDraft.mockClear();
     rpcMock.listeners.clear();
     rpcRequest.mockImplementation(async (type: string, payload: Record<string, unknown>) => {
@@ -168,6 +170,156 @@ describe("App result loading status toolbar", () => {
       executionId: expect.any(String)
     }), 120_000);
     expect(wrapper.find(".result-data-toolbar").exists()).toBe(false);
+  });
+
+  it("shows the editor tab context menu in the specified order", async () => {
+    const label = wrapper.get(".editor-tab-label");
+    await label.trigger("contextmenu");
+    await nextTick();
+
+    const labels = new Set(["关闭窗口", "关闭其它窗口", "关闭所有窗口", "复制窗口", "重命名"]);
+    const items = Array.from(document.body.querySelectorAll<HTMLElement>(".el-dropdown-menu__item"))
+      .filter((item) => labels.has(item.textContent?.trim() ?? ""));
+    expect(items.map((item) => item.textContent?.trim())).toEqual([
+      "关闭窗口", "关闭其它窗口", "关闭所有窗口", "复制窗口", "重命名"
+    ]);
+    expect(items[1]?.classList.contains("is-disabled")).toBe(true);
+  });
+
+  it("duplicates only the latest SQL text into a new unbound editor", async () => {
+    const editors = useEditorStore();
+    const sourceHandle = { name: "source.sql" } as FileSystemFileHandle;
+    editors.patch("bootstrap-editor", {
+      content: "select * from source_table",
+      dirty: true,
+      filePath: "source.sql",
+      fileHandle: sourceHandle,
+      connection: completionProfile(),
+      connectionState: "active",
+      transactionDirty: true,
+      transactionState: "active"
+    });
+    await nextTick();
+    rpcRequest.mockImplementation(async (type: string) => {
+      if (type === "editor.create") return { id: "copied-editor", title: "查询 2", connectionState: "unbound" };
+      return {};
+    });
+
+    const vm = wrapper.vm as unknown as { handleEditorTabCommand: (command: string, id: string) => Promise<void> };
+    await vm.handleEditorTabCommand("duplicate", "bootstrap-editor");
+
+    expect(rpcRequest).toHaveBeenCalledWith("editor.create", {});
+    const copied = editors.tabs.find((tab) => tab.id === "copied-editor");
+    expect(copied).toMatchObject({
+      title: "查询 2",
+      content: "select * from source_table",
+      dirty: true,
+      transactionDirty: false,
+      connectionState: "unbound"
+    });
+    expect(copied?.connection).toBeUndefined();
+    expect(copied?.filePath).toBeUndefined();
+    expect(copied?.fileHandle).toBeUndefined();
+    expect(editors.activeId).toBe("copied-editor");
+  });
+
+  it("renames a tab without changing its dirty or file state and persists immediately", async () => {
+    const editors = useEditorStore();
+    const fileHandle = { name: "source.sql" } as FileSystemFileHandle;
+    editors.patch("bootstrap-editor", { title: "查询 1", content: "select 1", dirty: false,
+      filePath: "source.sql", fileHandle });
+    await nextTick();
+    const promptSpy = vi.spyOn(ElMessageBox, "prompt")
+      .mockResolvedValue({ value: "  临时核对  ", action: "confirm" } as never);
+
+    const vm = wrapper.vm as unknown as { handleEditorTabCommand: (command: string, id: string) => Promise<void> };
+    await vm.handleEditorTabCommand("rename", "bootstrap-editor");
+
+    expect(editors.tabs[0]).toMatchObject({ title: "临时核对", dirty: false, filePath: "source.sql", fileHandle });
+    const validator = promptSpy.mock.calls[0]?.[2]?.inputValidator;
+    expect(typeof validator === "function" ? validator("   ") : undefined).toBe("名称不能为空");
+    expect(rpcMock.saveEditorDraft).toHaveBeenCalledWith("bootstrap-editor",
+      expect.objectContaining({ title: "临时核对", sqlText: "select 1", dirty: false }), false);
+  });
+
+  it("restores the previous title when rename persistence fails", async () => {
+    const editors = useEditorStore();
+    rpcMock.saveEditorDraft.mockRejectedValueOnce(new Error("draft failed"));
+    vi.spyOn(ElMessageBox, "prompt").mockResolvedValue({ value: "新名称", action: "confirm" } as never);
+    const messageSpy = vi.spyOn(ElMessage, "error").mockImplementation(() => undefined as never);
+
+    const vm = wrapper.vm as unknown as { handleEditorTabCommand: (command: string, id: string) => Promise<void> };
+    await vm.handleEditorTabCommand("rename", "bootstrap-editor");
+
+    expect(editors.tabs[0]?.title).toBe("查询 1");
+    expect(messageSpy).toHaveBeenCalled();
+  });
+
+  it("closes other tabs in order and activates the context-menu target", async () => {
+    const editors = useEditorStore();
+    editors.add({ id: "target-editor", title: "目标", content: "", dirty: false, transactionDirty: false, busy: false,
+      executionPhase: "idle", transactionOperation: "idle", connectionState: "unbound" });
+    editors.add({ id: "last-editor", title: "末尾", content: "", dirty: false, transactionDirty: false, busy: false,
+      executionPhase: "idle", transactionOperation: "idle", connectionState: "unbound" });
+    rpcRequest.mockImplementation(async (type: string, payload: Record<string, unknown>) => {
+      if (type === "editor.close" && payload.action === "check") return { requiresTransactionDecision: false };
+      return {};
+    });
+    const vm = wrapper.vm as unknown as { handleEditorTabCommand: (command: string, id: string) => Promise<void> };
+    await vm.handleEditorTabCommand("close-others", "target-editor");
+
+    expect(rpcRequest.mock.calls.filter(([type]) => type === "editor.close").map(([, payload]) =>
+      [(payload as Record<string, unknown>).editorId, (payload as Record<string, unknown>).action])).toEqual([
+      ["bootstrap-editor", "check"], ["bootstrap-editor", "close"],
+      ["last-editor", "check"], ["last-editor", "close"]
+    ]);
+    expect(editors.tabs.map((tab) => tab.id)).toEqual(["target-editor"]);
+    expect(editors.activeId).toBe("target-editor");
+  });
+
+  it("closes all tabs without creating a replacement editor", async () => {
+    const editors = useEditorStore();
+    editors.add({ id: "second-editor", title: "查询 2", content: "", dirty: false, transactionDirty: false, busy: false,
+      executionPhase: "idle", transactionOperation: "idle", connectionState: "unbound" });
+    rpcRequest.mockImplementation(async (type: string, payload: Record<string, unknown>) => {
+      if (type === "editor.close" && payload.action === "check") return { requiresTransactionDecision: false };
+      return {};
+    });
+    const createCallsBefore = rpcRequest.mock.calls.filter(([type]) => type === "editor.create").length;
+
+    const vm = wrapper.vm as unknown as { handleEditorTabCommand: (command: string, id: string) => Promise<void> };
+    await vm.handleEditorTabCommand("close-all", "bootstrap-editor");
+
+    expect(editors.tabs).toHaveLength(0);
+    expect(editors.activeId).toBe("");
+    expect(rpcRequest.mock.calls.filter(([type]) => type === "editor.create")).toHaveLength(createCallsBefore);
+  });
+
+  it("stops closing later tabs when a close confirmation is cancelled", async () => {
+    const editors = useEditorStore();
+    editors.add({ id: "dirty-editor", title: "待确认", content: "update t set a = 1", dirty: true,
+      transactionDirty: false, busy: false, executionPhase: "idle", transactionOperation: "idle", connectionState: "unbound" });
+    editors.add({ id: "later-editor", title: "后续", content: "", dirty: false, transactionDirty: false, busy: false,
+      executionPhase: "idle", transactionOperation: "idle", connectionState: "unbound" });
+    editors.add({ id: "target-editor", title: "保留", content: "", dirty: false, transactionDirty: false, busy: false,
+      executionPhase: "idle", transactionOperation: "idle", connectionState: "unbound" });
+    rpcRequest.mockImplementation(async (type: string, payload: Record<string, unknown>) => {
+      if (type === "editor.close" && payload.action === "check") return { requiresTransactionDecision: false };
+      return {};
+    });
+
+    const vm = wrapper.vm as unknown as { handleEditorTabCommand: (command: string, id: string) => Promise<void> };
+    const closing = vm.handleEditorTabCommand("close-others", "target-editor");
+    await flushPromises();
+    const dialog = document.body.querySelector(".el-message-box");
+    expect(dialog).not.toBeNull();
+    (dialog?.querySelector(".el-message-box__headerbtn") as HTMLButtonElement | null)?.click();
+    await closing;
+
+    expect(editors.tabs.map((tab) => tab.id)).toEqual(["dirty-editor", "later-editor", "target-editor"]);
+    expect(editors.activeId).toBe("dirty-editor");
+    expect(rpcRequest.mock.calls.filter(([type]) => type === "editor.close").map(([, payload]) =>
+      (payload as Record<string, unknown>).editorId)).toEqual(["bootstrap-editor", "bootstrap-editor"]);
   });
 
   it("shows result post errors and retains the local draft for correction", async () => {

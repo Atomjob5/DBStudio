@@ -124,12 +124,15 @@ public final class WorkspaceApiController {
                                    @RequestBody Map<String,Object> body) throws SQLException {
         Workspace workspace=registry.requireOwned(workspaceId,clientId);
         EditorSession editor=workspace.editors().require(editorId);
+        String title=ApiPayloads.text(body,"title").trim();
+        if(title.isEmpty())throw new ApiException("INVALID_EDITOR_TITLE","窗口名称不能为空");
         String transaction=editor.transactionDirty()?"active":"none";
         EditorDraft draft=new EditorDraft(workspaceId,editorId,lifecycle.runId(),
-                ApiPayloads.text(body,"title"),ApiPayloads.text(body,"sqlText"),integer(body,"sortOrder",0),
+                title,ApiPayloads.text(body,"sqlText"),integer(body,"sortOrder",0),
                 nullable(body,"fileName"),nullable(body,"filePath"),nullable(body,"profileId"),
                 ApiPayloads.bool(body,"dirty",false),ApiPayloads.bool(body,"active",false),transaction,null);
         repository.saveDraft(draft);
+        editor.rename(title);
         return ApiPayloads.map("saved",true,"updatedAt",java.time.Instant.now().toString());
     }
 
@@ -138,6 +141,7 @@ public final class WorkspaceApiController {
             EditorSession editor;
             try{editor=workspace.editors().create(UUID.fromString(draft.editorId()));}
             catch(IllegalArgumentException exception){continue;}
+            if(draft.title()!=null&&!draft.title().trim().isEmpty())editor.rename(draft.title().trim());
             if(draft.profileId()==null||draft.profileId().trim().isEmpty())continue;
             try{
                 Optional<SavedProfile> saved=profiles.find(UUID.fromString(draft.profileId()));

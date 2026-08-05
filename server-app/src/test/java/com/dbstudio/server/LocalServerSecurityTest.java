@@ -91,11 +91,17 @@ class LocalServerSecurityTest {
         Map<String, Object> createdEditor = http.exchange(url("/api/v1/workspaces/" + workspaceId + "/editors"),
                 HttpMethod.POST, new HttpEntity<Map<String,Object>>(new HashMap<String,Object>(), headers), Map.class).getBody();
         String editorId = String.valueOf(createdEditor.get("id"));
+        Map<String, Object> invalidDraft = new HashMap<String, Object>();
+        invalidDraft.put("title", "   "); invalidDraft.put("sqlText", "select 1");
+        assertEquals(HttpStatus.BAD_REQUEST,http.exchange(url("/api/v1/workspaces/" + workspaceId + "/editors/" + editorId + "/draft"),
+                HttpMethod.PUT,new HttpEntity<Map<String,Object>>(invalidDraft,headers),String.class).getStatusCode());
+        assertEquals(createdEditor.get("title"),workspaces.require(workspaceId).editors().require(editorId).title());
         Map<String, Object> draft = new HashMap<String, Object>();
         draft.put("title", "未保存查询"); draft.put("sqlText", "select 42"); draft.put("dirty", true);
         draft.put("sortOrder", 0); draft.put("active", true);
         assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/workspaces/" + workspaceId + "/editors/" + editorId + "/draft"),
                 HttpMethod.PUT, new HttpEntity<Map<String, Object>>(draft, headers), String.class).getStatusCode());
+        assertEquals("未保存查询",workspaces.require(workspaceId).editors().require(editorId).title());
         workspaces.expireNow(workspaceId);
         headers.set("X-DBStudio-Client-Id", clientId);
         Map<String, Object> openBody = new HashMap<String, Object>(); openBody.put("clientId", clientId);
@@ -108,8 +114,10 @@ class LocalServerSecurityTest {
                 HttpMethod.POST, new HttpEntity<Map<String, Object>>(recovery, headers), Map.class);
         List<Map<String, Object>> restored = (List<Map<String, Object>>) response.getBody().get("editors");
         assertEquals(editorId, restored.get(0).get("id"));
+        assertEquals("未保存查询", restored.get(0).get("title"));
         assertEquals("select 42", restored.get(0).get("content"));
         assertEquals(editorId, workspaces.require(workspaceId).editors().require(editorId).id().toString());
+        assertEquals("未保存查询",workspaces.require(workspaceId).editors().require(editorId).title());
     }
 
     @Test

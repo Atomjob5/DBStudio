@@ -156,7 +156,7 @@ public final class EditorSessionRegistry implements AutoCloseable {
 
     public static final class EditorSession implements AutoCloseable {
         private final UUID id;
-        private final String title;
+        private volatile String title;
         private volatile DatabaseContext context;
         private volatile String bindingKey;
         private volatile QueryRunner runner;
@@ -176,6 +176,10 @@ public final class EditorSessionRegistry implements AutoCloseable {
         private EditorSession(UUID id, String title) { this.id = id; this.title = title; }
         public UUID id() { return id; }
         public String title() { return title; }
+        public synchronized void rename(String title) {
+            this.title = title;
+            touch();
+        }
         public synchronized QueryRunner runner() {
             if (runner == null) throw new RpcException("EDITOR_CONNECTION_SUSPENDED", "编辑标签的数据库会话尚未激活");
             return runner;
