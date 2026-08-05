@@ -21,7 +21,7 @@
     <div class="manager-search"><el-input v-model="filterText" :prefix-icon="Search" clearable size="small"
       placeholder="筛选系统、环境或链接" aria-label="筛选数据库链接" /></div>
     <el-tree ref="treeRef" class="connection-tree" node-key="key" :data="treeData" :props="treeProps"
-             default-expand-all highlight-current :draggable="!exportSelecting" :show-checkbox="exportSelecting"
+             accordion highlight-current :draggable="!exportSelecting" :show-checkbox="exportSelecting"
              :allow-drag="allowDrag" :allow-drop="allowDrop"
              :filter-node-method="filterNode" @current-change="selectNode" @node-drop="moveProfile"
              @node-drag-over="updateDragHint" @node-drag-end="clearDragHint" @check="exportChecked">

@@ -26,6 +26,16 @@ const profiles = [
 
 function node(data: Record<string, unknown>): { data: Record<string, unknown> } { return { data }; }
 
+async function expandFirstEnvironment(wrapper: VueWrapper): Promise<void> {
+  const tree = wrapper.findComponent(ElTree);
+  const root = tree.findAll(".el-tree-node")
+    .find((item) => item.element.parentElement?.classList.contains("el-tree"));
+  await root?.find(".el-tree-node__content").trigger("click");
+  await wrapper.vm.$nextTick();
+  await root?.find(".el-tree-node__children .el-tree-node__content").trigger("click");
+  await wrapper.vm.$nextTick();
+}
+
 describe("ConnectionManagerPanel", () => {
   let wrapper: VueWrapper;
 
@@ -48,6 +58,8 @@ describe("ConnectionManagerPanel", () => {
 
   it("仅允许链接跨环境拖拽，且可以以链接作为放置目标", () => {
     const tree = wrapper.findComponent(ElTree);
+    expect(tree.props("defaultExpandAll")).toBe(false);
+    expect(tree.props("accordion")).toBe(true);
     const allowDrag = tree.props("allowDrag") as (value: unknown) => boolean;
     const allowDrop = tree.props("allowDrop") as (source: unknown, target: unknown, type: string) => boolean;
     const sourceProfile = { kind: "profile", id: "profile-a", environmentId: "environment-dev" };
@@ -58,6 +70,28 @@ describe("ConnectionManagerPanel", () => {
     expect(allowDrop(node(sourceProfile), node({ kind: "profile", id: "profile-b", environmentId: "environment-sit" }), "prev")).toBe(true);
     expect(allowDrop(node(sourceProfile), node({ kind: "environment", id: "environment-dev" }), "inner")).toBe(false);
     expect(allowDrop(node(sourceProfile), node({ kind: "system", id: "system-b" }), "inner")).toBe(false);
+  });
+
+  it("初始不展开系统节点，并保持同级节点手风琴行为", async () => {
+    const tree = wrapper.findComponent(ElTree);
+    expect(tree.props("defaultExpandAll")).toBe(false);
+    expect(tree.props("accordion")).toBe(true);
+    expect(tree.findAll(".el-tree-node__children")).toHaveLength(0);
+
+    const treeData = tree.props("data") as Array<{ key: string; children?: Array<{ key: string }> }>;
+    const first = treeData[0];
+    const second = treeData[1];
+    expect(first?.children?.length).toBeGreaterThan(0);
+    expect(second?.children?.length).toBeGreaterThan(0);
+    const rootNodes = tree.findAll(".el-tree-node")
+      .filter((item) => item.element.parentElement?.classList.contains("el-tree"));
+    await rootNodes[0]?.find(".el-tree-node__content").trigger("click");
+    await wrapper.vm.$nextTick();
+    expect(rootNodes[0]?.classes()).toContain("is-expanded");
+    await rootNodes[1]?.find(".el-tree-node__content").trigger("click");
+    await wrapper.vm.$nextTick();
+    expect(rootNodes[0]?.classes()).not.toContain("is-expanded");
+    expect(rootNodes[1]?.classes()).toContain("is-expanded");
   });
 
   it("拖到其他链接时移动到目标所属环境", async () => {
@@ -81,13 +115,14 @@ describe("ConnectionManagerPanel", () => {
     expect(document.body.textContent).toContain("重命名");
   });
 
-  it("仅在链接右键菜单中按编辑、克隆、删除顺序显示克隆入口", () => {
+  it("仅在链接右键菜单中按编辑、克隆、删除顺序显示克隆入口", async () => {
+    await expandFirstEnvironment(wrapper);
     const contextMenus = wrapper.findAllComponents(ElDropdown)
       .filter((item) => item.props("trigger") === "contextmenu");
     const profileMenus = contextMenus.filter((item) =>
       item.findAllComponents(ElDropdownItem).some((entry) => entry.props("command") === "clone"));
 
-    expect(profileMenus).toHaveLength(profiles.length);
+    expect(profileMenus).toHaveLength(1);
     expect(profileMenus[0].findAllComponents(ElDropdownItem).map((item) => item.props("command")))
       .toEqual(["edit", "clone", "delete"]);
     expect(contextMenus.filter((item) => !profileMenus.includes(item))
@@ -96,6 +131,7 @@ describe("ConnectionManagerPanel", () => {
   });
 
   it("立即克隆链接、阻止重复触发并刷新目录", async () => {
+    await expandFirstEnvironment(wrapper);
     let finishClone: ((value: unknown) => void) | undefined;
     rpcRequest.mockReturnValueOnce(new Promise((resolve) => { finishClone = resolve; }));
     const profileMenu = wrapper.findAllComponents(ElDropdown)
@@ -119,6 +155,7 @@ describe("ConnectionManagerPanel", () => {
   });
 
   it("密码不可复制时提示副本需要补充密码", async () => {
+    await expandFirstEnvironment(wrapper);
     rpcRequest.mockResolvedValueOnce({
       profile: { ...profiles[0], id: "profile-clone", name: "订单库 - 副本", rememberPassword: false },
       passwordStatus: "unavailable"
