@@ -133,7 +133,7 @@
       <el-splitter class="workbench" lazy>
         <el-splitter-panel v-if="panelOpen" v-model:size="leftWidth" :min="210" :max="420" collapsible>
           <ObjectExplorer v-if="activeTool === 'objects' && activeConnected && editors.active?.connection" ref="objectExplorer"
-                          :editor-id="editors.active.id" :connection-key="activeConnectionKey"
+                          :editor-id="editors.active.id" :tree-cache-key="activeObjectTreeKey"
                           :connection-name="editors.active.connection.name" :completion-loading="activeCompletionLoading"
                           @open="openObject" @definition="openDefinition" @refresh="refreshCompletionFromObjectExplorer" />
           <el-empty v-else-if="activeTool === 'objects'" class="workspace-empty" description="当前编辑标签尚未选择数据库链接">
@@ -271,7 +271,7 @@
   <CompletionSchemaDialog v-model="completionSchemaDialog" :namespaces="completionSchemaNamespaces"
                           :initial-selected-keys="completionSchemaInitialKeys" :refresh="completionSchemaRefresh"
                           @confirm="completeSchemaSelection" @cancel="cancelSchemaSelection" />
-  <CsvImportDialog v-model="csvDialog" :editor-id="editors.active?.id" @imported="objectExplorer?.resetTree()" />
+  <CsvImportDialog v-model="csvDialog" :editor-id="editors.active?.id" />
 </template>
 
 <script setup lang="ts">
@@ -438,9 +438,13 @@ const canLoadMore = computed(() => Boolean(activeResult.value?.columns.length &&
 const nextPageTooltip = computed(() => actionTooltip(resultLoadTooltip("next"), "result.loadNext"));
 const allRowsTooltip = computed(() => actionTooltip(resultLoadTooltip("all"), "result.loadAll"));
 const activeConnected = computed(() => Boolean(editors.active?.connection && editors.active.connectionState !== "unbound"));
-const activeConnectionKey = computed(() => editors.active?.connection ? `${editors.active.connection.id}@${editors.active.connection.revision}` : "unbound");
 const activeCompletionContext = computed(() => connections.completionContext(editors.active?.connection));
 const activeCompletionKey = computed(() => activeCompletionContext.value?.key ?? "unbound");
+const activeObjectTreeKey = computed(() => {
+  const environmentId = editors.active?.connection?.environmentId;
+  const systemId = connections.environments.find((item) => item.id === environmentId)?.systemId;
+  return systemId && environmentId ? `${systemId}:${environmentId}` : "unbound";
+});
 const activeCompletionLoading = computed(() => metadata.completionFor(activeCompletionKey.value)?.state === "loading");
 const completionCacheSize = computed(() => formatCompletionBytes(metadata.completionStats.estimatedBytes));
 const activeConnectionValue = computed(() => editors.active?.connection ? `${editors.active.connection.id}@${editors.active.connection.revision}` : undefined);
@@ -626,8 +630,8 @@ watch(activeExecutions, (items) => {
   selectedResultColumn.value = undefined;
   selectedResultRowCount.value = 0;
 });
-watch(() => [editors.activeId, activeConnectionKey.value, activeCompletionKey.value] as const, () => {
-  metadata.activate(activeConnectionKey.value, activeCompletionKey.value);
+watch(() => [editors.activeId, activeObjectTreeKey.value, activeCompletionKey.value] as const, () => {
+  metadata.activate(activeObjectTreeKey.value, activeCompletionKey.value);
 });
 watch(() => editors.activeId, (current, previous) => {
   editorHasSelection.value = false;
@@ -1633,8 +1637,7 @@ async function connectionSelectionChanged(value: unknown): Promise<void> {
     editors.patch(tab.id, { resultChangesDirty: false });
     queries.clearEditor(tab.id);
     scheduleDraft(tab.id);
-    metadata.activate(activeConnectionKey.value, activeCompletionKey.value);
-    await nextTick(); objectExplorer.value?.resetTree();
+    metadata.activate(activeObjectTreeKey.value, activeCompletionKey.value);
   } catch (error) { reportError(error); }
 }
 
@@ -2175,7 +2178,7 @@ async function clearCompletionCaches(): Promise<void> {
   const size = formatCompletionBytes(stats.estimatedBytes);
   try {
     await ElMessageBox.confirm(
-      `将清理约 ${size}（${stats.environmentCount}个环境）的补全缓存。对象树、数据库连接和查询结果不会受到影响。`,
+      `将清理约 ${size}（${stats.environmentCount}个环境）的补全缓存和已加载的对象树缓存。数据库连接和查询结果不会受到影响。`,
       "清理补全缓存",
       { type: "warning", confirmButtonText: "清理", cancelButtonText: "取消" }
     );
@@ -2186,7 +2189,9 @@ async function clearCompletionCaches(): Promise<void> {
   completionNoticeTimers.clear();
   await completionClient.clear();
   metadata.clearCompletions();
-  ElMessage.success(`已释放约 ${size} 的补全缓存`);
+  metadata.clearTreeCaches();
+  objectExplorer.value?.resetTree();
+  ElMessage.success(`已清理约 ${size} 的补全缓存和已加载对象树`);
 }
 function dismissStatusTask(id: string): void {
   if (id.startsWith("completion:")) metadata.dismissNotice(id.slice("completion:".length));

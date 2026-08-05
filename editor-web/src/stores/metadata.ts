@@ -2,23 +2,33 @@ import { computed, shallowRef } from "vue";
 import { defineStore } from "pinia";
 import type { CompletionCache, CompletionCacheStats, CompletionCacheSummary, CompletionProgress, MetadataNode } from "../types";
 
+export const TREE_ROOT_KEY = "__root__";
+
+type TreeCache = { children: Record<string, MetadataNode[]> };
+
 export const useMetadataStore = defineStore("metadata", () => {
   const activeTreeKey = shallowRef("unbound");
   const activeCompletionKey = shallowRef("unbound");
-  const treeCaches = shallowRef<Record<string, MetadataNode[]>>({});
+  const treeCaches = shallowRef<Record<string, TreeCache>>({});
+  const treeLoads = new Map<string, Promise<MetadataNode[]>>();
+  const treeGenerations = new Map<string, number>();
+  let treeEpoch = 0;
   const completionCaches = shallowRef<Record<string, CompletionCache>>({});
   const persistentStats = shallowRef<Omit<CompletionCacheStats, "loadingCount">>({
     environmentCount: 0, suggestionCount: 0, estimatedBytes: 0
   });
   const roots = computed({
-    get: () => treeCaches.value[activeTreeKey.value] ?? [],
+    get: () => treeCaches.value[activeTreeKey.value]?.children[TREE_ROOT_KEY] ?? [],
     set: (value: MetadataNode[]) => setRoots(value, activeTreeKey.value)
   });
   const completionStats = computed<CompletionCacheStats>(() => ({
     ...persistentStats.value,
     loadingCount: Object.values(completionCaches.value).filter((cache) => cache.state === "loading").length
   }));
-  const canClearCompletions = computed(() => persistentStats.value.environmentCount > 0
+  const hasTreeCaches = computed(() => Object.values(treeCaches.value)
+    .some((cache) => Object.keys(cache.children).length > 0));
+  const canClearCompletions = computed(() => hasTreeCaches.value
+    || persistentStats.value.environmentCount > 0
     || Object.keys(completionCaches.value).length > 0);
 
   function activate(treeKey?: string, completionKey?: string): void {
@@ -27,13 +37,72 @@ export const useMetadataStore = defineStore("metadata", () => {
   }
 
   function setRoots(values: MetadataNode[], key = activeTreeKey.value): void {
-    treeCaches.value = { ...treeCaches.value, [key]: values };
+    setTreeChildren(key, TREE_ROOT_KEY, values);
   }
 
   function clearTree(key = activeTreeKey.value): void {
+    treeGenerations.set(key, (treeGenerations.get(key) ?? 0) + 1);
     const next = { ...treeCaches.value };
     delete next[key];
     treeCaches.value = next;
+    clearTreeLoads(key);
+  }
+
+  function treeChildren(key: string, parentKey = TREE_ROOT_KEY): MetadataNode[] | undefined {
+    return treeCaches.value[key]?.children[parentKey];
+  }
+
+  function hasTreeChildren(key: string, parentKey = TREE_ROOT_KEY): boolean {
+    return treeChildren(key, parentKey) !== undefined;
+  }
+
+  function setTreeChildren(key: string, parentKey: string, values: MetadataNode[]): void {
+    const current = treeCaches.value[key];
+    treeCaches.value = {
+      ...treeCaches.value,
+      [key]: {
+        children: { ...(current?.children ?? {}), [parentKey]: values }
+      }
+    };
+  }
+
+  function treeVersion(key: string): string {
+    return `${treeEpoch}:${treeGenerations.get(key) ?? 0}`;
+  }
+
+  function treeLoadKey(key: string, parentKey: string): string {
+    return `${key}\u0000${parentKey}`;
+  }
+
+  function clearTreeLoads(key: string): void {
+    const prefix = `${key}\u0000`;
+    for (const loadKey of treeLoads.keys()) {
+      if (loadKey.startsWith(prefix)) treeLoads.delete(loadKey);
+    }
+  }
+
+  function loadTreeChildren(key: string, parentKey: string, loader: () => Promise<MetadataNode[]>): Promise<MetadataNode[]> {
+    const cached = treeChildren(key, parentKey);
+    if (cached !== undefined) return Promise.resolve(cached);
+    const loadKey = treeLoadKey(key, parentKey);
+    const existing = treeLoads.get(loadKey);
+    if (existing) return existing;
+    const version = treeVersion(key);
+    const task = Promise.resolve().then(loader).then((values) => {
+      if (treeVersion(key) === version) setTreeChildren(key, parentKey, values);
+      return values;
+    }).finally(() => {
+      if (treeLoads.get(loadKey) === task) treeLoads.delete(loadKey);
+    });
+    treeLoads.set(loadKey, task);
+    return task;
+  }
+
+  function clearTreeCaches(): void {
+    treeEpoch++;
+    treeGenerations.clear();
+    treeCaches.value = {};
+    treeLoads.clear();
   }
 
   function completionFor(key?: string): CompletionCache | undefined {
@@ -106,7 +175,7 @@ export const useMetadataStore = defineStore("metadata", () => {
   }
 
   function clearAll(): void {
-    treeCaches.value = {};
+    clearTreeCaches();
     completionCaches.value = {};
     persistentStats.value = { environmentCount: 0, suggestionCount: 0, estimatedBytes: 0 };
   }
@@ -118,8 +187,9 @@ export const useMetadataStore = defineStore("metadata", () => {
     return released;
   }
 
-  return { activeTreeKey, activeCompletionKey, roots, completionCaches, completionStats, canClearCompletions,
-    activate, setRoots, clearTree, completionFor, readyFromCache, beginCompletion, updateProgress,
+  return { activeTreeKey, activeCompletionKey, roots, completionCaches, completionStats, canClearCompletions, hasTreeCaches,
+    activate, setRoots, treeChildren, hasTreeChildren, setTreeChildren, loadTreeChildren, clearTree, clearTreeCaches,
+    completionFor, readyFromCache, beginCompletion, updateProgress,
     completeCompletion, failCompletion, applyPersistentStats, dismissNotice, statusFor, clearCompletions, clearAll };
 });
 

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useAppStore } from "./app";
 import { useConnectionStore } from "./connection";
@@ -6,7 +6,7 @@ import { useEditorStore } from "./editor";
 import { formatCompletionBytes, useMetadataStore } from "./metadata";
 import { useQueryStore } from "./query";
 import { useSettingsStore } from "./settings";
-import type { CompletionCacheSummary } from "../types";
+import type { CompletionCacheSummary, MetadataNode } from "../types";
 
 beforeEach(() => setActivePinia(createPinia()));
 
@@ -257,10 +257,61 @@ describe("application stores", () => {
 
     expect(released.loadingCount).toBe(1);
     expect(metadata.roots).toEqual([root]);
+    expect(metadata.canClearCompletions).toBe(true);
+    metadata.clearTreeCaches();
     expect(metadata.canClearCompletions).toBe(false);
     expect(metadata.completeCompletion("system:dev", "load-1", summary("profile-1", 1, 1, 100))).toBe(false);
     metadata.updateProgress({ loadId: "load-1", phase: "loading", completed: 2, total: 2, message: "late" });
     expect(metadata.completionCaches).toEqual({});
+  });
+
+  it("caches empty and non-empty lazy branches, isolates environments, and deduplicates loads", async () => {
+    const metadata = useMetadataStore();
+    const loader = vi.fn(async () => [] as never[]);
+    const key = "system-1:environment-dev";
+    const first = metadata.loadTreeChildren(key, "catalog:sales", loader);
+    const second = metadata.loadTreeChildren(key, "catalog:sales", loader);
+
+    await expect(Promise.all([first, second])).resolves.toEqual([[], []]);
+    expect(loader).toHaveBeenCalledTimes(1);
+    expect(metadata.hasTreeChildren(key, "catalog:sales")).toBe(true);
+    expect(metadata.treeChildren(key, "catalog:sales")).toEqual([]);
+
+    metadata.setTreeChildren(key, "__root__", [{ id: "sales", label: "sales", kind: "catalog", leaf: false }]);
+    metadata.setTreeChildren("system-1:environment-sit", "__root__", []);
+    metadata.activate(key);
+    expect(metadata.roots).toHaveLength(1);
+    metadata.activate("system-1:environment-sit");
+    expect(metadata.roots).toEqual([]);
+  });
+
+  it("does not let a response started before a tree clear repopulate the cache", async () => {
+    const metadata = useMetadataStore();
+    let resolveLoad!: (nodes: [{ id: string; label: string; kind: "catalog"; leaf: boolean }]) => void;
+    const pending = new Promise<[{ id: string; label: string; kind: "catalog"; leaf: boolean }]>((resolve) => {
+      resolveLoad = resolve;
+    });
+    const request = metadata.loadTreeChildren("system-1:environment-dev", "__root__", () => pending);
+    metadata.clearTree("system-1:environment-dev");
+    resolveLoad([{ id: "late", label: "late", kind: "catalog", leaf: false }]);
+    await request;
+
+    expect(metadata.hasTreeChildren("system-1:environment-dev", "__root__")).toBe(false);
+  });
+
+  it("invalidates all environments and ignores late responses after a global clear", async () => {
+    const metadata = useMetadataStore();
+    let resolveLoad!: (nodes: MetadataNode[]) => void;
+    const pending = new Promise<MetadataNode[]>((resolve) => { resolveLoad = resolve; });
+    const request = metadata.loadTreeChildren("system-1:environment-dev", "__root__", () => pending);
+    metadata.setTreeChildren("system-1:environment-sit", "__root__", []);
+    metadata.clearTreeCaches();
+    resolveLoad([]);
+    await request;
+
+    expect(metadata.hasTreeCaches).toBe(false);
+    expect(metadata.hasTreeChildren("system-1:environment-dev")).toBe(false);
+    expect(metadata.hasTreeChildren("system-1:environment-sit")).toBe(false);
   });
 
   it("initializes independent result limit and streaming batch settings", () => {

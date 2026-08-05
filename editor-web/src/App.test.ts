@@ -1707,7 +1707,7 @@ describe("App result loading status toolbar", () => {
 
     expect(ElMessageBox.confirm).toHaveBeenCalledWith(expect.stringContaining("1个环境"), "清理补全缓存", expect.any(Object));
     expect(completionMock.clear).toHaveBeenCalledTimes(1);
-    expect(metadata.roots).toHaveLength(1);
+    expect(metadata.roots).toHaveLength(0);
     expect(metadata.completeCompletion("system-1:environment-dev", "load-refresh", completionSummary("profile-1"))).toBe(false);
   });
 });

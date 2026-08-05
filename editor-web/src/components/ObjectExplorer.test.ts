@@ -17,7 +17,7 @@ describe("ObjectExplorer completion refresh boundary", () => {
     rpcRequest.mockReset();
     rpcRequest.mockResolvedValue([{ id: "catalog:sales", label: "sales", kind: "catalog", leaf: false } satisfies MetadataNode]);
     wrapper = mount(ObjectExplorer, {
-      props: { connectionName: "DEV / 业务库", editorId: "editor-1", connectionKey: "profile-1@1" },
+      props: { connectionName: "DEV / 业务库", editorId: "editor-1", treeCacheKey: "system-1:environment-dev" },
       global: { plugins: [ElementPlus] }
     });
   });
@@ -31,7 +31,7 @@ describe("ObjectExplorer completion refresh boundary", () => {
       objectCount: 1, columnCount: 2, estimatedBytes: 128 };
     metadata.beginCompletion("system:dev", "DEV", "load-1", "profile-1");
     metadata.completeCompletion("system:dev", "load-1", summary);
-    metadata.activate("profile-1@1", "system:dev");
+    metadata.activate("system-1:environment-dev", "system:dev");
 
     await flushPromises();
 
@@ -46,5 +46,39 @@ describe("ObjectExplorer completion refresh boundary", () => {
     await wrapper.find('button[aria-label="刷新对象树"]').trigger("click");
 
     expect(wrapper.emitted("refresh")).toHaveLength(1);
+  });
+
+  it("reuses the environment tree cache after unmounting and remounting", async () => {
+    await flushPromises();
+    expect(rpcRequest).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+    rpcRequest.mockClear();
+
+    wrapper = mount(ObjectExplorer, {
+      props: { connectionName: "DEV / 业务库", editorId: "editor-2", treeCacheKey: "system-1:environment-dev" },
+      global: { plugins: [ElementPlus] }
+    });
+    await flushPromises();
+
+    expect(rpcRequest).not.toHaveBeenCalled();
+  });
+
+  it("rebuilds for another environment and refreshes only after an explicit request", async () => {
+    await flushPromises();
+    const metadata = useMetadataStore();
+    metadata.setTreeChildren("system-1:environment-sit", "__root__", [
+      { id: "catalog:sit", label: "sit", kind: "catalog", leaf: false }
+    ]);
+    const callsBeforeSwitch = rpcRequest.mock.calls.length;
+
+    await wrapper.setProps({ editorId: "editor-2", treeCacheKey: "system-1:environment-sit" });
+    await flushPromises();
+    expect(rpcRequest).toHaveBeenCalledTimes(callsBeforeSwitch);
+    expect(wrapper.text()).toContain("sit");
+
+    await wrapper.find('button[aria-label="刷新对象树"]').trigger("click");
+    await flushPromises();
+    expect(rpcRequest).toHaveBeenCalledTimes(callsBeforeSwitch + 1);
+    expect(rpcRequest).toHaveBeenLastCalledWith("metadata.children", { kind: "root", editorId: "editor-2" });
   });
 });

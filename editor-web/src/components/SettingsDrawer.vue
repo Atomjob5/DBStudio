@@ -127,7 +127,7 @@
         <el-form-item class="compact-setting-row completion-cache-row">
           <template #label>
             <div class="setting-label"><span>补全缓存占用</span>
-              <el-tooltip content="统计浏览器IndexedDB中的紧凑补全快照；清理不会影响对象树、连接或查询结果。" placement="top">
+              <el-tooltip content="统计浏览器IndexedDB中的紧凑补全快照；清理会同时清除已加载的对象树，但不会影响连接或查询结果。" placement="top">
                 <el-icon class="setting-help" tabindex="0" aria-label="补全缓存占用说明"><QuestionFilled /></el-icon>
               </el-tooltip>
             </div>

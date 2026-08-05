@@ -40,7 +40,7 @@ import { ref, watch } from "vue";
 import { Coin, Collection, Document, Folder, FolderOpened, Grid, Refresh, Search, Tickets } from "@element-plus/icons-vue";
 import type { ElTree, LoadFunction, TreeNodeData } from "element-plus";
 import { rpc } from "../bridge/rpc";
-import { useMetadataStore } from "../stores/metadata";
+import { TREE_ROOT_KEY, useMetadataStore } from "../stores/metadata";
 import { useSettingsStore } from "../stores/settings";
 import { shortcutTooltip } from "../shortcuts";
 import type { MetadataNode } from "../types";
@@ -50,7 +50,7 @@ const emit = defineEmits<{
   definition: [node: MetadataNode];
   refresh: [];
 }>();
-const props = defineProps<{ connectionName?: string; editorId: string; connectionKey: string; completionLoading?: boolean }>();
+const props = defineProps<{ connectionName?: string; editorId: string; treeCacheKey: string; completionLoading?: boolean }>();
 const metadata = useMetadataStore();
 const settings = useSettingsStore();
 const treeRef = ref<InstanceType<typeof ElTree>>();
@@ -62,19 +62,24 @@ const loadNode: LoadFunction = async (node, resolve) => {
   try {
     const data = node.data as unknown as MetadataNode;
     const payload = node.level === 0 ? { kind: "root", editorId: props.editorId } : { ...data, editorId: props.editorId };
-    const nodes = await rpc.request<MetadataNode[]>("metadata.children", payload);
-    if (node.level === 0) metadata.roots = nodes;
+    const parentKey = node.level === 0 ? TREE_ROOT_KEY : data.id;
+    const nodes = await metadata.loadTreeChildren(props.treeCacheKey, parentKey,
+      () => rpc.request<MetadataNode[]>("metadata.children", payload));
     resolve(nodes);
   } catch { resolve([]); }
 };
 
 function resetTree(): void {
-  metadata.clearTree(props.connectionKey);
+  metadata.clearTree(props.treeCacheKey);
   treeKey.value++;
 }
 function refresh(): void { resetTree(); emit("refresh"); }
 
 watch(filterText, (value) => treeRef.value?.filter(value.trim()));
+watch(() => [props.editorId, props.treeCacheKey] as const, () => {
+  filterText.value = "";
+  treeKey.value++;
+});
 function filterNode(value: string, treeData: TreeNodeData): boolean {
   if (!value) return true;
   const data = treeData as MetadataNode;
