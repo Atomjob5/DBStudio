@@ -23,7 +23,7 @@
     <div ref="viewport" class="result-virtual-grid__viewport" role="rowgroup"
          @scroll="handleScroll" @pointerdown.capture="detectScrollbarPointerDown"
          @pointerdown="delegatePointerDown"
-         @pointerover="delegatePointerOver" @dblclick="delegateDoubleClick"
+         @pointerover="delegatePointerOver" @pointermove="delegatePointerMove" @dblclick="delegateDoubleClick"
          @contextmenu="delegateContextMenu">
       <div class="result-virtual-grid__canvas" :style="canvasStyle">
         <div v-for="entry in visibleRows" :key="entry.slot"
@@ -455,6 +455,10 @@ function delegatePointerDown(event: PointerEvent): void {
   if (interactionsSuspended()) return;
   const target = delegatedTarget(event);
   if (!target) return;
+  // A new drag may start on the same cell that was last hovered. Reset the
+  // deduplication key so the first pointer-enter during the drag is not
+  // swallowed by the previous gesture.
+  lastPointerKey = "";
   if (target.dataset.gridKind === "row") {
     emit("row-pointerdown", event, Number(target.dataset.gridSource));
     return;
@@ -476,6 +480,13 @@ function delegatePointerOver(event: PointerEvent): void {
     return;
   }
   emit("cell-pointerenter", Number(target.dataset.gridRow), Number(target.dataset.gridColumn));
+}
+
+function delegatePointerMove(event: PointerEvent): void {
+  // Pointer capture/drag implementations do not always emit pointerover when
+  // crossing a virtual cell. Reuse the same stable target delegation for
+  // pointermove so rectangular selection remains continuous.
+  delegatePointerOver(event);
 }
 
 function delegateContextMenu(event: MouseEvent): void {

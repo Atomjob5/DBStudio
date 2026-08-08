@@ -202,7 +202,8 @@
                              @export-loaded="exportLoaded" @export-full="exportFull" @close-result="closeTemporaryResult"
                              @toggle-result-edit="toggleResultEdit" @apply-result-changes="postActiveResultChanges"
                              @selected-column="selectedResultColumn = $event"
-                             @selected-row-count="selectedResultRowCount = $event" />
+                             @selected-row-count="selectedResultRowCount = $event"
+                             @selected-status-text="selectedResultStatusText = $event" />
               </el-splitter-panel>
             </el-splitter>
           </div>
@@ -212,6 +213,7 @@
 
     <AppStatusBar :execution-text="activeExecutionText" :busy="activeDatabaseBusy"
                   :selected-row-count="selectedResultRowCount" :result-content-offset="resultContentOffset"
+                  :selected-status-text="selectedResultStatusText"
                   :selected-column="selectedResultColumn"
                   :show-selected-column-remarks="settings.showSelectedColumnRemarks" :system-items="systemStatusItems"
                   :can-load-more="canLoadMore" :loading-mode="activeResultLoading?.mode"
@@ -424,6 +426,7 @@ interface ResultLoadingState {
 const resultLoading = ref<ResultLoadingState>();
 const selectedResultColumn = ref<SelectedResultColumn>();
 const selectedResultRowCount = ref(0);
+const selectedResultStatusText = ref("");
 const activeResultLoading = computed(() => {
   const loading = resultLoading.value;
   return loading && loading.editorId === editors.activeId ? loading : undefined;
@@ -627,6 +630,7 @@ watch(activeExecutions, (items) => {
   if (!selectedExists) activeResultIndex.value = items.length ? items[items.length - 1].executionId : 0;
   selectedResultColumn.value = undefined;
   selectedResultRowCount.value = 0;
+  selectedResultStatusText.value = "";
 });
 watch(() => [editors.activeId, activeObjectTreeKey.value, activeCompletionKey.value] as const, () => {
   metadata.activate(activeObjectTreeKey.value, activeCompletionKey.value);
@@ -635,12 +639,14 @@ watch(() => editors.activeId, (current, previous) => {
   editorHasSelection.value = false;
   selectedResultColumn.value = undefined;
   selectedResultRowCount.value = 0;
+  selectedResultStatusText.value = "";
   if (previous) void persistDraftById(previous, true);
   if (current) scheduleDraft(current);
 });
 watch(activeResultIndex, () => {
   selectedResultColumn.value = undefined;
   selectedResultRowCount.value = 0;
+  selectedResultStatusText.value = "";
 });
 watch(() => settings.showSelectedColumnRemarks, (enabled) => {
   if (!enabled) selectedResultColumn.value = undefined;

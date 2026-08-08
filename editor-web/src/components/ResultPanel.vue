@@ -118,24 +118,25 @@
       <div v-else-if="activeResult?.columns.length" ref="tableHost" class="table-host" tabindex="0"
            @keydown="tableKeydown" @pointermove="autoScrollSelection">
         <ResultSingleRecordView v-if="singleRecordMode && selectedRecordRow" ref="singleRecordView"
-                                :columns="columnOptions" :row="selectedRecordRow"
+                                :columns="visibleColumnOptions" :row="selectedRecordRow"
                                 :buffer-screens="settings.scrollOptimizationBufferScreens"
                                 :copy-separator="settings.copySeparator"
-                                :selection-mode="selectionMode" :cell-range="cellRange"
-                                :selected-cell-keys="selectedCellKeys"
-                                :focused-cell-key="focusedCellKey"
-                                :selected-row-sources="selectedRowSources"
+                                :layout-scope="settings.columnLayoutScope"
+                                :execution-id="execution?.executionId || ''"
+                                :editor-id="execution?.editorId || ''"
+                                :result-index="activeResult?.resultIndex ?? 0"
+                                :header-sorting-enabled="settings.headerSortingEnabled"
+                                :header-filtering-enabled="settings.headerFilteringEnabled"
+                                :initial-selection="singleRecordInitialSelection"
                                 :editing-column-index="editingCell?.rowIndex === selectedRecordRow.sourceIndex
                                   ? editingCell.columnIndex : undefined"
                                 :editing-value="editingCell?.value" :cell-states="resultCellStates"
-                                @cell-pointerdown="handleSingleRecordPointerdown"
-                                @cell-pointerenter="handleSingleRecordPointerenter"
                                 @cell-contextmenu="handleSingleRecordContextmenu"
-                                @row-pointerdown="handleSingleRecordRowPointerdown"
-                                @row-pointerenter="handleSingleRecordRowPointerenter"
                                 @row-contextmenu="handleSingleRecordRowContextmenu"
                                 @selection-change="handleSingleRecordSelectionChange"
-                                @cell-dblclick="handleSingleRecordDoubleClick(selectedRecordRow, $event)"
+                                @layout-dirty="singleRecordLayoutDirty = $event"
+                                @copy-text="copyText"
+                                @cell-dblclick="handleSingleRecordDoubleClick"
                                 @update:editing-value="updateEditingValue"
                                 @commit-edit="commitCellEdit" @cancel-edit="cancelCellEdit" />
         <ResultVirtualGrid v-else ref="virtualGrid"
@@ -223,7 +224,7 @@ import {
   ArrowLeft, ArrowRight, CircleCheck, CopyDocument, DataAnalysis, Document, Download, EditPen,
   Minus, Plus, Postcard, RefreshLeft
 } from "@element-plus/icons-vue";
-import type { QueryExecutionState, SelectedResultColumn } from "../types";
+import type { QueryColumn, QueryExecutionState, QueryResult, SelectedResultColumn } from "../types";
 import { matchesColumnQuery, resultColumnOptions, type ColumnOption } from "../columnFilter";
 import { autoColumnWidth, clampColumnWidth, columnIdentityKeys, defaultColumnWidth, moveColumnsToEdge,
   type ColumnEdge, type DropSide } from "../columnLayout";
@@ -241,7 +242,7 @@ import type { ResultGridScrollPosition, ResultVirtualColumn } from "../resultVir
 import ResultHeaderContextMenu, { type HeaderMenuCommand } from "./ResultHeaderContextMenu.vue";
 import ResultHeaderTools from "./ResultHeaderTools.vue";
 import ResultDataContextMenu, { type DataMenuCommand } from "./ResultDataContextMenu.vue";
-import ResultSingleRecordView from "./ResultSingleRecordView.vue";
+import ResultSingleRecordView, { type SingleRecordSelectionState } from "./ResultSingleRecordView.vue";
 import ResultVirtualGrid from "./ResultVirtualGrid.vue";
 import ResultSummaryFooter from "./ResultSummaryFooter.vue";
 import ResultValueDialog from "./ResultValueDialog.vue";
@@ -273,6 +274,7 @@ const emit = defineEmits<{
   "update:active-result-index": [resultIndex: string | number];
   "selected-column": [column: SelectedResultColumn | undefined];
   "selected-row-count": [count: number];
+  "selected-status-text": [text: string];
   "toggle-result-edit": [];
   "apply-result-changes": [];
 }>();
@@ -289,6 +291,11 @@ const virtualGrid = ref<{
 }>();
 const singleRecordView = ref<{
   getCopyText: (includeHeaders?: boolean) => string | undefined;
+  getSelectionState: () => SingleRecordSelectionState;
+  clearSelection: () => void;
+  handleKeydown: (event: KeyboardEvent) => void;
+  isLayoutDirty: () => boolean;
+  resetLayout: () => void;
 }>();
 const activeLayout = ref<{ layoutKey: string; viewKey: string; identities: string[] }>();
 const dropTarget = ref<{ identity: string; side: DropSide }>();
@@ -300,6 +307,30 @@ const dataMenu = ref<{ visible: boolean; x: number; y: number; mode: "cells" | "
 // ordinary data menu for copying, but it must not expose SQL-generation
 // commands that would silently target the source value column.
 const singleRecordSqlAllowed = ref(true);
+const singleRecordSelection = ref<SingleRecordSelectionState>();
+const singleRecordSourceIndex = ref<number>();
+const singleRecordInitialSelection = ref<{ mode: "cells" | "rows"; fields: number[] }>({ mode: "cells", fields: [] });
+const singleRecordEntryMode = ref<"cells" | "rows">("cells");
+const singleRecordEntryColumns = ref<number[]>([]);
+const singleRecordLayoutDirty = ref(false);
+const singleRecordSyntheticColumns: QueryColumn[] = ["字段名", "字段值", "字段备注", "字段类型"].map((label) => ({
+  label, name: label, remarks: "", catalog: "", schema: "", table: "", typeName: "VARCHAR", jdbcType: 12
+}));
+
+function resetStoredSingleRecordLayout(): void {
+  const currentExecution = execution.value;
+  const result = activeResult.value;
+  if (!currentExecution || !result) return;
+  const synthetic: QueryResult = {
+    resultIndex: result.resultIndex, sql: "", type: "QUERY", columns: singleRecordSyntheticColumns.map((column) => column.label),
+    columnDetails: singleRecordSyntheticColumns, rows: [], updateCount: -1, truncated: false, durationMs: 0, complete: true
+  };
+  const state = columnLayouts.ensure({
+    scope: settings.columnLayoutScope, executionId: currentExecution.executionId, editorId: currentExecution.editorId,
+    result: synthetic, defaultWidths: [180, 300, 220, 160], namespace: "single-record"
+  });
+  columnLayouts.reset(state.layoutKey, state.viewKey, state.identities, [180, 300, 220, 160]);
+}
 let dragPreview: HTMLElement | undefined;
 let measureContext: CanvasRenderingContext2D | null | undefined;
 let singleRecordReturnPosition: ResultGridScrollPosition | undefined;
@@ -507,12 +538,14 @@ watch(() => execution.value?.executionId, () => {
   sorts.value = {}; filters.value = {};
   selectedColumns.value = {};
   columnQuery.value = "";
+  singleRecordLayoutDirty.value = false;
   closeHeaderMenu(); closeDataMenu();
 });
 watch(activeIndex, () => {
   editingCell.value = undefined;
   clearSelection(); sumSummary.value = undefined; compareDialog.value = false; valueDialog.value.visible = false;
   columnQuery.value = ""; closeHeaderMenu(); closeDataMenu();
+  singleRecordLayoutDirty.value = false;
 });
 watch(() => activeResult.value?.columnDetails, () => emitSelectedColumn());
 watch([
@@ -1011,16 +1044,24 @@ function measureText(text: string): number {
 }
 
 const showRestoreLayout = computed(() => !!activeLayout.value
-  && columnLayouts.dirty(activeLayout.value.layoutKey, activeLayout.value.identities, defaultWidths.value));
+  && (columnLayouts.dirty(activeLayout.value.layoutKey, activeLayout.value.identities, defaultWidths.value)
+    || singleRecordLayoutDirty.value));
 const restoreLayoutTitle = computed(() =>
-  shortcutTooltip("复原列顺序、宽度和字段", "result.restoreLayout", settings.shortcuts));
+  shortcutTooltip("复原列顺序、宽度、字段和单记录视图", "result.restoreLayout", settings.shortcuts));
 
 function restoreLayout(): void {
   if (!showRestoreLayout.value) return;
   const active = activeLayout.value;
-  if (!active) return;
-  columnLayouts.reset(active.layoutKey, active.viewKey, active.identities, defaultWidths.value);
-  selectedColumns.value = { ...selectedColumns.value, [resultKey.value]: [] };
+  if (active && columnLayouts.dirty(active.layoutKey, active.identities, defaultWidths.value)) {
+    columnLayouts.reset(active.layoutKey, active.viewKey, active.identities, defaultWidths.value);
+    selectedColumns.value = { ...selectedColumns.value, [resultKey.value]: [] };
+  }
+  sorts.value = { ...sorts.value, [resultKey.value]: undefined };
+  filters.value = { ...filters.value, [resultKey.value]: [] };
+  sumSummary.value = undefined;
+  if (singleRecordView.value) singleRecordView.value.resetLayout();
+  else if (singleRecordLayoutDirty.value) resetStoredSingleRecordLayout();
+  singleRecordLayoutDirty.value = false;
   ElMessage.success("已复原列布局");
 }
 
@@ -1071,6 +1112,8 @@ function clearSelection(): void {
   singleRecordSqlAllowed.value = true;
   singleRecordMode.value = false;
   singleRecordReturnPosition = undefined;
+  singleRecordSourceIndex.value = undefined;
+  singleRecordSelection.value = undefined;
 }
 
 function detachCellRange(): void {
@@ -1327,6 +1370,9 @@ const selectedRowsInDisplayOrder = computed(() => {
   return displayRows.value.filter((row) => selected.has(row.sourceIndex));
 });
 const selectedRecordRow = computed<ViewRow | undefined>(() => {
+  if (singleRecordMode.value && singleRecordSourceIndex.value !== undefined) {
+    return displayRows.value.find((row) => row.sourceIndex === singleRecordSourceIndex.value);
+  }
   if (selectionMode.value === "rows") {
     return selectedRowsInDisplayOrder.value.length === 1 ? selectedRowsInDisplayOrder.value[0] : undefined;
   }
@@ -1346,35 +1392,83 @@ const canNavigateNext = computed(() => singleRecordMode.value
 const selectedRowCount = computed(() => selectionMode.value === "cells"
   ? new Set(selectedCellsInView.value.map((cell) => cell.sourceRow)).size
   : selectionMode.value === "rows" ? selectedRowsInDisplayOrder.value.length : 0);
-const hasDataSelection = computed(() => selectionMode.value === "cells"
-  ? selectedCellsInView.value.length > 0
-  : selectionMode.value === "rows" ? selectedRowsInDisplayOrder.value.length > 0
-    : selectedOrderedColumns().length > 0 && displayRows.value.length > 0);
+const hasDataSelection = computed(() => singleRecordMode.value
+  ? Boolean(singleRecordSelection.value?.hasSelection)
+  : selectionMode.value === "cells"
+    ? selectedCellsInView.value.length > 0
+    : selectionMode.value === "rows" ? selectedRowsInDisplayOrder.value.length > 0
+      : selectedOrderedColumns().length > 0 && displayRows.value.length > 0);
 const copySelectionTitle = computed(() => shortcutTooltip(
-  selectionMode.value === "rows" ? "复制选中行" : selectionMode.value === "columns" ? "复制选中列" : "复制选中单元格",
+  singleRecordMode.value && singleRecordSelection.value?.hasSelection ? "复制单记录选区"
+    : selectionMode.value === "rows" ? "复制选中行" : selectionMode.value === "columns" ? "复制选中列" : "复制选中单元格",
   "result.copySelection",
   settings.shortcuts,
 ));
 
-watch(selectedRowCount, (count) => emit("selected-row-count", count), { immediate: true });
+const selectedStatusText = computed(() => singleRecordMode.value
+  ? singleRecordSelection.value?.hasSelection ? singleRecordSelection.value.statusText : ""
+  : selectedRowCount.value > 0 ? `已选中 ${selectedRowCount.value} 行` : "");
+watch([selectedRowCount, selectedStatusText], ([count, text]) => {
+  emit("selected-row-count", count);
+  emit("selected-status-text", text);
+}, { immediate: true });
 watch(selectedRecordRow, (row) => {
-  if (!row && singleRecordMode.value) void leaveSingleRecordView();
+  if (!row && singleRecordMode.value) {
+    const fallback = displayRows.value[0];
+    if (fallback) singleRecordSourceIndex.value = fallback.sourceIndex;
+    else void leaveSingleRecordView();
+  }
   else if (!row) singleRecordReturnPosition = undefined;
 });
 
 async function leaveSingleRecordView(): Promise<void> {
   const position = singleRecordReturnPosition;
+  const sourceIndex = singleRecordSourceIndex.value;
+  const entryMode = singleRecordEntryMode.value;
+  const entryColumns = [...singleRecordEntryColumns.value];
   singleRecordMode.value = false;
   singleRecordSqlAllowed.value = true;
   singleRecordReturnPosition = undefined;
+  singleRecordSourceIndex.value = undefined;
+  singleRecordSelection.value = undefined;
   await nextTick();
   if (position) restoreScrollPosition(position);
+  if (sourceIndex === undefined) return;
+  const targetPosition = displayRows.value.findIndex((row) => row.sourceIndex === sourceIndex);
+  if (targetPosition < 0) return;
+  if (entryMode === "rows") {
+    clearColumnHeaderSelection(); cellRange.value = undefined; cellAnchor.value = undefined;
+    selectedCells.value = []; focusedCell.value = undefined; selectedRowSources.value = [sourceIndex];
+    selectionMode.value = "rows"; rowAnchor.value = sourceIndex;
+    return;
+  }
+  clearColumnHeaderSelection(); selectedRowSources.value = []; selectionMode.value = "cells";
+  const nextCells = entryColumns.map((sourceColumn) => {
+    const column = visibleColumnOptions.value.findIndex((item) => item.index === sourceColumn);
+    return column < 0 ? undefined : selectedCellAt(targetPosition, column);
+  }).filter((cell): cell is SelectedCell => !!cell);
+  selectedCells.value = nextCells;
+  const first = nextCells[0];
+  cellRange.value = first ? { start: { row: first.row, column: first.column }, end: { row: first.row, column: first.column } } : undefined;
+  cellAnchor.value = first ? { row: first.row, column: first.column } : undefined;
+  focusedCell.value = first ? { sourceRow: first.sourceRow, sourceColumn: first.sourceColumn } : undefined;
 }
 
 function toggleSingleRecordView(): void {
   if (singleRecordMode.value) { void leaveSingleRecordView(); return; }
   if (!selectedRecordRow.value) return;
   singleRecordReturnPosition = currentScrollPosition();
+  singleRecordSourceIndex.value = selectedRecordRow.value.sourceIndex;
+  singleRecordEntryMode.value = selectionMode.value === "rows" ? "rows" : "cells";
+  singleRecordEntryColumns.value = selectionMode.value === "cells"
+    ? [...new Set(selectedCellsInView.value.map((cell) => cell.sourceColumn))]
+    : visibleColumnOptions.value.map((column) => column.index);
+  singleRecordInitialSelection.value = {
+    mode: singleRecordEntryMode.value,
+    fields: singleRecordEntryMode.value === "rows"
+      ? visibleColumnOptions.value.map((column) => column.index) : singleRecordEntryColumns.value
+  };
+  singleRecordSelection.value = undefined;
   singleRecordSqlAllowed.value = selectionMode.value === "cells";
   singleRecordMode.value = true;
 }
@@ -1383,29 +1477,7 @@ function navigateSingleRecord(delta: -1 | 1): void {
   const position = selectedRecordPosition.value;
   const target = displayRows.value[position + delta];
   if (!singleRecordMode.value || position < 0 || !target) return;
-  const targetPosition = position + delta;
-  if (selectionMode.value === "rows") {
-    selectedRowSources.value = [target.sourceIndex];
-    rowAnchor.value = target.sourceIndex;
-    return;
-  }
-  if (selectionMode.value !== "cells") return;
-  const selectedColumns = [...new Set(selectedCellsInView.value.map((cell) => cell.sourceColumn))];
-  const nextCells = selectedColumns.map((sourceColumn) => {
-    const column = visibleColumnOptions.value.findIndex((item) => item.index === sourceColumn);
-    return column < 0 ? undefined : selectedCellAt(targetPosition, column);
-  }).filter((cell): cell is SelectedCell => !!cell);
-  selectedCells.value = nextCells;
-  const first = nextCells[0];
-  if (first) {
-    focusedCell.value = { sourceRow: first.sourceRow, sourceColumn: first.sourceColumn };
-    selectedColumnIndex.value = first.sourceColumn;
-    emitSelectedColumn();
-    cellAnchor.value = { row: first.row, column: first.column };
-  }
-  cellRange.value = nextCells.length === 1 && first
-    ? { start: { row: first.row, column: first.column }, end: { row: first.row, column: first.column } }
-    : undefined;
+  singleRecordSourceIndex.value = target.sourceIndex;
 }
 
 function selectedCopyText(includeHeaders = false): string {
@@ -1458,6 +1530,11 @@ function rowSql(mode: "insert" | "update" | "delete"): string | undefined {
 }
 
 const selectedCellSqlRows = computed<SelectedRowColumns[]>(() => {
+  if (singleRecordMode.value) {
+    const row = selectedRecordRow.value;
+    const cells = selectedSingleRecordCells.value;
+    return row && cells.length ? [{ row, columnIndices: [...new Set(cells.map((cell) => cell.sourceColumn))] }] : [];
+  }
   if (selectionMode.value !== "cells" || !selectedCellsInView.value.length) return [];
   const columnsByRow = new Map<number, Set<number>>();
   for (const cell of selectedCellsInView.value) {
@@ -1475,28 +1552,64 @@ function cellSql(mode: "update" | "delete"): string | undefined {
     activeResult.value?.dialectId);
 }
 
-const canCopyIn = computed(() => singleRecordSqlAllowed.value
-  && selectionMode.value === "cells" && !!inPredicate());
-const canCopyInsert = computed(() => singleRecordSqlAllowed.value
+const selectedSingleRecordCells = computed<SelectedCell[]>(() => {
+  const state = singleRecordSelection.value;
+  const row = selectedRecordRow.value;
+  if (!singleRecordMode.value || !state?.sourceCells.length || !row) return [];
+  return state.sourceCells.map((cell) => ({
+    row: singleRecordRowPosition(), sourceRow: row.sourceIndex,
+    column: visibleColumnOptions.value.findIndex((column) => column.index === cell.sourceColumn),
+    sourceColumn: cell.sourceColumn, value: cell.value
+  })).filter((cell) => cell.column >= 0);
+});
+
+function singleRecordInPredicate(): string | undefined {
+  const sourceCells = selectedSingleRecordCells.value;
+  const row = selectedRecordRow.value;
+  if (!row || !sourceCells.length) return undefined;
+  const selected = new Set(sourceCells.map((cell) => cell.sourceColumn));
+  const columns = visibleColumnOptions.value.filter((column) => selected.has(column.index))
+    .map((column) => ({ index: column.index, label: column.label, jdbcType: column.jdbcType ?? 12 }));
+  return copyInPredicate(columns, [row], activeResult.value?.dialectId);
+}
+
+function singleRecordCellSql(mode: "update" | "delete"): string | undefined {
+  const row = selectedRecordRow.value;
+  const cells = selectedSingleRecordCells.value;
+  if (!row || !cells.length) return undefined;
+  return copyCellSql(mode, activeResult.value?.mutationTarget, [{ row,
+    columnIndices: [...new Set(cells.map((cell) => cell.sourceColumn))] }], activeResult.value?.dialectId);
+}
+
+const canCopyIn = computed(() => singleRecordMode.value
+  ? Boolean(singleRecordSelection.value?.sqlAllowed && singleRecordInPredicate())
+  : singleRecordSqlAllowed.value && selectionMode.value === "cells" && !!inPredicate());
+const canCopyInsert = computed(() => !singleRecordMode.value && singleRecordSqlAllowed.value
   && selectionMode.value === "rows" && !!rowSql("insert"));
-const canCopyUpdate = computed(() => singleRecordSqlAllowed.value && (selectionMode.value === "rows"
-  ? !!rowSql("update") : selectionMode.value === "cells" && !!cellSql("update")));
-const canCopyDelete = computed(() => singleRecordSqlAllowed.value && (selectionMode.value === "rows"
-  ? !!rowSql("delete") : selectionMode.value === "cells" && !!cellSql("delete")));
+const canCopyUpdate = computed(() => singleRecordMode.value
+  ? Boolean(singleRecordSelection.value?.sqlAllowed && singleRecordCellSql("update"))
+  : singleRecordSqlAllowed.value && (selectionMode.value === "rows"
+    ? !!rowSql("update") : selectionMode.value === "cells" && !!cellSql("update")));
+const canCopyDelete = computed(() => singleRecordMode.value
+  ? Boolean(singleRecordSelection.value?.sqlAllowed && singleRecordCellSql("delete"))
+  : singleRecordSqlAllowed.value && (selectionMode.value === "rows"
+    ? !!rowSql("delete") : selectionMode.value === "cells" && !!cellSql("delete")));
 const compareValues = computed(() => ({
-  left: selectedCellsInView.value[0]?.value ?? null,
-  right: selectedCellsInView.value[1]?.value ?? null
+  left: (singleRecordMode.value ? selectedSingleRecordCells.value : selectedCellsInView.value)[0]?.value ?? null,
+  right: (singleRecordMode.value ? selectedSingleRecordCells.value : selectedCellsInView.value)[1]?.value ?? null
 }));
 const canCompareCells = computed(() =>
-  selectionMode.value === "cells" && selectedCellsInView.value.length === 2);
+  (singleRecordMode.value ? singleRecordSelection.value?.mode === "cells" : selectionMode.value === "cells")
+  && (singleRecordMode.value ? selectedSingleRecordCells.value.length : selectedCellsInView.value.length) === 2);
 const cellSumResult = computed(() =>
-  sumDecimalValues(selectedCellsInView.value.map((cell) => cell.value)));
-const canSumCells = computed(() => selectionMode.value === "cells"
-  && selectedCellsInView.value.length >= 2
+  sumDecimalValues((singleRecordMode.value ? selectedSingleRecordCells.value : selectedCellsInView.value).map((cell) => cell.value)));
+const canSumCells = computed(() => (singleRecordMode.value ? singleRecordSelection.value?.mode === "cells" : selectionMode.value === "cells")
+  && (singleRecordMode.value ? selectedSingleRecordCells.value.length : selectedCellsInView.value.length) >= 2
   && cellSumResult.value.valid && cellSumResult.value.count > 0);
 const canSetSelectedCellNull = computed(() => resultEditUnlocked.value
-  && selectedCellsInView.value.length > 0
-  && selectedCellsInView.value.every((cell) => isCellEditable(cell.sourceRow, cell.sourceColumn)));
+  && (singleRecordMode.value ? selectedSingleRecordCells.value.length : selectedCellsInView.value.length) > 0
+  && (singleRecordMode.value ? selectedSingleRecordCells.value : selectedCellsInView.value)
+    .every((cell) => isCellEditable(cell.sourceRow, cell.sourceColumn)));
 const headerSumResult = computed(() => sumDecimalValues(selectedOrderedColumns().flatMap((column) =>
   displayRows.value.map((row) => row.cells[column.index] ?? null))));
 const canSumHeaderData = computed(() => selectedOrderedColumns().length > 0
@@ -1522,11 +1635,13 @@ function dataMenuCommand(command: DataMenuCommand): void {
   if (command === "copy-data") { void copyCurrentSelection(); return; }
   if (command === "copy-all") { void copyCurrentSelection(true); return; }
   if (command === "copy-in") {
-    const text = inPredicate(); if (text) void copyText(text, "已复制 IN 语句"); return;
+    const text = singleRecordMode.value ? singleRecordInPredicate() : inPredicate();
+    if (text) void copyText(text, "已复制 IN 语句"); return;
   }
   const mode = command.replace("copy-", "") as "insert" | "update" | "delete";
-  const text = mode === "insert" ? rowSql(mode)
-    : selectionMode.value === "cells" ? cellSql(mode) : rowSql(mode);
+  const text = singleRecordMode.value
+    ? mode === "insert" ? undefined : singleRecordCellSql(mode)
+    : mode === "insert" ? rowSql(mode) : selectionMode.value === "cells" ? cellSql(mode) : rowSql(mode);
   if (text) void copyText(text, `已复制 ${mode.toUpperCase()} 语句`);
 }
 
@@ -1558,12 +1673,12 @@ function handleCellDoubleClick(row: number, column: number, rowData: ViewRow): v
   openCellValue(row, column, rowData);
 }
 
-function handleSingleRecordDoubleClick(row: ViewRow, columnIndex: number): void {
+function handleSingleRecordDoubleClick(fieldIndex: number): void {
   if (resultEditUnlocked.value) {
-    startEditCell(row.sourceIndex, columnIndex);
+    if (singleRecordSourceIndex.value !== undefined) startEditCell(singleRecordSourceIndex.value, fieldIndex);
     return;
   }
-  valueDialog.value = { visible: true, value: row.cells[columnIndex] ?? null };
+  valueDialog.value = { visible: true, value: activeResult.value?.rows[singleRecordSourceIndex.value ?? -1]?.[fieldIndex] ?? null };
 }
 
 function singleRecordRowPosition(): number {
@@ -1575,58 +1690,20 @@ function singleRecordColumnPosition(fieldIndex: number): number {
   return visibleColumnOptions.value.findIndex((column) => column.index === fieldIndex);
 }
 
-function handleSingleRecordSelectionChange(sqlAllowed: boolean): void {
-  singleRecordSqlAllowed.value = sqlAllowed;
-}
-
-function handleSingleRecordPointerdown(event: PointerEvent, fieldIndex: number, _columnIndex: number,
-                                       isValueCell: boolean): void {
-  singleRecordSqlAllowed.value = isValueCell;
-  if (!isValueCell) return;
-  const row = singleRecordRowPosition();
-  const column = singleRecordColumnPosition(fieldIndex);
-  if (row < 0 || column < 0) return;
-  startCellSelection(event, row, column);
-}
-
-function handleSingleRecordPointerenter(fieldIndex: number, _columnIndex: number, isValueCell: boolean): void {
-  singleRecordSqlAllowed.value = isValueCell;
-  if (!isValueCell) return;
-  const row = singleRecordRowPosition();
-  const column = singleRecordColumnPosition(fieldIndex);
-  if (row < 0 || column < 0) return;
-  extendCellSelection(row, column);
+function handleSingleRecordSelectionChange(state: SingleRecordSelectionState): void {
+  singleRecordSelection.value = state;
+  singleRecordSqlAllowed.value = state.sqlAllowed;
 }
 
 function handleSingleRecordContextmenu(event: MouseEvent, fieldIndex: number, _columnIndex: number,
                                        isValueCell: boolean): void {
-  const row = singleRecordRowPosition();
-  const column = singleRecordColumnPosition(fieldIndex);
-  if (row < 0 || column < 0 || !selectedRecordRow.value) return;
-  openCellMenuWithSqlPermission(event, row, column, selectedRecordRow.value, isValueCell);
+  if (!isValueCell) singleRecordSqlAllowed.value = false;
+  event.preventDefault(); event.stopPropagation(); openDataMenu(event, "cells");
 }
 
-function handleSingleRecordRowPointerdown(event: PointerEvent, fieldIndex: number): void {
-  const row = singleRecordRowPosition();
-  const column = singleRecordColumnPosition(fieldIndex);
-  if (row < 0 || column < 0) return;
-  // A row in the transposed adapter is a source field. Keep the source
-  // selection model in cell mode while the adapter highlights the full
-  // synthetic field row (including metadata cells).
-  startCellSelection(event, row, column);
-}
-
-function handleSingleRecordRowPointerenter(fieldIndex: number): void {
-  const row = singleRecordRowPosition();
-  const column = singleRecordColumnPosition(fieldIndex);
-  if (row >= 0 && column >= 0) extendCellSelection(row, column);
-}
-
-function handleSingleRecordRowContextmenu(event: MouseEvent, fieldIndex: number): void {
-  const row = singleRecordRowPosition();
-  const column = singleRecordColumnPosition(fieldIndex);
-  if (row < 0 || column < 0 || !selectedRecordRow.value) return;
-  openCellMenuWithSqlPermission(event, row, column, selectedRecordRow.value, false);
+function handleSingleRecordRowContextmenu(event: MouseEvent, _fieldIndex: number): void {
+  event.preventDefault(); event.stopPropagation(); singleRecordSqlAllowed.value = false;
+  openDataMenu(event, "rows");
 }
 
 function resultRowId(rowIndex: number): string {
@@ -1902,7 +1979,8 @@ function setSelectedCellsNull(): void {
   const result = activeResult.value;
   if (!currentExecution || !result || !canSetSelectedCellNull.value) return;
   const updates: Array<{ rowIndex: number; columnIndex: number; value: null }> = [];
-  for (const cell of selectedCellsInView.value) {
+  const cells = singleRecordMode.value ? selectedSingleRecordCells.value : selectedCellsInView.value;
+  for (const cell of cells) {
     const current = result.rows[cell.sourceRow]?.[cell.sourceColumn] ?? null;
     if (current === null) continue;
     resultEdits.stage(currentExecution.editorId, currentExecution.executionId, result.resultIndex,
@@ -1933,6 +2011,16 @@ function editableJdbcType(jdbcType: number): boolean {
 function tableKeydown(event: KeyboardEvent): void {
   const target = event.target as HTMLElement | null;
   if (target?.matches("input, textarea, select, [contenteditable='true']")) return;
+  if (singleRecordMode.value) {
+    if (event.key === "Escape") {
+      event.preventDefault(); singleRecordView.value?.clearSelection(); closeDataMenu(); closeHeaderMenu(); return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "c" && hasDataSelection.value) {
+      event.preventDefault(); void copyCurrentSelection(); return;
+    }
+    singleRecordView.value?.handleKeydown(event);
+    return;
+  }
   if (moveFocusedCell(event)) return;
   if (event.key === "Escape") { clearSelection(); closeDataMenu(); return; }
   if ((event.key === "Enter" || event.key === "F2") && resultEditUnlocked.value) {

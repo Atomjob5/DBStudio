@@ -5,6 +5,7 @@ import {
   type ColumnEdge, type ColumnLayoutScope, type DropSide
 } from "../columnLayout";
 import type { QueryResult } from "../types";
+import type { ResultFilter, ResultSort } from "../resultGrid";
 
 interface StoredLayout {
   sourceOrder: string[];
@@ -19,6 +20,8 @@ interface ViewState {
   anchor?: string;
   filterSignature: string;
   filteredOrder?: string[];
+  customSort?: ResultSort;
+  customFilters?: ResultFilter[];
 }
 
 export interface LayoutContext {
@@ -27,6 +30,8 @@ export interface LayoutContext {
   editorId: string;
   result: QueryResult;
   defaultWidths: number[];
+  /** Optional namespace for an adapter layout that must not collide with result columns. */
+  namespace?: string;
 }
 
 export const useColumnLayoutStore = defineStore("column-layout", () => {
@@ -35,11 +40,15 @@ export const useColumnLayoutStore = defineStore("column-layout", () => {
 
   function keys(context: LayoutContext): { layoutKey: string; viewKey: string; identities: string[] } {
     const identities = columnIdentityKeys(context.result.columns, context.result.columnDetails);
+    const prefix = context.namespace ? `${context.namespace}:` : "";
+    const scopeKey = context.scope === "editor"
+      ? `editor:${context.editorId}:${context.result.resultIndex}`
+      : `result:${context.executionId}:${context.result.resultIndex}`;
     return {
-      layoutKey: context.scope === "editor"
-        ? `editor:${context.editorId}:${context.result.resultIndex}`
-        : `result:${context.executionId}:${context.result.resultIndex}`,
-      viewKey: `${context.executionId}:${context.result.resultIndex}`,
+      layoutKey: `${prefix}${scopeKey}`,
+      viewKey: context.namespace && context.scope === "editor"
+        ? `${prefix}editor:${context.editorId}:${context.result.resultIndex}`
+        : `${prefix}${context.executionId}:${context.result.resultIndex}`,
       identities
     };
   }
@@ -97,6 +106,24 @@ export const useColumnLayoutStore = defineStore("column-layout", () => {
     views.value = { ...views.value, [viewKey]: {
       selected: [], anchor: undefined, filterSignature: signature, filteredOrder: undefined
     } };
+  }
+
+  function customSort(viewKey: string): ResultSort | undefined {
+    return ensureView(viewKey).customSort;
+  }
+
+  function customFilters(viewKey: string): ResultFilter[] {
+    return [...(ensureView(viewKey).customFilters ?? [])];
+  }
+
+  function setCustomSort(viewKey: string, sort: ResultSort | undefined): void {
+    const current = ensureView(viewKey);
+    views.value = { ...views.value, [viewKey]: { ...current, customSort: sort } };
+  }
+
+  function setCustomFilters(viewKey: string, filters: ResultFilter[]): void {
+    const current = ensureView(viewKey);
+    views.value = { ...views.value, [viewKey]: { ...current, customFilters: [...filters] } };
   }
 
   function displayedOrder(layoutKey: string, viewKey: string, visibleIdentities: string[], filtered: boolean): string[] {
@@ -170,7 +197,7 @@ export const useColumnLayoutStore = defineStore("column-layout", () => {
     layouts.value = { ...layouts.value, [layoutKey]: {
       sourceOrder: [...identities], order: [...identities], widths, visibleIdentities: undefined
     } };
-    views.value = { ...views.value, [viewKey]: { selected: [], filterSignature: "" } };
+    views.value = { ...views.value, [viewKey]: { selected: [], filterSignature: "", customSort: undefined, customFilters: [] } };
   }
 
   function orderDirty(layoutKey: string): boolean {
@@ -190,6 +217,7 @@ export const useColumnLayoutStore = defineStore("column-layout", () => {
     return false;
   }
 
-  return { layouts, views, ensure, layout, view, setVisible, visibleIdentities, setFilter, displayedOrder, choose, selectOnly, clearSelection, setSelection,
+  return { layouts, views, ensure, layout, view, setVisible, visibleIdentities, setFilter, customSort, customFilters,
+    setCustomSort, setCustomFilters, displayedOrder, choose, selectOnly, clearSelection, setSelection,
     reorder, moveToEdge, setWidth, reset, orderDirty, dirty };
 });

@@ -86,6 +86,7 @@ const props = defineProps<{
   executionText: string;
   busy: boolean;
   selectedRowCount: number;
+  selectedStatusText?: string;
   resultContentOffset: number;
   selectedColumn?: SelectedResultColumn;
   showSelectedColumnRemarks: boolean;
@@ -107,8 +108,9 @@ let rotationTimer: number | undefined;
 const statusBarStyle = computed(() => ({
   "--status-result-offset": `${Math.max(MIN_EXECUTION_ZONE_WIDTH, props.resultContentOffset)}px`
 }));
-const primaryStatusText = computed(() => props.busy || props.selectedRowCount <= 0
-  ? props.executionText : `已选中 ${props.selectedRowCount} 行`);
+const primaryStatusText = computed(() => props.busy
+  ? props.executionText
+  : props.selectedStatusText || (props.selectedRowCount > 0 ? `已选中 ${props.selectedRowCount} 行` : props.executionText));
 const visibleColumnRemarks = computed(() => props.showSelectedColumnRemarks && Boolean(props.selectedColumn?.remarks));
 const columnPath = computed(() => props.selectedColumn
   ? [props.selectedColumn.catalog, props.selectedColumn.schema, props.selectedColumn.table, props.selectedColumn.name]

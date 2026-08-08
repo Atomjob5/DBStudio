@@ -54,4 +54,34 @@ describe("ResultSingleRecordView", () => {
     grid.vm.$emit("update:editing-value", "changed");
     expect(wrapper.emitted("update:editing-value")).toEqual([["changed"]]);
   });
+
+  it("keeps cell, row and column selection local to the synthetic grid", async () => {
+    const wrapper = mount(ResultSingleRecordView, {
+      props: { columns, row: { sourceIndex: 3, cells: ["1001", "Alice"] } },
+      global: { plugins: [ElementPlus] }
+    });
+    const grid = wrapper.findComponent({ name: "ResultVirtualGrid" });
+    const pointer = { button: 0, preventDefault: () => undefined } as unknown as PointerEvent;
+    grid.vm.$emit("cell-pointerdown", pointer, 0, 1);
+    grid.vm.$emit("cell-pointerenter", 1, 1);
+    await nextTick();
+    const cellState = (wrapper.emitted("selection-change")?.at(-1)?.[0] as {
+      mode: string; cellKeys: string[]; sqlAllowed: boolean; statusText: string;
+    });
+    expect(cellState.mode).toBe("cells");
+    expect(cellState.cellKeys).toEqual(["0:1", "1:1"]);
+    expect(cellState.sqlAllowed).toBe(true);
+    expect(cellState.statusText).toBe("已选中 2 个单元格");
+
+    grid.vm.$emit("cell-pointerdown", pointer, 0, 0);
+    await nextTick();
+    const metadataState = (wrapper.emitted("selection-change")?.at(-1)?.[0] as { cellKeys: string[]; sqlAllowed: boolean });
+    expect(metadataState.cellKeys).toEqual(["0:0"]);
+    expect(metadataState.sqlAllowed).toBe(false);
+
+    await wrapper.find(".result-single-record-view").trigger("keydown", { key: "Escape" });
+    const cleared = (wrapper.emitted("selection-change")?.at(-1)?.[0] as { hasSelection: boolean });
+    expect(cleared.hasSelection).toBe(false);
+  });
+
 });

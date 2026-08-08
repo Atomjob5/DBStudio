@@ -550,7 +550,7 @@ describe("ResultPanel streaming rendering", () => {
     const singleRecord = wrapper.findComponent({ name: "ResultSingleRecordView" });
     expect(singleRecord.exists()).toBe(true);
     expect(singleRecord.props("columns").map((column: { label: string }) => column.label))
-      .toEqual(["id", "name", "note"]);
+      .toEqual(["name"]);
     expect(singleRecord.props("row")).toEqual({ sourceIndex: 0, cells: ["1", "Apple", null] });
     expect(button().attributes("aria-pressed")).toBe("true");
     expect(button().attributes("aria-label")).toBe("返回结果表格");
@@ -578,7 +578,7 @@ describe("ResultPanel streaming rendering", () => {
       ] }]
     } });
     await nextTick();
-    expect(wrapper.findComponent({ name: "ResultSingleRecordView" }).props("columns")[1])
+    expect(wrapper.findComponent({ name: "ResultSingleRecordView" }).props("columns")[0])
       .toMatchObject({ remarks: "商品名称" });
 
     await button().trigger("click");
