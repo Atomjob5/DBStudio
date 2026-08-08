@@ -10,6 +10,8 @@
           <template v-if="mode === 'cells'">
             <el-menu-item index="copy-data">复制数据</el-menu-item>
             <el-menu-item index="copy-in" :disabled="!canIn">复制为 IN 语句</el-menu-item>
+            <el-menu-item index="copy-update" :disabled="!canUpdate">复制为 UPDATE 语句</el-menu-item>
+            <el-menu-item index="copy-delete" :disabled="!canDelete">复制为 DELETE 语句</el-menu-item>
             <el-menu-item index="copy-all">复制列名和数据</el-menu-item>
           </template>
           <template v-else>

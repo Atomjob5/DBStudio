@@ -11,6 +11,7 @@ describe("ResultHeaderContextMenu", () => {
         x: 20,
         y: 30,
         canCopyData: true,
+        canIn: true,
         canMoveLeft: true,
         canMoveRight: true,
         canSum: true,

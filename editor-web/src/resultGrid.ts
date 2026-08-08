@@ -166,11 +166,13 @@ export function copyGrid(columns: Array<{ label: string; index: number }>, rows:
   return output.join("\n");
 }
 
-export function copyInPredicate(columns: Array<{ index: number; quotedLabel: string; jdbcType: number }>,
+export function copyInPredicate(columns: Array<{ index: number; label?: string; quotedLabel?: string; jdbcType: number }>,
                                 rows: ViewRow[], dialectId = "mysql"): string | undefined {
   if (!columns.length || !rows.length) return undefined;
   if (columns.length === 1) {
     const column = columns[0]; const values: string[] = []; let hasNull = false;
+    const label = unquoteIdentifier(column.label ?? column.quotedLabel ?? "");
+    if (!label) return undefined;
     for (const row of rows) {
       const value = row.cells[column.index];
       if (value === null || value === undefined) hasNull = true;
@@ -178,14 +180,16 @@ export function copyInPredicate(columns: Array<{ index: number; quotedLabel: str
     }
     const unique = [...new Set(values)];
     const parts: string[] = [];
-    if (unique.length) parts.push(`${column.quotedLabel} IN (${unique.join(", ")})`);
-    if (hasNull) parts.push(`${column.quotedLabel} IS NULL`);
+    if (unique.length) parts.push(`${label} IN (${unique.join(", ")})`);
+    if (hasNull) parts.push(`${label} IS NULL`);
     return parts.length > 1 ? `(${parts.join(" OR ")})` : parts[0];
   }
   if (rows.some((row) => columns.some((column) => row.cells[column.index] == null))) return undefined;
+  const labels = columns.map((column) => unquoteIdentifier(column.label ?? column.quotedLabel ?? ""));
+  if (labels.some((label) => !label)) return undefined;
   const tuples = rows.map((row) => `(${columns.map((column) =>
     sqlLiteral(row.cells[column.index] as string, column.jdbcType, dialectId)).join(", ")})`);
-  return `(${columns.map((column) => column.quotedLabel).join(", ")}) IN (${[...new Set(tuples)].join(", ")})`;
+  return `(${labels.join(", ")}) IN (${[...new Set(tuples)].join(", ")})`;
 }
 
 export type RowSqlMode = "insert" | "update" | "delete";
@@ -196,7 +200,7 @@ export function copyRowSql(mode: RowSqlMode, target: QueryMutationTarget | undef
   const visible = target.columns.filter((column) => visibleColumnIndices.includes(column.resultIndex));
   if (mode === "insert") {
     if (!visible.length) return undefined;
-    return rows.map((row) => `INSERT INTO ${target.qualifiedName} (${visible.map((column) => column.quotedName).join(", ")}) VALUES (${visible.map((column) => sqlLiteral(row.cells[column.resultIndex] ?? null, column.jdbcType, dialectId)).join(", ")});`).join("\n");
+    return rows.map((row) => `INSERT INTO ${target.qualifiedName} (${visible.map((column) => unquoteIdentifier(column.name)).join(", ")}) VALUES (${visible.map((column) => sqlLiteral(row.cells[column.resultIndex] ?? null, column.jdbcType, dialectId)).join(", ")});`).join("\n");
   }
   const key = chooseKey(target.uniqueKeys, rows);
   if (!key) return undefined;
@@ -207,11 +211,48 @@ export function copyRowSql(mode: RowSqlMode, target: QueryMutationTarget | undef
   return rows.map((row) => {
     const where = key.resultColumnIndices.map((index) => {
       const column = byIndex.get(index) as QueryMutationTarget["columns"][number];
-      return `${column.quotedName} = ${sqlLiteral(row.cells[index] ?? null, column.jdbcType, dialectId)}`;
+      return `${unquoteIdentifier(column.name)} = ${sqlLiteral(row.cells[index] ?? null, column.jdbcType, dialectId)}`;
     }).join(" AND ");
     if (mode === "delete") return `DELETE FROM ${target.qualifiedName} WHERE ${where};`;
-    return `UPDATE ${target.qualifiedName} SET ${setters.map((column) => `${column.quotedName} = ${sqlLiteral(row.cells[column.resultIndex] ?? null, column.jdbcType, dialectId)}`).join(", ")} WHERE ${where};`;
+    return `UPDATE ${target.qualifiedName} SET ${setters.map((column) => `${unquoteIdentifier(column.name)} = ${sqlLiteral(row.cells[column.resultIndex] ?? null, column.jdbcType, dialectId)}`).join(", ")} WHERE ${where};`;
   }).join("\n");
+}
+
+export interface SelectedRowColumns {
+  row: ViewRow;
+  columnIndices: number[];
+}
+
+/** Generate DML for cell selections, retaining the selected columns per row. */
+export function copyCellSql(mode: "update" | "delete", target: QueryMutationTarget | undefined,
+                            selectedRows: SelectedRowColumns[], dialectId = "mysql"): string | undefined {
+  if (!target || !selectedRows.length) return undefined;
+  const byIndex = new Map(target.columns.map((column) => [column.resultIndex, column]));
+  if (mode === "update" && selectedRows.some(({ columnIndices }) =>
+    !columnIndices.length || columnIndices.some((index) => !byIndex.has(index)))) return undefined;
+  const statements: string[] = [];
+  for (const { row, columnIndices } of selectedRows) {
+    const key = chooseKey(target.uniqueKeys, [row]);
+    if (!key) return undefined;
+    const where = key.resultColumnIndices.map((index) => {
+      const column = byIndex.get(index);
+      if (!column) return undefined;
+      return `${unquoteIdentifier(column.name)} = ${sqlLiteral(row.cells[index] ?? null, column.jdbcType, dialectId)}`;
+    });
+    if (where.some((part) => part === undefined)) return undefined;
+    if (mode === "delete") {
+      statements.push(`DELETE FROM ${target.qualifiedName} WHERE ${where.join(" AND ")};`);
+      continue;
+    }
+    const setters = [...new Set(columnIndices)].map((index) => {
+      const column = byIndex.get(index);
+      if (!column) return undefined;
+      return `${unquoteIdentifier(column.name)} = ${sqlLiteral(row.cells[index] ?? null, column.jdbcType, dialectId)}`;
+    });
+    if (setters.some((part) => part === undefined) || !setters.length) return undefined;
+    statements.push(`UPDATE ${target.qualifiedName} SET ${setters.join(", ")} WHERE ${where.join(" AND ")};`);
+  }
+  return statements.join("\n");
 }
 
 function chooseKey(keys: QueryMutationKey[], rows: ViewRow[]): QueryMutationKey | undefined {
@@ -236,6 +277,10 @@ export function sqlLiteral(value: string | null, jdbcType: number, dialectId = "
     return `TIMESTAMP '${value.replace("T", " ")}'`;
   }
   return `'${value.replace(/\\/g, "\\\\").replace(/'/g, "''")}'`;
+}
+
+function unquoteIdentifier(value: string): string {
+  return value.replace(/[\[\]`\"]/g, "");
 }
 
 function booleanValue(value: string): number { return /^(?:true|1|yes|y)$/i.test(value.trim()) ? 1 : 0; }

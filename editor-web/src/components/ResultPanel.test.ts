@@ -755,6 +755,39 @@ describe("ResultPanel streaming rendering", () => {
     expect(wrapper.findComponent({ name: "ElSelect" }).props("modelValue")).toEqual([]);
   });
 
+  it("persists visible fields with the editor layout scope and resets them with the layout button", async () => {
+    const settings = useSettingsStore();
+    settings.columnLayoutScope = "editor";
+    const execution = (executionId: string) => ({
+      executionId, editorId: "editor-filter-scope", busy: false, cancelled: false, failed: false,
+      durationMs: 4,
+      results: [{ resultIndex: 0, sql: "select id, name, status", type: "QUERY",
+        columns: ["id", "name", "status"], rows: [["1", "A", "ok"]], updateCount: -1,
+        truncated: false, durationMs: 3, complete: true }]
+    });
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: 0, execution: execution("execution-filter-a") },
+      global: { plugins: [ElementPlus] }
+    });
+    const select = wrapper.findComponent({ name: "ElSelect" });
+    select.vm.$emit("update:modelValue", [0, 2]);
+    await nextTick();
+    expect(select.props("modelValue")).toEqual([0, 2]);
+    expect(wrapper.find('button[aria-label="复原列布局"]').exists()).toBe(true);
+
+    await wrapper.setProps({ execution: execution("execution-filter-b") });
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ElSelect" }).props("modelValue")).toEqual([0, 2]);
+    expect((wrapper.findComponent({ name: "ElTableV2" }).props("columns") as Array<{ title: string }>)
+      .map((column) => column.title)).toEqual(["#", "id", "status"]);
+
+    await wrapper.find('button[aria-label="复原列布局"]').trigger("click");
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ElSelect" }).props("modelValue")).toEqual([]);
+    expect(wrapper.find('button[aria-label="复原列布局"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("selects multiple headers, drags them as a group, resizes and restores editor layout", async () => {
     useSettingsStore().columnLayoutScope = "editor";
     const wrapper = mount(ResultPanel, {
@@ -876,6 +909,52 @@ describe("ResultPanel streaming rendering", () => {
       .$emit("command", "copy-headers-with-remarks");
     await flushPromises();
     expect(clipboardWrite).toHaveBeenLastCalledWith('ID as "编号"|NAME');
+  });
+
+  it("框选表头并复制当前可见整列，已选列再次拖动才重排", async () => {
+    const wrapper = mount(ResultPanel, { props: { activeResultIndex: 0, execution: {
+      executionId: "execution-column-select", editorId: "editor-1", busy: false, cancelled: false,
+      failed: false, durationMs: 4,
+      results: [{ resultIndex: 0, sql: "select", type: "QUERY", columns: ["id", "name", "status"],
+        rows: [["1", "A", "ok"], ["2", "B", "blocked"]], updateCount: -1, truncated: false,
+        durationMs: 3, complete: true }]
+    } }, global: { plugins: [ElementPlus] } });
+    const table = wrapper.findComponent({ name: "ElTableV2" });
+    const columns = () => table.props("columns") as Column[];
+    const headers = () => columns().slice(1).map((column) =>
+      column.headerCellRenderer?.({} as never) as VNode);
+    const rows = () => table.props("data") as Array<{ sourceIndex: number; cells: string[] }>;
+
+    headers()[0].props?.onPointerdown({ button: 0, preventDefault: vi.fn(), ctrlKey: false, metaKey: false,
+      shiftKey: false });
+    headers()[1].props?.onPointerenter();
+    window.dispatchEvent(new Event("pointerup"));
+    await nextTick();
+    expect(String(headers()[0].props?.class)).toContain("selected");
+    expect(String(headers()[1].props?.class)).toContain("selected");
+    expect(String(columns()[1].cellRenderer?.({ rowData: rows()[0], rowIndex: 0 } as never)?.props?.class))
+      .toContain("column-selected");
+    expect(String(columns()[3].cellRenderer?.({ rowData: rows()[0], rowIndex: 0 } as never)?.props?.class))
+      .not.toContain("column-selected");
+
+    await wrapper.get(".table-host").trigger("keydown", { metaKey: true, key: "c" });
+    await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith("1,A\n2,B");
+
+    const dataTransfer = { effectAllowed: "", dropEffect: "", setData: vi.fn(), setDragImage: vi.fn() };
+    headers()[1].props?.onClick({ ctrlKey: false, metaKey: false, shiftKey: false });
+    headers()[1].props?.onPointerdown({ button: 0, preventDefault: vi.fn(), ctrlKey: false, metaKey: false,
+      shiftKey: false });
+    headers()[1].props?.onDragstart({ dataTransfer, preventDefault: vi.fn() });
+    const target = headers()[2];
+    const dragEvent = { dataTransfer, clientX: 90, preventDefault: vi.fn(),
+      currentTarget: { getBoundingClientRect: () => ({ left: 0, width: 100 }) } };
+    target.props?.onDragover(dragEvent);
+    target.props?.onDrop(dragEvent);
+    await nextTick();
+    expect((table.props("columns") as Column[]).slice(1).map((column) => column.title))
+      .toEqual(["id", "status", "name"]);
+    wrapper.unmount();
   });
 
   it("copies only a double-clicked title when enabled and keeps resize double click independent", async () => {
@@ -1129,6 +1208,19 @@ describe("ResultPanel streaming rendering", () => {
     expect(clipboardWrite).toHaveBeenLastCalledWith("1,Apple\n2,Banana");
     expect(wrapper.emitted("selected-row-count")?.at(-1)).toEqual([2]);
 
+    last.props?.onContextmenu({ preventDefault: vi.fn(), stopPropagation: vi.fn(), clientX: 20, clientY: 30 });
+    await nextTick();
+    const cellMenu = wrapper.findComponent({ name: "ResultDataContextMenu" });
+    expect(cellMenu.props("mode")).toBe("cells");
+    expect(cellMenu.props("canUpdate")).toBe(true);
+    expect(cellMenu.props("canDelete")).toBe(true);
+    cellMenu.vm.$emit("command", "copy-update"); await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith(
+      "UPDATE `db`.`sample` SET id = 1, name = 'Apple' WHERE id = 1;\nUPDATE `db`.`sample` SET id = 2, name = 'Banana' WHERE id = 2;");
+    cellMenu.vm.$emit("command", "copy-delete"); await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith(
+      "DELETE FROM `db`.`sample` WHERE id = 1;\nDELETE FROM `db`.`sample` WHERE id = 2;");
+
     const rowNumber = columns[0];
     expect(rowNumber.width).toBe(34);
     expect(rowNumber.minWidth).toBe(34);
@@ -1150,7 +1242,7 @@ describe("ResultPanel streaming rendering", () => {
     expect(menu.props("canUpdate")).toBe(true);
     menu.vm.$emit("command", "copy-update"); await flushPromises();
     expect(clipboardWrite).toHaveBeenLastCalledWith(
-      "UPDATE `db`.`sample` SET `name` = 'Apple' WHERE `id` = 1;\nUPDATE `db`.`sample` SET `name` = 'Banana' WHERE `id` = 2;\nUPDATE `db`.`sample` SET `name` = 'Cherry' WHERE `id` = 3;");
+      "UPDATE `db`.`sample` SET name = 'Apple' WHERE id = 1;\nUPDATE `db`.`sample` SET name = 'Banana' WHERE id = 2;\nUPDATE `db`.`sample` SET name = 'Cherry' WHERE id = 3;");
   });
 
   it("supports sparse cell comparison, exact sums, value viewing and complete row highlighting", async () => {

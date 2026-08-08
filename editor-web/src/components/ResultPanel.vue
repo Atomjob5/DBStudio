@@ -119,6 +119,7 @@
                            :selection-mode="selectionMode" :cell-range="cellRange"
                            :selected-cell-keys="selectedCellKeys"
                            :focused-cell-key="focusedCellKey"
+                           :selected-column-sources="selectedColumnSources"
                            :selected-row-sources="selectedRowSources"
                            :editing-cell="editingCell" :editing-value="editingCell?.value"
                            :cell-states="resultCellStates"
@@ -159,7 +160,8 @@
       <template #image><el-icon><DataAnalysis /></el-icon></template>
     </el-empty>
     <ResultHeaderContextMenu :visible="headerMenu.visible" :x="headerMenu.x" :y="headerMenu.y"
-                             :can-copy-data="canCopyHeaderData" :can-move-left="canMoveSelectionLeft"
+                             :can-copy-data="canCopyHeaderData" :can-in="canCopyHeaderIn"
+                             :can-move-left="canMoveSelectionLeft"
                              :can-move-right="canMoveSelectionRight" :can-sum="canSumHeaderData"
                              @close="closeHeaderMenu"
                              @command="headerMenuCommand" />
@@ -220,9 +222,9 @@ import { useQueryStore } from "../stores/query";
 import { useResultEditStore, type ResultMutationValue } from "../stores/resultEdits";
 import { resultColumnRemarksText, resultCopyText, type ResultCopyMode } from "../resultCopy";
 import { writeClipboardText } from "../clipboard";
-import { cellSelectionKey, copyGrid, copyInPredicate, copyRowSql, normalizeRange, selectRows,
+import { cellSelectionKey, copyCellSql, copyGrid, copyInPredicate, copyRowSql, normalizeRange, selectRows,
   sumDecimalValues, visibleRows, type CellPoint, type CellRange, type DecimalSumResult,
-  type ResultFilter, type ResultSort, type SelectedCell, type ViewRow } from "../resultGrid";
+  type ResultFilter, type ResultSort, type SelectedCell, type SelectedRowColumns, type ViewRow } from "../resultGrid";
 import type { ResultGridScrollPosition, ResultVirtualColumn } from "../resultVirtualGrid";
 import ResultHeaderContextMenu, { type HeaderMenuCommand } from "./ResultHeaderContextMenu.vue";
 import ResultHeaderTools from "./ResultHeaderTools.vue";
@@ -307,12 +309,18 @@ const focusedCell = ref<{ sourceRow: number; sourceColumn: number }>();
 const selectedColumnIndex = ref<number>();
 const selectingCells = ref(false);
 const selectingRows = ref(false);
+const selectingColumns = ref(false);
+const columnSelectionAnchor = ref<string>();
+const columnSelectionBase = ref<string[]>([]);
+const columnSelectionMode = ref<"replace" | "add" | "remove">("replace");
+const columnPointerState = ref<{ identity: string; wasSelected: boolean }>();
+const suppressNextColumnClick = ref(false);
 const rowDragAnchor = ref<number>();
 const rowDragBase = ref<number[]>([]);
 const rowDragMode = ref<"replace" | "add" | "remove">("replace");
 const selectedRowSources = ref<number[]>([]);
 const rowAnchor = ref<number>();
-const selectionMode = ref<"cells" | "rows">("cells");
+const selectionMode = ref<"cells" | "rows" | "columns">("cells");
 const singleRecordMode = ref(false);
 const valueDialog = ref<{ visible: boolean; value: string | null }>({ visible: false, value: null });
 const compareDialog = ref(false);
@@ -433,7 +441,15 @@ const activeSort = computed(() => sorts.value[resultKey.value]);
 const activeFilters = computed(() => filters.value[resultKey.value] ?? []);
 const selectedColumnIndices = computed<number[]>({
   get: () => selectedColumns.value[resultKey.value] ?? [],
-  set: (value) => { selectedColumns.value = { ...selectedColumns.value, [resultKey.value]: value }; }
+  set: (value) => {
+    selectedColumns.value = { ...selectedColumns.value, [resultKey.value]: value };
+    const active = activeLayout.value;
+    if (!active) return;
+    const identities = value.map((index) => currentIdentities.value[index])
+      .filter((identity): identity is string => !!identity);
+    const selectedIdentities = identities.length && identities.length < active.identities.length ? identities : undefined;
+    columnLayouts.setVisible(active.layoutKey, active.identities, selectedIdentities);
+  }
 });
 const columnOptions = computed(() => resultColumnOptions(activeResult.value?.columns ?? [], activeResult.value?.columnDetails));
 const filteredColumnOptions = computed(() => columnOptions.value.filter((column) => matchesColumnQuery(column, columnQuery.value)));
@@ -452,6 +468,13 @@ const visibleColumnOptions = computed(() => {
   const byIdentity = new Map(selectedVisibleColumnOptions.value.map((column) => [currentIdentities.value[column.index], column]));
   return columnLayouts.displayedOrder(active.layoutKey, active.viewKey, visibleIdentities.value,
     selectedColumnIndices.value.length > 0).map((identity) => byIdentity.get(identity)).filter((column): column is ColumnOption => !!column);
+});
+const selectedColumnSources = computed(() => {
+  if (selectionMode.value !== "columns" || !activeLayout.value) return [];
+  const selected = new Set(columnLayouts.view(activeLayout.value.viewKey).selected);
+  return visibleColumnOptions.value
+    .filter((column) => selected.has(currentIdentities.value[column.index]))
+    .map((column) => column.index);
 });
 const summary = computed(() => {
   const result = activeResult.value;
@@ -582,6 +605,7 @@ function columnDefinition(column: ColumnOption, visiblePosition: number): Column
     const editState = resultCellStates.value[`${rowData.sourceIndex}:${column.index}`];
     return h("span", {
       class: ["result-cell", cellData === null ? "null-value" : cellData.startsWith?.("0x") ? "binary-value" : "",
+        selectionMode.value === "columns" && isColumnSelected(column.index) ? "column-selected" : "",
         selectionMode.value === "cells" && selected ? "selected" : "",
         selectionMode.value === "cells" && focused ? "focused" : "",
         editState === "pending" ? "result-cell-pending" : "",
@@ -622,14 +646,57 @@ function rowSelectorColumn(): Column {
   };
 }
 
+function isColumnSelected(sourceIndex: number): boolean {
+  const active = activeLayout.value;
+  return selectionMode.value === "columns" && !!active
+    && columnLayouts.view(active.viewKey).selected.includes(currentIdentities.value[sourceIndex]);
+}
+
+function clearCellAndRowSelection(): void {
+  window.removeEventListener("pointerup", finishCellSelection);
+  window.removeEventListener("pointerup", finishRowSelection);
+  selectingCells.value = false;
+  selectingRows.value = false;
+  cellRange.value = undefined;
+  cellAnchor.value = undefined;
+  selectedCells.value = [];
+  focusedCell.value = undefined;
+  selectedRowSources.value = [];
+  rowAnchor.value = undefined;
+  selectedColumnIndex.value = undefined;
+  emit("selected-column", undefined);
+}
+
+function activateColumnSelection(): void {
+  clearCellAndRowSelection();
+  selectionMode.value = "columns";
+}
+
+function clearColumnHeaderSelection(): void {
+  const active = activeLayout.value;
+  if (active) columnLayouts.clearSelection(active.viewKey);
+  selectingColumns.value = false;
+  columnSelectionAnchor.value = undefined;
+  columnSelectionBase.value = [];
+  columnPointerState.value = undefined;
+  suppressNextColumnClick.value = false;
+  window.removeEventListener("pointerup", finishColumnSelection);
+}
+
 function activateLayout(): void {
   const result = activeResult.value;
   const currentExecution = execution.value;
   if (!result || !currentExecution) { activeLayout.value = undefined; return; }
   activeLayout.value = columnLayouts.ensure({
     scope: settings.columnLayoutScope, executionId: currentExecution.executionId, editorId: currentExecution.editorId,
-    result, defaultWidths: result.columns.map((label) => defaultColumnWidth(label))
+    result, defaultWidths: columnOptions.value.map((column) => defaultColumnWidth(column.label))
   });
+  const storedVisible = columnLayouts.visibleIdentities(activeLayout.value.layoutKey);
+  const selected = storedVisible
+    ? columnOptions.value.filter((column) => storedVisible.includes(activeLayout.value?.identities[column.index] ?? ""))
+      .map((column) => column.index)
+    : [];
+  selectedColumns.value = { ...selectedColumns.value, [resultKey.value]: selected };
   syncVisibleFilter();
 }
 
@@ -652,8 +719,10 @@ function renderHeader(column: ColumnOption, identity: string) {
     role: "button", tabindex: 0, draggable: !resizing.value,
     "aria-selected": String(selected), "aria-label": `列 ${column.label}`,
     title: settings.copyHeaderOnDoubleClick
-      ? "单击选择；双击复制列名；右键打开菜单；拖动改变位置"
-      : "单击选择；右键打开菜单；拖动改变位置",
+      ? "单击选择；拖动框选；已选列再次拖动改变位置；双击复制列名；右键打开菜单"
+      : "单击选择；拖动框选；已选列再次拖动改变位置；右键打开菜单",
+    onPointerdown: (event: PointerEvent) => startColumnSelection(event, identity),
+    onPointerenter: () => extendColumnSelection(identity),
     onClick: (event: MouseEvent) => selectColumnHeader(event, identity),
     onKeydown: (event: KeyboardEvent) => keyboardSelectHeader(event, identity),
     onContextmenu: (event: MouseEvent) => openHeaderMenu(event, identity),
@@ -696,8 +765,70 @@ function renderHeader(column: ColumnOption, identity: string) {
 function selectColumnHeader(event: MouseEvent, identity: string): void {
   const active = activeLayout.value;
   if (!active || resizing.value) return;
+  if (suppressNextColumnClick.value) {
+    suppressNextColumnClick.value = false;
+    return;
+  }
+  activateColumnSelection();
   const order = visibleColumnOptions.value.map((column) => currentIdentities.value[column.index]);
   columnLayouts.choose(active.viewKey, order, identity, event.ctrlKey || event.metaKey, event.shiftKey);
+}
+
+function startColumnSelection(event: PointerEvent, identity: string): void {
+  if (event.button !== 0 || resizing.value) return;
+  const active = activeLayout.value;
+  if (!active) return;
+  tableHost.value?.focus({ preventScroll: true });
+  const view = columnLayouts.view(active.viewKey);
+  const wasSelected = view.selected.includes(identity);
+  columnPointerState.value = { identity, wasSelected };
+  if (wasSelected) return;
+  event.preventDefault();
+  const order = visibleColumnOptions.value.map((column) => currentIdentities.value[column.index]);
+  const previousSelected = [...view.selected];
+  const previousAnchor = view.anchor;
+  clearCellAndRowSelection();
+  selectionMode.value = "columns";
+  columnSelectionBase.value = previousSelected;
+  columnSelectionMode.value = event.ctrlKey || event.metaKey
+    ? previousSelected.includes(identity) ? "remove" : "add" : "replace";
+  columnSelectionAnchor.value = event.shiftKey && previousAnchor && order.includes(previousAnchor)
+    ? previousAnchor : identity;
+  applyColumnSelection(identity);
+  suppressNextColumnClick.value = true;
+  selectingColumns.value = true;
+  window.removeEventListener("pointerup", finishColumnSelection);
+  window.addEventListener("pointerup", finishColumnSelection, { once: true });
+}
+
+function applyColumnSelection(identity: string): void {
+  const active = activeLayout.value;
+  const anchor = columnSelectionAnchor.value;
+  if (!active || !anchor) return;
+  const order = visibleColumnOptions.value.map((column) => currentIdentities.value[column.index]);
+  const start = order.indexOf(anchor); const end = order.indexOf(identity);
+  if (start < 0 || end < 0) return;
+  const range = order.slice(Math.min(start, end), Math.max(start, end) + 1);
+  const base = new Set(columnSelectionBase.value);
+  if (columnSelectionMode.value === "add") range.forEach((item) => base.add(item));
+  else if (columnSelectionMode.value === "remove") range.forEach((item) => base.delete(item));
+  else {
+    base.clear();
+    range.forEach((item) => base.add(item));
+  }
+  columnLayouts.setSelection(active.viewKey, order.filter((item) => base.has(item)), anchor);
+}
+
+function extendColumnSelection(identity: string): void {
+  if (!selectingColumns.value) return;
+  applyColumnSelection(identity);
+}
+
+function finishColumnSelection(): void {
+  selectingColumns.value = false;
+  columnPointerState.value = undefined;
+  window.removeEventListener("pointerup", finishColumnSelection);
+  window.setTimeout(() => { suppressNextColumnClick.value = false; }, 0);
 }
 
 function keyboardSelectHeader(event: KeyboardEvent, identity: string): void {
@@ -715,6 +846,8 @@ function openHeaderMenu(event: MouseEvent, identity: string, keyboardTarget?: HT
   const active = activeLayout.value;
   if (!active) return;
   event.preventDefault();
+  clearCellAndRowSelection();
+  selectionMode.value = "columns";
   const view = columnLayouts.view(active.viewKey);
   if (!view.selected.includes(identity)) columnLayouts.selectOnly(active.viewKey, identity);
   const bounds = keyboardTarget?.getBoundingClientRect();
@@ -737,7 +870,8 @@ function selectedOrderedColumns(): ColumnOption[] {
   return visibleColumnOptions.value.filter((column) => selected.has(currentIdentities.value[column.index]));
 }
 
-const canCopyHeaderData = computed(() => (activeResult.value?.rows.length ?? 0) > 0);
+const canCopyHeaderData = computed(() => selectedOrderedColumns().length > 0 && displayRows.value.length > 0);
+const canCopyHeaderIn = computed(() => selectionMode.value === "columns" && !!headerInPredicate());
 const canMoveSelectionLeft = computed(() => canMoveSelection("left"));
 const canMoveSelectionRight = computed(() => canMoveSelection("right"));
 
@@ -762,6 +896,11 @@ function headerMenuCommand(command: HeaderMenuCommand): void {
     moveSelectedColumns(command === "move-left" ? "left" : "right");
     return;
   }
+  if (command === "copy-in") {
+    const text = headerInPredicate();
+    if (text) void copyText(text, "已复制 IN 语句");
+    return;
+  }
   const mode: ResultCopyMode = command === "copy-headers" ? "headers"
     : command === "copy-data" ? "data" : "headers-and-data";
   void copySelectedColumns(mode);
@@ -778,7 +917,7 @@ async function copySelectedColumns(mode: ResultCopyMode): Promise<void> {
   const columns = selectedOrderedColumns();
   if (!columns.length) return;
   const text = resultCopyText(columns.map((column) => ({ label: column.label, index: column.index })),
-    activeResult.value?.rows ?? [], mode, settings.copySeparator);
+    displayRows.value.map((row) => row.cells), mode, settings.copySeparator);
   await copyText(text, mode === "headers" ? "已复制列名" : mode === "data" ? "已复制列数据" : "已复制列名和数据");
 }
 
@@ -801,7 +940,15 @@ function copyDoubleClickedHeader(event: MouseEvent, column: ColumnOption): void 
 function startColumnDrag(event: DragEvent, identity: string): void {
   const active = activeLayout.value;
   if (!active || resizing.value || !event.dataTransfer) { event.preventDefault(); return; }
-  if (!columnLayouts.view(active.viewKey).selected.includes(identity)) columnLayouts.selectOnly(active.viewKey, identity);
+  if (columnPointerState.value?.identity === identity && !columnPointerState.value.wasSelected) {
+    event.preventDefault();
+    endColumnDrag();
+    return;
+  }
+  if (!columnPointerState.value && !columnLayouts.view(active.viewKey).selected.includes(identity)) {
+    activateColumnSelection();
+    columnLayouts.selectOnly(active.viewKey, identity);
+  }
   const count = columnLayouts.view(active.viewKey).selected.length;
   event.dataTransfer.effectAllowed = "move";
   event.dataTransfer.setData("text/plain", identity);
@@ -833,6 +980,7 @@ function dropColumn(event: DragEvent, identity: string): void {
 
 function endColumnDrag(): void {
   dropTarget.value = undefined;
+  columnPointerState.value = undefined;
   dragPreview?.remove();
   dragPreview = undefined;
 }
@@ -893,16 +1041,17 @@ function measureText(text: string): number {
   return measureContext.measureText(text).width;
 }
 
-const showRestoreLayout = computed(() => settings.columnLayoutScope === "editor"
-  && !!activeLayout.value && columnLayouts.orderDirty(activeLayout.value.layoutKey));
+const showRestoreLayout = computed(() => !!activeLayout.value
+  && columnLayouts.dirty(activeLayout.value.layoutKey, activeLayout.value.identities, defaultWidths.value));
 const restoreLayoutTitle = computed(() =>
-  shortcutTooltip("复原列顺序和宽度", "result.restoreLayout", settings.shortcuts));
+  shortcutTooltip("复原列顺序、宽度和字段", "result.restoreLayout", settings.shortcuts));
 
 function restoreLayout(): void {
   if (!showRestoreLayout.value) return;
   const active = activeLayout.value;
   if (!active) return;
   columnLayouts.reset(active.layoutKey, active.viewKey, active.identities, defaultWidths.value);
+  selectedColumns.value = { ...selectedColumns.value, [resultKey.value]: [] };
   ElMessage.success("已复原列布局");
 }
 
@@ -947,18 +1096,9 @@ function reconcileViewState(): void {
 }
 
 function clearSelection(): void {
-  window.removeEventListener("pointerup", finishCellSelection);
-  window.removeEventListener("pointerup", finishRowSelection);
-  selectingCells.value = false;
-  selectingRows.value = false;
-  cellRange.value = undefined;
-  cellAnchor.value = undefined;
-  selectedCells.value = [];
-  focusedCell.value = undefined;
-  selectedColumnIndex.value = undefined;
-  emit("selected-column", undefined);
-  selectedRowSources.value = [];
-  rowAnchor.value = undefined;
+  clearCellAndRowSelection();
+  clearColumnHeaderSelection();
+  selectionMode.value = "cells";
   singleRecordMode.value = false;
   singleRecordReturnPosition = undefined;
 }
@@ -974,6 +1114,7 @@ function startCellSelection(event: PointerEvent, row: number, column: number): v
   if (event.button !== 0) return;
   event.preventDefault();
   tableHost.value?.focus();
+  clearColumnHeaderSelection();
   selectionMode.value = "cells";
   selectedRowSources.value = [];
   rowAnchor.value = undefined;
@@ -1032,6 +1173,7 @@ function selectResultRow(event: PointerEvent, sourceIndex: number): void {
   if (event.button !== 0) return;
   event.preventDefault(); event.stopPropagation();
   tableHost.value?.focus();
+  clearColumnHeaderSelection();
   selectionMode.value = "rows";
   selectedColumnIndex.value = undefined;
   emit("selected-column", undefined);
@@ -1078,6 +1220,7 @@ function openCellMenu(event: MouseEvent, row: number, column: number, rowData: V
     openDataMenu(event, "rows");
     return;
   }
+  clearColumnHeaderSelection();
   selectionMode.value = "cells";
   selectedRowSources.value = [];
   selectStatusColumn(column);
@@ -1094,6 +1237,7 @@ function openCellMenu(event: MouseEvent, row: number, column: number, rowData: V
 
 function openRowMenu(event: MouseEvent, sourceIndex: number): void {
   event.preventDefault(); event.stopPropagation();
+  clearColumnHeaderSelection();
   selectionMode.value = "rows";
   selectedColumnIndex.value = undefined;
   emit("selected-column", undefined);
@@ -1217,12 +1361,13 @@ const selectedRecordRow = computed<ViewRow | undefined>(() => {
 const canViewSingleRecord = computed(() => selectedRecordRow.value !== undefined);
 const selectedRowCount = computed(() => selectionMode.value === "cells"
   ? new Set(selectedCellsInView.value.map((cell) => cell.sourceRow)).size
-  : selectedRowsInDisplayOrder.value.length);
+  : selectionMode.value === "rows" ? selectedRowsInDisplayOrder.value.length : 0);
 const hasDataSelection = computed(() => selectionMode.value === "cells"
   ? selectedCellsInView.value.length > 0
-  : selectedRowsInDisplayOrder.value.length > 0);
+  : selectionMode.value === "rows" ? selectedRowsInDisplayOrder.value.length > 0
+    : selectedOrderedColumns().length > 0 && displayRows.value.length > 0);
 const copySelectionTitle = computed(() => shortcutTooltip(
-  selectionMode.value === "rows" ? "复制选中行" : "复制选中单元格",
+  selectionMode.value === "rows" ? "复制选中行" : selectionMode.value === "columns" ? "复制选中列" : "复制选中单元格",
   "result.copySelection",
   settings.shortcuts,
 ));
@@ -1252,6 +1397,10 @@ function selectedCopyText(includeHeaders = false): string {
   if (selectionMode.value === "rows") {
     return copyGrid(visibleColumnOptions.value, selectedRowsInDisplayOrder.value, includeHeaders, settings.copySeparator);
   }
+  if (selectionMode.value === "columns") {
+    const columns = selectedOrderedColumns();
+    return copyGrid(columns, displayRows.value, includeHeaders, settings.copySeparator);
+  }
   const bounds = selectedCellBounds.value;
   const selected = new Set(selectedCellsInView.value.map((cell) =>
     cellSelectionKey(cell.sourceRow, cell.sourceColumn)));
@@ -1266,12 +1415,20 @@ function selectedCopyText(includeHeaders = false): string {
 async function copyCurrentSelection(includeHeaders = false): Promise<void> {
   if (!hasDataSelection.value) return;
   await copyText(selectedCopyText(includeHeaders), includeHeaders ? "已复制列名和数据"
-    : selectionMode.value === "rows" ? "已复制选中行" : "已复制选中单元格");
+    : selectionMode.value === "rows" ? "已复制选中行"
+      : selectionMode.value === "columns" ? "已复制选中列" : "已复制选中单元格");
 }
 
 function inPredicate(): string | undefined {
   return copyInPredicate(selectedCellColumns.value.map((column) => ({ index: column.index,
-    quotedLabel: column.quotedLabel || column.label, jdbcType: column.jdbcType ?? 12 })), selectedCellRows.value,
+    label: column.label, jdbcType: column.jdbcType ?? 12 })), selectedCellRows.value,
+    activeResult.value?.dialectId);
+}
+
+function headerInPredicate(): string | undefined {
+  const columns = selectedOrderedColumns();
+  return copyInPredicate(columns.map((column) => ({ index: column.index,
+    label: column.label, jdbcType: column.jdbcType ?? 12 })), displayRows.value,
     activeResult.value?.dialectId);
 }
 
@@ -1281,10 +1438,30 @@ function rowSql(mode: "insert" | "update" | "delete"): string | undefined {
     activeResult.value?.dialectId);
 }
 
+const selectedCellSqlRows = computed<SelectedRowColumns[]>(() => {
+  if (selectionMode.value !== "cells" || !selectedCellsInView.value.length) return [];
+  const columnsByRow = new Map<number, Set<number>>();
+  for (const cell of selectedCellsInView.value) {
+    const columns = columnsByRow.get(cell.sourceRow) ?? new Set<number>();
+    columns.add(cell.sourceColumn);
+    columnsByRow.set(cell.sourceRow, columns);
+  }
+  return displayRows.value.filter((row) => columnsByRow.has(row.sourceIndex)).map((row) => ({
+    row, columnIndices: [...(columnsByRow.get(row.sourceIndex) ?? [])]
+  }));
+});
+
+function cellSql(mode: "update" | "delete"): string | undefined {
+  return copyCellSql(mode, activeResult.value?.mutationTarget, selectedCellSqlRows.value,
+    activeResult.value?.dialectId);
+}
+
 const canCopyIn = computed(() => selectionMode.value === "cells" && !!inPredicate());
 const canCopyInsert = computed(() => selectionMode.value === "rows" && !!rowSql("insert"));
-const canCopyUpdate = computed(() => selectionMode.value === "rows" && !!rowSql("update"));
-const canCopyDelete = computed(() => selectionMode.value === "rows" && !!rowSql("delete"));
+const canCopyUpdate = computed(() => selectionMode.value === "rows" ? !!rowSql("update")
+  : selectionMode.value === "cells" && !!cellSql("update"));
+const canCopyDelete = computed(() => selectionMode.value === "rows" ? !!rowSql("delete")
+  : selectionMode.value === "cells" && !!cellSql("delete"));
 const compareValues = computed(() => ({
   left: selectedCellsInView.value[0]?.value ?? null,
   right: selectedCellsInView.value[1]?.value ?? null
@@ -1327,7 +1504,8 @@ function dataMenuCommand(command: DataMenuCommand): void {
     const text = inPredicate(); if (text) void copyText(text, "已复制 IN 语句"); return;
   }
   const mode = command.replace("copy-", "") as "insert" | "update" | "delete";
-  const text = rowSql(mode);
+  const text = mode === "insert" ? rowSql(mode)
+    : selectionMode.value === "cells" ? cellSql(mode) : rowSql(mode);
   if (text) void copyText(text, `已复制 ${mode.toUpperCase()} 语句`);
 }
 
@@ -1822,7 +2000,7 @@ defineExpose({
 });
 
 onBeforeUnmount(() => {
-  finishColumnResize(); finishCellSelection(); finishRowSelection(); endColumnDrag(); closeHeaderMenu(); closeDataMenu();
+  finishColumnResize(); finishCellSelection(); finishRowSelection(); finishColumnSelection(); endColumnDrag(); closeHeaderMenu(); closeDataMenu();
   window.removeEventListener("pointerup", finishCellSelection);
   window.removeEventListener("pointerup", finishRowSelection);
 });
@@ -2034,6 +2212,7 @@ onBeforeUnmount(() => {
   user-select: none;
 }
 :deep(.result-cell.selected) { outline: 1.5px solid var(--db-accent); background: var(--db-accent-soft); }
+:deep(.result-cell.column-selected) { background: var(--db-accent-soft); }
 :deep(.result-cell.focused) {
   outline: 2px solid var(--db-accent);
   outline-offset: -1px;

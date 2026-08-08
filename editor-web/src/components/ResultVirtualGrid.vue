@@ -94,10 +94,11 @@ const props = defineProps<{
   columns: ResultVirtualColumn[];
   headerHeight: number;
   bufferScreens: number;
-  selectionMode: "cells" | "rows";
+  selectionMode: "cells" | "rows" | "columns";
   cellRange?: CellRange;
   selectedCellKeys?: string[];
   focusedCellKey?: string;
+  selectedColumnSources?: number[];
   selectedRowSources: number[];
   hasFooter?: boolean;
   editingCell?: { rowIndex: number; columnIndex: number };
@@ -132,6 +133,7 @@ const columnWidths = computed(() => props.columns.map((column) => column.width))
 const metrics = computed(() => columnMetrics(columnWidths.value));
 const selectedRowSet = computed(() => new Set(props.selectedRowSources));
 const selectedCellSet = computed(() => new Set(props.selectedCellKeys ?? []));
+const selectedColumnSet = computed(() => new Set(props.selectedColumnSources ?? []));
 const normalizedSelection = computed(() => props.cellRange ? normalizeRange(props.cellRange) : undefined);
 const visibleRows = computed(() => rowSlots.value
   .filter((entry) => entry.index < props.rows.length)
@@ -390,11 +392,12 @@ function cellClasses(rowIndex: number, column: ResultVirtualColumn): Array<strin
     && rowIndex >= range.start.row && rowIndex <= range.end.row
     && column.visibleIndex >= range.start.column && column.visibleIndex <= range.end.column;
   const selected = props.selectionMode === "cells" && (selectedByIdentity || selectedByRange);
+  const selectedColumn = props.selectionMode === "columns" && selectedColumnSet.value.has(column.sourceIndex);
   const focused = props.selectionMode === "cells" && !!row
     && props.focusedCellKey === `${row.sourceIndex}:${column.sourceIndex}`;
   const state = row ? props.cellStates?.[`${row.sourceIndex}:${column.sourceIndex}`] : undefined;
   return [value === null ? "null-value" : "", value?.startsWith("0x") ? "binary-value" : "",
-    selected && "selected", focused && "focused", state === "pending" && "result-cell-pending",
+    selectedColumn && "column-selected", selected && "selected", focused && "focused", state === "pending" && "result-cell-pending",
     state === "posted" && "result-cell-posted", state === "error" && "result-cell-error"];
 }
 

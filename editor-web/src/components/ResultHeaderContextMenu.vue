@@ -10,6 +10,7 @@
           <el-menu-item index="copy-headers-with-remarks">复制列名和注释</el-menu-item>
           <el-menu-item index="copy-data" :disabled="!canCopyData">复制数据</el-menu-item>
           <el-menu-item index="copy-all">复制列名和数据</el-menu-item>
+          <el-menu-item index="copy-in" :disabled="!canIn">复制为 IN 语句</el-menu-item>
         </el-sub-menu>
         <el-menu-item index="sum" :disabled="!canSum">求和</el-menu-item>
         <el-menu-item index="move-left" :disabled="!canMoveLeft">移动到最左</el-menu-item>
@@ -23,10 +24,10 @@
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 
 export type HeaderMenuCommand = "copy-headers" | "copy-headers-with-remarks" | "copy-data"
-  | "copy-all" | "sum" | "move-left" | "move-right";
+  | "copy-all" | "copy-in" | "sum" | "move-left" | "move-right";
 
 const props = defineProps<{ visible: boolean; x: number; y: number; canCopyData: boolean;
-  canMoveLeft: boolean; canMoveRight: boolean; canSum: boolean }>();
+  canIn?: boolean; canMoveLeft: boolean; canMoveRight: boolean; canSum: boolean }>();
 const emit = defineEmits<{ close: []; command: [command: HeaderMenuCommand] }>();
 const menuHost = ref<HTMLElement>();
 
@@ -38,7 +39,7 @@ watch(() => props.visible, async (visible) => {
 });
 
 function selectCommand(index: string): void {
-  if (["copy-headers", "copy-headers-with-remarks", "copy-data", "copy-all",
+  if (["copy-headers", "copy-headers-with-remarks", "copy-data", "copy-all", "copy-in",
     "sum", "move-left", "move-right"].includes(index)) {
     emit("command", index as HeaderMenuCommand);
     emit("close");

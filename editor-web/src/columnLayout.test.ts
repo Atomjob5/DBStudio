@@ -97,4 +97,17 @@ describe("column layout store", () => {
     expect(store.displayedOrder(active.layoutKey, active.viewKey, visible, true)).toEqual([active.identities[2], active.identities[0]]);
     expect(store.layout(active.layoutKey)?.order).toEqual([active.identities[0], active.identities[2], active.identities[1]]);
   });
+
+  it("persists visible fields with the editor layout and includes them in reset dirty state", () => {
+    const store = useColumnLayoutStore();
+    const first = store.ensure(context("editor", "execution-visible-1"));
+    store.setVisible(first.layoutKey, first.identities, [first.identities[0], first.identities[2]]);
+    const reused = store.ensure(context("editor", "execution-visible-2"));
+    expect(store.visibleIdentities(reused.layoutKey)).toEqual([first.identities[0], first.identities[2]]);
+    expect(store.dirty(reused.layoutKey, reused.identities, [120, 120, 120])).toBe(true);
+
+    store.reset(reused.layoutKey, reused.viewKey, reused.identities, [120, 120, 120]);
+    expect(store.visibleIdentities(reused.layoutKey)).toBeUndefined();
+    expect(store.dirty(reused.layoutKey, reused.identities, [120, 120, 120])).toBe(false);
+  });
 });

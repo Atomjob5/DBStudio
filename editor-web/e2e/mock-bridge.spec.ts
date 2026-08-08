@@ -1133,7 +1133,7 @@ test("sorts, filters, selects cells and copies safe row SQL", async ({ page, con
   await page.getByRole("menuitem", { name: "复制", exact: true }).hover();
   await page.getByRole("menuitem", { name: "复制为 IN 语句", exact: true }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()))
-    .toContain("(`id`, `name`) IN ((1, 'Apple Studio 1 ✨'), (2, 'Apple Studio 2 ✨'))");
+    .toContain("(id, name) IN ((1, 'Apple Studio 1 ✨'), (2, 'Apple Studio 2 ✨'))");
 
   const rowNumbers = page.locator(".result-row-number:not(.result-row-number-header)");
   await expect.poll(async () => {
@@ -1162,7 +1162,7 @@ test("sorts, filters, selects cells and copies safe row SQL", async ({ page, con
   await page.getByRole("menuitem", { name: "复制", exact: true }).hover();
   await page.getByRole("menuitem", { name: "复制为 UPDATE 语句", exact: true }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()))
-    .toContain("UPDATE `demo`.`sample` SET `name` = 'Apple Studio 1 ✨' WHERE `id` = 1;");
+    .toContain("UPDATE `demo`.`sample` SET name = 'Apple Studio 1 ✨' WHERE id = 1;");
   await page.locator(".table-host").focus();
   await page.keyboard.press("Escape");
   await expect(page.locator(".execution-status")).toHaveText("执行完成 · 38 ms");

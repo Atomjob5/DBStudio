@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { QueryColumn, QueryMutationTarget } from "./types";
-import { comparableValue, copyGrid, copyInPredicate, copyRowSql, formatJsonValue, selectRows,
+import { comparableValue, copyCellSql, copyGrid, copyInPredicate, copyRowSql, formatJsonValue, selectRows,
   sqlLiteral, sumDecimalValues, visibleRows } from "./resultGrid";
 
 const columns: QueryColumn[] = [
@@ -41,10 +41,10 @@ describe("result grid transformations", () => {
 
   it("generates IN predicates with correct NULL semantics", () => {
     const rows = [{ sourceIndex: 0, cells: ["1", "A", null] }, { sourceIndex: 1, cells: [null, "B", null] }];
-    expect(copyInPredicate([{ index: 0, quotedLabel: "`id`", jdbcType: -5 }], rows))
-      .toBe("(`id` IN (1) OR `id` IS NULL)");
+    expect(copyInPredicate([{ index: 0, label: "id", jdbcType: -5 }], rows))
+      .toBe("(id IN (1) OR id IS NULL)");
     expect(copyInPredicate([
-      { index: 0, quotedLabel: "`id`", jdbcType: -5 }, { index: 1, quotedLabel: "`name`", jdbcType: 12 }
+      { index: 0, label: "id", jdbcType: -5 }, { index: 1, label: "name", jdbcType: 12 }
     ], rows)).toBeUndefined();
   });
 
@@ -55,11 +55,22 @@ describe("result grid transformations", () => {
     ], uniqueKeys: [{ name: "PRIMARY", primary: true, resultColumnIndices: [0] }] };
     const rows = [{ sourceIndex: 0, cells: ["7", "O'Reilly"] }];
     expect(copyRowSql("update", target, [1], rows))
-      .toBe("UPDATE `db`.`orders` SET `name` = 'O''Reilly' WHERE `id` = 7;");
+      .toBe("UPDATE `db`.`orders` SET name = 'O''Reilly' WHERE id = 7;");
     expect(copyRowSql("delete", target, [1], rows))
-      .toBe("DELETE FROM `db`.`orders` WHERE `id` = 7;");
+      .toBe("DELETE FROM `db`.`orders` WHERE id = 7;");
     expect(copyRowSql("insert", target, [1], rows))
-      .toBe("INSERT INTO `db`.`orders` (`name`) VALUES ('O''Reilly');");
+      .toBe("INSERT INTO `db`.`orders` (name) VALUES ('O''Reilly');");
+
+    expect(copyCellSql("update", target, [{ row: { sourceIndex: 0, cells: ["7", "O'Reilly"] },
+      columnIndices: [0, 1] }]))
+      .toBe("UPDATE `db`.`orders` SET id = 7, name = 'O''Reilly' WHERE id = 7;");
+    expect(copyCellSql("delete", target, [{ row: { sourceIndex: 0, cells: ["7", "O'Reilly"] },
+      columnIndices: [1] }]))
+      .toBe("DELETE FROM `db`.`orders` WHERE id = 7;");
+    expect(copyCellSql("update", target, [
+      { row: { sourceIndex: 0, cells: ["7", "O'Reilly"] }, columnIndices: [1] },
+      { row: { sourceIndex: 1, cells: ["8", "Second"] }, columnIndices: [0] }
+    ])).toBe("UPDATE `db`.`orders` SET name = 'O''Reilly' WHERE id = 7;\nUPDATE `db`.`orders` SET id = 8 WHERE id = 8;");
   });
 
   it("uses Oracle-compatible binary, date and boolean literals", () => {

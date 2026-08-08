@@ -48,6 +48,13 @@ describe("ResultVirtualGrid", () => {
     expect(wrapper.findAll(".result-virtual-grid__header-cell").length).toBeLessThanOrEqual(13);
     expect(wrapper.findAll(".result-virtual-grid__cell").length).toBeLessThan(370);
 
+    wrapper.vm.setScrollPosition({ left: 0, top: 0 });
+    await nextTick();
+    await wrapper.setProps({ selectionMode: "columns", selectedColumnSources: [0] });
+    await nextTick();
+    expect(wrapper.get('[data-grid-row="0"][data-grid-column="0"]')
+      .classes()).toContain("column-selected");
+
     const cell = wrapper.get(".result-virtual-grid__cell");
     await cell.trigger("pointerdown", { button: 0 });
     await cell.trigger("dblclick");
