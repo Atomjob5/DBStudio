@@ -318,7 +318,7 @@ describe("application stores", () => {
     const settings = useSettingsStore();
     settings.initialize({ "result.maxRows": "2500", "result.streamBatchRows": "75", "result.columnLayoutScope": "editor",
       "result.copyHeaderOnDoubleClick": "false", "result.copySeparator": "tab",
-      "result.showColumnRemarksInHeader": "true", "result.scrollOptimizationEnabled": "true",
+      "result.showColumnRemarksInHeader": "true",
       "result.scrollOptimizationBufferScreens": "1.5",
       "statusBar.showSelectedColumnRemarks": "false",
       "connection.autoCommit": "true",
@@ -337,7 +337,6 @@ describe("application stores", () => {
     expect(settings.copyHeaderOnDoubleClick).toBe(false);
     expect(settings.copySeparator).toBe("tab");
     expect(settings.showColumnRemarksInHeader).toBe(true);
-    expect(settings.scrollOptimizationEnabled).toBe(true);
     expect(settings.scrollOptimizationBufferScreens).toBe(1.5);
     expect(settings.showSelectedColumnRemarks).toBe(false);
     expect(settings.autoCommit).toBe(true);
@@ -362,7 +361,6 @@ describe("application stores", () => {
     expect(settings.copyHeaderOnDoubleClick).toBe(true);
     expect(settings.copySeparator).toBe("comma");
     expect(settings.showColumnRemarksInHeader).toBe(false);
-    expect(settings.scrollOptimizationEnabled).toBe(false);
     expect(settings.scrollOptimizationBufferScreens).toBe(1);
     expect(settings.showSelectedColumnRemarks).toBe(true);
     expect(settings.autoCommit).toBe(false);

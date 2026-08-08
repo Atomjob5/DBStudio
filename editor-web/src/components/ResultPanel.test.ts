@@ -75,7 +75,7 @@ describe("ResultPanel streaming rendering", () => {
     await nextTick();
     expect(loading.get("img").attributes("src"))
       .toBe("/assets/branding/dbstudio-sql-loading-v4.webp");
-    expect(wrapper.findComponent({ name: "ElTableV2" }).exists()).toBe(false);
+    expect(wrapper.findComponent({ name: "ResultVirtualGrid" }).exists()).toBe(false);
     expect(wrapper.text()).not.toContain("执行查询后在这里查看结果");
 
     await wrapper.setProps({
@@ -97,7 +97,7 @@ describe("ResultPanel streaming rendering", () => {
     expect(wrapper.find(".result-loading").exists()).toBe(false);
     expect(wrapper.text()).toContain("结果 1");
     expect(wrapper.text()).toContain("正在执行");
-    expect(wrapper.findComponent({ name: "ElTableV2" }).exists()).toBe(true);
+    expect(wrapper.findComponent({ name: "ResultVirtualGrid" }).exists()).toBe(true);
 
     await wrapper.setProps({
       executing: false,
@@ -110,7 +110,7 @@ describe("ResultPanel streaming rendering", () => {
     expect(wrapper.text()).toContain("执行查询后在这里查看结果");
   });
 
-  it("keeps the legacy table by default and switches to the optimized grid without losing data", async () => {
+  it("uses the unified virtual grid by default without losing data", async () => {
     const settings = useSettingsStore();
     const execution = {
       executionId: "execution-scroll", editorId: "editor-1", busy: false, cancelled: false,
@@ -121,12 +121,8 @@ describe("ResultPanel streaming rendering", () => {
     const wrapper = mount(ResultPanel, {
       props: { activeResultIndex: 0, execution }, global: { plugins: [ElementPlus] }
     });
-    expect(wrapper.findComponent({ name: "ElTableV2" }).exists()).toBe(true);
-    expect(wrapper.findComponent({ name: "ResultVirtualGrid" }).exists()).toBe(false);
+    expect(wrapper.findComponent({ name: "ResultVirtualGrid" }).exists()).toBe(true);
 
-    settings.scrollOptimizationEnabled = true;
-    await nextTick();
-    expect(wrapper.findComponent({ name: "ElTableV2" }).exists()).toBe(false);
     const grid = wrapper.findComponent({ name: "ResultVirtualGrid" });
     expect(grid.exists()).toBe(true);
     expect(grid.props("rows")).toHaveLength(2);
@@ -136,14 +132,11 @@ describe("ResultPanel streaming rendering", () => {
     await nextTick();
     expect(grid.props("bufferScreens")).toBe(1.5);
 
-    settings.scrollOptimizationEnabled = false;
-    await nextTick();
-    expect(wrapper.findComponent({ name: "ElTableV2" }).exists()).toBe(true);
     expect(wrapper.text()).toContain("2 行 · 7 ms");
     wrapper.unmount();
   });
 
-  it("edits a source cell in the legacy grid and records a pending change", async () => {
+  it("edits a source cell in the unified virtual grid and records a pending change", async () => {
     const execution = {
       executionId: "execution-edit", editorId: "editor-1", busy: false, cancelled: false,
       failed: false, durationMs: 8,
@@ -188,14 +181,14 @@ describe("ResultPanel streaming rendering", () => {
     expect(wrapper.find('[aria-label="结果变更数量"]').exists()).toBe(false);
     expect(wrapper.text()).not.toContain("空字符串按 NULL");
 
-    const table = wrapper.findComponent({ name: "ElTableV2" });
+    const table = wrapper.findComponent({ name: "ResultVirtualGrid" });
     const columns = table.props("columns") as Column[];
-    const row = (table.props("data") as Array<{ sourceIndex: number; cells: string[] }>)[0];
-    const valueCell = columns[2].cellRenderer?.({ rowData: row, rowIndex: 0 } as never) as VNode;
+    const row = (table.props("rows") as Array<{ sourceIndex: number; cells: string[] }>)[0];
+    const valueCell = columns[1].cellRenderer?.({ rowData: row, rowIndex: 0 } as never) as VNode;
 
     valueCell.props?.onDblclick();
     await nextTick();
-    const editor = (wrapper.findComponent({ name: "ElTableV2" }).props("columns") as Column[])[2]
+    const editor = (wrapper.findComponent({ name: "ResultVirtualGrid" }).props("columns") as Column[])[1]
       .cellRenderer?.({ rowData: row, rowIndex: 0 } as never) as VNode;
     expect(editor.type).toBe("input");
     editor.props?.onInput({ target: { value: "after" } });
@@ -205,7 +198,7 @@ describe("ResultPanel streaming rendering", () => {
     expect(edits.session("editor-1", "execution-edit", 0)?.cells[0]).toMatchObject({
       rowIndex: 0, columnIndex: 1, originalValue: "before", draftValue: "after"
     });
-    const pending = (wrapper.findComponent({ name: "ElTableV2" }).props("columns") as Column[])[2]
+    const pending = (wrapper.findComponent({ name: "ResultVirtualGrid" }).props("columns") as Column[])[1]
       .cellRenderer?.({ rowData: row, rowIndex: 0 } as never) as VNode;
     expect(pending.props?.class).toContain("result-cell-pending");
     expect(wrapper.get('[aria-label="应用更改"]').classes()).toContain("el-button--success");
@@ -246,11 +239,11 @@ describe("ResultPanel streaming rendering", () => {
     edits.setUnlocked("editor-keyboard", "execution-edit-keyboard", 0, true);
     await nextTick();
 
-    const table = () => wrapper.findComponent({ name: "ElTableV2" });
+    const table = () => wrapper.findComponent({ name: "ResultVirtualGrid" });
     const cell = (rowIndex: number, columnIndex: number) => {
       const columns = table().props("columns") as Column[];
-      const rows = table().props("data") as Array<{ sourceIndex: number; cells: string[] }>;
-      return columns[columnIndex + 1]
+      const rows = table().props("rows") as Array<{ sourceIndex: number; cells: string[] }>;
+      return columns[columnIndex]
         .cellRenderer?.({ rowData: rows[rowIndex], rowIndex } as never) as VNode;
     };
     const host = wrapper.get(".table-host");
@@ -286,7 +279,6 @@ describe("ResultPanel streaming rendering", () => {
   });
 
   it("keeps the Enter, arrow and Enter editing flow in the optimized grid", async () => {
-    useSettingsStore().scrollOptimizationEnabled = true;
     const execution = {
       executionId: "execution-edit-virtual-keyboard", editorId: "editor-virtual-keyboard",
       busy: false, cancelled: false, failed: false, durationMs: 8,
@@ -400,16 +392,14 @@ describe("ResultPanel streaming rendering", () => {
     const wrapper = mount(Harness, { global: { plugins: [ElementPlus] } });
     await nextTick();
     const panel = wrapper.findComponent(ResultPanel);
-    const table = panel.findComponent({ name: "ElTableV2" });
+    const table = panel.findComponent({ name: "ResultVirtualGrid" });
     const columns = table.props("columns") as Column[];
-    const rows = table.props("data") as Array<{ sourceIndex: number; cells: string[] }>;
-    const first = columns[0].cellRenderer?.({ rowData: rows[0] } as never) as VNode;
-    const second = columns[0].cellRenderer?.({ rowData: rows[1] } as never) as VNode;
-    first.props?.onPointerdown({ button: 0, preventDefault: vi.fn(), stopPropagation: vi.fn(),
-      ctrlKey: false, metaKey: false, shiftKey: false });
-    second.props?.onPointerenter();
+    const rows = table.props("rows") as Array<{ sourceIndex: number; cells: string[] }>;
+    table.vm.$emit("row-pointerdown", { button: 0, preventDefault: vi.fn(), stopPropagation: vi.fn(),
+      ctrlKey: false, metaKey: false, shiftKey: false }, rows[0].sourceIndex);
+    table.vm.$emit("row-pointerenter", rows[1].sourceIndex);
     window.dispatchEvent(new Event("pointerup"));
-    second.props?.onContextmenu({ preventDefault: vi.fn(), stopPropagation: vi.fn(), clientX: 20, clientY: 30 });
+    table.vm.$emit("row-contextmenu", { preventDefault: vi.fn(), stopPropagation: vi.fn(), clientX: 20, clientY: 30 }, rows[1].sourceIndex);
     await nextTick();
     const menu = panel.findComponent({ name: "ResultDataContextMenu" });
     expect(menu.props()).toMatchObject({ mode: "rows", showClone: true, canClone: true, cloneBusy: false });
@@ -438,7 +428,7 @@ describe("ResultPanel streaming rendering", () => {
     ]);
     expect(inserts[1].values[2]).toEqual(
       { columnIndex: 2, value: { kind: "largeValueToken", value: "cloned-token-1" } });
-    expect((panel.findComponent({ name: "ElTableV2" }).props("data") as Array<unknown>)).toHaveLength(4);
+    expect((panel.findComponent({ name: "ResultVirtualGrid" }).props("rows") as Array<unknown>)).toHaveLength(4);
     cloneSpy.mockRestore();
     wrapper.unmount();
   });
@@ -491,10 +481,10 @@ describe("ResultPanel streaming rendering", () => {
       global: { plugins: [ElementPlus] }
     });
     const select = wrapper.findComponent({ name: "ElSelect" });
-    const table = wrapper.findComponent({ name: "ElTableV2" });
+    const table = wrapper.findComponent({ name: "ResultVirtualGrid" });
     expect(select.props("fitInputWidth")).toBe(true);
-    expect((table.props("columns") as Array<{ title: string }>).map((column) => column.title))
-      .toEqual(["#", "id", "customer_name", "amount"]);
+    expect((table.props("columns") as Array<{ label: string }>).map((column) => column.label))
+      .toEqual(["id", "customer_name", "amount"]);
 
     (select.props("filterMethod") as (query: string) => void)("订单 金额");
     await nextTick();
@@ -507,11 +497,11 @@ describe("ResultPanel streaming rendering", () => {
 
     select.vm.$emit("update:modelValue", [2, 0]);
     await nextTick();
-    expect((table.props("columns") as Array<{ title: string }>).map((column) => column.title)).toEqual(["#", "id", "amount"]);
+    expect((table.props("columns") as Array<{ label: string }>).map((column) => column.label)).toEqual(["id", "amount"]);
     select.vm.$emit("update:modelValue", []);
     await nextTick();
-    expect((table.props("columns") as Array<{ title: string }>).map((column) => column.title))
-      .toEqual(["#", "id", "customer_name", "amount"]);
+    expect((table.props("columns") as Array<{ label: string }>).map((column) => column.label))
+      .toEqual(["id", "customer_name", "amount"]);
   });
 
   it("views one selected record vertically with every source column and disables for cross-row selections", async () => {
@@ -534,11 +524,11 @@ describe("ResultPanel streaming rendering", () => {
       props: { activeResultIndex: 0, execution }, global: { plugins: [ElementPlus] }
     });
     const button = () => wrapper.get("button.single-record-button");
-    const table = () => wrapper.findComponent({ name: "ElTableV2" });
+    const table = () => wrapper.findComponent({ name: "ResultVirtualGrid" });
     const columns = () => table().props("columns") as Column[];
-    const rows = () => table().props("data") as Array<{ sourceIndex: number; cells: Array<string | null> }>;
+    const rows = () => table().props("rows") as Array<{ sourceIndex: number; cells: Array<string | null> }>;
     const cell = (row: number, column: number) =>
-      columns()[column + 1].cellRenderer?.({ rowData: rows()[row], rowIndex: row } as never) as VNode;
+      columns()[column].cellRenderer?.({ rowData: rows()[row], rowIndex: row } as never) as VNode;
 
     expect(button().attributes("disabled")).toBeDefined();
     expect(button().attributes("aria-label")).toBe("单个记录查看");
@@ -556,7 +546,7 @@ describe("ResultPanel streaming rendering", () => {
 
     await button().trigger("click");
     await nextTick();
-    expect(table().exists()).toBe(false);
+    expect(wrapper.findComponent({ name: "ResultSingleRecordView" }).exists()).toBe(true);
     const singleRecord = wrapper.findComponent({ name: "ResultSingleRecordView" });
     expect(singleRecord.exists()).toBe(true);
     expect(singleRecord.props("columns").map((column: { label: string }) => column.label))
@@ -564,6 +554,20 @@ describe("ResultPanel streaming rendering", () => {
     expect(singleRecord.props("row")).toEqual({ sourceIndex: 0, cells: ["1", "Apple", null] });
     expect(button().attributes("aria-pressed")).toBe("true");
     expect(button().attributes("aria-label")).toBe("返回结果表格");
+    const previousRecord = () => wrapper.get('button[aria-label="上一条记录"]');
+    const nextRecord = () => wrapper.get('button[aria-label="下一条记录"]');
+    expect(previousRecord().attributes("disabled")).toBeDefined();
+    expect(nextRecord().attributes("disabled")).toBeUndefined();
+    await nextRecord().trigger("click");
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ResultSingleRecordView" }).props("row"))
+      .toEqual({ sourceIndex: 1, cells: ["2", "Banana", "yellow"] });
+    expect(previousRecord().attributes("disabled")).toBeUndefined();
+    expect(nextRecord().attributes("disabled")).toBeDefined();
+    await previousRecord().trigger("click");
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ResultSingleRecordView" }).props("row"))
+      .toEqual({ sourceIndex: 0, cells: ["1", "Apple", null] });
 
     await wrapper.setProps({ execution: {
       ...execution,
@@ -579,7 +583,7 @@ describe("ResultPanel streaming rendering", () => {
 
     await button().trigger("click");
     await nextTick();
-    expect(table().exists()).toBe(true);
+    expect(wrapper.findComponent({ name: "ResultSingleRecordView" }).exists()).toBe(false);
     expect(button().attributes("disabled")).toBeUndefined();
 
     cell(1, 0).props?.onPointerdown({
@@ -588,12 +592,10 @@ describe("ResultPanel streaming rendering", () => {
     await nextTick();
     expect(button().attributes("disabled")).toBeDefined();
 
-    const rowSelector = columns()[0];
-    const secondRow = rowSelector.cellRenderer?.({ rowData: rows()[1] } as never) as VNode;
-    secondRow.props?.onPointerdown({
+    table().vm.$emit("row-pointerdown", {
       button: 0, preventDefault: vi.fn(), stopPropagation: vi.fn(),
       ctrlKey: false, metaKey: false, shiftKey: false
-    });
+    }, rows()[1].sourceIndex);
     window.dispatchEvent(new Event("pointerup"));
     await nextTick();
     expect(button().attributes("disabled")).toBeUndefined();
@@ -611,7 +613,6 @@ describe("ResultPanel streaming rendering", () => {
   });
 
   it("enables single-record view for an optimized-grid cell selection", async () => {
-    useSettingsStore().scrollOptimizationEnabled = true;
     const wrapper = mount(ResultPanel, {
       props: { activeResultIndex: 0, execution: {
         executionId: "execution-single-record-virtual", editorId: "editor-1", busy: false,
@@ -632,7 +633,7 @@ describe("ResultPanel streaming rendering", () => {
 
     await button().trigger("click");
     await nextTick();
-    expect(wrapper.findComponent({ name: "ResultVirtualGrid" }).exists()).toBe(false);
+    expect(wrapper.findComponent({ name: "ResultVirtualGrid" }).exists()).toBe(true);
     expect(wrapper.findComponent({ name: "ResultSingleRecordView" }).props("row"))
       .toEqual({ sourceIndex: 0, cells: ["1"] });
   });
@@ -647,14 +648,14 @@ describe("ResultPanel streaming rendering", () => {
         columnDetails: [{ label: "id", name: "id", remarks, catalog: "sales", schema: "", table: "orders", typeName: "BIGINT" }],
         rows: [["1"]], updateCount: -1, truncated: false, durationMs: 3, complete: true }]
     } }, global: { plugins: [ElementPlus] } });
-    const table = () => wrapper.findComponent({ name: "ElTableV2" });
+    const table = () => wrapper.findComponent({ name: "ResultVirtualGrid" });
     expect(table().props("headerHeight")).toBe(32);
-    const width = (table().props("columns") as Column[])[1].width;
+    const width = (table().props("columns") as Column[])[0].width;
 
     settings.showColumnRemarksInHeader = true;
     await nextTick();
     expect(table().props("headerHeight")).toBe(48);
-    const column = (table().props("columns") as Column[])[1];
+    const column = (table().props("columns") as Column[])[0];
     expect(column.width).toBe(width);
     const header = column.headerCellRenderer?.({} as never) as VNode;
     const labels = (header.children as VNode[])[0];
@@ -662,7 +663,7 @@ describe("ResultPanel streaming rendering", () => {
     expect(remark.children).toBe(remarks);
     expect(remark.props?.title).toBe(remarks);
 
-    const row = (table().props("data") as Array<{ sourceIndex: number; cells: string[] }>)[0];
+    const row = (table().props("rows") as Array<{ sourceIndex: number; cells: string[] }>)[0];
     const cell = column.cellRenderer?.({ rowData: row, rowIndex: 0 } as never) as VNode;
     cell.props?.onPointerdown({ button: 0, preventDefault: vi.fn() });
     expect(wrapper.emitted("selected-column")?.at(-1)?.[0]).toEqual({
@@ -687,9 +688,9 @@ describe("ResultPanel streaming rendering", () => {
     const wrapper = mount(ResultPanel, {
       props: { activeResultIndex: 0, execution }, global: { plugins: [ElementPlus] }
     });
-    let table = wrapper.findComponent({ name: "ElTableV2" });
-    let column = (table.props("columns") as Column[])[1];
-    const row = (table.props("data") as Array<{ sourceIndex: number; cells: string[] }>)[0];
+    let table = wrapper.findComponent({ name: "ResultVirtualGrid" });
+    let column = (table.props("columns") as Column[])[0];
+    const row = (table.props("rows") as Array<{ sourceIndex: number; cells: string[] }>)[0];
     const cell = column.cellRenderer?.({ rowData: row, rowIndex: 0 } as never) as VNode;
     cell.props?.onPointerdown({ button: 0, preventDefault: vi.fn() });
     expect(wrapper.emitted("selected-column")?.at(-1)?.[0]).toMatchObject({ remarks: "" });
@@ -700,8 +701,8 @@ describe("ResultPanel streaming rendering", () => {
     } });
     await nextTick();
 
-    table = wrapper.findComponent({ name: "ElTableV2" });
-    column = (table.props("columns") as Column[])[1];
+    table = wrapper.findComponent({ name: "ResultVirtualGrid" });
+    column = (table.props("columns") as Column[])[0];
     const header = column.headerCellRenderer?.({} as never) as VNode;
     const labels = (header.children as VNode[])[0];
     expect((labels.children as VNode[])[1].children).toBe("客户编号");
@@ -734,8 +735,8 @@ describe("ResultPanel streaming rendering", () => {
     let select = wrapper.findComponent({ name: "ElSelect" });
     select.vm.$emit("update:modelValue", [1]);
     await nextTick();
-    let table = wrapper.findComponent({ name: "ElTableV2" });
-    expect((table.props("columns") as Array<{ title: string }>).map((column) => column.title)).toEqual(["#", "id"]);
+    let table = wrapper.findComponent({ name: "ResultVirtualGrid" });
+    expect((table.props("columns") as Array<{ label: string }>).map((column) => column.label)).toEqual(["id"]);
 
     await wrapper.setProps({ activeResultIndex: 1 });
     select = wrapper.findComponent({ name: "ElSelect" });
@@ -746,9 +747,9 @@ describe("ResultPanel streaming rendering", () => {
 
     execution.results[0] = result(0, [["1", "11"], ["3", "33"]]);
     await wrapper.setProps({ execution: { ...execution, results: [...execution.results] } });
-    table = wrapper.findComponent({ name: "ElTableV2" });
-    expect(table.props("data")).toHaveLength(2);
-    expect((table.props("columns") as Array<{ title: string }>).map((column) => column.title)).toEqual(["#", "id"]);
+    table = wrapper.findComponent({ name: "ResultVirtualGrid" });
+    expect(table.props("rows")).toHaveLength(2);
+    expect((table.props("columns") as Array<{ label: string }>).map((column) => column.label)).toEqual(["id"]);
 
     await wrapper.setProps({ execution: { ...execution, executionId: "execution-b" } });
     await nextTick();
@@ -778,8 +779,8 @@ describe("ResultPanel streaming rendering", () => {
     await wrapper.setProps({ execution: execution("execution-filter-b") });
     await nextTick();
     expect(wrapper.findComponent({ name: "ElSelect" }).props("modelValue")).toEqual([0, 2]);
-    expect((wrapper.findComponent({ name: "ElTableV2" }).props("columns") as Array<{ title: string }>)
-      .map((column) => column.title)).toEqual(["#", "id", "status"]);
+    expect((wrapper.findComponent({ name: "ResultVirtualGrid" }).props("columns") as Array<{ label: string }>)
+      .map((column) => column.label)).toEqual(["id", "status"]);
 
     await wrapper.find('button[aria-label="复原列布局"]').trigger("click");
     await nextTick();
@@ -798,9 +799,9 @@ describe("ResultPanel streaming rendering", () => {
           updateCount: -1, truncated: false, durationMs: 7, complete: true }]
       } }, global: { plugins: [ElementPlus] }
     });
-    const table = () => wrapper.findComponent({ name: "ElTableV2" });
+    const table = () => wrapper.findComponent({ name: "ResultVirtualGrid" });
     const columns = () => table().props("columns") as Column[];
-    const dataColumns = () => columns().slice(1);
+    const dataColumns = () => columns();
     const header = (index: number) => dataColumns()[index].headerCellRenderer?.({} as never) as VNode;
 
     header(0).props?.onClick({ ctrlKey: false, metaKey: false, shiftKey: false });
@@ -817,7 +818,7 @@ describe("ResultPanel streaming rendering", () => {
     target.props?.onDragover(dragEvent);
     target.props?.onDrop(dragEvent);
     await nextTick();
-    expect(dataColumns().map((column) => column.title)).toEqual(["name", "id", "amount"]);
+    expect(dataColumns().map((column) => column.label)).toEqual(["name", "id", "amount"]);
     expect(wrapper.find('button[aria-label="复原列布局"]').exists()).toBe(true);
 
     const resizedHeader = header(0);
@@ -833,7 +834,7 @@ describe("ResultPanel streaming rendering", () => {
 
     await wrapper.find('button[aria-label="复原列布局"]').trigger("click");
     await nextTick();
-    expect(dataColumns().map((column) => column.title)).toEqual(["id", "name", "amount"]);
+    expect(dataColumns().map((column) => column.label)).toEqual(["id", "name", "amount"]);
     expect(dataColumns()[1].width).toBe(120);
   });
 
@@ -852,8 +853,8 @@ describe("ResultPanel streaming rendering", () => {
           rows: [["1", "Apple, Inc.", "12.30"]], updateCount: -1, truncated: false, durationMs: 7, complete: true }]
       } }, global: { plugins: [ElementPlus] }
     });
-    const columns = () => wrapper.findComponent({ name: "ElTableV2" }).props("columns") as Column[];
-    const dataColumns = () => columns().slice(1);
+    const columns = () => wrapper.findComponent({ name: "ResultVirtualGrid" }).props("columns") as Column[];
+    const dataColumns = () => columns();
     const header = (index: number) => dataColumns()[index].headerCellRenderer?.({} as never) as VNode;
 
     header(0).props?.onClick({ ctrlKey: false, metaKey: false, shiftKey: false });
@@ -873,7 +874,7 @@ describe("ResultPanel streaming rendering", () => {
 
     menu.vm.$emit("command", "move-right");
     await nextTick();
-    expect(dataColumns().map((column) => column.title)).toEqual(["name", "id", "amount"]);
+    expect(dataColumns().map((column) => column.label)).toEqual(["name", "id", "amount"]);
 
     header(0).props?.onContextmenu({ preventDefault: vi.fn(), clientX: 20, clientY: 30 });
     menu.vm.$emit("command", "copy-headers");
@@ -883,7 +884,6 @@ describe("ResultPanel streaming rendering", () => {
 
   it("copies selected virtual-grid headers with remarks and the configured separator", async () => {
     const settings = useSettingsStore();
-    settings.scrollOptimizationEnabled = true;
     settings.copySeparator = "pipe";
     const wrapper = mount(ResultPanel, {
       props: { activeResultIndex: 0, execution: {
@@ -919,11 +919,11 @@ describe("ResultPanel streaming rendering", () => {
         rows: [["1", "A", "ok"], ["2", "B", "blocked"]], updateCount: -1, truncated: false,
         durationMs: 3, complete: true }]
     } }, global: { plugins: [ElementPlus] } });
-    const table = wrapper.findComponent({ name: "ElTableV2" });
+    const table = wrapper.findComponent({ name: "ResultVirtualGrid" });
     const columns = () => table.props("columns") as Column[];
-    const headers = () => columns().slice(1).map((column) =>
+    const headers = () => columns().map((column) =>
       column.headerCellRenderer?.({} as never) as VNode);
-    const rows = () => table.props("data") as Array<{ sourceIndex: number; cells: string[] }>;
+    const rows = () => table.props("rows") as Array<{ sourceIndex: number; cells: string[] }>;
 
     headers()[0].props?.onPointerdown({ button: 0, preventDefault: vi.fn(), ctrlKey: false, metaKey: false,
       shiftKey: false });
@@ -932,9 +932,9 @@ describe("ResultPanel streaming rendering", () => {
     await nextTick();
     expect(String(headers()[0].props?.class)).toContain("selected");
     expect(String(headers()[1].props?.class)).toContain("selected");
-    expect(String(columns()[1].cellRenderer?.({ rowData: rows()[0], rowIndex: 0 } as never)?.props?.class))
+    expect(String(columns()[0].cellRenderer?.({ rowData: rows()[0], rowIndex: 0 } as never)?.props?.class))
       .toContain("column-selected");
-    expect(String(columns()[3].cellRenderer?.({ rowData: rows()[0], rowIndex: 0 } as never)?.props?.class))
+    expect(String(columns()[2].cellRenderer?.({ rowData: rows()[0], rowIndex: 0 } as never)?.props?.class))
       .not.toContain("column-selected");
 
     await wrapper.get(".table-host").trigger("keydown", { metaKey: true, key: "c" });
@@ -952,7 +952,7 @@ describe("ResultPanel streaming rendering", () => {
     target.props?.onDragover(dragEvent);
     target.props?.onDrop(dragEvent);
     await nextTick();
-    expect((table.props("columns") as Column[]).slice(1).map((column) => column.title))
+    expect((table.props("columns") as Column[]).map((column) => column.label))
       .toEqual(["id", "status", "name"]);
     wrapper.unmount();
   });
@@ -966,7 +966,7 @@ describe("ResultPanel streaming rendering", () => {
           rows: [["1"]], updateCount: -1, truncated: false, durationMs: 7, complete: true }]
       } }, global: { plugins: [ElementPlus] }
     });
-    const column = (wrapper.findComponent({ name: "ElTableV2" }).props("columns") as Column[])[1];
+    const column = (wrapper.findComponent({ name: "ResultVirtualGrid" }).props("columns") as Column[])[0];
     const header = column.headerCellRenderer?.({} as never) as VNode;
     const children = header.children as VNode[];
     children[0].props?.onDblclick({ preventDefault: vi.fn(), stopPropagation: vi.fn() });
@@ -979,7 +979,7 @@ describe("ResultPanel streaming rendering", () => {
     expect(clipboardWrite).toHaveBeenCalledTimes(1);
 
     settings.copyHeaderOnDoubleClick = false;
-    const updatedHeader = (wrapper.findComponent({ name: "ElTableV2" }).props("columns") as Column[])[1]
+    const updatedHeader = (wrapper.findComponent({ name: "ResultVirtualGrid" }).props("columns") as Column[])[0]
       .headerCellRenderer?.({} as never) as VNode;
     (updatedHeader.children as VNode[])[0].props?.onDblclick({ preventDefault: vi.fn(), stopPropagation: vi.fn() });
     await flushPromises();
@@ -996,19 +996,19 @@ describe("ResultPanel streaming rendering", () => {
           { label: "name", name: "name", remarks: "", catalog: "db", schema: "", table: "sample", typeName: "VARCHAR", jdbcType: 12, quotedLabel: "`name`" }
         ], rows: [["10", "ten"], ["2", "two"], [null, "none"]], updateCount: -1, truncated: false, durationMs: 3, complete: true }]
     } }, global: { plugins: [ElementPlus] } });
-    const table = () => wrapper.findComponent({ name: "ElTableV2" });
-    const header = (table().props("columns") as Column[])[1].headerCellRenderer?.({} as never) as VNode;
+    const table = () => wrapper.findComponent({ name: "ResultVirtualGrid" });
+    const header = (table().props("columns") as Column[])[0].headerCellRenderer?.({} as never) as VNode;
     const tools = (header.children as VNode[]).find((child) => child?.props?.columnIndex === 0) as VNode;
     tools.props?.onSort(); await nextTick();
-    expect((table().props("data") as Array<{ cells: Array<string | null> }>).map((row) => row.cells[0]))
+    expect((table().props("rows") as Array<{ cells: Array<string | null> }>).map((row) => row.cells[0]))
       .toEqual(["2", "10", null]);
     tools.props?.onApply({ columnIndex: 0, operator: "gt", value: "2" }); await nextTick();
-    expect((table().props("data") as Array<{ cells: Array<string | null> }>).map((row) => row.cells[0])).toEqual(["10"]);
+    expect((table().props("rows") as Array<{ cells: Array<string | null> }>).map((row) => row.cells[0])).toEqual(["10"]);
 
     settings.headerSortingEnabled = false; await nextTick();
-    expect((table().props("data") as Array<{ cells: Array<string | null> }>).map((row) => row.cells[0])).toEqual(["10"]);
+    expect((table().props("rows") as Array<{ cells: Array<string | null> }>).map((row) => row.cells[0])).toEqual(["10"]);
     settings.headerFilteringEnabled = false; await nextTick();
-    expect((table().props("data") as Array<{ cells: Array<string | null> }>).map((row) => row.cells[0]))
+    expect((table().props("rows") as Array<{ cells: Array<string | null> }>).map((row) => row.cells[0]))
       .toEqual(["10", "2", null]);
   });
 
@@ -1021,11 +1021,11 @@ describe("ResultPanel streaming rendering", () => {
         rows: [["1", "A", "10"], ["2", "B", "20"], ["3", "C", "30"]],
         updateCount: -1, truncated: false, durationMs: 3, complete: true }]
     } }, global: { plugins: [ElementPlus] } });
-    const table = () => wrapper.findComponent({ name: "ElTableV2" });
+    const table = () => wrapper.findComponent({ name: "ResultVirtualGrid" });
     const columns = () => table().props("columns") as Column[];
-    const rows = () => table().props("data") as Array<{ sourceIndex: number; cells: string[] }>;
+    const rows = () => table().props("rows") as Array<{ sourceIndex: number; cells: string[] }>;
     const cell = (row: number, column: number) =>
-      columns()[column + 1].cellRenderer?.({ rowData: rows()[row], rowIndex: row } as never) as VNode;
+      columns()[column].cellRenderer?.({ rowData: rows()[row], rowIndex: row } as never) as VNode;
     const classes = (row: number, column: number) => String(cell(row, column).props?.class);
     const host = wrapper.get(".table-host");
     cell(1, 1).props?.onPointerdown({
@@ -1094,15 +1094,12 @@ describe("ResultPanel streaming rendering", () => {
     expect(classes(2, 2)).not.toContain("selected");
     await host.trigger("keydown", { key: "Escape" });
 
-    const rowNumber = columns()[0].cellRenderer?.({ rowData: rows()[0] } as never) as VNode;
-    rowNumber.props?.onPointerdown({
+    table().vm.$emit("row-pointerdown", {
       button: 0, preventDefault: vi.fn(), stopPropagation: vi.fn(),
       ctrlKey: false, metaKey: false, shiftKey: false
-    });
+    }, rows()[0].sourceIndex);
     await host.trigger("keydown", { key: "ArrowDown" });
     await nextTick();
-    expect(String(columns()[0].cellRenderer?.({ rowData: rows()[0] } as never)?.props?.class))
-      .toContain("selected");
     expect(classes(1, 0)).not.toContain("focused");
     wrapper.unmount();
   });
@@ -1123,13 +1120,13 @@ describe("ResultPanel streaming rendering", () => {
         rows: [["2", "B", "20"], ["1", "A", "10"], ["3", "C", "30"]],
         updateCount: -1, truncated: false, durationMs: 3, complete: true }]
     } }, global: { plugins: [ElementPlus] } });
-    const table = () => wrapper.findComponent({ name: "ElTableV2" });
+    const table = () => wrapper.findComponent({ name: "ResultVirtualGrid" });
     const columns = () => table().props("columns") as Column[];
-    const rows = () => table().props("data") as Array<{ sourceIndex: number; cells: string[] }>;
+    const rows = () => table().props("rows") as Array<{ sourceIndex: number; cells: string[] }>;
     const cell = (row: number, column: number) =>
-      columns()[column + 1].cellRenderer?.({ rowData: rows()[row], rowIndex: row } as never) as VNode;
+      columns()[column].cellRenderer?.({ rowData: rows()[row], rowIndex: row } as never) as VNode;
 
-    const firstHeader = columns()[1].headerCellRenderer?.({} as never) as VNode;
+    const firstHeader = columns()[0].headerCellRenderer?.({} as never) as VNode;
     const tools = (firstHeader.children as VNode[]).find((child) => child?.props?.columnIndex === 0) as VNode;
     tools.props?.onSort();
     await nextTick();
@@ -1156,14 +1153,14 @@ describe("ResultPanel streaming rendering", () => {
     window.dispatchEvent(new Event("pointerup"));
     await wrapper.get(".table-host").trigger("keydown", { key: "ArrowRight" });
     await nextTick();
-    expect((columns().slice(1) as Array<{ title: string }>).map((column) => column.title))
+    expect((columns() as unknown as Array<{ label: string }>).map((column) => column.label))
       .toEqual(["id", "amount"]);
     expect(String(cell(0, 1).props?.class)).toContain("focused");
 
     select.vm.$emit("update:modelValue", []);
     await nextTick();
-    const sourceHeader = columns()[1].headerCellRenderer?.({} as never) as VNode;
-    const targetHeader = columns()[2].headerCellRenderer?.({} as never) as VNode;
+    const sourceHeader = columns()[0].headerCellRenderer?.({} as never) as VNode;
+    const targetHeader = columns()[1].headerCellRenderer?.({} as never) as VNode;
     const dataTransfer = { effectAllowed: "", dropEffect: "", setData: vi.fn(), setDragImage: vi.fn() };
     sourceHeader.props?.onDragstart({ dataTransfer, preventDefault: vi.fn() });
     const dragEvent = { dataTransfer, clientX: 90, preventDefault: vi.fn(),
@@ -1171,7 +1168,7 @@ describe("ResultPanel streaming rendering", () => {
     targetHeader.props?.onDragover(dragEvent);
     targetHeader.props?.onDrop(dragEvent);
     await nextTick();
-    expect((columns().slice(1) as Array<{ title: string }>).map((column) => column.title))
+    expect((columns() as unknown as Array<{ label: string }>).map((column) => column.label))
       .toEqual(["name", "id", "amount"]);
     cell(0, 0).props?.onPointerdown({
       button: 0, preventDefault: vi.fn(), ctrlKey: false, metaKey: false, shiftKey: false
@@ -1196,11 +1193,11 @@ describe("ResultPanel streaming rendering", () => {
         ], uniqueKeys: [{ name: "PRIMARY", primary: true, resultColumnIndices: [0] }] },
         rows: [["1", "Apple"], ["2", "Banana"], ["3", "Cherry"]], updateCount: -1, truncated: false, durationMs: 3, complete: true }]
     } }, global: { plugins: [ElementPlus] } });
-    const table = wrapper.findComponent({ name: "ElTableV2" });
+    const table = wrapper.findComponent({ name: "ResultVirtualGrid" });
     const columns = table.props("columns") as Column[];
-    const rows = table.props("data") as Array<{ sourceIndex: number; cells: string[] }>;
-    const first = columns[1].cellRenderer?.({ rowData: rows[0], rowIndex: 0 } as never) as VNode;
-    const last = columns[2].cellRenderer?.({ rowData: rows[1], rowIndex: 1 } as never) as VNode;
+    const rows = table.props("rows") as Array<{ sourceIndex: number; cells: string[] }>;
+    const first = columns[0].cellRenderer?.({ rowData: rows[0], rowIndex: 0 } as never) as VNode;
+    const last = columns[1].cellRenderer?.({ rowData: rows[1], rowIndex: 1 } as never) as VNode;
     first.props?.onPointerdown({ button: 0, preventDefault: vi.fn() });
     last.props?.onPointerenter(); window.dispatchEvent(new Event("pointerup"));
     await wrapper.get(".table-host").trigger("keydown", { metaKey: true, key: "c" });
@@ -1221,21 +1218,16 @@ describe("ResultPanel streaming rendering", () => {
     expect(clipboardWrite).toHaveBeenLastCalledWith(
       "DELETE FROM `db`.`sample` WHERE id = 1;\nDELETE FROM `db`.`sample` WHERE id = 2;");
 
-    const rowNumber = columns[0];
-    expect(rowNumber.width).toBe(34);
-    expect(rowNumber.minWidth).toBe(34);
-    expect(rowNumber.maxWidth).toBe(34);
-    const rowOne = rowNumber.cellRenderer?.({ rowData: rows[0] } as never) as VNode;
-    const rowThree = rowNumber.cellRenderer?.({ rowData: rows[2] } as never) as VNode;
-    rowOne.props?.onPointerdown({ button: 0, preventDefault: vi.fn(), stopPropagation: vi.fn(), ctrlKey: false, metaKey: false, shiftKey: false });
-    rowThree.props?.onPointerenter();
+    table.vm.$emit("row-pointerdown", { button: 0, preventDefault: vi.fn(), stopPropagation: vi.fn(),
+      ctrlKey: false, metaKey: false, shiftKey: false }, rows[0].sourceIndex);
+    table.vm.$emit("row-pointerenter", rows[2].sourceIndex);
     window.dispatchEvent(new Event("pointerup"));
     await wrapper.get(".table-host").trigger("keydown", { metaKey: true, key: "c" });
     await flushPromises();
     expect(clipboardWrite).toHaveBeenLastCalledWith("1,Apple\n2,Banana\n3,Cherry");
     expect(wrapper.emitted("selected-row-count")?.at(-1)).toEqual([3]);
 
-    rowThree.props?.onContextmenu({ preventDefault: vi.fn(), stopPropagation: vi.fn(), clientX: 20, clientY: 30 });
+    table.vm.$emit("row-contextmenu", { preventDefault: vi.fn(), stopPropagation: vi.fn(), clientX: 20, clientY: 30 }, rows[2].sourceIndex);
     await nextTick();
     const menu = wrapper.findComponent({ name: "ResultDataContextMenu" });
     expect(menu.props("mode")).toBe("rows");
@@ -1265,11 +1257,11 @@ describe("ResultPanel streaming rendering", () => {
         stubs: { ResultValueCompareDialog: true }
       }
     });
-    const table = () => wrapper.findComponent({ name: "ElTableV2" });
+    const table = () => wrapper.findComponent({ name: "ResultVirtualGrid" });
     const columns = () => table().props("columns") as Column[];
-    const rows = () => table().props("data") as Array<{ sourceIndex: number; cells: string[] }>;
+    const rows = () => table().props("rows") as Array<{ sourceIndex: number; cells: string[] }>;
     const cell = (row: number, column: number) =>
-      columns()[column + 1].cellRenderer?.({ rowData: rows()[row], rowIndex: row } as never) as VNode;
+      columns()[column].cellRenderer?.({ rowData: rows()[row], rowIndex: row } as never) as VNode;
 
     cell(0, 0).props?.onPointerdown({
       button: 0, preventDefault: vi.fn(), ctrlKey: false, metaKey: false, shiftKey: false
@@ -1295,7 +1287,7 @@ describe("ResultPanel streaming rendering", () => {
     expect(wrapper.findComponent({ name: "ResultSummaryFooter" }).props()).toMatchObject({
       total: "3.50", count: 2
     });
-    expect(table().props("footerHeight")).toBe(32);
+    expect(table().props("hasFooter")).toBe(true);
 
     menu.vm.$emit("command", "compare");
     await nextTick();
@@ -1309,14 +1301,10 @@ describe("ResultPanel streaming rendering", () => {
       modelValue: true, value: "{\"a\":1}"
     });
 
-    const rowClass = table().props("rowClass") as (params: { rowData: { sourceIndex: number } }) => string;
-    const rowNumber = columns()[0].cellRenderer?.({ rowData: rows()[0] } as never) as VNode;
-    rowNumber.props?.onPointerdown({
+    table().vm.$emit("row-pointerdown", {
       button: 0, preventDefault: vi.fn(), stopPropagation: vi.fn(),
       ctrlKey: false, metaKey: false, shiftKey: false
-    });
-    expect(rowClass({ rowData: rows()[0] })).toBe("result-row-selected");
-    expect(rowClass({ rowData: rows()[1] })).toBe("");
+    }, rows()[0].sourceIndex);
   }, 20_000);
 
   it("sums selected headers across the current filtered rows and clears stale totals", async () => {
@@ -1335,8 +1323,8 @@ describe("ResultPanel streaming rendering", () => {
     const wrapper = mount(ResultPanel, {
       props: { activeResultIndex: 0, execution }, global: { plugins: [ElementPlus] }
     });
-    const table = () => wrapper.findComponent({ name: "ElTableV2" });
-    const header = () => (table().props("columns") as Column[])[1]
+    const table = () => wrapper.findComponent({ name: "ResultVirtualGrid" });
+    const header = () => (table().props("columns") as Column[])[0]
       .headerCellRenderer?.({} as never) as VNode;
     header().props?.onClick({ ctrlKey: false, metaKey: false, shiftKey: false });
     header().props?.onContextmenu({ preventDefault: vi.fn(), clientX: 20, clientY: 30 });

@@ -12,7 +12,7 @@
 | `EditorSessionRegistry` | `application-core` | 为每个 SQL 标签维护独立的 `QueryRunner`、JDBC 会话和当前执行 ID。 |
 | `QueryRunner` | `application-core` | 在标签专属单线程中执行 JDBC 语句、读取结果集、按批次通知监听器。 |
 | `WorkspaceEventChannel` | `server-app` | 将事件序列化为 JSON，放入有界队列并按顺序发送给浏览器。 |
-| Pinia Query Store 与 `ResultPanel` | `editor-web` | 以不可变方式替换执行/结果引用，驱动 `el-table-v2` 及时刷新。 |
+| Pinia Query Store 与 `ResultPanel` | `editor-web` | 以不可变方式替换执行/结果引用，驱动 `ResultVirtualGrid` 及时刷新。 |
 
 一个浏览器标签对应一个 `Workspace`；一个 SQL 编辑标签对应一个 `EditorSession`，也对应一个独立 JDBC 会话。不同编辑标签可以并行执行；同一个标签同一时刻只允许一个活动查询。
 
@@ -86,7 +86,7 @@ sequenceDiagram
         Q->>W: query.rows
         W-->>V: 该批行数据
         V->>S: appendRows（替换引用）
-        S-->>U: el-table-v2 刷新
+        S-->>U: ResultVirtualGrid 刷新
     end
     Q->>W: query.resultComplete
     Q->>W: query.executionComplete
@@ -125,8 +125,7 @@ sequenceDiagram
 | --- | ---: | ---: | --- |
 | `result.maxRows` | 1000 | 1–100000 | 单个结果集允许读取、保存在执行快照并发送到前端的最大行数。 |
 | `result.streamBatchRows` | 100 | 1–1000 | 一条 `query.rows` WebSocket 事件最多携带的行数。 |
-| `result.scrollOptimizationEnabled` | false | true / false | 开启结果集行列双向虚拟化；只影响前端渲染，不改变查询和分页语义。 |
-| `result.scrollOptimizationBufferScreens` | 1 | 0.5 - 3，步长 0.5 | 双向虚拟表格在可视区域四周额外渲染的屏数；仅在滚动优化开启时生效。 |
+| `result.scrollOptimizationBufferScreens` | 1 | 0.5 - 3，步长 0.5 | 结果虚拟表格在可视区域四周额外渲染的屏数。 |
 
 读取循环的规则如下：
 
@@ -160,13 +159,13 @@ query.started
 | --- | --- | --- |
 | `query.started` | `start` | 建立执行状态、显示执行中。 |
 | `query.resultMeta` | `addResult` | 出现结果标签和列定义。 |
-| `query.rows` | `appendRows` | 当前结果行数和 `el-table-v2` 数据立即增加。 |
+| `query.rows` | `appendRows` | 当前结果行数和 `ResultVirtualGrid` 数据立即增加。 |
 | `query.resultComplete` | `completeResult` | 显示耗时、截断标志、错误或影响行数。 |
 | `query.executionComplete` | `complete` | 结束执行状态，并同步标签事务脏状态。 |
 
-Query Store 使用 `shallowRef<Record<string, QueryExecutionState>>`，但不会原地修改 execution、result 或 rows。每收到一批行都会新建目标结果对象、`rows` 数组、`results` 数组和 execution 对象，再替换对应编辑器的引用。这样传给 `ResultPanel` 的 `execution` Prop 每批都会改变引用，Vue 可稳定触发计算属性和 `el-table-v2` 更新，同时不对每个单元格建立深层响应式代理。
+Query Store 使用 `shallowRef<Record<string, QueryExecutionState>>`，但不会原地修改 execution、result 或 rows。每收到一批行都会新建目标结果对象、`rows` 数组、`results` 数组和 execution 对象，再替换对应编辑器的引用。这样传给 `ResultPanel` 的 `execution` Prop 每批都会改变引用，Vue 可稳定触发计算属性和 `ResultVirtualGrid` 更新，同时不对每个单元格建立深层响应式代理。
 
-`ResultPanel` 只根据当前结果的列和行渲染。滚动优化关闭时继续使用 `el-table-v2`；开启时使用单滚动容器的行列双向虚拟网格，并保留浏览器原生滚动。两种模式共用排序、筛选、选择和列布局状态，切换时保留横纵滚动位置。排序只创建当前行数组的副本，不修改 Store 中的原始结果。结果面板中的“已截断”提示仅说明 UI 保留的行受到 `result.maxRows` 限制，不代表数据库查询本身返回的数据总量。
+`ResultPanel` 只根据当前结果的列和行渲染，始终使用单滚动容器的行列双向虚拟网格，并保留浏览器原生滚动。排序、筛选、选择和列布局共用同一套状态，排序只创建当前行数组的副本，不修改 Store 中的原始结果。结果面板中的“已截断”提示仅说明 UI 保留的行受到 `result.maxRows` 限制，不代表数据库查询本身返回的数据总量。
 
 ## 6. 取消、失败与事务
 

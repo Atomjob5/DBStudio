@@ -367,7 +367,7 @@ test("manages global JDBC slots, execution history, probing, abort and cleanup",
   await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
 });
 
-test("enables the optimized 200 by 30 result grid with native wheel scrolling", async ({ page }) => {
+test("uses the unified 200 by 30 virtual result grid with native wheel scrolling", async ({ page }) => {
   await connectMock(page);
   await dismissCompletionSchemaDialog(page);
   const editor = page.locator(".monaco-editor .view-lines");
@@ -376,7 +376,7 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
   await page.keyboard.type("select /*wide_result*/ 1");
   await page.getByRole("button", { name: "执行", exact: true }).click();
   await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
-  await expect(page.locator(".el-table-v2")).toBeVisible();
+  await expect(page.locator(".result-virtual-grid")).toBeVisible();
   const legacyTypography = await resultTypography(page);
   expect(legacyTypography).toMatchObject({
     cellSize: "12px",
@@ -392,7 +392,7 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
   });
   expect(legacyTypography.cellFamily).toContain("-apple-system");
   expect(legacyTypography.titleFamily).toBe(legacyTypography.cellFamily);
-  const legacyScroller = page.locator(".el-table-v2__main .el-table-v2__body");
+  const resultScroller = page.locator(".result-virtual-grid__viewport");
   await page.locator(".result-cell").filter({ hasText: /^1$/ }).first().click();
   await expect(page.locator(".result-cell.focused")).toHaveText("1");
   await page.keyboard.press("ArrowRight");
@@ -406,7 +406,7 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
   await expect(page.locator(".result-cell.focused")).toHaveText("R23 C17");
   const legacyFocusVisibility = await page.locator(".result-cell.focused").evaluate((element) => {
     const bounds = element.getBoundingClientRect();
-    const viewport = element.closest(".el-table-v2__main")!.getBoundingClientRect();
+    const viewport = element.closest(".result-virtual-grid__viewport")!.getBoundingClientRect();
     return bounds.top >= viewport.top && bounds.bottom <= viewport.bottom
       && bounds.left >= viewport.left + 34 && bounds.right <= viewport.right;
   });
@@ -414,7 +414,7 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
   for (let index = 0; index < 22; index++) await page.keyboard.press("ArrowUp");
   for (let index = 0; index < 16; index++) await page.keyboard.press("ArrowLeft");
   await expect(page.locator(".result-cell.focused")).toHaveText("1");
-  await legacyScroller.hover();
+  await resultScroller.hover();
   await page.mouse.wheel(0, 320);
   await page.mouse.wheel(480, 0);
   await page.waitForTimeout(50);
@@ -422,10 +422,6 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
   await page.getByRole("button", { name: "更多操作", exact: true }).click();
   await page.getByRole("menuitem", { name: "设置", exact: true }).click();
   const settings = page.getByRole("dialog", { name: "设置", exact: true });
-  const scrollOptimization = settings.locator(".compact-setting-row").filter({ hasText: "滚动优化" });
-  await scrollOptimization.scrollIntoViewIfNeeded();
-  await expect(settings.getByText("预渲染缓冲", { exact: true })).toHaveCount(0);
-  await scrollOptimization.locator(".el-switch").click();
   await expect(settings.getByText("预渲染缓冲", { exact: true })).toBeVisible();
   await expect(settings.getByRole("spinbutton", { name: "预渲染缓冲", exact: true })).toHaveValue("1.0");
   await settings.getByRole("button", { name: "Close this dialog", exact: true }).click();
@@ -433,7 +429,7 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
 
   const grid = page.locator(".result-virtual-grid__viewport");
   await expect(grid).toBeVisible();
-  await expect(page.locator(".el-table-v2")).toHaveCount(0);
+  await expect(page.locator(".result-virtual-grid")).toHaveCount(1);
   const optimizedTypography = await resultTypography(page);
   expect(optimizedTypography).toEqual(legacyTypography);
   await expect.poll(() => grid.evaluate((element) => ({
@@ -683,21 +679,13 @@ test("enables the optimized 200 by 30 result grid with native wheel scrolling", 
   await page.getByRole("button", { name: "更多操作", exact: true }).click();
   await page.getByRole("menuitem", { name: "设置", exact: true }).click();
   const reopenedSettings = page.getByRole("dialog", { name: "设置", exact: true });
-  const reopenedOptimization = reopenedSettings.locator(".compact-setting-row").filter({ hasText: "滚动优化" });
-  await reopenedOptimization.scrollIntoViewIfNeeded();
   await expect(reopenedSettings.getByText("预渲染缓冲", { exact: true })).toBeVisible();
-  await reopenedOptimization.locator(".el-switch").click();
-  await expect(reopenedSettings.getByText("预渲染缓冲", { exact: true })).toHaveCount(0);
   await reopenedSettings.getByRole("button", { name: "Close this dialog", exact: true }).click();
-  await expect(page.locator(".el-table-v2")).toBeVisible();
+  await expect(page.locator(".result-virtual-grid")).toBeVisible();
 
   await page.getByRole("button", { name: "更多操作", exact: true }).click();
   await page.getByRole("menuitem", { name: "设置", exact: true }).click();
   const finalSettings = page.getByRole("dialog", { name: "设置", exact: true });
-  const finalOptimization = finalSettings.locator(".compact-setting-row").filter({ hasText: "滚动优化" });
-  await finalOptimization.scrollIntoViewIfNeeded();
-  await expect(finalSettings.getByText("预渲染缓冲", { exact: true })).toHaveCount(0);
-  await finalOptimization.locator(".el-switch").click();
   await expect(finalSettings.getByText("预渲染缓冲", { exact: true })).toBeVisible();
   await finalSettings.getByRole("button", { name: "Close this dialog", exact: true }).click();
   await expect.poll(() => page.locator(".result-virtual-grid__viewport").evaluate((element) => ({
@@ -1137,7 +1125,7 @@ test("sorts, filters, selects cells and copies safe row SQL", async ({ page, con
 
   const rowNumbers = page.locator(".result-row-number:not(.result-row-number-header)");
   await expect.poll(async () => {
-    const gutter = page.locator(".el-table-v2__left").first();
+    const gutter = page.locator(".result-virtual-grid__gutter").first();
     return gutter.evaluate((element) => {
       const style = getComputedStyle(element);
       const divider = getComputedStyle(element, "::after");

@@ -214,7 +214,6 @@ class LocalServerSecurityTest {
         assertTrue(defaults.getBody().contains("\"result.headerSortingEnabled\":\"true\""));
         assertTrue(defaults.getBody().contains("\"result.headerFilteringEnabled\":\"true\""));
         assertTrue(defaults.getBody().contains("\"result.showColumnRemarksInHeader\":\"false\""));
-        assertTrue(defaults.getBody().contains("\"result.scrollOptimizationEnabled\":\"false\""));
         assertTrue(defaults.getBody().contains("\"result.scrollOptimizationBufferScreens\":\"1\""));
         assertTrue(defaults.getBody().contains("\"statusBar.showSelectedColumnRemarks\":\"true\""));
         assertTrue(defaults.getBody().contains("\"connection.maxActiveSessions\":\"10\""));
@@ -256,7 +255,7 @@ class LocalServerSecurityTest {
         }
 
         for (String key : Arrays.asList("result.headerSortingEnabled", "result.headerFilteringEnabled",
-                "result.showColumnRemarksInHeader", "result.scrollOptimizationEnabled",
+                "result.showColumnRemarksInHeader",
                 "statusBar.showSelectedColumnRemarks", "editor.minimapEnabled", "editor.wordWrapEnabled",
                 "editor.dangerousStatementWarningEnabled")) {
             setting.put("key", key);

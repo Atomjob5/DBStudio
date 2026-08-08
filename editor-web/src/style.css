@@ -318,14 +318,10 @@ textarea,
 .el-tabs__item.is-active { color: var(--db-text); }
 .el-tabs__active-bar { background: var(--db-accent); height: 2px; border-radius: 2px; }
 
-.el-table,
-.el-table-v2 { --el-table-border-color: var(--db-border-soft); --el-table-row-hover-bg-color: var(--db-accent-soft); }
+.el-table { --el-table-border-color: var(--db-border-soft); --el-table-row-hover-bg-color: var(--db-accent-soft); }
 .el-table::before { background: var(--db-border-soft); }
 .el-table th.el-table__cell { background: var(--db-table-header); color: var(--db-text-secondary); font-weight: 600; }
 .el-table td.el-table__cell { border-bottom-color: var(--db-border-soft); }
-.el-table-v2__header { background: var(--db-table-header); color: var(--db-text-secondary); font-weight: 600; }
-.el-table-v2__row { border-bottom: 1px solid var(--db-border-soft); }
-.el-table-v2__row:hover { background: var(--db-accent-soft); }
 .el-alert { border-radius: 12px; }
 .el-tag { border-radius: 999px; }
 .el-splitter-panel { overflow: hidden; }

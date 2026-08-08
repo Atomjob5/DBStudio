@@ -1,4 +1,5 @@
 import type { VNodeChild } from "vue";
+import type { ViewRow } from "./resultGrid";
 
 export interface VirtualRange {
   start: number;
@@ -17,6 +18,11 @@ export interface ResultVirtualColumn {
   visibleIndex: number;
   width: number;
   headerRenderer: () => VNodeChild;
+  readonly?: boolean;
+  cellClass?: string;
+  /** Optional renderer retained for integrations that need to synthesize grid events. */
+  cellRenderer?: (context: { rowData: ViewRow; rowIndex: number }) => VNodeChild;
+  headerCellRenderer?: () => VNodeChild;
 }
 
 export interface ResultGridScrollPosition {

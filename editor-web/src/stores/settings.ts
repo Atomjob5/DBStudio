@@ -22,7 +22,6 @@ export const useSettingsStore = defineStore("settings", () => {
   const headerSortingEnabled = ref(true);
   const headerFilteringEnabled = ref(true);
   const showColumnRemarksInHeader = ref(false);
-  const scrollOptimizationEnabled = ref(false);
   const scrollOptimizationBufferScreens = ref(1);
   const showSelectedColumnRemarks = ref(true);
   const maxActiveSessions = ref(10);
@@ -53,7 +52,6 @@ export const useSettingsStore = defineStore("settings", () => {
     headerSortingEnabled.value = settings["result.headerSortingEnabled"] !== "false";
     headerFilteringEnabled.value = settings["result.headerFilteringEnabled"] !== "false";
     showColumnRemarksInHeader.value = settings["result.showColumnRemarksInHeader"] === "true";
-    scrollOptimizationEnabled.value = settings["result.scrollOptimizationEnabled"] === "true";
     const bufferScreens = Number.parseFloat(settings["result.scrollOptimizationBufferScreens"] ?? "1");
     scrollOptimizationBufferScreens.value = Number.isFinite(bufferScreens)
       && bufferScreens >= 0.5 && bufferScreens <= 3 && Number.isInteger(bufferScreens * 2)
@@ -95,7 +93,7 @@ export const useSettingsStore = defineStore("settings", () => {
 
   return { maxResultRows, streamBatchRows, maxResultLobBytes, columnLayoutScope, copyHeaderOnDoubleClick, copySeparator,
     headerSortingEnabled, headerFilteringEnabled, showColumnRemarksInHeader, showSelectedColumnRemarks,
-    scrollOptimizationEnabled, scrollOptimizationBufferScreens,
+    scrollOptimizationBufferScreens,
     maxActiveSessions, autoCommit, idleTimeoutMinutes, transactionDisconnectRollbackMinutes,
     completionCandidateLimit, completionPreciseMatchingEnabled, completionSnippets,
     minimapEnabled, wordWrapEnabled, dangerousStatementWarningEnabled,

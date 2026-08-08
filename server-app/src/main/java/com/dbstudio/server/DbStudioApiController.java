@@ -101,7 +101,7 @@ public final class DbStudioApiController {
             "ui.theme", "result.maxRows", "result.streamBatchRows", "result.columnLayoutScope",
             "result.copyHeaderOnDoubleClick", "result.copySeparator",
             "result.headerSortingEnabled", "result.headerFilteringEnabled", "result.showColumnRemarksInHeader",
-            "result.scrollOptimizationEnabled", "result.scrollOptimizationBufferScreens",
+            "result.scrollOptimizationBufferScreens",
             "result.edit.maxLobBytes",
             "statusBar.showSelectedColumnRemarks",
             "connection.maxActiveSessions", "connection.autoCommit", "connection.idleTimeoutMinutes",
@@ -1389,7 +1389,6 @@ public final class DbStudioApiController {
         }
         if (("result.headerSortingEnabled".equals(key) || "result.headerFilteringEnabled".equals(key)
                 || "result.showColumnRemarksInHeader".equals(key)
-                || "result.scrollOptimizationEnabled".equals(key)
                 || "statusBar.showSelectedColumnRemarks".equals(key))
                 && !Arrays.asList("true", "false").contains(value)) {
             throw new ApiException("INVALID_SETTING", "开关设置无效");
@@ -2209,7 +2208,6 @@ public final class DbStudioApiController {
         if (!result.containsKey("result.headerSortingEnabled")) result.put("result.headerSortingEnabled", "true");
         if (!result.containsKey("result.headerFilteringEnabled")) result.put("result.headerFilteringEnabled", "true");
         if (!result.containsKey("result.showColumnRemarksInHeader")) result.put("result.showColumnRemarksInHeader", "false");
-        if (!result.containsKey("result.scrollOptimizationEnabled")) result.put("result.scrollOptimizationEnabled", "false");
         if (!result.containsKey("result.scrollOptimizationBufferScreens")) {
             result.put("result.scrollOptimizationBufferScreens", "1");
         }

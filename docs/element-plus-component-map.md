@@ -10,7 +10,7 @@ DBStudio uses Element Plus before custom UI code. IDE styling is implemented wit
 | Connection management | `el-dialog`, `el-form`, `el-input`, `el-input-number`, `el-select`, `el-switch`, `el-alert` |
 | Lazy metadata explorer | `el-tree` with lazy loading and an `el-dropdown` context menu |
 | SQL tabs | `el-tabs`, `el-tab-pane` |
-| Large query results | `el-table-v2`, `el-auto-resizer`, cell renderers and a shared browser tooltip |
+| Large query results | `ResultVirtualGrid` with native scrolling, cell renderers and a shared browser tooltip |
 | History | `el-drawer`, `el-table`, `el-pagination`, `el-tag` |
 | CSV import | `el-dialog`, `el-steps`, `el-upload` interaction styling, `el-table`, `el-select`, `el-progress` |
 | Settings | `el-drawer`, `el-form`, `el-input-number`, `el-radio-group`, `el-alert` |
@@ -40,4 +40,4 @@ The Apple-inspired appearance is implemented with Element Plus theme variables, 
 - Reason: the inner text alignment is application-specific status content, so only CSS flex layout is needed; it is not a reusable replacement for an Element Plus component.
 - Tests: exercised by the application smoke flow and theme verification.
 
-No custom result grid is currently approved. `el-table-v2` remains the implementation unless a reproducible browser blocker is recorded here with a minimal reproduction and performance results.
+`ResultVirtualGrid` is the approved result-grid implementation. It owns row/column virtualization and native scrolling while the surrounding result panel owns sorting, filtering, selection and mutation actions.

@@ -397,6 +397,7 @@ function cellClasses(rowIndex: number, column: ResultVirtualColumn): Array<strin
     && props.focusedCellKey === `${row.sourceIndex}:${column.sourceIndex}`;
   const state = row ? props.cellStates?.[`${row.sourceIndex}:${column.sourceIndex}`] : undefined;
   return [value === null ? "null-value" : "", value?.startsWith("0x") ? "binary-value" : "",
+    !!column.readonly && "result-cell-readonly", column.cellClass ?? false,
     selectedColumn && "column-selected", selected && "selected", focused && "focused", state === "pending" && "result-cell-pending",
     state === "posted" && "result-cell-posted", state === "error" && "result-cell-error"];
 }
@@ -747,6 +748,10 @@ defineExpose({ getScrollPosition, setScrollPosition, scrollCellIntoView });
   background: var(--db-content);
   color: var(--db-text);
   font: inherit;
+}
+.result-cell-readonly {
+  background: color-mix(in srgb, var(--db-table-header) 72%, var(--db-content) 28%);
+  color: var(--db-text-secondary);
 }
 .result-cell-pending {
   background: color-mix(in srgb, var(--db-warning) 20%, transparent);

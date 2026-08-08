@@ -56,7 +56,6 @@ const mockSettings: Record<string, string> = {
   "result.copySeparator": "comma",
   "result.headerSortingEnabled": "true",
   "result.headerFilteringEnabled": "true",
-  "result.scrollOptimizationEnabled": "false",
   "result.scrollOptimizationBufferScreens": "1",
   "connection.maxActiveSessions": "10",
   "connection.idleTimeoutMinutes": "10",

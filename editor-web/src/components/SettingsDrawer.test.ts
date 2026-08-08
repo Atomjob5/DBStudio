@@ -19,7 +19,6 @@ describe("SettingsDrawer compact result settings", () => {
         headerSortingEnabled: true,
         headerFilteringEnabled: true,
         showColumnRemarksInHeader: false,
-        scrollOptimizationEnabled: false,
         scrollOptimizationBufferScreens: 1,
         showSelectedColumnRemarks: true,
         maxActiveSessions: 10,
@@ -58,16 +57,11 @@ describe("SettingsDrawer compact result settings", () => {
     const wrapper = mountDrawer();
     await flushPromises();
     const tooltips = wrapper.findAllComponents({ name: "ElTooltip" });
-    expect(tooltips.map((tooltip) => tooltip.props("content"))).toEqual(expect.arrayContaining([
-      expect.stringContaining("完整导出不受影响"),
-      expect.stringContaining("事件触发更频繁"),
-      expect.stringContaining("渲染压力"),
-      expect.stringContaining("字段集合完全一致"),
-      expect.stringContaining("自动转义"),
-      expect.stringContaining("IndexedDB"),
-      expect.stringContaining("每条DML成功执行即提交"),
-      expect.stringContaining("未包含 WHERE")
-    ]));
+    const tooltipText = tooltips.map((tooltip) => String(tooltip.props("content"))).join("\n");
+    for (const text of ["完整导出不受影响", "事件触发更频繁", "控制可视区域四周", "字段集合完全一致",
+      "自动转义", "IndexedDB", "每条DML成功执行即提交", "未包含 WHERE"]) {
+      expect(tooltipText).toContain(text);
+    }
 
     expect(wrapper.get('[data-testid="completion-cache-stats"]').text()).toContain("约 1.2 MB · 3个环境 · 1项加载中");
     await wrapper.get('button[aria-label="清理全部补全缓存"]').trigger("click");
@@ -85,12 +79,11 @@ describe("SettingsDrawer compact result settings", () => {
     switches[2].vm.$emit("update:modelValue", false);
     switches[3].vm.$emit("update:modelValue", true);
     switches[4].vm.$emit("update:modelValue", true);
-    switches[5].vm.$emit("update:modelValue", true);
+    switches[5].vm.$emit("update:modelValue", false);
     switches[6].vm.$emit("update:modelValue", false);
     switches[7].vm.$emit("update:modelValue", false);
-    switches[8].vm.$emit("update:modelValue", false);
-    switches[9].vm.$emit("update:modelValue", true);
-    switches[10].vm.$emit("update:modelValue", false);
+    switches[8].vm.$emit("update:modelValue", true);
+    switches[9].vm.$emit("update:modelValue", false);
     wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "result")!.vm.$emit("update:modelValue", "editor");
     wrapper.findAllComponents({ name: "ElRadioGroup" })
@@ -111,7 +104,6 @@ describe("SettingsDrawer compact result settings", () => {
     expect(wrapper.emitted("update:headerSortingEnabled")?.[0]).toEqual([false]);
     expect(wrapper.emitted("update:headerFilteringEnabled")?.[0]).toEqual([false]);
     expect(wrapper.emitted("update:showColumnRemarksInHeader")?.[0]).toEqual([true]);
-    expect(wrapper.emitted("update:scrollOptimizationEnabled")?.[0]).toEqual([true]);
     expect(wrapper.emitted("update:showSelectedColumnRemarks")?.[0]).toEqual([false]);
     expect(wrapper.emitted("update:columnLayoutScope")?.[0]).toEqual(["editor"]);
     expect(wrapper.emitted("update:copySeparator")?.[0]).toEqual(["pipe"]);
@@ -131,13 +123,13 @@ describe("SettingsDrawer compact result settings", () => {
     wrapper.unmount();
   });
 
-  it("only shows and updates the buffer setting while scroll optimization is enabled", async () => {
+  it("always shows and updates the virtual-grid buffer setting", async () => {
     const wrapper = mountDrawer();
     await flushPromises();
-    expect(wrapper.find('input[aria-label="预渲染缓冲"]').exists()).toBe(false);
-    expect(wrapper.text()).not.toContain("预渲染缓冲");
+    expect(wrapper.find('input[aria-label="预渲染缓冲"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain("预渲染缓冲");
 
-    await wrapper.setProps({ scrollOptimizationEnabled: true, scrollOptimizationBufferScreens: 2 });
+    await wrapper.setProps({ scrollOptimizationBufferScreens: 2 });
     const buffer = wrapper.findAllComponents({ name: "ElInputNumber" }).at(-1);
     expect(buffer?.props("modelValue")).toBe(2);
     expect(buffer?.props("min")).toBe(0.5);
@@ -145,9 +137,6 @@ describe("SettingsDrawer compact result settings", () => {
     buffer?.vm.$emit("update:modelValue", 1.5);
     expect(wrapper.emitted("update:scrollOptimizationBufferScreens")?.[0]).toEqual([1.5]);
 
-    await wrapper.setProps({ scrollOptimizationEnabled: false });
-    expect(wrapper.text()).not.toContain("预渲染缓冲");
-    await wrapper.setProps({ scrollOptimizationEnabled: true });
     expect(wrapper.findAllComponents({ name: "ElInputNumber" }).at(-1)?.props("modelValue")).toBe(2);
     wrapper.unmount();
   });

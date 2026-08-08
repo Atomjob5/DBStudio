@@ -230,7 +230,6 @@
                   :copy-header-on-double-click="settings.copyHeaderOnDoubleClick" :copy-separator="settings.copySeparator"
                   :header-sorting-enabled="settings.headerSortingEnabled" :header-filtering-enabled="settings.headerFilteringEnabled"
                   :show-column-remarks-in-header="settings.showColumnRemarksInHeader"
-                  :scroll-optimization-enabled="settings.scrollOptimizationEnabled"
                   :scroll-optimization-buffer-screens="settings.scrollOptimizationBufferScreens"
                   :show-selected-column-remarks="settings.showSelectedColumnRemarks"
                   :max-active-sessions="settings.maxActiveSessions" :auto-commit="settings.autoCommit"
@@ -249,7 +248,6 @@
                   @update:header-sorting-enabled="updateHeaderSortingEnabled"
                   @update:header-filtering-enabled="updateHeaderFilteringEnabled"
                   @update:show-column-remarks-in-header="updateShowColumnRemarksInHeader"
-                  @update:scroll-optimization-enabled="updateScrollOptimizationEnabled"
                   @update:scroll-optimization-buffer-screens="updateScrollOptimizationBufferScreens"
                   @update:show-selected-column-remarks="updateShowSelectedColumnRemarks"
                   @update:copy-separator="updateCopySeparator" @update:max-active-sessions="updateMaxActiveSessions"
@@ -2010,11 +2008,6 @@ async function updateShowColumnRemarksInHeader(value: boolean): Promise<void> {
   const previous = settings.showColumnRemarksInHeader; settings.showColumnRemarksInHeader = value;
   try { await rpc.request("settings.update", { key: "result.showColumnRemarksInHeader", value: String(value) }); }
   catch (error) { settings.showColumnRemarksInHeader = previous; reportError(error); }
-}
-async function updateScrollOptimizationEnabled(value: boolean): Promise<void> {
-  const previous = settings.scrollOptimizationEnabled; settings.scrollOptimizationEnabled = value;
-  try { await rpc.request("settings.update", { key: "result.scrollOptimizationEnabled", value: String(value) }); }
-  catch (error) { settings.scrollOptimizationEnabled = previous; reportError(error); }
 }
 async function updateScrollOptimizationBufferScreens(value: number): Promise<void> {
   const previous = settings.scrollOptimizationBufferScreens; settings.scrollOptimizationBufferScreens = value;

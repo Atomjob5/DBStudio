@@ -509,19 +509,11 @@ describe("App result loading status toolbar", () => {
     expect(rpcRequest.mock.calls.map(([type]) => type)).not.toContain("transaction.rollback");
   });
 
-  it("persists scroll optimization and rolls the switch back when saving fails", async () => {
+  it("persists virtual-grid render buffering and rolls it back when saving fails", async () => {
     const settings = useSettingsStore();
     const vm = wrapper.vm as unknown as {
-      updateScrollOptimizationEnabled: (value: boolean) => Promise<void>;
       updateScrollOptimizationBufferScreens: (value: number) => Promise<void>;
     };
-    rpcRequest.mockResolvedValueOnce({});
-    await vm.updateScrollOptimizationEnabled(true);
-    expect(settings.scrollOptimizationEnabled).toBe(true);
-    expect(rpcRequest).toHaveBeenLastCalledWith("settings.update", {
-      key: "result.scrollOptimizationEnabled", value: "true"
-    });
-
     rpcRequest.mockResolvedValueOnce({});
     await vm.updateScrollOptimizationBufferScreens(1.5);
     expect(settings.scrollOptimizationBufferScreens).toBe(1.5);
@@ -532,10 +524,6 @@ describe("App result loading status toolbar", () => {
     rpcRequest.mockRejectedValueOnce(new Error("save failed"));
     await vm.updateScrollOptimizationBufferScreens(2);
     expect(settings.scrollOptimizationBufferScreens).toBe(1.5);
-
-    rpcRequest.mockRejectedValueOnce(new Error("save failed"));
-    await vm.updateScrollOptimizationEnabled(false);
-    expect(settings.scrollOptimizationEnabled).toBe(true);
   });
 
   it("persists editor display settings and rolls back failed saves", async () => {

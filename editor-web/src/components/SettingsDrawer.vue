@@ -184,17 +184,6 @@
         </el-form-item>
         <el-form-item class="compact-setting-row">
           <template #label>
-            <div class="setting-label"><span>滚动优化</span>
-              <el-tooltip content="减少滚动时渲染的行列数量，降低宽表和大量数据滚动时的渲染压力，适合低配置设备。" placement="top">
-                <el-icon class="setting-help" tabindex="0" aria-label="滚动优化说明"><QuestionFilled /></el-icon>
-              </el-tooltip>
-            </div>
-          </template>
-          <el-switch size="small" aria-label="滚动优化" :model-value="scrollOptimizationEnabled"
-                     @update:model-value="$emit('update:scrollOptimizationEnabled', $event === true)" />
-        </el-form-item>
-        <el-form-item v-if="scrollOptimizationEnabled" class="compact-setting-row">
-          <template #label>
             <div class="setting-label"><span>预渲染缓冲</span>
               <el-tooltip content="控制可视区域四周最多额外渲染的屏数；宽表会自动收缩缓冲，避免单元格过多导致卡顿。" placement="top">
                 <el-icon class="setting-help" tabindex="0" aria-label="预渲染缓冲说明"><QuestionFilled /></el-icon>
@@ -293,7 +282,7 @@ defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: Resolv
   streamBatchRows: number; maxLobBytes: number; columnLayoutScope: ColumnLayoutScope; copyHeaderOnDoubleClick: boolean;
   copySeparator: CopySeparator; maxActiveSessions: number; idleTimeoutMinutes: number;
   headerSortingEnabled: boolean; headerFilteringEnabled: boolean;
-  showColumnRemarksInHeader: boolean; scrollOptimizationEnabled: boolean;
+  showColumnRemarksInHeader: boolean;
   scrollOptimizationBufferScreens: number; showSelectedColumnRemarks: boolean;
   autoCommit: boolean;
   transactionDisconnectRollbackMinutes: number;
@@ -309,7 +298,7 @@ const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme"
   "update:copySeparator": [value: CopySeparator]; "update:maxActiveSessions": [value: number];
   "update:autoCommit": [value: boolean];
   "update:headerSortingEnabled": [value: boolean]; "update:headerFilteringEnabled": [value: boolean];
-  "update:showColumnRemarksInHeader": [value: boolean]; "update:scrollOptimizationEnabled": [value: boolean];
+  "update:showColumnRemarksInHeader": [value: boolean];
   "update:scrollOptimizationBufferScreens": [value: number];
   "update:showSelectedColumnRemarks": [value: boolean];
   "update:idleTimeoutMinutes": [value: number]; "update:transactionDisconnectRollbackMinutes": [value: number];

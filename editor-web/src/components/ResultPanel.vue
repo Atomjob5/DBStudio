@@ -75,6 +75,18 @@
               </div>
             </el-option>
           </el-select>
+          <Transition name="single-record-navigation">
+            <div v-if="singleRecordMode" class="single-record-navigation" role="group" aria-label="单记录导航">
+              <el-tooltip content="上一条记录">
+                <el-button text :icon="ArrowLeft" aria-label="上一条记录"
+                           :disabled="!canNavigatePrevious" @click="navigateSingleRecord(-1)" />
+              </el-tooltip>
+              <el-tooltip content="下一条记录">
+                <el-button text :icon="ArrowRight" aria-label="下一条记录"
+                           :disabled="!canNavigateNext" @click="navigateSingleRecord(1)" />
+              </el-tooltip>
+            </div>
+          </Transition>
           <el-tooltip :content="singleRecordMode ? '返回结果表格' : '单个记录查看'">
             <el-button text class="single-record-button" :icon="Postcard"
                        :type="singleRecordMode ? 'primary' : 'default'"
@@ -105,15 +117,28 @@
       <el-alert v-else-if="activeResult?.errorMessage" :title="activeResult.errorMessage" type="error" show-icon :closable="false" />
       <div v-else-if="activeResult?.columns.length" ref="tableHost" class="table-host" tabindex="0"
            @keydown="tableKeydown" @pointermove="autoScrollSelection">
-        <ResultSingleRecordView v-if="singleRecordMode && selectedRecordRow"
+        <ResultSingleRecordView v-if="singleRecordMode && selectedRecordRow" ref="singleRecordView"
                                 :columns="columnOptions" :row="selectedRecordRow"
+                                :buffer-screens="settings.scrollOptimizationBufferScreens"
+                                :copy-separator="settings.copySeparator"
+                                :selection-mode="selectionMode" :cell-range="cellRange"
+                                :selected-cell-keys="selectedCellKeys"
+                                :focused-cell-key="focusedCellKey"
+                                :selected-row-sources="selectedRowSources"
                                 :editing-column-index="editingCell?.rowIndex === selectedRecordRow.sourceIndex
                                   ? editingCell.columnIndex : undefined"
                                 :editing-value="editingCell?.value" :cell-states="resultCellStates"
+                                @cell-pointerdown="handleSingleRecordPointerdown"
+                                @cell-pointerenter="handleSingleRecordPointerenter"
+                                @cell-contextmenu="handleSingleRecordContextmenu"
+                                @row-pointerdown="handleSingleRecordRowPointerdown"
+                                @row-pointerenter="handleSingleRecordRowPointerenter"
+                                @row-contextmenu="handleSingleRecordRowContextmenu"
+                                @selection-change="handleSingleRecordSelectionChange"
                                 @cell-dblclick="handleSingleRecordDoubleClick(selectedRecordRow, $event)"
                                 @update:editing-value="updateEditingValue"
                                 @commit-edit="commitCellEdit" @cancel-edit="cancelCellEdit" />
-        <ResultVirtualGrid v-else-if="settings.scrollOptimizationEnabled" ref="virtualGrid"
+        <ResultVirtualGrid v-else ref="virtualGrid"
                            :rows="displayRows" :columns="virtualColumns" :header-height="headerHeight"
                            :buffer-screens="settings.scrollOptimizationBufferScreens"
                            :selection-mode="selectionMode" :cell-range="cellRange"
@@ -136,18 +161,6 @@
                                  @close="sumSummary = undefined" />
           </template>
         </ResultVirtualGrid>
-        <el-auto-resizer v-else v-slot="{ width, height }">
-          <el-table-v2 ref="legacyTable" :columns="tableColumns" :data="displayRows"
-                       :width="width" :height="height" row-key="sourceIndex"
-                       :row-height="32" :header-height="headerHeight" fixed
-                       :row-class="legacyRowClass" :footer-height="sumSummary ? 32 : 0"
-                       @scroll="captureLegacyScroll">
-            <template #footer>
-              <ResultSummaryFooter v-if="sumSummary" :total="sumSummary.total" :count="sumSummary.count"
-                                   @close="sumSummary = undefined" />
-            </template>
-          </el-table-v2>
-        </el-auto-resizer>
       </div>
       <el-result v-else icon="success" title="语句执行完成" :sub-title="`影响行数：${activeResult?.updateCount ?? 0}`" />
     </template>
@@ -205,12 +218,11 @@
 
 <script setup lang="ts">
 import { computed, h, nextTick, onBeforeUnmount, ref, watch } from "vue";
-import { ElMessage, TableV2FixedDir } from "element-plus";
+import { ElMessage } from "element-plus";
 import {
-  CircleCheck, CopyDocument, DataAnalysis, Document, Download, EditPen, Minus, Plus,
-  Postcard, RefreshLeft
+  ArrowLeft, ArrowRight, CircleCheck, CopyDocument, DataAnalysis, Document, Download, EditPen,
+  Minus, Plus, Postcard, RefreshLeft
 } from "@element-plus/icons-vue";
-import type { Column } from "element-plus";
 import type { QueryExecutionState, SelectedResultColumn } from "../types";
 import { matchesColumnQuery, resultColumnOptions, type ColumnOption } from "../columnFilter";
 import { autoColumnWidth, clampColumnWidth, columnIdentityKeys, defaultColumnWidth, moveColumnsToEdge,
@@ -275,18 +287,19 @@ const virtualGrid = ref<{
   setScrollPosition: (position: ResultGridScrollPosition) => void;
   scrollCellIntoView: (rowIndex: number, columnIndex: number) => void;
 }>();
-const legacyTable = ref<{
-  scrollTo: (position: { scrollLeft?: number; scrollTop?: number }) => void;
-  scrollToLeft: (scrollLeft: number) => void;
-  scrollToRow: (row: number, strategy?: "auto" | "center" | "end" | "start" | "smart") => void;
+const singleRecordView = ref<{
+  getCopyText: (includeHeaders?: boolean) => string | undefined;
 }>();
-const legacyScrollPosition = ref<ResultGridScrollPosition>({ left: 0, top: 0 });
 const activeLayout = ref<{ layoutKey: string; viewKey: string; identities: string[] }>();
 const dropTarget = ref<{ identity: string; side: DropSide }>();
 const resizing = ref<{ identity: string; startX: number; startWidth: number }>();
 const headerMenu = ref({ visible: false, x: 0, y: 0 });
 const dataMenu = ref<{ visible: boolean; x: number; y: number; mode: "cells" | "rows" }>(
   { visible: false, x: 0, y: 0, mode: "cells" });
+// A synthetic metadata cell in the single-record adapter can still use the
+// ordinary data menu for copying, but it must not expose SQL-generation
+// commands that would silently target the source value column.
+const singleRecordSqlAllowed = ref(true);
 let dragPreview: HTMLElement | undefined;
 let measureContext: CanvasRenderingContext2D | null | undefined;
 let singleRecordReturnPosition: ResultGridScrollPosition | undefined;
@@ -518,12 +531,6 @@ watch(() => settings.headerSortingEnabled, (enabled) => { if (!enabled) { sorts.
 watch(() => settings.headerFilteringEnabled, (enabled) => {
   if (!enabled) { filters.value = {}; detachCellRange(); sumSummary.value = undefined; }
 });
-watch(() => settings.scrollOptimizationEnabled, async () => {
-  const position = currentScrollPosition();
-  await nextTick();
-  restoreScrollPosition(position);
-}, { flush: "sync" });
-
 const displayRows = computed(() => visibleRows(activeResult.value?.rows ?? [], columnOptions.value,
   settings.headerSortingEnabled ? activeSort.value : undefined,
   settings.headerFilteringEnabled ? activeFilters.value : []));
@@ -552,98 +559,60 @@ const selectedCellsInView = computed<SelectedCell[]>(() => {
 watch(() => activeResult.value?.rows, (rows, previous) => {
   if (previous && rows !== previous) sumSummary.value = undefined;
 });
-const tableColumns = computed<Column[]>(() => [rowSelectorColumn(), ...visibleColumnOptions.value.map((column, index) =>
-  columnDefinition(column, index))]);
 const virtualColumns = computed<ResultVirtualColumn[]>(() => visibleColumnOptions.value.map((column, visibleIndex) => {
   const identity = currentIdentities.value[column.index];
+  const headerRenderer = () => renderHeader(column, identity);
   return {
     key: `c${column.index}`,
     label: column.label,
     sourceIndex: column.index,
     visibleIndex,
     width: resultColumnWidth(column, identity),
-    headerRenderer: () => renderHeader(column, identity)
+    headerRenderer,
+    headerCellRenderer: headerRenderer,
+    cellRenderer: ({ rowData, rowIndex }) => virtualCellRenderer(rowData, rowIndex, column, visibleIndex)
   };
 }));
 
-function columnDefinition(column: ColumnOption, visiblePosition: number): Column {
-  const identity = currentIdentities.value[column.index];
-  return {
-  key: `c${column.index}`,
-  dataKey: "cells",
-  title: column.label,
-  width: resultColumnWidth(column, identity),
-  minWidth: 72,
-  maxWidth: 800,
-  headerCellRenderer: () => renderHeader(column, identity),
-  cellRenderer: ({ rowData, rowIndex }: { rowData: ViewRow; rowIndex: number }) => {
-    const cellData = rowData.cells[column.index] ?? null;
-    const selected = selectedCellKeySet.value.has(cellSelectionKey(rowData.sourceIndex, column.index));
-    const focused = focusedCellKey.value === cellSelectionKey(rowData.sourceIndex, column.index);
-    if (editingCell.value?.rowIndex === rowData.sourceIndex
-        && editingCell.value.columnIndex === column.index) {
-      return h("input", {
-        class: "result-cell-editor",
-        value: editingCell.value.value ?? "",
-        "aria-label": "编辑结果值",
-        autofocus: true,
-        onInput: (event: Event) => updateEditingValue((event.target as HTMLInputElement).value),
-        onKeydown: (event: KeyboardEvent) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            commitCellEdit("enter");
-          }
-          else if (event.key === "Escape") { event.preventDefault(); cancelCellEdit(); }
-        },
-        onBlur: commitCellEdit,
-        onVnodeMounted: (vnode) => {
-          const element = vnode.el as HTMLInputElement | null;
-          element?.focus(); element?.select();
-        }
-      });
-    }
-    const editState = resultCellStates.value[`${rowData.sourceIndex}:${column.index}`];
-    return h("span", {
-      class: ["result-cell", cellData === null ? "null-value" : cellData.startsWith?.("0x") ? "binary-value" : "",
-        selectionMode.value === "columns" && isColumnSelected(column.index) ? "column-selected" : "",
-        selectionMode.value === "cells" && selected ? "selected" : "",
-        selectionMode.value === "cells" && focused ? "focused" : "",
-        editState === "pending" ? "result-cell-pending" : "",
-        editState === "posted" ? "result-cell-posted" : "",
-        editState === "error" ? "result-cell-error" : ""],
-      title: cellData !== null && cellData.length >= 40 ? cellData : undefined,
-      onPointerdown: (event: PointerEvent) => startCellSelection(event, rowIndex, visiblePosition),
-      onPointerenter: () => extendCellSelection(rowIndex, visiblePosition),
-      onContextmenu: (event: MouseEvent) => openCellMenu(event, rowIndex, visiblePosition, rowData),
-      onDblclick: () => handleCellDoubleClick(rowIndex, visiblePosition, rowData)
-    }, cellData === null ? "NULL" : cellData);
+function virtualCellRenderer(rowData: ViewRow, rowIndex: number, column: ColumnOption, visiblePosition: number) {
+  const cellData = rowData.cells[column.index] ?? null;
+  const selected = selectedCellKeySet.value.has(cellSelectionKey(rowData.sourceIndex, column.index));
+  const focused = focusedCellKey.value === cellSelectionKey(rowData.sourceIndex, column.index);
+  if (editingCell.value?.rowIndex === rowData.sourceIndex
+      && editingCell.value.columnIndex === column.index) {
+    return h("input", {
+      class: "result-cell-editor",
+      value: editingCell.value.value ?? "",
+      "aria-label": "编辑结果值",
+      autofocus: true,
+      onInput: (event: Event) => updateEditingValue((event.target as HTMLInputElement).value),
+      onKeydown: (event: KeyboardEvent) => {
+        if (event.key === "Enter") { event.preventDefault(); commitCellEdit("enter"); }
+        else if (event.key === "Escape") { event.preventDefault(); cancelCellEdit(); }
+      },
+      onBlur: () => commitCellEdit("blur")
+    });
   }
-  };
-}
-
-function legacyRowClass({ rowData }: { rowData: ViewRow }): string {
-  return [selectionMode.value === "rows" && selectedRowSources.value.includes(rowData.sourceIndex)
-    ? "result-row-selected" : "", resultRowClasses.value[rowData.sourceIndex] ?? ""].filter(Boolean).join(" ");
+  const editState = resultCellStates.value[`${rowData.sourceIndex}:${column.index}`];
+  return h("span", {
+    class: ["result-cell", cellData === null ? "null-value" : cellData.startsWith?.("0x") ? "binary-value" : "",
+      selectionMode.value === "columns" && isColumnSelected(column.index) ? "column-selected" : "",
+      selectionMode.value === "cells" && selected ? "selected" : "",
+      selectionMode.value === "cells" && focused ? "focused" : "",
+      editState === "pending" ? "result-cell-pending" : "",
+      editState === "posted" ? "result-cell-posted" : "",
+      editState === "error" ? "result-cell-error" : ""],
+    title: cellData !== null && cellData.length >= 40 ? cellData : undefined,
+    onPointerdown: (event: PointerEvent) => startCellSelection(event, rowIndex, visiblePosition),
+    onPointerenter: () => extendCellSelection(rowIndex, visiblePosition),
+    onContextmenu: (event: MouseEvent) => openCellMenu(event, rowIndex, visiblePosition, rowData),
+    onDblclick: () => handleCellDoubleClick(rowIndex, visiblePosition, rowData)
+  }, cellData === null ? "NULL" : cellData);
 }
 
 function resultColumnWidth(column: ColumnOption, identity: string): number {
   const stored = activeLayout.value ? columnLayouts.layout(activeLayout.value.layoutKey) : undefined;
   return stored?.widths[identity] ?? defaultColumnWidth(column.label);
-}
-
-function rowSelectorColumn(): Column {
-  return {
-    key: "__row__", dataKey: "sourceIndex", title: "#", width: 34, minWidth: 34, maxWidth: 34,
-    fixed: TableV2FixedDir.LEFT,
-    headerCellRenderer: () => h("span", { class: "result-row-number result-row-number-header", title: "单击或拖动行号选择整行" }, "#"),
-    cellRenderer: ({ rowData }: { rowData: ViewRow }) => h("span", {
-      class: ["result-row-number", selectionMode.value === "rows" && selectedRowSources.value.includes(rowData.sourceIndex) ? "selected" : ""],
-      title: `选择第 ${rowData.sourceIndex + 1} 行；按住拖动可连续选择多行`,
-      onPointerdown: (event: PointerEvent) => selectResultRow(event, rowData.sourceIndex),
-      onPointerenter: () => extendRowSelection(rowData.sourceIndex),
-      onContextmenu: (event: MouseEvent) => openRowMenu(event, rowData.sourceIndex)
-    }, String(rowData.sourceIndex + 1))
-  };
 }
 
 function isColumnSelected(sourceIndex: number): boolean {
@@ -1099,6 +1068,7 @@ function clearSelection(): void {
   clearCellAndRowSelection();
   clearColumnHeaderSelection();
   selectionMode.value = "cells";
+  singleRecordSqlAllowed.value = true;
   singleRecordMode.value = false;
   singleRecordReturnPosition = undefined;
 }
@@ -1215,7 +1185,13 @@ function finishRowSelection(): void {
 }
 
 function openCellMenu(event: MouseEvent, row: number, column: number, rowData: ViewRow): void {
+  openCellMenuWithSqlPermission(event, row, column, rowData, true);
+}
+
+function openCellMenuWithSqlPermission(event: MouseEvent, row: number, column: number,
+                                       rowData: ViewRow, sqlAllowed: boolean): void {
   event.preventDefault(); event.stopPropagation();
+  singleRecordSqlAllowed.value = sqlAllowed;
   if (selectionMode.value === "rows" && selectedRowSources.value.includes(rowData.sourceIndex)) {
     openDataMenu(event, "rows");
     return;
@@ -1237,6 +1213,7 @@ function openCellMenu(event: MouseEvent, row: number, column: number, rowData: V
 
 function openRowMenu(event: MouseEvent, sourceIndex: number): void {
   event.preventDefault(); event.stopPropagation();
+  singleRecordSqlAllowed.value = true;
   clearColumnHeaderSelection();
   selectionMode.value = "rows";
   selectedColumnIndex.value = undefined;
@@ -1358,7 +1335,14 @@ const selectedRecordRow = computed<ViewRow | undefined>(() => {
   const sourceIndex = sourceRows.values().next().value;
   return displayRows.value.find((row) => row.sourceIndex === sourceIndex);
 });
+const selectedRecordPosition = computed(() => {
+  const row = selectedRecordRow.value;
+  return row ? displayRows.value.findIndex((item) => item.sourceIndex === row.sourceIndex) : -1;
+});
 const canViewSingleRecord = computed(() => selectedRecordRow.value !== undefined);
+const canNavigatePrevious = computed(() => singleRecordMode.value && selectedRecordPosition.value > 0);
+const canNavigateNext = computed(() => singleRecordMode.value
+  && selectedRecordPosition.value >= 0 && selectedRecordPosition.value < displayRows.value.length - 1);
 const selectedRowCount = computed(() => selectionMode.value === "cells"
   ? new Set(selectedCellsInView.value.map((cell) => cell.sourceRow)).size
   : selectionMode.value === "rows" ? selectedRowsInDisplayOrder.value.length : 0);
@@ -1381,6 +1365,7 @@ watch(selectedRecordRow, (row) => {
 async function leaveSingleRecordView(): Promise<void> {
   const position = singleRecordReturnPosition;
   singleRecordMode.value = false;
+  singleRecordSqlAllowed.value = true;
   singleRecordReturnPosition = undefined;
   await nextTick();
   if (position) restoreScrollPosition(position);
@@ -1390,10 +1375,44 @@ function toggleSingleRecordView(): void {
   if (singleRecordMode.value) { void leaveSingleRecordView(); return; }
   if (!selectedRecordRow.value) return;
   singleRecordReturnPosition = currentScrollPosition();
+  singleRecordSqlAllowed.value = selectionMode.value === "cells";
   singleRecordMode.value = true;
 }
 
+function navigateSingleRecord(delta: -1 | 1): void {
+  const position = selectedRecordPosition.value;
+  const target = displayRows.value[position + delta];
+  if (!singleRecordMode.value || position < 0 || !target) return;
+  const targetPosition = position + delta;
+  if (selectionMode.value === "rows") {
+    selectedRowSources.value = [target.sourceIndex];
+    rowAnchor.value = target.sourceIndex;
+    return;
+  }
+  if (selectionMode.value !== "cells") return;
+  const selectedColumns = [...new Set(selectedCellsInView.value.map((cell) => cell.sourceColumn))];
+  const nextCells = selectedColumns.map((sourceColumn) => {
+    const column = visibleColumnOptions.value.findIndex((item) => item.index === sourceColumn);
+    return column < 0 ? undefined : selectedCellAt(targetPosition, column);
+  }).filter((cell): cell is SelectedCell => !!cell);
+  selectedCells.value = nextCells;
+  const first = nextCells[0];
+  if (first) {
+    focusedCell.value = { sourceRow: first.sourceRow, sourceColumn: first.sourceColumn };
+    selectedColumnIndex.value = first.sourceColumn;
+    emitSelectedColumn();
+    cellAnchor.value = { row: first.row, column: first.column };
+  }
+  cellRange.value = nextCells.length === 1 && first
+    ? { start: { row: first.row, column: first.column }, end: { row: first.row, column: first.column } }
+    : undefined;
+}
+
 function selectedCopyText(includeHeaders = false): string {
+  if (singleRecordMode.value) {
+    const text = singleRecordView.value?.getCopyText(includeHeaders);
+    if (text !== undefined) return text;
+  }
   if (selectionMode.value === "rows") {
     return copyGrid(visibleColumnOptions.value, selectedRowsInDisplayOrder.value, includeHeaders, settings.copySeparator);
   }
@@ -1456,12 +1475,14 @@ function cellSql(mode: "update" | "delete"): string | undefined {
     activeResult.value?.dialectId);
 }
 
-const canCopyIn = computed(() => selectionMode.value === "cells" && !!inPredicate());
-const canCopyInsert = computed(() => selectionMode.value === "rows" && !!rowSql("insert"));
-const canCopyUpdate = computed(() => selectionMode.value === "rows" ? !!rowSql("update")
-  : selectionMode.value === "cells" && !!cellSql("update"));
-const canCopyDelete = computed(() => selectionMode.value === "rows" ? !!rowSql("delete")
-  : selectionMode.value === "cells" && !!cellSql("delete"));
+const canCopyIn = computed(() => singleRecordSqlAllowed.value
+  && selectionMode.value === "cells" && !!inPredicate());
+const canCopyInsert = computed(() => singleRecordSqlAllowed.value
+  && selectionMode.value === "rows" && !!rowSql("insert"));
+const canCopyUpdate = computed(() => singleRecordSqlAllowed.value && (selectionMode.value === "rows"
+  ? !!rowSql("update") : selectionMode.value === "cells" && !!cellSql("update")));
+const canCopyDelete = computed(() => singleRecordSqlAllowed.value && (selectionMode.value === "rows"
+  ? !!rowSql("delete") : selectionMode.value === "cells" && !!cellSql("delete")));
 const compareValues = computed(() => ({
   left: selectedCellsInView.value[0]?.value ?? null,
   right: selectedCellsInView.value[1]?.value ?? null
@@ -1543,6 +1564,69 @@ function handleSingleRecordDoubleClick(row: ViewRow, columnIndex: number): void 
     return;
   }
   valueDialog.value = { visible: true, value: row.cells[columnIndex] ?? null };
+}
+
+function singleRecordRowPosition(): number {
+  const row = selectedRecordRow.value;
+  return row ? displayRows.value.findIndex((item) => item.sourceIndex === row.sourceIndex) : -1;
+}
+
+function singleRecordColumnPosition(fieldIndex: number): number {
+  return visibleColumnOptions.value.findIndex((column) => column.index === fieldIndex);
+}
+
+function handleSingleRecordSelectionChange(sqlAllowed: boolean): void {
+  singleRecordSqlAllowed.value = sqlAllowed;
+}
+
+function handleSingleRecordPointerdown(event: PointerEvent, fieldIndex: number, _columnIndex: number,
+                                       isValueCell: boolean): void {
+  singleRecordSqlAllowed.value = isValueCell;
+  if (!isValueCell) return;
+  const row = singleRecordRowPosition();
+  const column = singleRecordColumnPosition(fieldIndex);
+  if (row < 0 || column < 0) return;
+  startCellSelection(event, row, column);
+}
+
+function handleSingleRecordPointerenter(fieldIndex: number, _columnIndex: number, isValueCell: boolean): void {
+  singleRecordSqlAllowed.value = isValueCell;
+  if (!isValueCell) return;
+  const row = singleRecordRowPosition();
+  const column = singleRecordColumnPosition(fieldIndex);
+  if (row < 0 || column < 0) return;
+  extendCellSelection(row, column);
+}
+
+function handleSingleRecordContextmenu(event: MouseEvent, fieldIndex: number, _columnIndex: number,
+                                       isValueCell: boolean): void {
+  const row = singleRecordRowPosition();
+  const column = singleRecordColumnPosition(fieldIndex);
+  if (row < 0 || column < 0 || !selectedRecordRow.value) return;
+  openCellMenuWithSqlPermission(event, row, column, selectedRecordRow.value, isValueCell);
+}
+
+function handleSingleRecordRowPointerdown(event: PointerEvent, fieldIndex: number): void {
+  const row = singleRecordRowPosition();
+  const column = singleRecordColumnPosition(fieldIndex);
+  if (row < 0 || column < 0) return;
+  // A row in the transposed adapter is a source field. Keep the source
+  // selection model in cell mode while the adapter highlights the full
+  // synthetic field row (including metadata cells).
+  startCellSelection(event, row, column);
+}
+
+function handleSingleRecordRowPointerenter(fieldIndex: number): void {
+  const row = singleRecordRowPosition();
+  const column = singleRecordColumnPosition(fieldIndex);
+  if (row >= 0 && column >= 0) extendCellSelection(row, column);
+}
+
+function handleSingleRecordRowContextmenu(event: MouseEvent, fieldIndex: number): void {
+  const row = singleRecordRowPosition();
+  const column = singleRecordColumnPosition(fieldIndex);
+  if (row < 0 || column < 0 || !selectedRecordRow.value) return;
+  openCellMenuWithSqlPermission(event, row, column, selectedRecordRow.value, false);
 }
 
 function resultRowId(rowIndex: number): string {
@@ -1806,7 +1890,7 @@ function commitCellEdit(reason: "enter" | "blur" | "viewport" = "blur"): void {
 
 function restoreTableFocusAfterEdit(): void {
   void nextTick(() => {
-    if (editingCell.value || singleRecordMode.value) return;
+    if (editingCell.value) return;
     tableHost.value?.focus({ preventScroll: true });
   });
 }
@@ -1899,27 +1983,7 @@ function moveFocusedCell(event: KeyboardEvent): boolean {
 }
 
 function scrollCellIntoView(point: CellPoint): void {
-  if (virtualGrid.value) {
-    virtualGrid.value.scrollCellIntoView(point.row, point.column);
-    return;
-  }
-  legacyTable.value?.scrollToRow(point.row, "auto");
-  const column = visibleColumnOptions.value[point.column];
-  if (!column) return;
-  const left = visibleColumnOptions.value.slice(0, point.column).reduce((total, item) => {
-    const identity = currentIdentities.value[item.index];
-    return total + resultColumnWidth(item, identity);
-  }, 0);
-  const right = left + resultColumnWidth(column, currentIdentities.value[column.index]);
-  const viewportWidth = tableHost.value?.querySelector<HTMLElement>(".el-table-v2__main")?.clientWidth
-    ?? tableHost.value?.clientWidth ?? 0;
-  const availableWidth = Math.max(0, viewportWidth - 34 - 8);
-  const currentLeft = legacyScrollPosition.value.left;
-  const nextLeft = left < currentLeft ? left
-    : right > currentLeft + availableWidth ? right - availableWidth : currentLeft;
-  if (nextLeft === currentLeft) return;
-  legacyScrollPosition.value = { ...legacyScrollPosition.value, left: Math.max(0, nextLeft) };
-  legacyTable.value?.scrollToLeft(legacyScrollPosition.value.left);
+  virtualGrid.value?.scrollCellIntoView(point.row, point.column);
 }
 
 function autoScrollSelection(event: PointerEvent): void {
@@ -1936,37 +2000,15 @@ function autoScrollSelection(event: PointerEvent): void {
   if (scroller) {
     scroller.scrollTop += delta.top;
     scroller.scrollLeft += delta.left;
-    return;
   }
-  restoreLegacyScrollPosition({
-    left: legacyScrollPosition.value.left + delta.left,
-    top: legacyScrollPosition.value.top + delta.top
-  });
 }
 
 function currentScrollPosition(): ResultGridScrollPosition {
-  if (virtualGrid.value) return virtualGrid.value.getScrollPosition();
-  return { ...legacyScrollPosition.value };
+  return virtualGrid.value?.getScrollPosition() ?? { left: 0, top: 0 };
 }
 
 function restoreScrollPosition(position: ResultGridScrollPosition): void {
-  if (virtualGrid.value) {
-    virtualGrid.value.setScrollPosition(position);
-    return;
-  }
-  restoreLegacyScrollPosition(position);
-}
-
-function captureLegacyScroll(position: { scrollLeft: number; scrollTop: number }): void {
-  legacyScrollPosition.value = { left: position.scrollLeft, top: position.scrollTop };
-}
-
-function restoreLegacyScrollPosition(position: ResultGridScrollPosition): void {
-  legacyScrollPosition.value = { left: Math.max(0, position.left), top: Math.max(0, position.top) };
-  legacyTable.value?.scrollTo({
-    scrollLeft: legacyScrollPosition.value.left,
-    scrollTop: legacyScrollPosition.value.top
-  });
+  virtualGrid.value?.setScrollPosition(position);
 }
 
 async function copyText(text: string, successMessage: string): Promise<void> {
@@ -2042,6 +2084,16 @@ onBeforeUnmount(() => {
 .result-actions :deep(.el-button) { width: 28px; min-height: 28px; padding: 0; }
 .result-actions :deep(.result-edit-mode) { width: auto; padding: 0 8px; font-size: 11px; }
 .result-actions :deep(.el-dropdown) { display: inline-flex; }
+.single-record-navigation { display: inline-flex; align-items: center; gap: 1px; }
+.single-record-navigation-enter-active {
+  animation: single-record-navigation-in 380ms cubic-bezier(.22, 1.35, .36, 1) both;
+}
+@keyframes single-record-navigation-in {
+  0% { opacity: 0; transform: translateX(8px) scale(.78); }
+  65% { opacity: 1; transform: translateX(-2px) scale(1.08); }
+  84% { transform: translateX(1px) scale(.98); }
+  100% { opacity: 1; transform: translateX(0) scale(1); }
+}
 .result-edit-operations {
   width: 148px;
   max-width: 148px;
@@ -2155,33 +2207,11 @@ onBeforeUnmount(() => {
   color: var(--db-text);
   font: inherit;
 }
-:deep(.el-table-v2),
 :deep(.result-virtual-grid__viewport) {
   font-family: inherit;
   font-size: 12px;
   font-weight: 400;
   font-variant-numeric: tabular-nums;
-}
-:deep(.el-table-v2__header-cell) { padding: 0; }
-:deep(.el-table-v2__row.result-row-selected),
-:deep(.el-table-v2__row.result-row-selected:hover),
-:deep(.el-table-v2__row.result-row-selected.is-hovered) {
-  background: var(--db-accent-soft);
-}
-:deep(.el-table-v2__row.result-row-selected .result-row-number) { background: transparent; }
-:deep(.el-table-v2__row.result-row-inserted) { background: color-mix(in srgb, var(--el-color-success) 10%, transparent); }
-:deep(.el-table-v2__row.result-row-inserted-applied) { background: color-mix(in srgb, var(--el-color-success) 6%, transparent); }
-:deep(.el-table-v2__row.result-row-deleted) { background: color-mix(in srgb, var(--el-color-danger) 9%, transparent); opacity: .72; }
-:deep(.el-table-v2__row.result-row-deleted .result-cell) { text-decoration: line-through; }
-:deep(.el-table-v2__footer) { background: var(--db-panel-soft); }
-:deep(.el-table-v2__left) {
-  border-right: 0;
-  background: var(--db-row-gutter-bg);
-  box-shadow: none;
-}
-:deep(.el-table-v2__left::after) {
-  content: ""; position: absolute; z-index: 3; top: 0; right: 0; bottom: 0; width: 1px;
-  background: var(--db-row-gutter-divider); pointer-events: none;
 }
 .result-empty { flex: 1; }
 .result-empty :deep(.el-empty__image) { width: auto; height: auto; }
@@ -2224,8 +2254,6 @@ onBeforeUnmount(() => {
 }
 :deep(.result-row-number-header) { background: var(--db-table-header); font-weight: 600; }
 :deep(.result-row-number:not(.result-row-number-header)) { cursor: pointer; }
-:deep(.el-table-v2__row:hover .result-row-number),
-:deep(.el-table-v2__row.is-hovered .result-row-number),
 :deep(.result-virtual-grid__row:hover .result-row-number) { color: var(--db-text-secondary); }
 :deep(.result-row-number.selected) { outline: 0; background: var(--db-row-gutter-bg); color: var(--db-accent); font-weight: 600; }
 :deep(.result-row-number.selected::before) {
@@ -2238,6 +2266,7 @@ onBeforeUnmount(() => {
   .result-tabs { max-width: 45%; }
 }
 @media (prefers-reduced-motion: reduce) {
+  .single-record-navigation-enter-active { animation: none !important; }
   .result-edit-actions-enter-active,
   .result-edit-actions-leave-active {
     animation: none !important;
