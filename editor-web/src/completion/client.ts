@@ -8,6 +8,7 @@ type Pending = { resolve: (value: CompletionWorkerValue) => void; reject: (error
 export class CompletionClient {
   private worker?: Worker;
   private readonly pending = new Map<string, Pending>();
+  private workerGeneration = 0;
 
   inspect(cacheKey: string, providerId: string): Promise<CompletionCacheSummary | undefined> {
     return this.send({ id: crypto.randomUUID(), type: "inspect", cacheKey, providerId }) as Promise<CompletionCacheSummary | undefined>;
@@ -65,8 +66,15 @@ export class CompletionClient {
     return this.send({ id: crypto.randomUUID(), type: "stats" }) as Promise<Omit<CompletionCacheStats, "loadingCount">>;
   }
 
-  clear(): Promise<void> {
-    return this.send({ id: crypto.randomUUID(), type: "clear" }) as Promise<void>;
+  async clear(): Promise<void> {
+    try {
+      await this.send({ id: crypto.randomUUID(), type: "clear" });
+    } finally {
+      // Clearing the stores drops references, but the Worker can retain its expanded
+      // V8 heap and document mirror. Recycle it so the next request starts with a
+      // genuinely empty isolate. This also runs when clearing fails halfway through.
+      this.terminateWorker();
+    }
   }
 
   private send(request: CompletionWorkerRequest): Promise<CompletionWorkerValue> {
@@ -80,6 +88,8 @@ export class CompletionClient {
   private ensureWorker(): Worker {
     if (this.worker) return this.worker;
     const worker = new Worker(new URL("../workers/completion.worker.ts", import.meta.url), { type: "module" });
+    this.workerGeneration += 1;
+    if (import.meta.env?.DEV) console.debug("[completion] worker-created", { generation: this.workerGeneration });
     worker.onmessage = (event: MessageEvent<CompletionWorkerResponse>) => {
       const pending = this.pending.get(event.data.id);
       if (!pending) return;
@@ -88,14 +98,29 @@ export class CompletionClient {
       else pending.resolve(event.data.value);
     };
     worker.onerror = (event) => {
+      if (this.worker !== worker) return;
       const error = new Error(event.message || "SQL补全工作线程异常");
-      for (const pending of this.pending.values()) pending.reject(error);
-      this.pending.clear();
-      worker.terminate();
-      this.worker = undefined;
+      this.terminateWorker(error, worker);
     };
     this.worker = worker;
     return worker;
+  }
+
+  private terminateWorker(reason?: Error, expectedWorker?: Worker): void {
+    const worker = this.worker;
+    if (expectedWorker && worker !== expectedWorker) return;
+    this.worker = undefined;
+    if (worker) {
+      worker.onmessage = null;
+      worker.onerror = null;
+      worker.terminate();
+    }
+    if (!reason) {
+      if (import.meta.env?.DEV) console.debug("[completion] worker-recycled", { generation: this.workerGeneration });
+      reason = Object.assign(new Error("SQL补全工作线程已重置"), { code: "WORKER_RESET" });
+    }
+    for (const pending of this.pending.values()) pending.reject(reason);
+    this.pending.clear();
   }
 }
 

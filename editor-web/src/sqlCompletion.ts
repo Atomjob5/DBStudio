@@ -72,6 +72,17 @@ export interface CompletionObjectDelta {
   remarks: string;
 }
 
+/** Current object contents projected into the compact IndexedDB record shape. */
+export interface CompletionStoredObject {
+  namespaceKey: string;
+  catalog: string;
+  schema: string;
+  name: string;
+  kind: "table" | "view";
+  remarks: string;
+  columns: Array<{ name: string; remarks: string }>;
+}
+
 export interface CompletionPhysicalTable {
   schema: string;
   table: string;
@@ -183,6 +194,22 @@ export function mergeCompletionColumns(index: CompletionIndex, namespaceKey: str
   }
   object.columns = [...byName.values()].sort((left, right) => compareName(left.name, right.name));
   object.snapshot.columns = object.columns;
+}
+
+export function completionStoredObject(index: CompletionIndex, namespaceKey: string,
+                                       objectName: string): CompletionStoredObject | undefined {
+  const namespace = index.namespaces.get(normalize(namespaceKey));
+  const object = namespace?.objects.get(normalize(objectName));
+  if (!namespace || !object) return undefined;
+  return {
+    namespaceKey: namespace.snapshot.key,
+    catalog: namespace.snapshot.catalog,
+    schema: namespace.snapshot.schema,
+    name: object.snapshot.name,
+    kind: object.snapshot.kind,
+    remarks: object.snapshot.remarks,
+    columns: object.snapshot.columns.map((column) => ({ name: column.name, remarks: column.remarks }))
+  };
 }
 
 export function applyCompletionStructure(index: CompletionIndex, schema: string, table: string,

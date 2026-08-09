@@ -5,6 +5,7 @@ import type { CompletionWorkerRequest, CompletionWorkerResponse } from "./worker
 class MockWorker {
   static latest?: MockWorker;
   readonly messages: CompletionWorkerRequest[] = [];
+  terminated = false;
   onmessage?: (event: MessageEvent<CompletionWorkerResponse>) => void;
   onerror?: (event: ErrorEvent) => void;
 
@@ -18,13 +19,36 @@ class MockWorker {
     queueMicrotask(() => this.onmessage?.({ data: { id: request.id, value } } as MessageEvent<CompletionWorkerResponse>));
   }
 
-  terminate(): void { }
+  terminate(): void { this.terminated = true; }
+}
+
+class DelayedWorker {
+  static latest?: DelayedWorker;
+  readonly messages: CompletionWorkerRequest[] = [];
+  terminated = false;
+  onmessage?: (event: MessageEvent<CompletionWorkerResponse>) => void;
+  onerror?: (event: ErrorEvent) => void;
+
+  constructor() { DelayedWorker.latest = this; }
+
+  postMessage(request: CompletionWorkerRequest): void {
+    this.messages.push(request);
+    if (request.type !== "clear" && request.type !== "stats") return;
+    queueMicrotask(() => this.onmessage?.({ data: { id: request.id, value: undefined } } as MessageEvent<CompletionWorkerResponse>));
+  }
+
+  respond(id: string): void {
+    this.onmessage?.({ data: { id, value: undefined } } as MessageEvent<CompletionWorkerResponse>);
+  }
+
+  terminate(): void { this.terminated = true; }
 }
 
 describe("CompletionClient worker protocol", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     MockWorker.latest = undefined;
+    DelayedWorker.latest = undefined;
   });
 
   it("sends model identity and cursor data without copying SQL into completion requests", async () => {
@@ -130,5 +154,67 @@ describe("CompletionClient worker protocol", () => {
       providerId: "oceanbase-oracle",
       sql: "alter table CBSAC.CUSTOMERS add CREATED_AT timestamp"
     });
+  });
+
+  it("recycles the worker after clearing and ignores residual responses", async () => {
+    vi.stubGlobal("Worker", DelayedWorker);
+    const client = new CompletionClient();
+    const pending = client.complete("cache", "oracle", "editor", 1, 0, "", 20, false);
+    const pendingRefresh = client.refresh({
+      cacheKey: "cache", providerId: "oracle", workspaceId: "workspace", clientId: "client",
+      body: { editorId: "editor" }
+    });
+    const oldWorker = DelayedWorker.latest;
+    const rejected = expect(pending).rejects.toMatchObject({ code: "WORKER_RESET" });
+    const refreshRejected = expect(pendingRefresh).rejects.toMatchObject({ code: "WORKER_RESET" });
+
+    await client.clear();
+    await rejected;
+    await refreshRejected;
+    expect(oldWorker?.terminated).toBe(true);
+
+    const staleRequest = oldWorker?.messages.find((request) => request.type === "complete");
+    if (staleRequest) oldWorker?.respond(staleRequest.id);
+    await client.stats();
+    expect(DelayedWorker.latest).not.toBe(oldWorker);
+  });
+
+  it("recycles the worker even when clearing reports an error", async () => {
+    class FailingWorker extends MockWorker {
+      override postMessage(request: CompletionWorkerRequest): void {
+        this.messages.push(request);
+        if (request.type === "clear") queueMicrotask(() => this.onmessage?.({
+          data: { id: request.id, error: { message: "清理失败", code: "CLEAR_FAILED" } }
+        } as MessageEvent<CompletionWorkerResponse>));
+        else if (request.type === "stats") queueMicrotask(() => this.onmessage?.({
+          data: { id: request.id, value: undefined }
+        } as MessageEvent<CompletionWorkerResponse>));
+      }
+    }
+    vi.stubGlobal("Worker", FailingWorker);
+    const client = new CompletionClient();
+    await client.stats();
+    const worker = FailingWorker.latest;
+    await expect(client.clear()).rejects.toMatchObject({ code: "CLEAR_FAILED" });
+    expect(worker?.terminated).toBe(true);
+  });
+
+  it("rejects pending requests and recreates the channel after a worker exception", async () => {
+    class CrashingWorker extends MockWorker {
+      override postMessage(request: CompletionWorkerRequest): void {
+        this.messages.push(request);
+        queueMicrotask(() => this.onerror?.({ message: "worker crashed" } as ErrorEvent));
+      }
+    }
+    vi.stubGlobal("Worker", CrashingWorker);
+    const client = new CompletionClient();
+    const pending = client.stats();
+    const oldWorker = MockWorker.latest;
+    await expect(pending).rejects.toThrow("worker crashed");
+    expect(oldWorker?.terminated).toBe(true);
+
+    vi.stubGlobal("Worker", MockWorker);
+    await client.stats();
+    expect(MockWorker.latest).not.toBe(oldWorker);
   });
 });

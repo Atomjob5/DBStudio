@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   applyCompletionStructure,
   buildCompletionIndex,
+  completionStoredObject,
+  createCompletionIndex,
+  mergeCompletionColumns,
   resetCompletionStructure,
   resolveChangedPhysicalTable,
   resolveCompletion,
   resolveResultColumnRemarks,
-  resolveSinglePhysicalTable
+  resolveSinglePhysicalTable,
+  upsertCompletionObjects
 } from "./sqlCompletion";
 import type { CompletionSnapshot } from "./types";
 
@@ -64,6 +68,50 @@ const oracleSnapshot: CompletionSnapshot = {
 };
 
 describe("handwritten context-aware SQL completion", () => {
+  it("projects the current index object for compact streaming persistence", () => {
+    const stored = completionStoredObject(index, "catalog:sales", "orders");
+    expect(stored).toEqual({
+      namespaceKey: "catalog:sales", catalog: "sales", schema: "", name: "orders",
+      kind: "table", remarks: "订单",
+      columns: [{ name: "customer_id", remarks: "客户编号" }, { name: "id", remarks: "订单编号" }]
+    });
+    expect(completionStoredObject(index, "catalog:sales", "missing")).toBeUndefined();
+  });
+
+  it("keeps streamed object snapshots consistent across batches and duplicate fields", () => {
+    const streamed = createCompletionIndex("schema:app", [
+      { key: "schema:app", catalog: "", schema: "APP", label: "APP" }
+    ]);
+    upsertCompletionObjects(streamed, [{
+      namespaceKey: "schema:app", catalog: "", schema: "APP", name: "orders",
+      kind: "table", remarks: "订单"
+    }]);
+    upsertCompletionObjects(streamed, [{
+      namespaceKey: "schema:app", catalog: "", schema: "APP", name: "orders",
+      kind: "table", remarks: "订单表"
+    }, {
+      namespaceKey: "schema:app", catalog: "", schema: "APP", name: "customers",
+      kind: "view", remarks: "客户视图"
+    }]);
+    mergeCompletionColumns(streamed, "schema:app", "orders", [
+      { name: "id", typeName: "", remarks: "旧编号" }
+    ]);
+    mergeCompletionColumns(streamed, "schema:app", "orders", [
+      { name: "id", typeName: "", remarks: "订单编号" },
+      { name: "status", typeName: "", remarks: "状态" }
+    ]);
+
+    expect(completionStoredObject(streamed, "schema:app", "orders")).toEqual({
+      namespaceKey: "schema:app", catalog: "", schema: "APP", name: "orders",
+      kind: "table", remarks: "订单表",
+      columns: [{ name: "id", remarks: "订单编号" }, { name: "status", remarks: "状态" }]
+    });
+    expect(completionStoredObject(streamed, "schema:app", "customers")).toEqual({
+      namespaceKey: "schema:app", catalog: "", schema: "APP", name: "customers",
+      kind: "view", remarks: "客户视图", columns: []
+    });
+  });
+
   it("resolves result remarks only from an exact cached source", () => {
     expect(resolveResultColumnRemarks(index, "mysql", "select id, customer_id from sales.orders", [
       { index: 0, catalog: "SALES", schema: "", table: "ORDERS", name: "ID" },

@@ -3,6 +3,7 @@
 import {
   applyCompletionStructure,
   buildCompletionIndex,
+  completionStoredObject,
   createCompletionIndex,
   mergeCompletionColumns,
   resetCompletionStructure,
@@ -152,6 +153,7 @@ async function handle(request: CompletionWorkerRequest) {
     return undefined;
   }
   if (request.type === "clear") {
+    completionDiagnostic("clear-start", { indexCount: indexes.size });
     invalidationEpoch += 1;
     for (const controller of refreshControllers.values()) controller.abort();
     for (const controller of enrichmentControllers.values()) controller.abort();
@@ -160,7 +162,13 @@ async function handle(request: CompletionWorkerRequest) {
     await Promise.allSettled([...mutationQueues.values()]);
     indexes.clear();
     loadedStructures.clear();
-    await clearAllStores();
+    try {
+      await clearAllStores();
+    } catch (error) {
+      completionDiagnostic("clear-failed", { indexCount: indexes.size });
+      throw error;
+    }
+    completionDiagnostic("clear-complete", { indexCount: indexes.size });
     return undefined;
   }
   return cacheStats();
@@ -221,7 +229,8 @@ async function refreshStreaming(cacheKey: string, providerId: string, url: strin
   let completed = false;
   let manifest: CompletionManifest | undefined;
   let index: CompletionIndex | undefined;
-  const records = new Map<string, StoredCompletionObject>();
+  let streamedObjectCount = 0;
+  let streamedColumnCount = 0;
   try {
     const response = await fetch(url, {
       method: "POST", credentials: "same-origin", cache: "no-store", signal: controller.signal,
@@ -244,6 +253,9 @@ async function refreshStreaming(cacheKey: string, providerId: string, url: strin
         };
         index = createCompletionIndex(record.metadata.defaultNamespaceKey, record.metadata.namespaces);
         remember(cacheKey, { index, providerId, estimatedBytes: 0 });
+        completionDiagnostic("refresh-begin", {
+          cacheKey, namespaceCount: record.metadata.namespaces.length
+        });
         return;
       }
       if (!manifest || !index || !generation) throw new Error("补全流缺少begin记录");
@@ -251,35 +263,37 @@ async function refreshStreaming(cacheKey: string, providerId: string, url: strin
         upsertCompletionObjects(index, record.values);
         const changed: StoredCompletionObject[] = [];
         for (const value of record.values) {
-          const key = objectRecordKey(cacheKey, generation, value.namespaceKey, value.name);
-          const existing = records.get(key);
-          const stored: StoredCompletionObject = existing ?? {
-            key, generationKey: generationKey(cacheKey, generation), cacheKey, generation,
-            namespaceKey: value.namespaceKey, catalog: value.catalog, schema: value.schema,
-            name: value.name, kind: value.kind, remarks: value.remarks, columns: []
-          };
-          stored.kind = value.kind;
-          stored.remarks = value.remarks;
-          records.set(key, stored);
-          changed.push(stored);
+          const current = completionStoredObject(index, value.namespaceKey, value.name);
+          if (!current) continue;
+          changed.push({
+            key: objectRecordKey(cacheKey, generation, current.namespaceKey, current.name),
+            generationKey: generationKey(cacheKey, generation), cacheKey, generation,
+            ...current
+          });
         }
         await idbPutMany(OBJECT_STORE, changed);
+        streamedObjectCount += record.values.length;
+        completionDiagnostic("refresh-objects", { cacheKey, count: record.values.length,
+          total: streamedObjectCount });
         return;
       }
       if (record.type === "columns") {
         const changed: StoredCompletionObject[] = [];
         for (const group of record.values) {
-          const key = objectRecordKey(cacheKey, generation, group.namespaceKey, group.objectName);
-          const stored = records.get(key);
-          if (!stored) continue;
           const columns = group.columns.map(([name, remarks]) => ({ name, remarks, typeName: "" }));
           mergeCompletionColumns(index, group.namespaceKey, group.objectName, columns);
-          const byName = new Map(stored.columns.map((column) => [normalize(column.name), column]));
-          for (const [name, remarks] of group.columns) byName.set(normalize(name), { name, remarks });
-          stored.columns = [...byName.values()];
-          changed.push(stored);
+          const current = completionStoredObject(index, group.namespaceKey, group.objectName);
+          if (!current) continue;
+          changed.push({
+            key: objectRecordKey(cacheKey, generation, current.namespaceKey, current.name),
+            generationKey: generationKey(cacheKey, generation), cacheKey, generation,
+            ...current
+          });
         }
         await idbPutMany(OBJECT_STORE, changed);
+        streamedColumnCount += record.values.reduce((total, group) => total + group.columns.length, 0);
+        completionDiagnostic("refresh-columns", { cacheKey, groupCount: record.values.length,
+          total: streamedColumnCount });
         return;
       }
       if (record.type === "warning") {
@@ -296,6 +310,8 @@ async function refreshStreaming(cacheKey: string, providerId: string, url: strin
       ensureCurrentEpoch(epoch);
       loadedStructures.set(cacheKey, new Set());
       remember(cacheKey, { index, providerId, estimatedBytes: manifest.estimatedBytes });
+      completionDiagnostic("refresh-complete", { cacheKey, objectCount: summary.objectCount,
+        columnCount: summary.columnCount, estimatedBytes: summary.estimatedBytes });
       completed = true;
       if (previousManifest?.activeGeneration && previousManifest.activeGeneration !== generation) {
         void deleteGeneration(cacheKey, previousManifest.activeGeneration);
@@ -304,6 +320,10 @@ async function refreshStreaming(cacheKey: string, providerId: string, url: strin
     if (!completed || !manifest) throw new Error("补全元数据流未正常完成");
     return manifestSummary(manifest);
   } catch (error) {
+    completionDiagnostic("refresh-failed", {
+      cacheKey, objectCount: streamedObjectCount, columnCount: streamedColumnCount,
+      restoredPrevious: Boolean(previous)
+    });
     if (generation && !completed) await deleteGeneration(cacheKey, generation).catch(() => undefined);
     if (epoch === invalidationEpoch) {
       if (previous) remember(cacheKey, previous); else indexes.delete(cacheKey);
@@ -606,6 +626,10 @@ function enqueueMutation<T>(key: string, operation: () => Promise<T>): Promise<T
 
 function post(response: CompletionWorkerResponse): void {
   self.postMessage(response);
+}
+
+function completionDiagnostic(event: string, details: Record<string, string | number | boolean | undefined>): void {
+  if (import.meta.env.DEV) console.debug("[completion]", event, details);
 }
 
 function workerError(error: unknown): { message: string; code?: string } {
