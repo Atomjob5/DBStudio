@@ -2309,12 +2309,15 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
   width: 100%;
   height: 26px;
-  border: 1px solid var(--db-accent);
+  border: 1px solid var(--db-result-selection-border);
   border-radius: 3px;
   outline: 0;
-  background: var(--db-content);
-  color: var(--db-text);
-  font: inherit;
+  background: var(--db-result-bg) !important;
+  color: var(--db-result-cell-color) !important;
+  font-family: var(--db-result-font-family) !important;
+  font-size: var(--db-result-font-size) !important;
+  font-weight: var(--db-result-cell-font-weight) !important;
+  font-style: var(--db-result-cell-font-style) !important;
 }
 :deep(.result-virtual-grid__viewport) {
   font-family: var(--db-result-font-family);
@@ -2356,8 +2359,18 @@ onBeforeUnmount(() => {
 :deep(.result-cell.selected) { outline: 1.5px solid var(--db-result-selection-border); background: var(--db-result-selection-bg); }
 :deep(.result-cell.column-selected) { background: var(--db-result-selection-bg); }
 :deep(.result-cell.focused) {
-  outline: 2px solid var(--db-accent);
+  outline: 2px solid var(--db-result-selection-border);
   outline-offset: -1px;
+}
+:deep(.result-cell.null-value) {
+  color: var(--db-result-null-color) !important;
+  font-weight: var(--db-result-null-font-weight) !important;
+  font-style: var(--db-result-null-font-style) !important;
+}
+:deep(.result-cell.binary-value) {
+  color: var(--db-result-binary-color) !important;
+  font-weight: var(--db-result-binary-font-weight) !important;
+  font-style: var(--db-result-binary-font-style) !important;
 }
 :deep(.result-row-number) {
   position: relative; display: block; width: 100%; height: 32px; margin: 0; border: 0; border-radius: 0;

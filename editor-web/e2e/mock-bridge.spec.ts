@@ -1241,6 +1241,91 @@ test("supports Apple appearance, system theme settings and compact windows", asy
   await expect(page).toHaveScreenshot("apple-workspace-compact-dark.png");
 });
 
+test("applies color scheme drafts to Monaco and result CSS only after saving", async ({ page }) => {
+  await page.getByRole("button", { name: "更多操作", exact: true }).click();
+  await page.getByRole("menuitem", { name: "设置", exact: true }).click();
+  const settings = page.getByRole("dialog", { name: "设置", exact: true });
+  await settings.locator(".el-radio-button").filter({ hasText: "亮色" }).click();
+  await settings.getByRole("button", { name: "配置配色方案", exact: true }).click();
+
+  const drawer = page.getByRole("dialog", { name: "配色方案", exact: true });
+  await expect(drawer.locator(".appearance-preset")).toHaveCount(6);
+  await expect(drawer.getByRole("textbox", { name: "行号", exact: true })).toBeVisible();
+  await expect(drawer.getByRole("textbox", { name: "当前行号", exact: true })).toBeVisible();
+  await expect(drawer.getByRole("textbox", { name: "光标", exact: true })).toBeVisible();
+
+  const before = await page.evaluate(() => ({
+    editorBg: getComputedStyle(document.documentElement).getPropertyValue("--db-editor-bg").trim(),
+    resultBg: getComputedStyle(document.documentElement).getPropertyValue("--db-result-bg").trim(),
+  }));
+  await drawer.getByRole("button", { name: /Solarized Light/ }).click();
+  await expect(drawer.locator(".preview-current-line")).toBeVisible();
+  const draftPreview = await drawer.locator(".appearance-preview").evaluate((element) => getComputedStyle(element).backgroundColor);
+  expect(draftPreview).toBe("rgb(253, 246, 227)");
+  await expect.poll(() => page.evaluate(() => ({
+    editorBg: getComputedStyle(document.documentElement).getPropertyValue("--db-editor-bg").trim(),
+    resultBg: getComputedStyle(document.documentElement).getPropertyValue("--db-result-bg").trim(),
+  }))).toEqual(before);
+
+  await drawer.getByRole("textbox", { name: "背景", exact: true }).fill("#123456");
+  await drawer.getByRole("textbox", { name: "表格背景", exact: true }).fill("#223344");
+  await drawer.getByRole("textbox", { name: "普通标识符颜色", exact: true }).fill("#445566");
+  await drawer.getByRole("textbox", { name: "NULL颜色", exact: true }).fill("#AA0000");
+  await drawer.getByRole("textbox", { name: "二进制值颜色", exact: true }).fill("#00AA00");
+  await drawer.getByRole("textbox", { name: "选中边框", exact: true }).fill("#ABCDEF");
+  await drawer.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(drawer).toBeHidden();
+  await expect(page.getByText("配色方案已保存", { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => ({
+    editorBg: getComputedStyle(document.documentElement).getPropertyValue("--db-editor-bg").trim(),
+    resultBg: getComputedStyle(document.documentElement).getPropertyValue("--db-result-bg").trim(),
+    editorFont: getComputedStyle(document.querySelector(".monaco-editor .view-lines")!).fontFamily,
+  }))).toMatchObject({ editorBg: "#123456" });
+
+  await settings.getByRole("button", { name: "配置配色方案", exact: true }).click();
+  const reopened = page.getByRole("dialog", { name: "配色方案", exact: true });
+  await expect(reopened.getByRole("textbox", { name: "背景", exact: true })).toHaveValue("#123456");
+  await expect(reopened.getByText("自定义", { exact: true })).toBeVisible();
+  await reopened.getByRole("button", { name: "取消", exact: true }).click();
+  await settings.getByRole("button", { name: "Close this dialog", exact: true }).click();
+
+  await connectMock(page);
+  await replaceSql(page, "select color_scheme_test");
+  await page.getByRole("button", { name: "执行", exact: true }).click();
+  await expect(page.getByText("20 行 · 38 ms", { exact: true })).toBeVisible();
+  await expect(page.locator(".result-cell.null-value").first()).toBeVisible();
+  await expect(page.locator(".result-cell.binary-value").first()).toBeVisible();
+  const selectedCell = page.locator(".result-cell").filter({ hasText: /^1$/ }).first();
+  await selectedCell.click();
+  await expect.poll(() => selectedCell.evaluate((element) => getComputedStyle(element).outlineColor))
+    .toBe("rgb(171, 205, 239)");
+  const semanticStyles = await page.evaluate(() => {
+    const read = (selector: string) => {
+      const element = document.querySelector(selector);
+      if (!element) return null;
+      const style = getComputedStyle(element);
+      return { color: style.color, weight: style.fontWeight, fontStyle: style.fontStyle };
+    };
+    return { nullValue: read(".result-cell.null-value"), binary: read(".result-cell.binary-value") };
+  });
+  expect(semanticStyles).toEqual({
+    nullValue: { color: "rgb(170, 0, 0)", weight: "400", fontStyle: "italic" },
+    binary: { color: "rgb(0, 170, 0)", weight: "400", fontStyle: "normal" },
+  });
+
+  await replaceSql(page, "select color_scheme_test for update");
+  await page.getByRole("button", { name: "执行", exact: true }).click();
+  await expect(page.getByText("20 行 · 38 ms", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "切换结果编辑模式", exact: true }).click();
+  await page.locator(".result-cell").filter({ hasText: /^1$/ }).first().dblclick();
+  const editInput = page.getByRole("textbox", { name: "编辑结果值", exact: true });
+  await expect(editInput).toBeVisible();
+  await expect.poll(() => editInput.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { background: style.backgroundColor, color: style.color, border: style.borderTopColor };
+  })).toEqual({ background: "rgb(34, 51, 68)", color: "rgb(101, 123, 131)", border: "rgb(171, 205, 239)" });
+});
+
 test("follows the system color scheme and reduces nonessential motion", async ({ page }) => {
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
   await page.reload();

@@ -224,6 +224,31 @@ describe("ResultVirtualGrid", () => {
     wrapper.unmount();
   });
 
+  it("keeps NULL and binary semantic classes alongside selected and focused states", async () => {
+    const specialRows = [{ sourceIndex: 0, cells: [null, "0xA1B2", "normal"] }];
+    const wrapper = mount(ResultVirtualGrid, {
+      props: {
+        rows: specialRows, columns: columns.slice(0, 3), headerHeight: 32,
+        bufferScreens: 1, selectionMode: "cells", selectedRowSources: [],
+        selectedCellKeys: ["0:0"], focusedCellKey: "0:0"
+      }
+    });
+    const viewport = wrapper.get(".result-virtual-grid__viewport").element as HTMLElement;
+    Object.defineProperties(viewport, {
+      clientWidth: { configurable: true, value: 420 },
+      clientHeight: { configurable: true, value: 160 }
+    });
+    wrapper.vm.setScrollPosition({ left: 0, top: 0 });
+    await nextTick();
+
+    expect(wrapper.get('[data-grid-row="0"][data-grid-column="0"]').classes()).toEqual(
+      expect.arrayContaining(["null-value", "selected", "focused"]),
+    );
+    expect(wrapper.get('[data-grid-row="0"][data-grid-column="1"]').classes()).toContain("binary-value");
+    expect(wrapper.findAll(".result-row-number")).not.toHaveLength(0);
+    wrapper.unmount();
+  });
+
   it("keeps mixed database values compact, classed and safely truncated", async () => {
     const longJson = '{"订单序号":1,"商品名称":"适合验证长文本省略与完整内容提示的测试商品"}';
     const mixedRows = [{

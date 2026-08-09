@@ -42,4 +42,39 @@ describe("AppearanceColorSchemeDrawer", () => {
     expect(wrapper.emitted("cancel")).toHaveLength(1);
     wrapper.unmount();
   });
+
+  it("exposes every editor color and binds every text style to the preview", async () => {
+    const wrapper = mountDrawer();
+    await flushPromises();
+
+    for (const label of ["行号", "当前行号", "光标"]) {
+      expect(wrapper.find(`input[aria-label="${label}"]`).exists()).toBe(true);
+    }
+    await wrapper.get('input[aria-label="行号"]').setValue("#101010");
+    await wrapper.get('input[aria-label="当前行号"]').setValue("#202020");
+    await wrapper.get('input[aria-label="光标"]').setValue("#303030");
+    await wrapper.get('input[aria-label="普通标识符颜色"]').setValue("#445566");
+    await wrapper.get('input[aria-label="字符串颜色"]').setValue("#556677");
+    await wrapper.get('input[aria-label="数字颜色"]').setValue("#667788");
+    await wrapper.get('input[aria-label="注释颜色"]').setValue("#778899");
+    await wrapper.get('input[aria-label="引用标识符颜色"]').setValue("#8899AA");
+
+    const style = wrapper.get(".appearance-preview").attributes("style");
+    expect(style).toContain("--preview-editor-line-number: #101010");
+    expect(style).toContain("--preview-editor-active-line-number: #202020");
+    expect(style).toContain("--preview-editor-cursor: #303030");
+    expect(wrapper.findAll(".preview-line")).toHaveLength(4);
+    expect(wrapper.find(".preview-current-line").exists()).toBe(true);
+    expect(wrapper.find(".preview-selection").exists()).toBe(true);
+    expect(wrapper.find(".preview-cursor").exists()).toBe(true);
+    expect(wrapper.findAll(".preview-result-row-number")).toHaveLength(3);
+
+    for (const token of ["keyword", "identifier", "string", "number", "comment", "quoted"]) {
+      expect(wrapper.find(`.preview-${token}`).exists()).toBe(true);
+    }
+    for (const selector of [".preview-result-cell", ".preview-result-header", ".preview-null", ".preview-binary", ".preview-result-row-number"]) {
+      expect(wrapper.find(selector).exists()).toBe(true);
+    }
+    wrapper.unmount();
+  });
 });

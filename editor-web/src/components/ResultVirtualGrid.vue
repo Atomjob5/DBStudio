@@ -757,16 +757,15 @@ defineExpose({ getScrollPosition, setScrollPosition, scrollCellIntoView });
   box-sizing: border-box;
   width: 100%;
   height: 26px;
-  border: 1px solid var(--db-accent);
+  border: 1px solid var(--db-result-selection-border);
   border-radius: 3px;
   outline: 0;
-  background: var(--db-result-bg);
-  color: var(--db-result-cell-color);
-  font-family: var(--db-result-font-family);
-  font-size: var(--db-result-font-size);
-  font-weight: var(--db-result-cell-font-weight);
-  font-style: var(--db-result-cell-font-style);
-  font: inherit;
+  background: var(--db-result-bg) !important;
+  color: var(--db-result-cell-color) !important;
+  font-family: var(--db-result-font-family) !important;
+  font-size: var(--db-result-font-size) !important;
+  font-weight: var(--db-result-cell-font-weight) !important;
+  font-style: var(--db-result-cell-font-style) !important;
 }
 .result-cell-readonly {
   background: color-mix(in srgb, var(--db-result-header-bg) 72%, var(--db-result-bg) 28%);
@@ -778,6 +777,20 @@ defineExpose({ getScrollPosition, setScrollPosition, scrollCellIntoView });
   font-size: var(--db-result-font-size);
   font-weight: var(--db-result-cell-font-weight);
   font-style: var(--db-result-cell-font-style);
+}
+.result-virtual-grid__cell.result-cell.null-value {
+  color: var(--db-result-null-color) !important;
+  font-weight: var(--db-result-null-font-weight) !important;
+  font-style: var(--db-result-null-font-style) !important;
+}
+.result-virtual-grid__cell.result-cell.binary-value {
+  color: var(--db-result-binary-color) !important;
+  font-weight: var(--db-result-binary-font-weight) !important;
+  font-style: var(--db-result-binary-font-style) !important;
+}
+.result-virtual-grid__cell.result-cell.focused {
+  outline: 2px solid var(--db-result-selection-border);
+  outline-offset: -1px;
 }
 .result-cell-pending {
   background: color-mix(in srgb, var(--db-warning) 20%, transparent);

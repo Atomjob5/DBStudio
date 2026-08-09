@@ -294,9 +294,16 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
     history.splice(10); mockJdbcExecutions.set(String(jdbc.slotId), history);
     jdbc.historyCount = history.length; jdbc.lastExecutionAt = history[0].startedAt;
     emit("jdbc.connections.changed", { updatedAt: Date.now() });
-    const wideResult = String(payload.text ?? "").includes("wide_result");
-    const resultColumns = wideResult ? Array.from({ length: 30 }, (_, index) => `column_${index + 1}`) : ["id", "name"];
-    const resultDetails = wideResult ? resultColumns.map((label, index) => ({
+    const sqlText = String(payload.text ?? "");
+    const wideResult = sqlText.includes("wide_result");
+    const specialResult = /\bcolor_scheme_test\b/i.test(sqlText);
+    const resultColumns = specialResult ? ["id", "status", "payload"]
+      : wideResult ? Array.from({ length: 30 }, (_, index) => `column_${index + 1}`) : ["id", "name"];
+    const resultDetails = specialResult ? resultColumns.map((label, index) => ({
+      label, name: label, remarks: "", catalog: "demo", schema: "", table: "sample",
+      typeName: index === 0 ? "BIGINT" : index === 1 ? "VARCHAR" : "VARBINARY",
+      jdbcType: index === 0 ? -5 : index === 1 ? 12 : -3, quotedLabel: `\`${label}\``
+    })) : wideResult ? resultColumns.map((label, index) => ({
       label, name: label,
       remarks: index === 0
         ? "用于验证字段筛选宽度约束的超长中文注释 Long field remark that must never expand the selector dropdown"
@@ -326,9 +333,11 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
           lockMode: editableForUpdate ? "WAIT" : "NONE", updateSupported: editableForUpdate,
           insertSupported: editableForUpdate, deleteSupported: editableForUpdate },
         updateCount: -1, truncated: false, durationMs: 0 });
-      const rows = Array.from({ length: 200 }, (_, index) => wideResult
-        ? resultColumns.map((_, column) => column === 0 ? String(index + 1) : `R${index + 1} C${column + 1}`)
-        : [String(index + 1), `Apple Studio ${index + 1} ✨`]);
+      const rows = specialResult
+        ? Array.from({ length: 20 }, (_, index) => [String(index + 1), index % 2 ? null : "active", index % 2 ? `0xA${index.toString(16).padStart(3, "0")}` : "0xA1B2"])
+        : Array.from({ length: 200 }, (_, index) => wideResult
+          ? resultColumns.map((_, column) => column === 0 ? String(index + 1) : `R${index + 1} C${column + 1}`)
+          : [String(index + 1), `Apple Studio ${index + 1} ✨`]);
       const rowIds = rows.map(() => crypto.randomUUID());
       emit("query.rows", { editorId, executionId, resultIndex: 0, rowIds: rowIds.slice(0, 100), rows: rows.slice(0, 100) });
       emit("query.rows", { editorId, executionId, resultIndex: 0, rowIds: rowIds.slice(100), rows: rows.slice(100) });

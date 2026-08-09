@@ -370,10 +370,16 @@ class LocalServerSecurityTest {
         HttpHeaders headers = authenticatedHeaders();
         Map<String, String> setting = new HashMap<String, String>();
         setting.put("key", "appearance.colorSchemes");
-        setting.put("value", mapper.writeValueAsString(colorSchemes()));
+        Map<String, Object> valid = colorSchemes();
+        ((Map<String, Object>) ((Map<String, Object>) valid.get("light")).get("editor")).put("background", "#123456");
+        setting.put("value", mapper.writeValueAsString(valid));
         ResponseEntity<String> saved = http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                 new HttpEntity<Map<String, String>>(setting, headers), String.class);
         assertEquals(HttpStatus.OK, saved.getStatusCode());
+        ResponseEntity<String> reloaded = http.exchange(url("/api/v1/settings"), HttpMethod.GET,
+                new HttpEntity<String>(headers), String.class);
+        assertEquals(HttpStatus.OK, reloaded.getStatusCode());
+        assertTrue(reloaded.getBody().contains("#123456"));
 
         Map<String, Object> invalid = colorSchemes();
         ((Map<String, Object>) invalid.get("light")).put("unknown", true);
@@ -388,6 +394,36 @@ class LocalServerSecurityTest {
         ResponseEntity<String> invalidSize = http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                 new HttpEntity<Map<String, String>>(setting, headers), String.class);
         assertEquals(HttpStatus.BAD_REQUEST, invalidSize.getStatusCode());
+
+        invalid = colorSchemes();
+        ((Map<String, Object>) ((Map<String, Object>) invalid.get("light")).get("editor")).put("background", "red");
+        setting.put("value", mapper.writeValueAsString(invalid));
+        assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+
+        invalid = colorSchemes();
+        ((Map<String, Object>) ((Map<String, Object>) invalid.get("light")).get("editor")).put("fontFamily", "Comic Sans");
+        setting.put("value", mapper.writeValueAsString(invalid));
+        assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+
+        invalid = colorSchemes();
+        ((Map<String, Object>) ((Map<String, Object>) invalid.get("light")).get("editor")).put("lineHeight", 20.5);
+        setting.put("value", mapper.writeValueAsString(invalid));
+        assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+
+        invalid = colorSchemes();
+        ((Map<String, Object>) ((Map<String, Object>) invalid.get("dark")).get("result")).put("selectionBorder", "#12345");
+        setting.put("value", mapper.writeValueAsString(invalid));
+        assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+
+        StringBuilder oversized = new StringBuilder(64 * 1024 + 1);
+        for (int index = 0; index < 64 * 1024 + 1; index++) oversized.append('x');
+        setting.put("value", oversized.toString());
+        assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
     }
 
     private Map<String, Object> colorSchemes() {

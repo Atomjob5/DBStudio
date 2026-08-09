@@ -10,6 +10,7 @@ import { useMetadataStore } from "./stores/metadata";
 import { useQueryStore } from "./stores/query";
 import { useResultEditStore } from "./stores/resultEdits";
 import { useSettingsStore } from "./stores/settings";
+import { cloneColorSchemes, DEFAULT_COLOR_SCHEMES, serializeColorSchemeSettings } from "./appearance";
 import type {
   CompletionCacheSummary,
   CompletionNamespaceDescriptor,
@@ -634,6 +635,30 @@ describe("App result loading status toolbar", () => {
     rpcRequest.mockRejectedValueOnce(new Error("save failed"));
     await vm.updateMinimapEnabled(true);
     expect(settings.minimapEnabled).toBe(false);
+  });
+
+  it("applies color schemes immediately and rolls back a failed save", async () => {
+    const settings = useSettingsStore();
+    const vm = wrapper.vm as unknown as {
+      saveColorSchemes: (value: typeof DEFAULT_COLOR_SCHEMES) => Promise<void>;
+    };
+    const next = cloneColorSchemes(DEFAULT_COLOR_SCHEMES);
+    next.light.editor.background = "#123456";
+    next.light.result.selectionBorder = "#654321";
+
+    rpcRequest.mockResolvedValueOnce({});
+    await vm.saveColorSchemes(next);
+    expect(settings.colorSchemes.light.editor.background).toBe("#123456");
+    expect(rpcRequest).toHaveBeenLastCalledWith("settings.update", {
+      key: "appearance.colorSchemes", value: serializeColorSchemeSettings(next),
+    });
+
+    const saved = cloneColorSchemes(settings.colorSchemes);
+    const failed = cloneColorSchemes(saved);
+    failed.light.editor.background = "#ABCDEF";
+    rpcRequest.mockRejectedValueOnce(new Error("save failed"));
+    await vm.saveColorSchemes(failed);
+    expect(settings.colorSchemes).toEqual(saved);
   });
 
   it("formats a selection and compacts the whole document from icon toolbar buttons", async () => {

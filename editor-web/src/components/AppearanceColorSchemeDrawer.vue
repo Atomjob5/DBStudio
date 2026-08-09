@@ -34,15 +34,17 @@
         <div class="appearance-section-heading"><div><strong>实时预览</strong><span>修改任意细节后立即查看效果</span></div></div>
         <div class="appearance-preview" :style="previewVariables">
           <div class="appearance-preview-editor">
-            <div class="preview-gutter"><span>1</span><span>2</span><span>3</span><span>4</span></div>
-            <pre><span class="preview-keyword">SELECT</span> <span class="preview-identifier">user_name</span>, <span class="preview-string">'active'</span>
-<span class="preview-keyword">FROM</span> <span class="preview-quoted">`users`</span> <span class="preview-keyword">WHERE</span> id = <span class="preview-number">42</span>;
-<span class="preview-comment">-- 查询当前用户</span></pre>
+            <div class="preview-code" aria-label="SQL 编辑器预览">
+              <div class="preview-line"><span class="preview-line-number">1</span><code><span class="preview-keyword">SELECT</span> <span class="preview-selection"><span class="preview-identifier">user_name</span></span>, <span class="preview-string">'active'</span></code></div>
+              <div class="preview-line preview-current-line"><span class="preview-line-number preview-active-line-number">2</span><code><span class="preview-keyword">FROM</span> <span class="preview-quoted">`users`</span> <span class="preview-keyword">WHERE</span> id = <span class="preview-number">42</span><span class="preview-cursor" aria-hidden="true" /></code></div>
+              <div class="preview-line"><span class="preview-line-number">3</span><code><span class="preview-comment">-- 查询当前用户</span></code></div>
+              <div class="preview-line"><span class="preview-line-number">4</span><code><span class="preview-identifier">LIMIT</span> <span class="preview-number">100</span></code></div>
+            </div>
           </div>
           <div class="preview-result" role="table" aria-label="结果集预览">
-            <div class="preview-result-row preview-result-header"><span>id</span><span>status</span><span>payload</span></div>
-            <div class="preview-result-row"><span>42</span><span>active</span><span>0xA1B2</span></div>
-            <div class="preview-result-row preview-result-selected"><span>43</span><span class="preview-null">NULL</span><span>0xC3D4</span></div>
+            <div class="preview-result-row preview-result-header"><span class="preview-result-row-number">#</span><span>id</span><span>status</span><span>payload</span></div>
+            <div class="preview-result-row"><span class="preview-result-row-number">1</span><span>42</span><span class="preview-result-cell">active</span><span class="preview-binary">0xA1B2</span></div>
+            <div class="preview-result-row preview-result-selected"><span class="preview-result-row-number">2</span><span>43</span><span class="preview-null">NULL</span><span class="preview-binary">0xC3D4</span></div>
           </div>
         </div>
       </section>
@@ -59,6 +61,11 @@
           <ColorField label="普通文本" :value="activeScheme.editor.foreground" @update="updateColor('editor', 'foreground', $event)" />
           <ColorField label="选区" :value="activeScheme.editor.selection" @update="updateColor('editor', 'selection', $event)" />
           <ColorField label="当前行" :value="activeScheme.editor.lineHighlight" @update="updateColor('editor', 'lineHighlight', $event)" />
+        </div>
+        <div class="appearance-fields appearance-fields-three">
+          <ColorField label="行号" :value="activeScheme.editor.lineNumber" @update="updateColor('editor', 'lineNumber', $event)" />
+          <ColorField label="当前行号" :value="activeScheme.editor.activeLineNumber" @update="updateColor('editor', 'activeLineNumber', $event)" />
+          <ColorField label="光标" :value="activeScheme.editor.cursor" @update="updateColor('editor', 'cursor', $event)" />
         </div>
       </section>
 
@@ -153,15 +160,24 @@ const previewVariables = computed(() => {
   return {
     "--preview-editor-bg": editor.background, "--preview-editor-fg": editor.foreground,
     "--preview-editor-font": fontFamilyCss(editor.fontFamily), "--preview-editor-size": `${editor.fontSize}px`,
-    "--preview-editor-line": `${editor.lineHeight}px`, "--preview-keyword": editor.keyword.color,
+    "--preview-editor-line": `${editor.lineHeight}px`, "--preview-editor-selection": editor.selection,
+    "--preview-editor-line-highlight": editor.lineHighlight, "--preview-editor-line-number": editor.lineNumber,
+    "--preview-editor-active-line-number": editor.activeLineNumber, "--preview-editor-cursor": editor.cursor,
+    "--preview-keyword": editor.keyword.color,
     "--preview-keyword-weight": editor.keyword.bold ? "700" : "400", "--preview-keyword-style": editor.keyword.italic ? "italic" : "normal",
-    "--preview-identifier": editor.identifier.color, "--preview-string": editor.string.color,
-    "--preview-number": editor.number.color, "--preview-comment": editor.comment.color, "--preview-quoted": editor.quotedIdentifier.color,
+    "--preview-identifier": editor.identifier.color, "--preview-identifier-weight": editor.identifier.bold ? "700" : "400", "--preview-identifier-style": editor.identifier.italic ? "italic" : "normal",
+    "--preview-string": editor.string.color, "--preview-string-weight": editor.string.bold ? "700" : "400", "--preview-string-style": editor.string.italic ? "italic" : "normal",
+    "--preview-number": editor.number.color, "--preview-number-weight": editor.number.bold ? "700" : "400", "--preview-number-style": editor.number.italic ? "italic" : "normal",
+    "--preview-comment": editor.comment.color, "--preview-comment-weight": editor.comment.bold ? "700" : "400", "--preview-comment-style": editor.comment.italic ? "italic" : "normal",
+    "--preview-quoted": editor.quotedIdentifier.color, "--preview-quoted-weight": editor.quotedIdentifier.bold ? "700" : "400", "--preview-quoted-style": editor.quotedIdentifier.italic ? "italic" : "normal",
     "--preview-result-bg": result.background, "--preview-result-header-bg": result.headerBackground,
     "--preview-result-font": fontFamilyCss(result.fontFamily), "--preview-result-size": `${result.fontSize}px`,
-    "--preview-result-cell": result.cell.color, "--preview-result-header": result.header.color,
+    "--preview-result-cell": result.cell.color, "--preview-result-cell-weight": result.cell.bold ? "700" : "400", "--preview-result-cell-style": result.cell.italic ? "italic" : "normal",
+    "--preview-result-header": result.header.color,
     "--preview-result-header-weight": result.header.bold ? "700" : "400", "--preview-result-header-style": result.header.italic ? "italic" : "normal",
-    "--preview-result-null": result.nullValue.color, "--preview-result-binary": result.binaryValue.color,
+    "--preview-result-null": result.nullValue.color, "--preview-result-null-weight": result.nullValue.bold ? "700" : "400", "--preview-result-null-style": result.nullValue.italic ? "italic" : "normal",
+    "--preview-result-binary": result.binaryValue.color, "--preview-result-binary-weight": result.binaryValue.bold ? "700" : "400", "--preview-result-binary-style": result.binaryValue.italic ? "italic" : "normal",
+    "--preview-result-row-number": result.rowNumber.color, "--preview-result-row-number-weight": result.rowNumber.bold ? "700" : "400", "--preview-result-row-number-style": result.rowNumber.italic ? "italic" : "normal",
     "--preview-result-selection": result.selectionBackground, "--preview-result-border": result.selectionBorder,
   };
 });
@@ -224,8 +240,31 @@ function drawerChanged(value: boolean): void {
 .appearance-preset-swatch i:nth-child(2) { width: 86%; background: var(--swatch-string); }.appearance-preset-swatch i:nth-child(3) { width: 48%; background: var(--swatch-comment); }
 .appearance-preset-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 3px; }.appearance-preset-copy strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }.appearance-preset-copy small { overflow: hidden; color: var(--db-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }.appearance-preset > .el-icon { color: var(--db-accent); }
 .appearance-preview { display: grid; grid-template-columns: 1.15fr .85fr; min-height: 180px; overflow: hidden; border: 1px solid var(--db-border-soft); border-radius: 10px; background: var(--preview-editor-bg); color: var(--preview-editor-fg); box-shadow: var(--db-shadow-sm); }
-.appearance-preview-editor { display: flex; min-width: 0; padding: 14px 10px 14px 0; font-family: var(--preview-editor-font); font-size: var(--preview-editor-size); line-height: var(--preview-editor-line); }.appearance-preview-editor pre { min-width: 0; margin: 0; overflow: auto; white-space: pre; }.preview-gutter { display: flex; width: 30px; flex: none; flex-direction: column; padding-right: 8px; color: color-mix(in srgb, var(--preview-editor-fg) 45%, transparent); text-align: right; user-select: none; }.preview-keyword { color: var(--preview-keyword); font-weight: var(--preview-keyword-weight); font-style: var(--preview-keyword-style); }.preview-identifier { color: var(--preview-identifier); }.preview-string { color: var(--preview-string); }.preview-number { color: var(--preview-number); }.preview-comment { color: var(--preview-comment); font-style: italic; }.preview-quoted { color: var(--preview-quoted); }
-.preview-result { display: flex; min-width: 0; flex-direction: column; justify-content: center; padding: 14px 10px; background: var(--preview-result-bg); font-family: var(--preview-result-font); font-size: var(--preview-result-size); }.preview-result-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); min-height: 30px; align-items: center; border-bottom: 1px solid color-mix(in srgb, var(--preview-result-header) 18%, transparent); }.preview-result-row span { min-width: 0; padding: 0 7px; overflow: hidden; color: var(--preview-result-cell); text-overflow: ellipsis; white-space: nowrap; }.preview-result-header { background: var(--preview-result-header-bg); }.preview-result-header span { color: var(--preview-result-header); font-weight: var(--preview-result-header-weight); font-style: var(--preview-result-header-style); }.preview-result-selected { outline: 1px solid var(--preview-result-border); background: var(--preview-result-selection); }.preview-null { color: var(--preview-result-null) !important; font-style: italic; }.preview-result-row span:last-child { color: var(--preview-result-binary); }
+.appearance-preview-editor { display: flex; min-width: 0; padding: 14px 10px; overflow: hidden; font-family: var(--preview-editor-font); font-size: var(--preview-editor-size); line-height: var(--preview-editor-line); }
+.preview-code { min-width: 0; flex: 1; overflow: auto; }
+.preview-line { display: flex; min-width: max-content; min-height: var(--preview-editor-line); align-items: center; white-space: pre; }
+.preview-line code { position: relative; font: inherit; }
+.preview-line.preview-current-line { background: var(--preview-editor-line-highlight); }
+.preview-line-number { display: inline-block; width: 30px; flex: none; margin-right: 8px; color: var(--preview-editor-line-number); text-align: right; user-select: none; }
+.preview-active-line-number { color: var(--preview-editor-active-line-number); }
+.preview-selection { background: var(--preview-editor-selection); }
+.preview-cursor { display: inline-block; height: 1.1em; margin-left: 2px; border-left: 2px solid var(--preview-editor-cursor); vertical-align: -0.15em; }
+.preview-keyword { color: var(--preview-keyword); font-weight: var(--preview-keyword-weight); font-style: var(--preview-keyword-style); }
+.preview-identifier { color: var(--preview-identifier); font-weight: var(--preview-identifier-weight); font-style: var(--preview-identifier-style); }
+.preview-string { color: var(--preview-string); font-weight: var(--preview-string-weight); font-style: var(--preview-string-style); }
+.preview-number { color: var(--preview-number); font-weight: var(--preview-number-weight); font-style: var(--preview-number-style); }
+.preview-comment { color: var(--preview-comment); font-weight: var(--preview-comment-weight); font-style: var(--preview-comment-style); }
+.preview-quoted { color: var(--preview-quoted); font-weight: var(--preview-quoted-weight); font-style: var(--preview-quoted-style); }
+.preview-result { display: flex; min-width: 0; flex-direction: column; justify-content: center; padding: 14px 10px; background: var(--preview-result-bg); font-family: var(--preview-result-font); font-size: var(--preview-result-size); }
+.preview-result-row { display: grid; grid-template-columns: 28px repeat(3, minmax(0, 1fr)); min-height: 30px; align-items: center; border-bottom: 1px solid color-mix(in srgb, var(--preview-result-header) 18%, transparent); }
+.preview-result-row span { min-width: 0; padding: 0 5px; overflow: hidden; color: var(--preview-result-cell); font-weight: var(--preview-result-cell-weight); font-style: var(--preview-result-cell-style); text-overflow: ellipsis; white-space: nowrap; }
+.preview-result-header { background: var(--preview-result-header-bg); }
+.preview-result-header span { color: var(--preview-result-header); font-weight: var(--preview-result-header-weight); font-style: var(--preview-result-header-style); }
+.preview-result-row-number { color: var(--preview-result-row-number) !important; font-weight: var(--preview-result-row-number-weight) !important; font-style: var(--preview-result-row-number-style) !important; text-align: right; }
+.preview-result-header .preview-result-row-number { color: var(--preview-result-header) !important; font-weight: var(--preview-result-header-weight) !important; font-style: var(--preview-result-header-style) !important; }
+.preview-result-selected { outline: 1px solid var(--preview-result-border); background: var(--preview-result-selection); }
+.preview-null { color: var(--preview-result-null) !important; font-weight: var(--preview-result-null-weight) !important; font-style: var(--preview-result-null-style) !important; }
+.preview-binary { color: var(--preview-result-binary) !important; font-weight: var(--preview-result-binary-weight) !important; font-style: var(--preview-result-binary-style) !important; }
 .appearance-fields { display: grid; gap: 10px; }.appearance-fields-three { grid-template-columns: 1.4fr .8fr .8fr; }.appearance-fields-two { grid-template-columns: 1.4fr .8fr; }.appearance-fields-four { grid-template-columns: repeat(4, minmax(0, 1fr)); }.appearance-fields label { display: flex; min-width: 0; flex-direction: column; gap: 5px; color: var(--db-muted); font-size: 11px; }.appearance-fields select { width: 100%; height: 28px; padding: 0 7px; border: 1px solid var(--db-border); border-radius: 7px; background: var(--db-control-bg); color: var(--db-text); outline: 0; }.appearance-fields :deep(.el-input-number) { width: 100%; }.appearance-token-list { display: flex; flex-direction: column; gap: 5px; }.appearance-token-row { display: grid; grid-template-columns: minmax(95px, 1fr) minmax(125px, 1.3fr) 56px 56px; min-height: 34px; align-items: center; gap: 8px; padding: 3px 0; border-bottom: 1px solid var(--db-border-soft); }.appearance-token-label { font-size: 12px; }.appearance-color-field { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 6px; color: var(--db-muted); font-size: 11px; }.appearance-color-control { display: inline-flex; min-width: 0; align-items: center; gap: 4px; }.appearance-color-control input { width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: transparent; cursor: pointer; }.appearance-color-control code { color: var(--db-text-secondary); font-size: 10px; }.appearance-token-row :deep(.el-checkbox) { margin-right: 0; }.appearance-drawer-footer { width: 100%; }
 @media (max-width: 620px) { .appearance-presets { grid-template-columns: repeat(2, minmax(0, 1fr)); }.appearance-preview { grid-template-columns: 1fr; }.appearance-fields-four { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 </style>
