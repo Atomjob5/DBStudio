@@ -332,6 +332,9 @@ class LocalServerSecurityTest {
         assertTrue(defaults.getBody().contains("\\\"editor.lowercase\\\":null"));
         assertTrue(defaults.getBody().contains("\\\"editor.toggleLineComment\\\":null"));
         assertTrue(defaults.getBody().contains("\\\"editor.toggleBlockComment\\\":null"));
+        assertTrue(defaults.getBody().contains("\\\"result.toggleEditMode\\\":null"));
+        assertTrue(defaults.getBody().contains("\\\"result.toggleSingleRecord\\\":null"));
+        assertTrue(defaults.getBody().contains("\\\"result.restoreLayout\\\":null"));
 
         Map<String, String> setting = new HashMap<String, String>();
         setting.put("key", "keyboard.shortcuts");
@@ -340,7 +343,9 @@ class LocalServerSecurityTest {
                 + "\"editor.toggleMinimap\":null,\"editor.toggleWordWrap\":null,"
                 + "\"editor.uppercase\":\"Mod+Alt+U\",\"editor.lowercase\":null,"
                 + "\"editor.toggleLineComment\":null,\"editor.toggleBlockComment\":null,"
-                + "\"editor.complete\":\"F6\"}");
+                + "\"editor.complete\":\"F6\","
+                + "\"result.toggleEditMode\":\"Mod+Alt+E\","
+                + "\"result.toggleSingleRecord\":\"Mod+Alt+R\"}");
         assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                 new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
 

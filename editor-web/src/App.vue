@@ -404,6 +404,7 @@ const staleResultHighlightVersions = new Map<string, number>();
 const staleResultHighlightActive = new Set<string>();
 const resultPanel = ref<{
   restoreLayout(): void;
+  toggleSingleRecordView(): void;
   copyCurrentSelection(): Promise<void>;
   exportLoaded(): void;
   exportFull(): void;
@@ -556,14 +557,17 @@ const canToggleResultEdit = computed(() => Boolean(showResultEditActions.value
     || activeResult.value?.mutationTarget?.editableForUpdate === true)
   && !settings.autoCommit && canOperateTransaction.value
   && !activeExecution.value?.historical));
-const resultEditTooltip = computed(() => settings.autoCommit
-  ? "请关闭自动提交后重新执行 FOR UPDATE"
-  : activeExecution.value?.historical ? "断线前结果不可编辑"
-    : activeResult.value?.mutationTarget?.mode !== "editable"
-      && activeResult.value?.mutationTarget?.editableForUpdate !== true
-      ? activeResult.value?.mutationTarget?.reason || "当前查询形态不支持编辑"
-      : !hasActiveTransaction.value ? "事务已结束，请重新执行 FOR UPDATE"
-        : resultEditUnlocked.value ? "退出编辑模式（不会提交或释放数据库锁）" : "进入结果编辑模式");
+const resultEditTooltip = computed(() => {
+  const label = settings.autoCommit
+    ? "请关闭自动提交后重新执行 FOR UPDATE"
+    : activeExecution.value?.historical ? "断线前结果不可编辑"
+      : activeResult.value?.mutationTarget?.mode !== "editable"
+        && activeResult.value?.mutationTarget?.editableForUpdate !== true
+        ? activeResult.value?.mutationTarget?.reason || "当前查询形态不支持编辑"
+        : !hasActiveTransaction.value ? "事务已结束，请重新执行 FOR UPDATE"
+          : resultEditUnlocked.value ? "退出编辑模式（不会提交或释放数据库锁）" : "进入结果编辑模式";
+  return actionTooltip(label, "result.toggleEditMode");
+});
 const canPostResultChanges = computed(() => Boolean(editors.active && canOperateTransaction.value
   && activeResultEditSession.value && resultEdits.operations(activeResultEditSession.value).length > 0));
 const postResultChangesTooltip = computed(() => canPostResultChanges.value
@@ -1852,6 +1856,8 @@ function runShortcutAction(actionId: ShortcutActionId): void {
     if (editors.active && activeCompletionKey.value !== "unbound") monacoEditor.value?.triggerCompletion();
     return;
   }
+  if (actionId === "result.toggleEditMode") { toggleResultEdit(); return; }
+  if (actionId === "result.toggleSingleRecord") { resultPanel.value?.toggleSingleRecordView(); return; }
   if (actionId === "result.restoreLayout") { resultPanel.value?.restoreLayout(); return; }
   if (actionId === "result.copySelection") {
     void resultPanel.value?.copyCurrentSelection().catch(reportError);

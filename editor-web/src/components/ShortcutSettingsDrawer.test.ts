@@ -20,7 +20,7 @@ describe("ShortcutSettingsDrawer", () => {
     await flushPromises();
     expect(wrapper.findAll(".shortcut-settings-section")).toHaveLength(6);
     expect(wrapper.findAll(".shortcut-group")).toHaveLength(5);
-    expect(wrapper.findAll(".shortcut-row")).toHaveLength(32);
+    expect(wrapper.findAll(".shortcut-row")).toHaveLength(34);
     expect(wrapper.get(".shortcut-overview").text()).toContain("录制说明");
     expect(wrapper.text()).toContain("主工具栏");
     expect(wrapper.text()).toContain("工作区侧栏");
@@ -28,7 +28,7 @@ describe("ShortcutSettingsDrawer", () => {
     expect(wrapper.text()).toContain("文件、查询、事务与全局操作 · 14 项");
     expect(wrapper.text()).toContain("对象与连接面板 · 3 项");
     expect(wrapper.text()).toContain("编辑、排版与补全 · 9 项");
-    expect(wrapper.text()).toContain("结果复制、布局与导出 · 4 项");
+    expect(wrapper.text()).toContain("结果复制、布局与导出 · 6 项");
     expect(wrapper.text()).toContain("结果数据加载 · 2 项");
     expect(wrapper.text()).toContain("切换 Minimap");
     expect(wrapper.text()).toContain("切换自动换行");
@@ -89,7 +89,7 @@ describe("ShortcutSettingsDrawer", () => {
     await flushPromises();
 
     expect(wrapper.get(".shortcut-reset-button").attributes("disabled")).toBeDefined();
-    expect(wrapper.findAll(".shortcut-recorder")).toHaveLength(32);
+    expect(wrapper.findAll(".shortcut-recorder")).toHaveLength(34);
     expect(wrapper.findAll(".shortcut-recorder").every((control) => control.attributes("disabled") !== undefined)).toBe(true);
     expect(wrapper.findAll(".shortcut-clear-button").every((control) => control.attributes("disabled") !== undefined)).toBe(true);
     wrapper.unmount();

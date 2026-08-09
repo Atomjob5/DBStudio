@@ -554,6 +554,45 @@ describe("App result loading status toolbar", () => {
     expect(rpcRequest.mock.calls.map(([type]) => type)).not.toContain("transaction.rollback");
   });
 
+  it("runs result edit and single-record toolbar actions through configurable shortcuts", async () => {
+    const settings = useSettingsStore();
+    const edits = seedEditableResult(false);
+    edits.setUnlocked("bootstrap-editor", "execution-edit", 0, false);
+    settings.setShortcut("result.toggleEditMode", "F9");
+    settings.setShortcut("result.toggleSingleRecord", "F10");
+    await nextTick();
+    const tooltipContents = wrapper.findAllComponents({ name: "ElTooltip" })
+      .map((tooltip) => String(tooltip.props("content")));
+    expect(tooltipContents.some((content) => content.includes("进入结果编辑模式") && content.includes("F9"))).toBe(true);
+    expect(tooltipContents.some((content) => content.includes("单个记录查看") && content.includes("F10"))).toBe(true);
+
+    document.body.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "F9", code: "F9", bubbles: true, cancelable: true,
+    }));
+    await nextTick();
+    expect(edits.session("bootstrap-editor", "execution-edit", 0)?.unlocked).toBe(true);
+
+    const table = wrapper.findComponent({ name: "ResultVirtualGrid" });
+    table.vm.$emit("cell-pointerdown", {
+      button: 0, preventDefault: vi.fn(), stopPropagation: vi.fn(),
+      ctrlKey: false, metaKey: false, shiftKey: false,
+    }, 0, 0);
+    window.dispatchEvent(new Event("pointerup"));
+    await nextTick();
+
+    document.body.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "F10", code: "F10", bubbles: true, cancelable: true,
+    }));
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ResultSingleRecordView" }).exists()).toBe(true);
+
+    document.body.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "F10", code: "F10", bubbles: true, cancelable: true,
+    }));
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ResultSingleRecordView" }).exists()).toBe(false);
+  });
+
   it("persists virtual-grid render buffering and rolls it back when saving fails", async () => {
     const settings = useSettingsStore();
     const vm = wrapper.vm as unknown as {

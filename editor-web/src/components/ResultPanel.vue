@@ -88,7 +88,7 @@
               </el-tooltip>
             </div>
           </Transition>
-          <el-tooltip :content="singleRecordMode ? '返回结果表格' : '单个记录查看'">
+          <el-tooltip :content="singleRecordTitle">
             <el-button text class="single-record-button" :icon="Postcard"
                        :type="singleRecordMode ? 'primary' : 'default'"
                        :disabled="!canViewSingleRecord"
@@ -1399,6 +1399,11 @@ const selectedRecordPosition = computed(() => {
   return row ? displayRows.value.findIndex((item) => item.sourceIndex === row.sourceIndex) : -1;
 });
 const canViewSingleRecord = computed(() => selectedRecordRow.value !== undefined);
+const singleRecordTitle = computed(() => shortcutTooltip(
+  singleRecordMode.value ? "返回结果表格" : "单个记录查看",
+  "result.toggleSingleRecord",
+  settings.shortcuts,
+));
 const canNavigatePrevious = computed(() => singleRecordMode.value && selectedRecordPosition.value > 0);
 const canNavigateNext = computed(() => singleRecordMode.value
   && selectedRecordPosition.value >= 0 && selectedRecordPosition.value < displayRows.value.length - 1);
@@ -2137,6 +2142,7 @@ function exportCommand(command: string): void {
 
 defineExpose({
   restoreLayout,
+  toggleSingleRecordView,
   copyCurrentSelection,
   exportLoaded: () => exportCommand("loaded"),
   exportFull: () => exportCommand("full"),
