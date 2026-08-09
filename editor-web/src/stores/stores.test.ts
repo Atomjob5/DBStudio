@@ -52,6 +52,24 @@ describe("application stores", () => {
     expect(editors.activeId).toBe("one");
   });
 
+  it("moves editor tabs without changing the active tab", () => {
+    const editors = useEditorStore();
+    const tab = (id: string) => ({ id, title: id, content: "", dirty: false, transactionDirty: false, busy: false,
+      executionPhase: "idle" as const, transactionOperation: "idle" as const,
+      connectionState: "unbound" as const });
+    editors.add(tab("one"));
+    editors.add(tab("two"));
+    editors.add(tab("three"));
+    editors.activeId = "two";
+
+    expect(editors.move("two", 0)).toBe(true);
+    expect(editors.tabs.map((item) => item.id)).toEqual(["two", "one", "three"]);
+    expect(editors.activeId).toBe("two");
+    expect(editors.move("three", 99)).toBe(false);
+    expect(editors.tabs.map((item) => item.id)).toEqual(["two", "one", "three"]);
+    expect(editors.move("missing", 0)).toBe(false);
+  });
+
   it("does not erase fast query results when the start response arrives late", () => {
     const queries = useQueryStore();
     queries.start("editor-1", "execution-1");

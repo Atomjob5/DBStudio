@@ -771,6 +771,20 @@ public final class DbStudioApiController {
             }
             @Override public void resultMetadata(int resultIndex, String sql, StatementType type,
                                                  List<ResultColumn> columns, ResultMutationTarget mutationTarget) {
+                emitDetailedResultMetadata(workspace, editorId, executionReference.get(), resultIndex, sql, type,
+                        columns, mutationTarget, context.provider().dialect().id(), null);
+            }
+            @Override public void resultMetadata(int resultIndex, SqlStatement statement,
+                                                 List<ResultColumn> columns, ResultMutationTarget mutationTarget) {
+                emitDetailedResultMetadata(workspace, editorId, executionReference.get(), resultIndex,
+                        statement.text(), statement.type(), columns, mutationTarget,
+                        context.provider().dialect().id(), statement);
+            }
+            private void emitDetailedResultMetadata(Workspace targetWorkspace, String targetEditorId,
+                                                    UUID targetExecutionId, int resultIndex, String sql,
+                                                    StatementType type, List<ResultColumn> columns,
+                                                    ResultMutationTarget mutationTarget, String dialectId,
+                                                    SqlStatement source) {
                 List<String> labels = new ArrayList<String>(columns.size());
                 List<Map<String, Object>> details = new ArrayList<Map<String, Object>>(columns.size());
                 for (ResultColumn column : columns) {
@@ -780,8 +794,8 @@ public final class DbStudioApiController {
                             "table", column.table(), "typeName", column.typeName(), "jdbcType", column.jdbcType(),
                             "quotedLabel", column.quotedLabel()));
                 }
-                emitResultMetadata(workspace, editorId, executionReference.get(), resultIndex, sql, type, labels, details,
-                        mutationTargetPayload(mutationTarget), context.provider().dialect().id());
+                emitResultMetadata(targetWorkspace, targetEditorId, targetExecutionId, resultIndex, sql, type, labels,
+                        details, mutationTargetPayload(mutationTarget), dialectId, source);
             }
             @Override public void rows(int resultIndex, List<List<String>> rows) {
                 workspace.events().emit("query.rows", ApiPayloads.map(
@@ -806,8 +820,11 @@ public final class DbStudioApiController {
                 id -> {
                     executionReference.set(id);
                     workspace.events().emit("query.started", ApiPayloads.map(
-                            "editorId", editorId, "executionId", id.toString(),
-                            "resultPresentation", appendResult ? "append" : "replace"));
+                        "editorId", editorId, "executionId", id.toString(),
+                            "resultPresentation", appendResult ? "append" : "replace",
+                            "statements", statements.stream().map(statement -> ApiPayloads.map(
+                                    "sql", statement.text(), "startOffset", statement.startOffset(),
+                                    "endOffset", statement.endOffset())).collect(java.util.stream.Collectors.toList())));
                     if (!appendResult) {
                         editor.retireResultChanges();
                         workspace.removeLargeValueDrafts(editorId);
@@ -836,13 +853,26 @@ public final class DbStudioApiController {
                                     StatementType type, List<String> columns,
                                     List<Map<String, Object>> columnDetails, Map<String, Object> mutationTarget,
                                     String dialectId) {
-        workspace.events().emit("query.resultMeta", ApiPayloads.map("editorId", editorId,
+        emitResultMetadata(workspace, editorId, executionId, resultIndex, sql, type, columns, columnDetails,
+                mutationTarget, dialectId, null);
+    }
+
+    private void emitResultMetadata(Workspace workspace, String editorId, UUID executionId, int resultIndex, String sql,
+                                    StatementType type, List<String> columns,
+                                    List<Map<String, Object>> columnDetails, Map<String, Object> mutationTarget,
+                                    String dialectId, SqlStatement source) {
+        Map<String, Object> payload = new LinkedHashMap<String, Object>(ApiPayloads.map("editorId", editorId,
                 "executionId", executionId == null ? null : executionId.toString(),
                 "resultIndex", resultIndex, "sql", sql, "type", type.name(), "columns", columns,
                 "columnDetails", columnDetails, "mutationTarget", mutationTarget, "editCapability", mutationTarget,
                 "dialectId", dialectId,
                 "rows", Collections.emptyList(), "updateCount", -1,
                 "truncated", false, "durationMs", 0, "complete", false));
+        if (source != null) {
+            payload.put("sourceStartOffset", source.startOffset());
+            payload.put("sourceEndOffset", source.endOffset());
+        }
+        workspace.events().emit("query.resultMeta", payload);
     }
 
     private static String executionId(AtomicReference<UUID> reference) {
@@ -1778,7 +1808,17 @@ public final class DbStudioApiController {
         String text = ApiPayloads.text(body, "text");
         String selected = ApiPayloads.text(body, "selectedText");
         List<SqlStatement> result;
-        if (!selected.trim().isEmpty()) result = provider.dialect().split(selected);
+        if (!selected.trim().isEmpty()) {
+            int selectionStartOffset = 0;
+            Object rawSelectionStart = body.get("selectionStartOffset");
+            if (rawSelectionStart instanceof Number) selectionStartOffset = ((Number) rawSelectionStart).intValue();
+            int base = Math.max(0, Math.min(selectionStartOffset, text == null ? 0 : text.length()));
+            result = new ArrayList<SqlStatement>();
+            for (SqlStatement statement : provider.dialect().split(selected)) {
+                result.add(new SqlStatement(statement.text(), base + statement.startOffset(),
+                        base + statement.endOffset(), statement.type()));
+            }
+        }
         else if ("script".equals(scope)) result = provider.dialect().split(text);
         else {
             int cursor = 0;

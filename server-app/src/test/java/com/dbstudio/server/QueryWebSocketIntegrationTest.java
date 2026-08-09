@@ -88,8 +88,9 @@ class QueryWebSocketIntegrationTest {
                 statement.execute("INSERT INTO result_column_comment VALUES (1, 12.30)");
             }
             assertCompletionSnapshot(editorId, workspaceId, cookie, events);
-            List<Map<String, Object>> metadataEvents = executeSql(editorId, workspaceId, cookie, events,
-                    "SELECT id AS order_id, amount, amount + 1 AS calculated FROM result_column_comment");
+            String sourceSql = "SELECT id AS order_id, amount, amount + 1 AS calculated FROM result_column_comment";
+            List<Map<String, Object>> metadataEvents = executeSql(editorId, workspaceId, cookie, events, sourceSql);
+            assertStatementSources(metadataEvents, sourceSql);
             assertColumnMetadata(metadataEvents);
             assertJdbcSlotHistory(editorId, workspaceId, cookie,
                     "SELECT id AS order_id, amount, amount + 1 AS calculated FROM result_column_comment");
@@ -859,6 +860,25 @@ class QueryWebSocketIntegrationTest {
         assertTrue(types.indexOf("query.resultMeta") < types.indexOf("query.rows"), types.toString());
         assertTrue(types.lastIndexOf("query.rows") < types.indexOf("query.resultComplete"), types.toString());
         assertTrue(types.indexOf("query.resultComplete") < types.indexOf("query.executionComplete"), types.toString());
+    }
+
+    @SuppressWarnings("unchecked")
+    private void assertStatementSources(List<Map<String, Object>> events, String sql) {
+        Map<String, Object> startedPayload = null;
+        Map<String, Object> resultPayload = null;
+        for (Map<String, Object> event : events) {
+            if ("query.started".equals(event.get("type"))) startedPayload = (Map<String, Object>) event.get("payload");
+            if ("query.resultMeta".equals(event.get("type"))) resultPayload = (Map<String, Object>) event.get("payload");
+        }
+        assertTrue(startedPayload != null, "Missing query.started statement sources");
+        List<Map<String, Object>> statements = (List<Map<String, Object>>) startedPayload.get("statements");
+        assertEquals(1, statements.size());
+        assertEquals(sql, statements.get(0).get("sql"));
+        assertEquals(0, statements.get(0).get("startOffset"));
+        assertEquals(sql.length(), statements.get(0).get("endOffset"));
+        assertTrue(resultPayload != null, "Missing query.resultMeta source range");
+        assertEquals(0, resultPayload.get("sourceStartOffset"));
+        assertEquals(sql.length(), resultPayload.get("sourceEndOffset"));
     }
 
     private String origin() { return "http://127.0.0.1:" + port; }

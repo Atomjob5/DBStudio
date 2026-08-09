@@ -64,6 +64,8 @@ vi.mock("./completion/client", () => ({ completionClient: completionMock }));
 const captureSqlTransformTarget = vi.fn<(key?: string) => SqlTransformTarget | undefined>();
 const applySqlTransform = vi.fn();
 const runSelectionAction = vi.fn<(action: SqlEditorSelectionAction) => boolean>();
+const highlightExecutionSource = vi.fn().mockReturnValue("highlighted");
+const clearResultHighlight = vi.fn();
 const MonacoEditorStub = defineComponent({
   name: "MonacoEditor",
   props: { initialValue: { type: String, default: "" } },
@@ -77,6 +79,9 @@ const MonacoEditorStub = defineComponent({
       captureSqlTransformTarget,
       applySqlTransform,
       runSelectionAction,
+      getModelVersion: () => 1,
+      highlightExecutionSource,
+      clearResultHighlight,
     });
     return () => h("div", { class: "monaco-editor-stub" });
   },
@@ -91,6 +96,8 @@ describe("App result loading status toolbar", () => {
     captureSqlTransformTarget.mockReset();
     applySqlTransform.mockReset().mockReturnValue("applied");
     runSelectionAction.mockReset().mockReturnValue(true);
+    highlightExecutionSource.mockReset().mockReturnValue("highlighted");
+    clearResultHighlight.mockReset();
     completionMock.inspect.mockReset().mockResolvedValue(undefined);
     completionMock.refresh.mockReset().mockResolvedValue(completionSummary("profile-completion"));
     completionMock.stats.mockReset().mockResolvedValue({ environmentCount: 0, suggestionCount: 0, estimatedBytes: 0 });
@@ -172,7 +179,45 @@ describe("App result loading status toolbar", () => {
     expect(wrapper.find(".result-data-toolbar").exists()).toBe(false);
   });
 
+  it("reveals a result source only after an explicit result-tab click", async () => {
+    const editors = useEditorStore();
+    const queries = useQueryStore();
+    editors.add({ id: "editor-with-results", title: "查询 2", content: "SELECT 1;\nSELECT 2;", dirty: false,
+      transactionDirty: false, busy: false, executionPhase: "idle", transactionOperation: "idle",
+      connectionState: "unbound" });
+    queries.start("editor-with-results", "execution-source");
+    queries.addResult("editor-with-results", { resultIndex: 0, sql: "SELECT 1", type: "QUERY", columns: ["id"],
+      rows: [["1"]], updateCount: -1, truncated: false, durationMs: 1, complete: true,
+      sourceStartOffset: 0, sourceEndOffset: 8 });
+    queries.addResult("editor-with-results", { resultIndex: 1, sql: "SELECT 2", type: "QUERY", columns: ["id"],
+      rows: [["2"]], updateCount: -1, truncated: false, durationMs: 1, complete: true,
+      sourceStartOffset: 9, sourceEndOffset: 17 });
+    queries.complete("editor-with-results", { durationMs: 2 });
+    await flushPromises();
+    highlightExecutionSource.mockClear();
+
+    const resultTabs = wrapper.findAll(".result-tabs .el-tabs__item");
+    await resultTabs[1].trigger("click");
+    await flushPromises();
+    expect(highlightExecutionSource.mock.calls.some((call) => call.at(-1)?.reveal === true)).toBe(true);
+
+    highlightExecutionSource.mockClear();
+    await resultTabs[1].trigger("click");
+    await flushPromises();
+    expect(highlightExecutionSource.mock.calls.some((call) => call.at(-1)?.reveal === true)).toBe(true);
+
+    editors.add({ id: "other-editor", title: "查询 3", content: "SELECT 3", dirty: false, transactionDirty: false,
+      busy: false, executionPhase: "idle", transactionOperation: "idle", connectionState: "unbound" });
+    await flushPromises();
+    highlightExecutionSource.mockClear();
+    editors.activeId = "editor-with-results";
+    await flushPromises();
+    expect(highlightExecutionSource.mock.calls.length).toBeGreaterThan(0);
+    expect(highlightExecutionSource.mock.calls.every((call) => call.at(-1)?.reveal === false)).toBe(true);
+  });
+
   it("shows the editor tab context menu in the specified order", async () => {
+    expect(wrapper.get(".editor-tabs .el-dropdown").attributes("draggable")).toBe("true");
     const label = wrapper.get(".editor-tab-label");
     await label.trigger("contextmenu");
     await nextTick();

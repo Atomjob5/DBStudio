@@ -1,6 +1,7 @@
 package com.dbstudio.desktop.query;
 
 import com.dbstudio.spi.StatementType;
+import com.dbstudio.spi.SqlStatement;
 import java.util.List;
 
 /** 在编辑器专属查询线程上接收有序查询输出。 */
@@ -14,6 +15,13 @@ public interface QueryResultListener {
     default void resultMetadata(int resultIndex, String sql, StatementType type, List<ResultColumn> columns,
                                 ResultMutationTarget mutationTarget) {
         resultMetadata(resultIndex, sql, type, columns);
+    }
+    default void resultMetadata(int resultIndex, SqlStatement statement, List<ResultColumn> columns) {
+        resultMetadata(resultIndex, statement, columns, null);
+    }
+    default void resultMetadata(int resultIndex, SqlStatement statement, List<ResultColumn> columns,
+                                ResultMutationTarget mutationTarget) {
+        resultMetadata(resultIndex, statement.text(), statement.type(), columns, mutationTarget);
     }
     void rows(int resultIndex, List<List<String>> rows);
     default void rows(int resultIndex, List<String> rowIds, List<List<String>> rows) {

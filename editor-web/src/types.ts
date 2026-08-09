@@ -430,6 +430,8 @@ export interface EditorTab {
 export interface QueryResult {
   resultIndex: number;
   sql: string;
+  sourceStartOffset?: number;
+  sourceEndOffset?: number;
   type: string;
   columns: string[];
   columnDetails?: QueryColumn[];
@@ -540,6 +542,12 @@ export interface QueryExecutionState {
   durationMs: number;
   historical?: boolean;
   temporary?: boolean;
+}
+
+export interface QueryExecutionSource {
+  sql: string;
+  startOffset: number;
+  endOffset: number;
 }
 
 export interface HistoryEntry {

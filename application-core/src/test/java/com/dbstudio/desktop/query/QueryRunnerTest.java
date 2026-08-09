@@ -106,6 +106,30 @@ class QueryRunnerTest {
     }
 
     @Test
+    void forwardsTheOriginalStatementRangeWithResultMetadata() throws Exception {
+        final Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
+        DatabaseSession session = session(connection);
+        try (QueryRunner runner = new QueryRunner(session, 10)) {
+            final int[] range = { -1, -1 };
+            runner.execute(Collections.singletonList(new SqlStatement("SELECT 1", 12, 20, StatementType.QUERY)), true,
+                    new QueryResultListener() {
+                        @Override public void resultStarted(int index, String sql, StatementType type,
+                                                            java.util.List<String> columns) { }
+                        @Override public void resultMetadata(int index, SqlStatement statement,
+                                                             List<ResultColumn> columns,
+                                                             ResultMutationTarget mutationTarget) {
+                            range[0] = statement.startOffset();
+                            range[1] = statement.endOffset();
+                        }
+                        @Override public void rows(int index, java.util.List<java.util.List<String>> rows) { }
+                        @Override public void resultCompleted(int index, StatementResult result) { }
+                    }).join();
+            assertEquals(12, range[0]);
+            assertEquals(20, range[1]);
+        }
+    }
+
+    @Test
     void fetchesAdditionalPagesOnTheEditorSession() throws Exception {
         final Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
         connection.setAutoCommit(false);

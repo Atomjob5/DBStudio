@@ -7,6 +7,7 @@ import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import type {
   CompletionCandidate,
   CompletionResult,
+  QueryExecutionSource,
   SqlEditorSelectionAction,
   SqlTransformApplyResult,
   SqlTransformTarget,
@@ -25,14 +26,19 @@ const props = defineProps<{ modelKey: string; initialValue: string; theme: "dark
   minimapEnabled: boolean; wordWrapEnabled: boolean }>();
 const emit = defineEmits<{
   dirty: [];
-  execute: [scope: "current" | "script" | "current-new-tab", selection: string, cursorOffset: number];
+  execute: [scope: "current" | "script" | "current-new-tab", selection: string, cursorOffset: number,
+    selectionStartOffset: number];
   "selection-change": [selected: boolean];
 }>();
 const container = ref<HTMLElement>();
 const instance = shallowRef<monaco.editor.IStandaloneCodeEditor>();
 const models = new Map<string, monaco.editor.ITextModel>();
 const modelKeys = new WeakMap<monaco.editor.ITextModel, string>();
+const viewStates = new Map<string, monaco.editor.ICodeEditorViewState>();
 const mirrorListeners = new Map<string, monaco.IDisposable>();
+interface SourceAnchor extends QueryExecutionSource { modelKey: string; decorationId: string; }
+const sourceAnchors = new Map<string, Map<string, SourceAnchor>>();
+let resultHighlight: { executionId: string; modelKey: string; decorationId: string } | undefined;
 const modelSynchronizer = new CompletionModelSynchronizer(completionClient);
 let contentListener: monaco.IDisposable | undefined;
 let completionProvider: monaco.IDisposable | undefined;
@@ -250,6 +256,12 @@ watch(() => [props.completionKey, props.providerId], () => {
 
 function switchModel(key: string, value: string): void {
   if (!instance.value || !key) return;
+  const previousModel = instance.value.getModel();
+  const previousKey = previousModel && modelKeys.get(previousModel);
+  if (previousKey) {
+    const state = instance.value.saveViewState();
+    if (state) viewStates.set(previousKey, state);
+  }
   changingModel = true;
   let model = models.get(key);
   if (!model) {
@@ -259,6 +271,8 @@ function switchModel(key: string, value: string): void {
     registerMirrorListener(key, model);
   }
   instance.value.setModel(model);
+  const viewState = viewStates.get(key);
+  if (viewState) instance.value.restoreViewState(viewState);
   contentListener?.dispose();
   contentListener = model.onDidChangeContent(() => { if (!changingModel) emit("dirty"); });
   changingModel = false;
@@ -292,7 +306,8 @@ function trigger(scope: "current" | "script" | "current-new-tab"): void {
   const selection = editor.getSelection();
   const selected = selection && !selection.isEmpty() ? model.getValueInRange(selection) : "";
   const position = editor.getPosition();
-  emit("execute", scope, selected, position ? model.getOffsetAt(position) : 0);
+  emit("execute", scope, selected, position ? model.getOffsetAt(position) : 0,
+    selection && !selection.isEmpty() ? model.getOffsetAt(selection.getStartPosition()) : 0);
 }
 
 function triggerCompletion(): void {
@@ -342,6 +357,106 @@ function setValue(value: string, key = props.modelKey): void {
   model.setValue(value);
   changingModel = false;
   if (isCompletionBound()) synchronizeInBackground(key, model);
+}
+
+function getModelVersion(key = props.modelKey): number | undefined {
+  return models.get(key)?.getVersionId();
+}
+
+function sourceKey(source: Pick<QueryExecutionSource, "sql" | "startOffset" | "endOffset">): string {
+  return `${source.startOffset}:${source.endOffset}:${source.sql}`;
+}
+
+function clearResultHighlight(): void {
+  if (!resultHighlight) return;
+  const model = models.get(resultHighlight.modelKey);
+  model?.deltaDecorations([resultHighlight.decorationId], []);
+  resultHighlight = undefined;
+}
+
+function registerExecutionSources(executionId: string, sources: QueryExecutionSource[], key = props.modelKey): void {
+  releaseExecutionSources(executionId);
+  const model = models.get(key);
+  if (!model) return;
+  const valid = sources.filter((source) => Number.isInteger(source.startOffset)
+    && Number.isInteger(source.endOffset) && source.startOffset >= 0
+    && source.endOffset > source.startOffset && source.endOffset <= model.getValue().length
+    && model.getValue().slice(source.startOffset, source.endOffset) === source.sql);
+  if (!valid.length) return;
+  const decorations = valid.map((source) => {
+    const start = model.getPositionAt(source.startOffset);
+    const end = model.getPositionAt(source.endOffset);
+    return {
+      range: {
+        startLineNumber: start.lineNumber, startColumn: start.column,
+        endLineNumber: end.lineNumber, endColumn: end.column,
+      },
+      options: { stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges },
+    };
+  });
+  const ids = model.deltaDecorations([], decorations);
+  const anchors = new Map<string, SourceAnchor>();
+  valid.forEach((source, index) => anchors.set(sourceKey(source), {
+    ...source, modelKey: key, decorationId: ids[index]
+  }));
+  sourceAnchors.set(executionId, anchors);
+}
+
+function releaseExecutionSources(executionId: string): void {
+  const anchors = sourceAnchors.get(executionId);
+  if (!anchors) return;
+  const byModel = new Map<string, string[]>();
+  anchors.forEach((anchor) => byModel.set(anchor.modelKey,
+    [...(byModel.get(anchor.modelKey) ?? []), anchor.decorationId]));
+  byModel.forEach((ids, key) => models.get(key)?.deltaDecorations(ids, []));
+  sourceAnchors.delete(executionId);
+  if (resultHighlight?.executionId === executionId) clearResultHighlight();
+}
+
+function releaseEditorSources(key = props.modelKey): void {
+  for (const [executionId, anchors] of sourceAnchors) {
+    const ids = [...anchors.values()].filter((anchor) => anchor.modelKey === key)
+      .map((anchor) => anchor.decorationId);
+    if (!ids.length) continue;
+    models.get(key)?.deltaDecorations(ids, []);
+    const remaining = new Map([...anchors].filter(([, anchor]) => anchor.modelKey !== key));
+    if (remaining.size) sourceAnchors.set(executionId, remaining);
+    else sourceAnchors.delete(executionId);
+  }
+  if (resultHighlight?.modelKey === key) clearResultHighlight();
+}
+
+function releaseModel(key: string): void {
+  const model = models.get(key);
+  if (!model || instance.value?.getModel() === model) return;
+  releaseEditorSources(key);
+  mirrorListeners.get(key)?.dispose();
+  mirrorListeners.delete(key);
+  models.delete(key);
+  viewStates.delete(key);
+  model.dispose();
+}
+
+function highlightExecutionSource(executionId: string, sql: string, startOffset?: number,
+                                  endOffset?: number, options: { reveal?: boolean } = {}): "highlighted" | "stale" | "missing" {
+  clearResultHighlight();
+  if (startOffset === undefined || endOffset === undefined) return "missing";
+  const anchors = sourceAnchors.get(executionId);
+  const anchor = anchors?.get(sourceKey({ sql, startOffset, endOffset }));
+  if (!anchor) return "missing";
+  const model = models.get(props.modelKey);
+  const range = model?.getDecorationRange(anchor.decorationId);
+  if (!model || !range) return "missing";
+  if (model.getValueInRange(range) !== sql) return "stale";
+  const ids = model.deltaDecorations([], [{ range, options: {
+    className: "dbstudio-sql-result-highlight",
+    stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+  } }]);
+  resultHighlight = { executionId, modelKey: props.modelKey, decorationId: ids[0] };
+  if (options.reveal && instance.value?.getModel() === model) {
+    instance.value.revealRangeInCenterIfOutsideViewport(range, monaco.editor.ScrollType.Smooth);
+  }
+  return "highlighted";
 }
 
 function captureSqlTransformTarget(key = props.modelKey): SqlTransformTarget | undefined {
@@ -415,12 +530,19 @@ function positionAfterText(startLineNumber: number, startColumn: number, text: s
 
 defineExpose({
   getValue,
+  getModelVersion,
   setValue,
   triggerExecute: trigger,
   triggerCompletion,
   runSelectionAction,
   captureSqlTransformTarget,
   applySqlTransform,
+  registerExecutionSources,
+  releaseExecutionSources,
+  releaseEditorSources,
+  releaseModel,
+  highlightExecutionSource,
+  clearResultHighlight,
 });
 
 onBeforeUnmount(() => {
@@ -430,9 +552,21 @@ onBeforeUnmount(() => {
   mirrorListeners.forEach((listener) => listener.dispose());
   mirrorListeners.clear();
   modelSynchronizer.releaseAll();
+  clearResultHighlight();
+  sourceAnchors.forEach((anchors) => anchors.forEach((anchor) => {
+    models.get(anchor.modelKey)?.deltaDecorations([anchor.decorationId], []);
+  }));
+  sourceAnchors.clear();
+  viewStates.clear();
   instance.value?.dispose();
   models.forEach((model) => model.dispose());
 });
 </script>
 
-<style scoped>.monaco-host { background: var(--db-editor-bg); }</style>
+<style scoped>
+.monaco-host { background: var(--db-editor-bg); }
+:global(.dbstudio-sql-result-highlight) {
+  background: color-mix(in srgb, var(--db-accent) 23%, transparent);
+  border-radius: 2px;
+}
+</style>

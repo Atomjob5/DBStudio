@@ -2,7 +2,8 @@
   <section class="result-panel fill">
     <template v-if="resultTabs.length">
       <div class="result-header">
-        <el-tabs v-model="activeIndex" class="result-tabs" @tab-remove="closeResultTab">
+        <el-tabs v-model="activeIndex" class="result-tabs" @tab-remove="closeResultTab"
+                 @tab-click="emitResultTabClick" @wheel="emitTabsWheel">
           <el-tab-pane v-for="(tab, index) in resultTabs" :key="tab.key" :name="tab.key"
                        :closable="tab.execution.temporary === true && !tab.execution.busy" :label="tab.result?.errorMessage
                          ? `错误 ${index + 1}` : `结果 ${index + 1}`" />
@@ -224,6 +225,7 @@ import {
   ArrowLeft, ArrowRight, CircleCheck, CopyDocument, DataAnalysis, Document, Download, EditPen,
   Minus, Plus, Postcard, RefreshLeft
 } from "@element-plus/icons-vue";
+import type { TabsPaneContext } from "element-plus";
 import type { QueryColumn, QueryExecutionState, QueryResult, SelectedResultColumn } from "../types";
 import { matchesColumnQuery, resultColumnOptions, type ColumnOption } from "../columnFilter";
 import { autoColumnWidth, clampColumnWidth, columnIdentityKeys, defaultColumnWidth, moveColumnsToEdge,
@@ -271,6 +273,8 @@ const emit = defineEmits<{
   "export-loaded": [executionId: string, resultIndex: number];
   "export-full": [executionId: string, resultIndex: number];
   "close-result": [executionId: string];
+  "tabs-wheel": [event: WheelEvent];
+  "result-tab-click": [tabKey: string | number];
   "update:active-result-index": [resultIndex: string | number];
   "selected-column": [column: SelectedResultColumn | undefined];
   "selected-row-count": [count: number];
@@ -284,6 +288,15 @@ const app = useAppStore();
 const queries = useQueryStore();
 const resultEdits = useResultEditStore();
 const tableHost = ref<HTMLElement>();
+
+function emitTabsWheel(event: WheelEvent): void {
+  emit("tabs-wheel", event);
+}
+
+function emitResultTabClick(tab: TabsPaneContext): void {
+  const tabKey = tab.paneName;
+  if (tabKey !== undefined) emit("result-tab-click", tabKey);
+}
 const virtualGrid = ref<{
   getScrollPosition: () => ResultGridScrollPosition;
   setScrollPosition: (position: ResultGridScrollPosition) => void;

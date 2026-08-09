@@ -110,6 +110,26 @@ describe("ResultPanel streaming rendering", () => {
     expect(wrapper.text()).toContain("执行查询后在这里查看结果");
   });
 
+  it("emits an explicit intent when a result tab is clicked", async () => {
+    const execution = {
+      executionId: "execution-tab-click", editorId: "editor-tab-click", busy: false,
+      cancelled: false, failed: false, durationMs: 2,
+      results: [
+        { resultIndex: 0, sql: "select 1", type: "QUERY", columns: ["value"], rows: [["1"]],
+          updateCount: -1, truncated: false, durationMs: 1, complete: true },
+        { resultIndex: 1, sql: "select 2", type: "QUERY", columns: ["value"], rows: [["2"]],
+          updateCount: -1, truncated: false, durationMs: 1, complete: true },
+      ]
+    };
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: "execution-tab-click", execution },
+      global: { plugins: [ElementPlus] }
+    });
+
+    await wrapper.findAll(".result-tabs .el-tabs__item")[1].trigger("click");
+    expect(wrapper.emitted("result-tab-click")).toEqual([["execution-tab-click:1"]]);
+  });
+
   it("uses the unified virtual grid by default without losing data", async () => {
     const settings = useSettingsStore();
     const execution = {

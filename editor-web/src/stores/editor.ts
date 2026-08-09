@@ -24,10 +24,20 @@ export const useEditorStore = defineStore("editor", () => {
     if (tab) Object.assign(tab, values);
   }
 
+  function move(id: string, targetIndex: number): boolean {
+    const sourceIndex = tabs.value.findIndex((item) => item.id === id);
+    if (sourceIndex < 0) return false;
+    const index = Math.max(0, Math.min(targetIndex, tabs.value.length - 1));
+    if (sourceIndex === index) return false;
+    const [tab] = tabs.value.splice(sourceIndex, 1);
+    tabs.value.splice(index, 0, tab);
+    return true;
+  }
+
   function clear(): void {
     tabs.value = [];
     activeId.value = "";
   }
 
-  return { tabs, activeId, active, add, remove, patch, clear };
+  return { tabs, activeId, active, add, remove, move, patch, clear };
 });

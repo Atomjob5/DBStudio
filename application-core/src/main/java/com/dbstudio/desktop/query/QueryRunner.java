@@ -1476,7 +1476,7 @@ public final class QueryRunner implements AutoCloseable {
                     output = new StatementResult(sqlStatement.text(), sqlStatement.type(),
                             Collections.<String>emptyList(), Collections.<List<String>>emptyList(),
                             updateCount, false, Duration.between(started, Instant.now()), null);
-                    listener.resultMetadata(resultIndex, sqlStatement.text(), sqlStatement.type(), output.columnDetails());
+                    listener.resultMetadata(resultIndex, sqlStatement, output.columnDetails());
                 }
                 outputs.add(output);
                 listener.resultCompleted(resultIndex, output);
@@ -1487,7 +1487,7 @@ public final class QueryRunner implements AutoCloseable {
                 StatementResult output = new StatementResult(sqlStatement.text(), sqlStatement.type(),
                         Collections.<String>emptyList(), Collections.<List<String>>emptyList(),
                         0, false, Duration.between(started, Instant.now()), null);
-                listener.resultMetadata(firstResultIndex, sqlStatement.text(), sqlStatement.type(), output.columnDetails());
+                listener.resultMetadata(firstResultIndex, sqlStatement, output.columnDetails());
                 listener.resultCompleted(firstResultIndex, output);
                 outputs.add(output);
             }
@@ -1501,7 +1501,7 @@ public final class QueryRunner implements AutoCloseable {
             StatementResult failure = new StatementResult(sqlStatement.text(), sqlStatement.type(),
                     Collections.<String>emptyList(), Collections.<List<String>>emptyList(), -1, false,
                     Duration.between(started, Instant.now()), sanitize(exception));
-            listener.resultMetadata(firstResultIndex, sqlStatement.text(), sqlStatement.type(), failure.columnDetails());
+            listener.resultMetadata(firstResultIndex, sqlStatement, failure.columnDetails());
             listener.resultCompleted(firstResultIndex, failure);
             return Collections.singletonList(failure);
         } finally {
@@ -1530,7 +1530,7 @@ public final class QueryRunner implements AutoCloseable {
         ResolvedResultMetadata resolved = columnResolver.resolve(prepared,
                 Collections.unmodifiableList(columnDetails));
         columnDetails = resolved.columns();
-        listener.resultMetadata(resultIndex, sqlStatement.text(), sqlStatement.type(), columnDetails,
+        listener.resultMetadata(resultIndex, sqlStatement, columnDetails,
                 resolved.mutationTarget());
 
         List<List<String>> rows = new ArrayList<List<String>>(Math.min(resultMaxRows, JDBC_FETCH_SIZE));

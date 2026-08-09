@@ -154,6 +154,15 @@
                     <el-tab-pane v-for="tab in editors.tabs" :key="tab.id" :name="tab.id">
                       <template #label>
                         <el-dropdown trigger="contextmenu" :disabled="editorTabMenuBusy"
+                                     :class="{
+                            'editor-tab-dragging': editorDrag?.sourceId === tab.id,
+                            'editor-tab-drop-before': editorDrag?.targetId === tab.id && editorDrag.position === 'before',
+                            'editor-tab-drop-after': editorDrag?.targetId === tab.id && editorDrag.position === 'after'
+                          }" draggable="true"
+                                @dragstart="startEditorTabDrag($event, tab.id)"
+                                @dragover="dragOverEditorTab($event, tab.id)"
+                                @drop="dropEditorTab($event, tab.id)"
+                                @dragend="endEditorTabDrag"
                                      @command="(command) => handleEditorTabCommand(String(command), tab.id)">
                           <span class="editor-tab-label">
                             <i v-if="tab.dirty" class="dirty-dot" aria-label="未保存" />
@@ -200,6 +209,8 @@
                              :can-apply-result-changes="canPostResultChanges"
                              :apply-result-changes-tooltip="postResultChangesTooltip"
                              @export-loaded="exportLoaded" @export-full="exportFull" @close-result="closeTemporaryResult"
+                             @result-tab-click="handleResultTabClick"
+                             @tabs-wheel="handleResultTabsWheel"
                              @toggle-result-edit="toggleResultEdit" @apply-result-changes="postActiveResultChanges"
                              @selected-column="selectedResultColumn = $event"
                              @selected-row-count="selectedResultRowCount = $event"
@@ -347,7 +358,7 @@ import {
   type ShortcutBinding,
   type ShortcutBindings,
 } from "./shortcuts";
-import type { BootstrapResponse, CompletionCache, CompletionNamespaceDescriptor, CompletionNamespacesResponse, CompletionProgress, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryResult, RecoveredEditor, SavedProfile, SelectedResultColumn, SqlCompletionSnippet, SqlEditorSelectionAction, SqlTransformApplyResult, SqlTransformTarget, StatusBarSystemItem, ThemePreference, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "./types";
+import type { BootstrapResponse, CompletionCache, CompletionNamespaceDescriptor, CompletionNamespacesResponse, CompletionProgress, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryExecutionSource, QueryResult, RecoveredEditor, SavedProfile, SelectedResultColumn, SqlCompletionSnippet, SqlEditorSelectionAction, SqlTransformApplyResult, SqlTransformTarget, StatusBarSystemItem, ThemePreference, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "./types";
 
 const app = useAppStore(); const connections = useConnectionStore(); const metadata = useMetadataStore();
 const editors = useEditorStore(); const queries = useQueryStore(); const settings = useSettingsStore();
@@ -366,14 +377,25 @@ const connectionCascaderOpen = ref(false);
 const objectExplorer = ref<InstanceType<typeof ObjectExplorer>>();
 const monacoEditor = ref<{
   getValue(key?: string): string;
+  getModelVersion(key?: string): number | undefined;
   setValue(value: string, key?: string): void;
   triggerExecute(scope: "current" | "script" | "current-new-tab"): void;
   triggerCompletion(): void;
   runSelectionAction(action: SqlEditorSelectionAction): boolean;
   captureSqlTransformTarget(key?: string): SqlTransformTarget | undefined;
   applySqlTransform(target: SqlTransformTarget, replacement: string): SqlTransformApplyResult;
+  registerExecutionSources(executionId: string, sources: QueryExecutionSource[], key?: string): void;
+  releaseExecutionSources(executionId: string): void;
+  releaseEditorSources(key?: string): void;
+  releaseModel(key: string): void;
+  highlightExecutionSource(executionId: string, sql: string, startOffset?: number, endOffset?: number,
+                            options?: { reveal?: boolean }): "highlighted" | "stale" | "missing";
+  clearResultHighlight(): void;
 }>();
 const editorHasSelection = ref(false);
+const editorDrag = ref<{ sourceId: string; targetId?: string; position: "before" | "after" }>();
+const staleResultHighlightVersions = new Map<string, number>();
+const staleResultHighlightActive = new Set<string>();
 const resultPanel = ref<{
   restoreLayout(): void;
   copyCurrentSelection(): Promise<void>;
@@ -415,6 +437,36 @@ const activeResult = computed(() => activeExecution.value?.results.find((result)
     || (activeExecution.value.executionId === String(activeResultIndex.value) && result.resultIndex === 0)
     || (activeExecutions.value.length === 1 && result.resultIndex === activeResultIndex.value)))
   ?? activeExecution.value?.results[0]);
+
+function syncResultHighlight(reveal = false): void {
+  const editorId = editors.activeId;
+  const execution = activeExecution.value;
+  const result = activeResult.value;
+  if (!editorId || !execution || execution.editorId !== editorId || !result) {
+    monacoEditor.value?.clearResultHighlight?.();
+    return;
+  }
+  const outcome = monacoEditor.value?.highlightExecutionSource?.(execution.executionId, result.sql,
+    result.sourceStartOffset, result.sourceEndOffset, { reveal });
+  const noticeKey = `${execution.executionId}:${result.resultIndex}:${result.sql}:${result.sourceStartOffset}:${result.sourceEndOffset}`;
+  if (outcome === "highlighted") {
+    staleResultHighlightActive.delete(noticeKey);
+    staleResultHighlightVersions.delete(noticeKey);
+    return;
+  }
+  const sourceWasProvided = result.sourceStartOffset !== undefined && result.sourceEndOffset !== undefined;
+  if (outcome !== "stale" && !(outcome === "missing" && sourceWasProvided)) return;
+  const version = monacoEditor.value?.getModelVersion?.(editorId);
+  if (version === undefined || staleResultHighlightActive.has(noticeKey)) return;
+  staleResultHighlightActive.add(noticeKey);
+  staleResultHighlightVersions.set(noticeKey, version);
+  ElMessage.warning("执行后 SQL 已修改，无法定位原语句");
+}
+
+function handleResultTabClick(tabKey: string | number): void {
+  activeResultIndex.value = tabKey;
+  void nextTick().then(() => syncResultHighlight(true));
+}
 interface ResultLoadingState {
   editorId: string;
   resultIndex: number;
@@ -642,12 +694,17 @@ watch(() => editors.activeId, (current, previous) => {
   selectedResultStatusText.value = "";
   if (previous) void persistDraftById(previous, true);
   if (current) scheduleDraft(current);
+  void nextTick().then(() => syncResultHighlight());
 });
 watch(activeResultIndex, () => {
   selectedResultColumn.value = undefined;
   selectedResultRowCount.value = 0;
   selectedResultStatusText.value = "";
+  void nextTick().then(() => syncResultHighlight());
 });
+watch(() => [activeExecution.value?.executionId, activeResult.value?.resultIndex,
+  activeResult.value?.sourceStartOffset, activeResult.value?.sourceEndOffset,
+  activeResult.value?.sql] as const, () => void nextTick().then(() => syncResultHighlight()));
 watch(() => settings.showSelectedColumnRemarks, (enabled) => {
   if (!enabled) selectedResultColumn.value = undefined;
 });
@@ -722,10 +779,19 @@ function installEventHandlers(): void {
     }
   }));
   disposers.push(rpc.on("query.started", (raw) => {
-    const data = raw as { editorId: string; executionId: string; resultPresentation?: "replace" | "append" };
+    const data = raw as { editorId: string; executionId: string; resultPresentation?: "replace" | "append";
+      statements?: QueryExecutionSource[] };
     const presentation = data.resultPresentation ?? "replace";
-    if (presentation === "replace") resultEdits.finishEditor(data.editorId);
+    if (presentation === "replace") {
+      resultEdits.finishEditor(data.editorId);
+      for (const execution of queries.executionList(data.editorId)) {
+        monacoEditor.value?.releaseExecutionSources?.(execution.executionId);
+      }
+    }
     queries.start(data.editorId, data.executionId, presentation);
+    if (data.statements?.length) {
+      monacoEditor.value?.registerExecutionSources?.(data.executionId, data.statements, data.editorId);
+    }
     const tab = editors.tabs.find((item) => item.id === data.editorId);
     if (tab?.busy && tab.executionPhase !== "cancelling") {
       editors.patch(data.editorId, { activeExecutionId: data.executionId,
@@ -916,7 +982,13 @@ async function bootstrapWorkspace(recovered: RecoveredEditor[]): Promise<void> {
     app.applyBootstrap(data);
     leftWidth.value = Number(data.settings["layout.leftWidth"] ?? 248);
     editorHeight.value = data.settings["layout.editorHeight"] ?? "62%";
+    for (const tab of editors.tabs) {
+      for (const execution of queries.executionList(tab.id)) {
+        monacoEditor.value?.releaseExecutionSources?.(execution.executionId);
+      }
+    }
     editors.clear(); queries.clear(); resultEdits.clear(); statusBar.clear(); resultLoading.value = undefined;
+    monacoEditor.value?.clearResultHighlight?.();
     for (const value of [...recovered].sort((left, right) => left.sortOrder - right.sortOrder)) {
       editors.add({ id: value.id, title: value.title, content: value.content, filePath: value.filePath,
         dirty: value.dirty, transactionDirty: value.transactionState === "active" || value.transactionState === "disconnected-protected",
@@ -1029,6 +1101,7 @@ async function newEditor(content = "", filePath?: string, title?: string, fileHa
 function markActiveDirty(): void {
   if (!editors.active) return;
   editors.patch(editors.active.id, { dirty: true }); scheduleDraft(editors.active.id);
+  void nextTick().then(() => syncResultHighlight());
 }
 function runEditorSelectionAction(action: SqlEditorSelectionAction): void {
   if (!canEditSelection.value) return;
@@ -1178,12 +1251,13 @@ async function discardEditorPendingChanges(editorId: string): Promise<void> {
 }
 type EditorExecutionScope = "current" | "script" | "current-new-tab";
 
-function executeFromEditor(scope: EditorExecutionScope, selectedText: string, cursorOffset: number): void {
+function executeFromEditor(scope: EditorExecutionScope, selectedText: string, cursorOffset: number,
+                           selectionStartOffset = 0): void {
   if (scope === "current-new-tab") {
-    void executeCurrentInNewTab(selectedText, cursorOffset);
+    void executeCurrentInNewTab(selectedText, cursorOffset, selectionStartOffset);
     return;
   }
-  void executeActive(scope, selectedText, cursorOffset);
+  void executeActive(scope, selectedText, cursorOffset, false, "replace", selectionStartOffset);
 }
 function triggerEditorExecution(scope: EditorExecutionScope): void {
   if (!canExecute.value) return;
@@ -1198,7 +1272,7 @@ function executeCommand(command: string): void {
   if (command === "current" || command === "script") triggerEditorExecution(command);
   if (command === "current-new-tab") triggerEditorExecution(command);
 }
-async function executeCurrentInNewTab(selectedText = "", cursorOffset = 0): Promise<void> {
+async function executeCurrentInNewTab(selectedText = "", cursorOffset = 0, selectionStartOffset = 0): Promise<void> {
   const source = editors.active;
   if (!source || source.busy || resultLoading.value?.editorId === source.id) return;
   if (!source.connection || source.connectionState === "unbound") {
@@ -1208,13 +1282,14 @@ async function executeCurrentInNewTab(selectedText = "", cursorOffset = 0): Prom
   try {
     await rpc.ensureOperational();
     if (!await ensureEditorCredentials(source)) return;
-    await executeActive("current", selectedText, cursorOffset, false, "append");
+    await executeActive("current", selectedText, cursorOffset, false, "append", selectionStartOffset);
   } catch (error) {
     ElMessage.error(message(error));
   }
 }
 async function executeActive(scope: "current" | "script", selectedText = "", cursorOffset = 0,
-                             recoveryRetried = false, presentation: "replace" | "append" = "replace"): Promise<void> {
+                             recoveryRetried = false, presentation: "replace" | "append" = "replace",
+                             selectionStartOffset = 0): Promise<void> {
   const tab = editors.active;
   if (!tab || tab.busy || resultLoading.value?.editorId === tab.id) return;
   if (!tab.connection || tab.connectionState === "unbound") {
@@ -1240,7 +1315,7 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
       executionStartedAt: Date.now(), executionPhase: "starting" }); app.status = "正在执行…";
     const response = await rpc.request<{ executionId: string }>("query.execute", {
       editorId: tab.id, text: monacoEditor.value?.getValue(tab.id) ?? tab.content,
-      selectedText, cursorOffset, scope, stopOnError: true, resultPresentation: presentation
+      selectedText, cursorOffset, selectionStartOffset, scope, stopOnError: true, resultPresentation: presentation
     });
     if (presentation === "replace") {
       resultEdits.finishEditor(tab.id);
@@ -1260,7 +1335,7 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
     }
     if ((error as { code?: string }).code === "WORKSPACE_RECOVERED_RETRY_REQUIRED" && !recoveryRetried) {
       if (editors.activeId !== tab.id) return;
-      await executeActive(scope, selectedText, cursorOffset, true, presentation);
+      await executeActive(scope, selectedText, cursorOffset, true, presentation, selectionStartOffset);
       return;
     }
     if ((error as { code?: string }).code === "RISK_REEXECUTION_REQUIRED") {
@@ -1639,6 +1714,9 @@ async function connectionSelectionChanged(value: unknown): Promise<void> {
     if (transactionAction === "rollback") restoreResultEditValues(tab.id, "original");
     if (transactionAction) resultEdits.finishEditor(tab.id);
     editors.patch(tab.id, { resultChangesDirty: false });
+    for (const execution of queries.executionList(tab.id)) {
+      monacoEditor.value?.releaseExecutionSources?.(execution.executionId);
+    }
     queries.clearEditor(tab.id);
     scheduleDraft(tab.id);
     metadata.activate(activeObjectTreeKey.value, activeCompletionKey.value);
@@ -1818,6 +1896,55 @@ async function saveActive(saveAs: boolean): Promise<boolean> {
   return true;
 }
 
+function startEditorTabDrag(event: DragEvent, id: string): void {
+  if (editorTabMenuBusy.value) return;
+  editorDrag.value = { sourceId: id, position: "after" };
+  event.dataTransfer?.setData("text/plain", id);
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+}
+
+function dragOverEditorTab(event: DragEvent, id: string): void {
+  const drag = editorDrag.value;
+  if (!drag || drag.sourceId === id) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  const element = event.currentTarget as HTMLElement;
+  const tabElement = element.closest<HTMLElement>(".el-tabs__item") ?? element;
+  const bounds = tabElement.getBoundingClientRect();
+  const position = event.clientX < bounds.left + bounds.width / 2 ? "before" : "after";
+  editorDrag.value = { ...drag, targetId: id, position };
+  const nav = element.closest(".editor-tabs")?.querySelector<HTMLElement>(".el-tabs__nav-scroll");
+  const navBounds = nav?.getBoundingClientRect();
+  if (nav && navBounds) {
+    const edge = 28;
+    if (event.clientX < navBounds.left + edge) nav.parentElement?.querySelector<HTMLElement>(".el-tabs__nav-prev")?.click();
+    else if (event.clientX > navBounds.right - edge) nav.parentElement?.querySelector<HTMLElement>(".el-tabs__nav-next")?.click();
+  }
+}
+
+function dropEditorTab(event: DragEvent, id: string): void {
+  const drag = editorDrag.value;
+  if (!drag || drag.sourceId === id) return;
+  event.preventDefault();
+  const targetIndex = editors.tabs.findIndex((tab) => tab.id === id);
+  const sourceIndex = editors.tabs.findIndex((tab) => tab.id === drag.sourceId);
+  if (targetIndex < 0 || sourceIndex < 0) { endEditorTabDrag(); return; }
+  let destination = drag.position === "after" ? targetIndex + 1 : targetIndex;
+  if (sourceIndex < destination) destination -= 1;
+  if (editors.move(drag.sourceId, destination)) {
+    void persistEditorOrder();
+  }
+  endEditorTabDrag();
+}
+
+function endEditorTabDrag(): void {
+  editorDrag.value = undefined;
+}
+
+async function persistEditorOrder(): Promise<void> {
+  await Promise.all(editors.tabs.map((tab) => persistDraftById(tab.id, true)));
+}
+
 async function closeTab(id: string): Promise<boolean> {
   const tab = editors.tabs.find((item) => item.id === id); if (!tab) return true;
   editors.activeId = id;
@@ -1839,7 +1966,12 @@ async function closeTab(id: string): Promise<boolean> {
     if (action === "commit" && resultEdits.hasPending(id)) await postEditorPendingChanges(id);
     await rpc.request("editor.close", { editorId: id, action });
   } else await rpc.request("editor.close", { editorId: id, action: "close" });
-  resultEdits.finishEditor(id); queries.clearEditor(id); editors.remove(id); return true;
+  for (const execution of queries.executionList(id)) {
+    monacoEditor.value?.releaseExecutionSources?.(execution.executionId);
+  }
+  resultEdits.finishEditor(id); queries.clearEditor(id); editors.remove(id);
+  void nextTick().then(() => monacoEditor.value?.releaseModel?.(id));
+  return true;
 }
 
 type EditorTabMenuCommand = "close" | "close-others" | "close-all" | "duplicate" | "rename";
@@ -2215,6 +2347,7 @@ async function closeTemporaryResult(executionId: string): Promise<void> {
   try {
     await rpc.ensureOperational();
     await rpc.request("query.closeResult", { editorId: tab.id, executionId });
+    monacoEditor.value?.releaseExecutionSources?.(executionId);
     resultEdits.finishExecution(tab.id, executionId);
     queries.removeExecution(tab.id, executionId);
     const remaining = queries.executionList(tab.id);
@@ -2223,6 +2356,21 @@ async function closeTemporaryResult(executionId: string): Promise<void> {
   } catch (error) {
     ElMessage.error(message(error));
   }
+}
+
+function handleResultTabsWheel(event: WheelEvent): void {
+  if (event.shiftKey || event.deltaY === 0 || event.deltaX !== 0) return;
+  const root = (event.target instanceof HTMLElement ? event.target.closest(".result-tabs") : null)
+    ?? event.currentTarget as HTMLElement | null;
+  const nav = root?.querySelector<HTMLElement>(".el-tabs__nav");
+  if (!nav) return;
+  const translated = new WheelEvent("wheel", {
+    bubbles: true, cancelable: true, deltaX: event.deltaY, deltaY: 0,
+    deltaMode: event.deltaMode, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
+    altKey: event.altKey, shiftKey: false,
+  });
+  nav.dispatchEvent(translated);
+  if (translated.defaultPrevented) event.preventDefault();
 }
 async function exportLoaded(executionId: string | number, resultIndex?: number): Promise<void> {
   if (!editors.active || activeExecution.value?.historical) {
@@ -2521,7 +2669,32 @@ function message(error: unknown): string { return error instanceof Error ? error
   background: var(--db-panel-soft);
   border-bottom: 1px solid var(--db-border-soft);
 }
-.editor-tab-label { display: inline-flex; align-items: center; gap: 6px; max-width: 180px; min-width: 0; }
+.editor-tabs :deep(.el-tabs__item) { display: inline-flex; align-items: center; padding: 0; }
+.editor-tabs :deep(.el-dropdown) {
+  position: relative;
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  min-width: 0;
+  max-width: 204px;
+  padding: 0 12px;
+  cursor: grab;
+  user-select: none;
+}
+.editor-tabs :deep(.el-dropdown.editor-tab-dragging) { opacity: .45; cursor: grabbing; }
+.editor-tabs :deep(.el-dropdown.editor-tab-drop-before)::before,
+.editor-tabs :deep(.el-dropdown.editor-tab-drop-after)::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--db-accent);
+  content: "";
+}
+.editor-tabs :deep(.el-dropdown.editor-tab-drop-before)::before { left: 0; }
+.editor-tabs :deep(.el-dropdown.editor-tab-drop-after)::after { right: 0; }
+.editor-tab-label { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; }
 .editor-tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dirty-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--db-accent); }
 .editor-widget { flex: 1; min-height: 0; }
