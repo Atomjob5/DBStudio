@@ -8,6 +8,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import java.net.URI;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -362,6 +363,65 @@ class LocalServerSecurityTest {
             assertEquals(HttpStatus.BAD_REQUEST, rejected.getStatusCode());
             assertTrue(rejected.getBody().contains("INVALID_SETTING"));
         }
+    }
+
+    @Test
+    void validatesAndPersistsColorSchemeSettings() throws Exception {
+        HttpHeaders headers = authenticatedHeaders();
+        Map<String, String> setting = new HashMap<String, String>();
+        setting.put("key", "appearance.colorSchemes");
+        setting.put("value", mapper.writeValueAsString(colorSchemes()));
+        ResponseEntity<String> saved = http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class);
+        assertEquals(HttpStatus.OK, saved.getStatusCode());
+
+        Map<String, Object> invalid = colorSchemes();
+        ((Map<String, Object>) invalid.get("light")).put("unknown", true);
+        setting.put("value", mapper.writeValueAsString(invalid));
+        ResponseEntity<String> unknownField = http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class);
+        assertEquals(HttpStatus.BAD_REQUEST, unknownField.getStatusCode());
+
+        invalid = colorSchemes();
+        ((Map<String, Object>) ((Map<String, Object>) invalid.get("dark")).get("editor")).put("fontSize", 25);
+        setting.put("value", mapper.writeValueAsString(invalid));
+        ResponseEntity<String> invalidSize = http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class);
+        assertEquals(HttpStatus.BAD_REQUEST, invalidSize.getStatusCode());
+    }
+
+    private Map<String, Object> colorSchemes() {
+        Map<String, Object> value = new LinkedHashMap<String, Object>();
+        value.put("version", 1);
+        value.put("light", colorSchemeMode("light"));
+        value.put("dark", colorSchemeMode("dark"));
+        return value;
+    }
+
+    private Map<String, Object> colorSchemeMode(String presetId) {
+        Map<String, Object> mode = new LinkedHashMap<String, Object>();
+        mode.put("presetId", presetId);
+        Map<String, Object> editor = new LinkedHashMap<String, Object>();
+        editor.put("fontFamily", "sf-mono"); editor.put("fontSize", 13); editor.put("lineHeight", 21);
+        editor.put("background", "#FFFFFF"); editor.put("foreground", "#1D1D1F");
+        editor.put("keyword", textStyle("#9B2393", true, false)); editor.put("identifier", textStyle("#1D1D1F", false, false));
+        editor.put("string", textStyle("#C41A16", false, false)); editor.put("number", textStyle("#1C00CF", false, false));
+        editor.put("comment", textStyle("#6C7986", false, true)); editor.put("quotedIdentifier", textStyle("#0F68A0", false, false));
+        editor.put("lineNumber", "#A1A1A6"); editor.put("activeLineNumber", "#6E6E73"); editor.put("cursor", "#0071E3");
+        editor.put("selection", "#B8D9F8"); editor.put("lineHighlight", "#F5F5F7");
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
+        result.put("fontFamily", "sf-mono"); result.put("fontSize", 12); result.put("background", "#FFFFFF"); result.put("headerBackground", "#F5F5F7");
+        result.put("cell", textStyle("#1D1D1F", false, false)); result.put("header", textStyle("#6E6E73", true, false));
+        result.put("nullValue", textStyle("#AF52DE", false, true)); result.put("binaryValue", textStyle("#B25000", false, false));
+        result.put("rowNumber", textStyle("#86868B", false, false)); result.put("selectionBackground", "#DCECFB"); result.put("selectionBorder", "#0071E3");
+        mode.put("editor", editor); mode.put("result", result);
+        return mode;
+    }
+
+    private Map<String, Object> textStyle(String color, boolean bold, boolean italic) {
+        Map<String, Object> value = new LinkedHashMap<String, Object>();
+        value.put("color", color); value.put("bold", bold); value.put("italic", italic);
+        return value;
     }
 
     @Test

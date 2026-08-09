@@ -3,6 +3,7 @@ import { ref } from "vue";
 import type { ColumnLayoutScope } from "../columnLayout";
 import type { CopySeparator } from "../resultCopy";
 import type { SqlCompletionSnippet } from "../types";
+import { cloneColorSchemes, parseColorSchemeSettings, type ColorSchemeSettings } from "../appearance";
 import { parseSqlCompletionSnippets } from "../completion/snippets";
 import {
   DEFAULT_SHORTCUT_BINDINGS,
@@ -38,6 +39,7 @@ export const useSettingsStore = defineStore("settings", () => {
   const shortcuts = ref<ShortcutBindings>({ ...DEFAULT_SHORTCUT_BINDINGS });
   const shortcutRecordingActive = ref(false);
   const recentFiles = ref<string[]>([]);
+  const colorSchemes = ref<ColorSchemeSettings>(cloneColorSchemes(parseColorSchemeSettings()));
 
   function initialize(settings: Record<string, string>, recent: string[]): void {
     const parsed = Number.parseInt(settings["result.maxRows"] ?? "1000", 10);
@@ -77,6 +79,11 @@ export const useSettingsStore = defineStore("settings", () => {
       ? Math.max(1, Math.min(100, inspectorOpacity)) : 100;
     shortcuts.value = parseShortcutBindings(settings["keyboard.shortcuts"]);
     recentFiles.value = recent;
+    colorSchemes.value = parseColorSchemeSettings(settings["appearance.colorSchemes"]);
+  }
+
+  function setColorSchemes(value: ColorSchemeSettings): void {
+    colorSchemes.value = cloneColorSchemes(value);
   }
 
   function setShortcuts(value: ShortcutBindings): void {
@@ -102,5 +109,5 @@ export const useSettingsStore = defineStore("settings", () => {
     completionCandidateLimit, completionPreciseMatchingEnabled, completionSnippets,
     minimapEnabled, wordWrapEnabled, dangerousStatementWarningEnabled, objectInspectorOpacity,
     shortcuts, shortcutRecordingActive,
-    recentFiles, initialize, setCompletionSnippets, setShortcuts, setShortcut, resetShortcuts };
+    recentFiles, colorSchemes, initialize, setColorSchemes, setCompletionSnippets, setShortcuts, setShortcut, resetShortcuts };
 });

@@ -183,7 +183,7 @@
                     </el-tab-pane>
                   </el-tabs>
                   <MonacoEditor v-if="editors.active" ref="monacoEditor" class="editor-widget" :model-key="editors.active.id"
-                                :initial-value="editors.active.content" :theme="app.theme"
+                                :initial-value="editors.active.content" :theme="app.theme" :appearance="activeColorScheme"
                                 :completion-key="activeCompletionKey" :provider-id="editors.active.connection?.providerId || 'generic'"
                                 :completion-candidate-limit="settings.completionCandidateLimit"
                                 :completion-precise-matching-enabled="settings.completionPreciseMatchingEnabled"
@@ -279,7 +279,10 @@
                   @update:word-wrap-enabled="updateWordWrapEnabled"
                   @update:dangerous-statement-warning-enabled="updateDangerousStatementWarningEnabled"
                   @clear-completion-caches="clearCompletionCaches" @open-shortcuts="openShortcutSettings"
+                  @open-appearance="appearanceDrawer = true"
                   @open-completion-snippets="openCompletionSnippetSettings" />
+  <AppearanceColorSchemeDrawer v-model="appearanceDrawer" :schemes="settings.colorSchemes" :saving="appearanceSaving"
+                               @save="saveColorSchemes" />
   <ShortcutSettingsDrawer v-model="shortcutDrawer" :bindings="settings.shortcuts" :saving="shortcutSaving"
                           @update-binding="updateShortcutBinding" @reset-defaults="resetShortcutBindings"
                           @recording="settings.shortcutRecordingActive = $event" />
@@ -327,6 +330,7 @@ import ConnectionDialog from "./components/ConnectionDialog.vue";
 import ConnectionManagerPanel from "./components/ConnectionManagerPanel.vue";
 import CompletionSchemaDialog from "./components/CompletionSchemaDialog.vue";
 import CsvImportDialog from "./components/CsvImportDialog.vue";
+import AppearanceColorSchemeDrawer from "./components/AppearanceColorSchemeDrawer.vue";
 import HistoryDrawer from "./components/HistoryDrawer.vue";
 import JdbcTaskManagerDrawer from "./components/JdbcTaskManagerDrawer.vue";
 import MonacoEditor from "./components/MonacoEditor.vue";
@@ -347,6 +351,7 @@ import { useSettingsStore } from "./stores/settings";
 import { useStatusBarStore } from "./stores/statusBar";
 import type { ColumnLayoutScope } from "./columnLayout";
 import type { CopySeparator } from "./resultCopy";
+import { applyColorSchemeCss, cloneColorSchemes, serializeColorSchemeSettings, type ColorSchemeSettings } from "./appearance";
 import { applyDocumentTheme } from "./theme";
 import { openRecentSql, openSqlFile, recentSqlFiles, saveSqlFile } from "./files/browserFiles";
 import { completionClient } from "./completion/client";
@@ -372,6 +377,7 @@ const resultEdits = useResultEditStore();
 const statusBar = useStatusBarStore();
 const connectionDialog = ref(false); const historyDrawer = ref(false); const jdbcTaskManagerDrawer = ref(false);
 const settingsDrawer = ref(false);
+const appearanceDrawer = ref(false); const appearanceSaving = ref(false);
 const shortcutDrawer = ref(false); const shortcutSaving = ref(false); const csvDialog = ref(false);
 const completionSnippetDrawer = ref(false); const completionSnippetSaving = ref(false);
 const editorTabMenuBusy = ref(false);
@@ -399,6 +405,7 @@ const monacoEditor = ref<{
   clearResultHighlight(): void;
 }>();
 const editorHasSelection = ref(false);
+const activeColorScheme = computed(() => settings.colorSchemes[app.theme]);
 const editorDrag = ref<{ sourceId: string; targetId?: string; position: "before" | "after" }>();
 const staleResultHighlightVersions = new Map<string, number>();
 const staleResultHighlightActive = new Set<string>();
@@ -684,6 +691,9 @@ onBeforeUnmount(() => {
 });
 
 watch(() => app.theme, (theme) => applyDocumentTheme(theme), { immediate: true });
+watch([() => app.theme, () => settings.colorSchemes], ([theme, schemes]) => {
+  applyColorSchemeCss(theme, schemes[theme]);
+}, { deep: true, immediate: true });
 watch(activeExecutions, (items) => {
   const key = String(activeResultIndex.value);
   const selectedExists = items.some((execution) => execution.executionId === key
@@ -722,6 +732,7 @@ watch(settingsDrawer, (open) => {
   if (!open) {
     shortcutDrawer.value = false;
     completionSnippetDrawer.value = false;
+    appearanceDrawer.value = false;
   }
 });
 
@@ -2118,6 +2129,24 @@ async function openHistory(entry: HistoryEntry): Promise<void> { await newEditor
 async function updateTheme(theme: ThemePreference): Promise<void> {
   app.setThemePreference(theme);
   await rpc.request("settings.update", { key: "ui.theme", value: theme });
+}
+async function saveColorSchemes(value: ColorSchemeSettings): Promise<void> {
+  const previous = cloneColorSchemes(settings.colorSchemes);
+  settings.setColorSchemes(value);
+  appearanceSaving.value = true;
+  try {
+    await rpc.request("settings.update", {
+      key: "appearance.colorSchemes",
+      value: serializeColorSchemeSettings(value),
+    });
+    appearanceDrawer.value = false;
+    ElMessage.success("配色方案已保存");
+  } catch (error) {
+    settings.setColorSchemes(previous);
+    reportError(error);
+  } finally {
+    appearanceSaving.value = false;
+  }
 }
 async function updateMaxRows(value: number): Promise<void> {
   const previous = settings.maxResultRows; settings.maxResultRows = value;

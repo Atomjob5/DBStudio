@@ -1,5 +1,6 @@
 import type { MockRequestHandler } from "./rpc";
 import { DEFAULT_SHORTCUT_BINDINGS, serializeShortcutBindings } from "../shortcuts";
+import { DEFAULT_COLOR_SCHEMES, serializeColorSchemeSettings } from "../appearance";
 
 const providers = [{ id: "mysql", displayName: "MySQL", capabilities: ["TABLES", "VIEWS", "PROCEDURES"], fields: [
   { key: "host", label: "主机", type: "TEXT", required: true, defaultValue: "127.0.0.1", description: "数据库主机" },
@@ -65,6 +66,7 @@ const mockSettings: Record<string, string> = {
   "editor.minimapEnabled": "true",
   "editor.wordWrapEnabled": "false",
   "editor.objectInspectorOpacity": "100",
+  "appearance.colorSchemes": serializeColorSchemeSettings(DEFAULT_COLOR_SCHEMES),
   "keyboard.shortcuts": serializeShortcutBindings(DEFAULT_SHORTCUT_BINDINGS),
 };
 

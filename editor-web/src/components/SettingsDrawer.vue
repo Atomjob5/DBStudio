@@ -13,6 +13,10 @@
             <el-radio-button value="dark"><el-icon><Moon /></el-icon>深色</el-radio-button>
           </el-radio-group>
         </el-form-item>
+        <el-button class="appearance-settings-button" :icon="MagicStick" @click="$emit('openAppearance')">
+          配置配色方案
+          <el-icon class="shortcut-settings-arrow"><ArrowRight /></el-icon>
+        </el-button>
       </section>
 
       <section class="settings-section shortcut-settings">
@@ -273,7 +277,7 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowRight, Delete, DocumentCopy, Monitor, Moon, Operation, QuestionFilled, Sunny } from "@element-plus/icons-vue";
+import { ArrowRight, Delete, DocumentCopy, MagicStick, Monitor, Moon, Operation, QuestionFilled, Sunny } from "@element-plus/icons-vue";
 import type { ResolvedTheme, ThemePreference } from "../types";
 import type { ColumnLayoutScope } from "../columnLayout";
 import type { CopySeparator } from "../resultCopy";
@@ -290,7 +294,7 @@ defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: Resolv
   completionCandidateLimit: number; completionPreciseMatchingEnabled: boolean;
   completionSnippetCount: number; canClearCompletionCaches: boolean;
   minimapEnabled: boolean; wordWrapEnabled: boolean; dangerousStatementWarningEnabled: boolean }>();
-const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme": [value: ThemePreference];
+const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme": [value: ThemePreference]; "openAppearance": [];
   "update:minimapEnabled": [value: boolean]; "update:wordWrapEnabled": [value: boolean];
   "update:dangerousStatementWarningEnabled": [value: boolean];
   "update:maxRows": [value: number]; "update:streamBatchRows": [value: number]; "update:maxLobBytes": [value: number];
@@ -338,6 +342,8 @@ function copyHeaderToggleChanged(value: string | number | boolean): void {
 .theme-options :deep(.el-radio-button) { flex: 1; }
 .theme-options :deep(.el-radio-button__inner) { width: 100%; padding-inline: 8px; }
 .theme-options .el-icon { margin-right: 5px; vertical-align: -2px; }
+.appearance-settings-button { width: 100%; justify-content: flex-start; margin-top: 2px; }
+.appearance-settings-button .shortcut-settings-arrow { margin-left: auto; }
 .shortcut-settings-button { width: 100%; justify-content: flex-start; }
 .shortcut-settings-arrow { margin-left: auto; }
 .completion-snippet-settings-button { margin-top: 10px; }

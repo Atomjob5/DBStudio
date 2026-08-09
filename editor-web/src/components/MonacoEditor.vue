@@ -22,14 +22,18 @@ import { completionDocumentation, truncateCompletionComment } from "../completio
 import { compileSqlSnippet, matchingSnippetCandidates } from "../completion/snippets";
 import type { SqlCompletionSnippet } from "../types";
 import { resolveSqlObjectReference } from "../objectReference";
+import type { ModeColorScheme, TextStyle } from "../appearance";
+import { DEFAULT_COLOR_SCHEMES, fontFamilyCss } from "../appearance";
 
 (self as typeof self & { MonacoEnvironment: object }).MonacoEnvironment = { getWorker: () => new EditorWorker() };
 
-const props = defineProps<{ modelKey: string; initialValue: string; theme: "dark" | "light";
+const props = withDefaults(defineProps<{ modelKey: string; initialValue: string; theme: "dark" | "light"; appearance?: ModeColorScheme;
   completionKey: string; providerId: string; completionCandidateLimit: number;
   completionPreciseMatchingEnabled: boolean; completionSnippets: SqlCompletionSnippet[];
   minimapEnabled: boolean; wordWrapEnabled: boolean; editorId: string; connectionDisplay: string;
-  defaultCatalog?: string; defaultSchema?: string; objectInspectorOpacity: number }>();
+  defaultCatalog?: string; defaultSchema?: string; objectInspectorOpacity: number }>(), {
+  appearance: () => DEFAULT_COLOR_SCHEMES.light,
+});
 const emit = defineEmits<{
   dirty: [];
   execute: [scope: "current" | "script" | "current-new-tab", selection: string, cursorOffset: number,
@@ -110,6 +114,38 @@ function monacoTheme(theme: "dark" | "light"): string {
   return theme === "dark" ? "dbstudio-apple-dark" : "dbstudio-apple-light";
 }
 
+function tokenFontStyle(value: TextStyle): string {
+  return [value.bold ? "bold" : "", value.italic ? "italic" : ""].filter(Boolean).join(" ");
+}
+
+function appearanceTheme(theme: "dark" | "light", scheme: ModeColorScheme): string {
+  const id = `dbstudio-appearance-${theme}`;
+  const editor = scheme.editor;
+  monaco.editor.defineTheme(id, {
+    base: theme === "dark" ? "vs-dark" : "vs",
+    inherit: true,
+    rules: [
+      { token: "keyword", foreground: editor.keyword.color.slice(1), fontStyle: tokenFontStyle(editor.keyword) },
+      { token: "identifier", foreground: editor.identifier.color.slice(1), fontStyle: tokenFontStyle(editor.identifier) },
+      { token: "string", foreground: editor.string.color.slice(1), fontStyle: tokenFontStyle(editor.string) },
+      { token: "number", foreground: editor.number.color.slice(1), fontStyle: tokenFontStyle(editor.number) },
+      { token: "comment", foreground: editor.comment.color.slice(1), fontStyle: tokenFontStyle(editor.comment) },
+      { token: "identifier.quote", foreground: editor.quotedIdentifier.color.slice(1), fontStyle: tokenFontStyle(editor.quotedIdentifier) },
+    ],
+    colors: {
+      "editor.background": editor.background,
+      "editor.foreground": editor.foreground,
+      "editorLineNumber.foreground": editor.lineNumber,
+      "editorLineNumber.activeForeground": editor.activeLineNumber,
+      "editor.selectionBackground": editor.selection,
+      "editor.inactiveSelectionBackground": editor.selection,
+      "editor.lineHighlightBackground": editor.lineHighlight,
+      "editorCursor.foreground": editor.cursor,
+    },
+  });
+  return id;
+}
+
 if (!monaco.languages.getLanguages().some((item) => item.id === "dbstudio-mysql")) {
   monaco.languages.register({ id: "dbstudio-mysql" });
   monaco.languages.setMonarchTokensProvider("dbstudio-mysql", {
@@ -128,11 +164,11 @@ if (!monaco.languages.getLanguages().some((item) => item.id === "dbstudio-mysql"
 onMounted(() => {
   instance.value = monaco.editor.create(container.value!, {
     language: "dbstudio-mysql",
-    theme: monacoTheme(props.theme),
+    theme: appearanceTheme(props.theme, props.appearance),
     automaticLayout: true,
-    fontFamily: '"SF Mono", Menlo, Consolas, monospace',
-    fontSize: 13,
-    lineHeight: 21,
+    fontFamily: fontFamilyCss(props.appearance.editor.fontFamily),
+    fontSize: props.appearance.editor.fontSize,
+    lineHeight: props.appearance.editor.lineHeight,
     fontLigatures: true,
     minimap: { enabled: props.minimapEnabled },
     wordWrap: props.wordWrapEnabled ? "on" : "off",
@@ -261,7 +297,19 @@ function completionKind(kind: CompletionCandidate["kind"]): monaco.languages.Com
 }
 
 watch(() => props.modelKey, (key) => switchModel(key, props.initialValue));
-watch(() => props.theme, (theme) => monaco.editor.setTheme(monacoTheme(theme)));
+watch(() => props.theme, (theme) => {
+  if (!instance.value) return;
+  monaco.editor.setTheme(appearanceTheme(theme, props.appearance));
+});
+watch(() => props.appearance, (scheme) => {
+  if (!instance.value) return;
+  monaco.editor.setTheme(appearanceTheme(props.theme, scheme));
+  instance.value.updateOptions({
+    fontFamily: fontFamilyCss(scheme.editor.fontFamily),
+    fontSize: scheme.editor.fontSize,
+    lineHeight: scheme.editor.lineHeight,
+  });
+}, { deep: true });
 watch(() => props.minimapEnabled, (enabled) => instance.value?.updateOptions({ minimap: { enabled } }));
 watch(() => props.wordWrapEnabled, (enabled) => instance.value?.updateOptions({ wordWrap: enabled ? "on" : "off" }));
 watch(() => [props.completionKey, props.providerId], () => {

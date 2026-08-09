@@ -114,6 +114,7 @@ public final class DbStudioApiController {
             "editor.completionCandidateLimit", "editor.completionPreciseMatchingEnabled",
             "editor.completionSnippets", "editor.minimapEnabled", "editor.wordWrapEnabled",
             "editor.dangerousStatementWarningEnabled", "editor.objectInspectorOpacity",
+            "appearance.colorSchemes",
             "keyboard.shortcuts",
             "layout.leftWidth", "layout.editorHeight");
     private static final Set<String> COMPLETION_SNIPPET_FIELDS = new LinkedHashSet<String>(Arrays.asList(
@@ -151,6 +152,29 @@ public final class DbStudioApiController {
             + "\"result.restoreLayout\":null,"
             + "\"result.copySelection\":null,\"result.exportLoaded\":null,\"result.exportFull\":null,"
             + "\"result.loadNext\":null,\"result.loadAll\":null}";
+    private static final String DEFAULT_COLOR_SCHEMES =
+            "{\"version\":1,\"light\":{\"presetId\":\"dbstudio-light\",\"editor\":{"
+            + "\"fontFamily\":\"sf-mono\",\"fontSize\":13,\"lineHeight\":21,\"background\":\"#FFFFFF\",\"foreground\":\"#1D1D1F\","
+            + "\"keyword\":{\"color\":\"#9B2393\",\"bold\":true,\"italic\":false},\"identifier\":{\"color\":\"#1D1D1F\",\"bold\":false,\"italic\":false},"
+            + "\"string\":{\"color\":\"#C41A16\",\"bold\":false,\"italic\":false},\"number\":{\"color\":\"#1C00CF\",\"bold\":false,\"italic\":false},"
+            + "\"comment\":{\"color\":\"#6C7986\",\"bold\":false,\"italic\":true},\"quotedIdentifier\":{\"color\":\"#0F68A0\",\"bold\":false,\"italic\":false},"
+            + "\"lineNumber\":\"#A1A1A6\",\"activeLineNumber\":\"#6E6E73\",\"cursor\":\"#0071E3\",\"selection\":\"#B8D9F8\",\"lineHighlight\":\"#F5F5F7\"},"
+            + "\"result\":{"
+            + "\"fontFamily\":\"system-ui\",\"fontSize\":12,\"background\":\"#FFFFFF\",\"headerBackground\":\"#F5F5F7\","
+            + "\"cell\":{\"color\":\"#1D1D1F\",\"bold\":false,\"italic\":false},\"header\":{\"color\":\"#6E6E73\",\"bold\":true,\"italic\":false},"
+            + "\"nullValue\":{\"color\":\"#AF52DE\",\"bold\":false,\"italic\":true},\"binaryValue\":{\"color\":\"#B25000\",\"bold\":false,\"italic\":false},"
+            + "\"rowNumber\":{\"color\":\"#86868B\",\"bold\":false,\"italic\":false},\"selectionBackground\":\"#DCECFB\",\"selectionBorder\":\"#0071E3\"}},"
+            + "\"dark\":{\"presetId\":\"dbstudio-dark\",\"editor\":{"
+            + "\"fontFamily\":\"sf-mono\",\"fontSize\":13,\"lineHeight\":21,\"background\":\"#111113\",\"foreground\":\"#F5F5F7\","
+            + "\"keyword\":{\"color\":\"#FC5FA3\",\"bold\":true,\"italic\":false},\"identifier\":{\"color\":\"#F5F5F7\",\"bold\":false,\"italic\":false},"
+            + "\"string\":{\"color\":\"#FC6A5D\",\"bold\":false,\"italic\":false},\"number\":{\"color\":\"#D0BF69\",\"bold\":false,\"italic\":false},"
+            + "\"comment\":{\"color\":\"#7F8C98\",\"bold\":false,\"italic\":true},\"quotedIdentifier\":{\"color\":\"#5DD8FF\",\"bold\":false,\"italic\":false},"
+            + "\"lineNumber\":\"#636366\",\"activeLineNumber\":\"#A1A1A6\",\"cursor\":\"#2997FF\",\"selection\":\"#264F78\",\"lineHighlight\":\"#19191C\"},"
+            + "\"result\":{"
+            + "\"fontFamily\":\"system-ui\",\"fontSize\":12,\"background\":\"#151517\",\"headerBackground\":\"#1C1C1E\","
+            + "\"cell\":{\"color\":\"#F5F5F7\",\"bold\":false,\"italic\":false},\"header\":{\"color\":\"#A1A1A6\",\"bold\":true,\"italic\":false},"
+            + "\"nullValue\":{\"color\":\"#BF5AF2\",\"bold\":false,\"italic\":true},\"binaryValue\":{\"color\":\"#FF9F0A\",\"bold\":false,\"italic\":false},"
+            + "\"rowNumber\":{\"color\":\"#7D7D83\",\"bold\":false,\"italic\":false},\"selectionBackground\":\"#264F78\",\"selectionBorder\":\"#2997FF\"}}}";
 
     private final ProviderRegistry providers;
     private final ConnectionProfileRepository profiles;
@@ -1586,6 +1610,7 @@ public final class DbStudioApiController {
             throw new ApiException("INVALID_SETTING", "编辑器开关设置无效");
         }
         if ("editor.completionSnippets".equals(key)) validateCompletionSnippets(value);
+        if ("appearance.colorSchemes".equals(key)) validateColorSchemeSettings(value);
         if ("keyboard.shortcuts".equals(key)) validateShortcutSettings(value);
         settings.put(key, value);
         if ("editor.dangerousStatementWarningEnabled".equals(key)) workspaces.clearRiskConfirmations();
@@ -1647,6 +1672,115 @@ public final class DbStudioApiController {
                 throw new ApiException("INVALID_SETTING", "SQL片段内容不能为空且不能超过64 KiB");
             }
             validateCompletionSnippetVariables(sql);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void validateColorSchemeSettings(String value) {
+        if (value == null || value.length() > 64 * 1024) {
+            throw new ApiException("INVALID_SETTING", "配色方案设置内容过长");
+        }
+        final Map<String, Object> root;
+        try {
+            root = objectMapper.readValue(value, Map.class);
+        } catch (Exception exception) {
+            throw new ApiException("INVALID_SETTING", "配色方案设置必须是有效 JSON");
+        }
+        requireKeys(root, setOf("version", "light", "dark"), "配色方案");
+        requireInteger(root, "version", 1, 1, "配色方案版本");
+        validateColorSchemeMode(requiredMap(root, "light", "亮色方案"), "亮色方案");
+        validateColorSchemeMode(requiredMap(root, "dark", "深色方案"), "深色方案");
+    }
+
+    private void validateColorSchemeMode(Map<String, Object> mode, String label) {
+        requireKeys(mode, setOf("presetId", "editor", "result"), label);
+        requireText(mode, "presetId", label + "预设标识", 64);
+        validateEditorColorScheme(requiredMap(mode, "editor", label + "编辑器"), label + "编辑器");
+        validateResultColorScheme(requiredMap(mode, "result", label + "结果集"), label + "结果集");
+    }
+
+    private void validateEditorColorScheme(Map<String, Object> editor, String label) {
+        requireKeys(editor, setOf("fontFamily", "fontSize", "lineHeight", "background", "foreground",
+                "keyword", "identifier", "string", "number", "comment", "quotedIdentifier", "lineNumber",
+                "activeLineNumber", "cursor", "selection", "lineHighlight"), label);
+        requireFont(editor, "fontFamily", label);
+        requireInteger(editor, "fontSize", 10, 24, label + "字号");
+        requireInteger(editor, "lineHeight", 14, 36, label + "行高");
+        for (String key : Arrays.asList("background", "foreground", "lineNumber", "activeLineNumber", "cursor",
+                "selection", "lineHighlight")) requireColor(editor, key, label);
+        for (String key : Arrays.asList("keyword", "identifier", "string", "number", "comment", "quotedIdentifier")) {
+            validateTextStyle(requiredMap(editor, key, label + key), label + key);
+        }
+    }
+
+    private void validateResultColorScheme(Map<String, Object> result, String label) {
+        requireKeys(result, setOf("fontFamily", "fontSize", "background", "headerBackground", "cell", "header",
+                "nullValue", "binaryValue", "rowNumber", "selectionBackground", "selectionBorder"), label);
+        requireFont(result, "fontFamily", label);
+        requireInteger(result, "fontSize", 10, 24, label + "字号");
+        for (String key : Arrays.asList("background", "headerBackground", "selectionBackground", "selectionBorder")) {
+            requireColor(result, key, label);
+        }
+        for (String key : Arrays.asList("cell", "header", "nullValue", "binaryValue", "rowNumber")) {
+            validateTextStyle(requiredMap(result, key, label + key), label + key);
+        }
+    }
+
+    private void validateTextStyle(Map<String, Object> style, String label) {
+        requireKeys(style, setOf("color", "bold", "italic"), label);
+        requireColor(style, "color", label);
+        requireBoolean(style, "bold", label);
+        requireBoolean(style, "italic", label);
+    }
+
+    private static Set<String> setOf(String... values) {
+        return new LinkedHashSet<String>(Arrays.asList(values));
+    }
+
+    private static void requireKeys(Map<String, Object> map, Set<String> expected, String label) {
+        if (map == null || !map.keySet().equals(expected)) {
+            throw new ApiException("INVALID_SETTING", label + "字段不完整或包含未知字段");
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> requiredMap(Map<String, Object> map, String key, String label) {
+        Object value = map.get(key);
+        if (!(value instanceof Map)) throw new ApiException("INVALID_SETTING", label + "格式无效");
+        return (Map<String, Object>) value;
+    }
+
+    private static void requireText(Map<String, Object> map, String key, String label, int maxLength) {
+        Object value = map.get(key);
+        if (!(value instanceof String) || ((String) value).isEmpty() || ((String) value).length() > maxLength) {
+            throw new ApiException("INVALID_SETTING", label + "无效");
+        }
+    }
+
+    private static void requireFont(Map<String, Object> map, String key, String label) {
+        Object value = map.get(key);
+        if (!(value instanceof String) || !Arrays.asList("system-ui", "system-mono", "sf-mono", "menlo", "monaco", "consolas", "jetbrains-mono").contains(value)) {
+            throw new ApiException("INVALID_SETTING", label + "字体无效");
+        }
+    }
+
+    private static void requireColor(Map<String, Object> map, String key, String label) {
+        Object value = map.get(key);
+        if (!(value instanceof String) || !((String) value).matches("#[0-9A-Fa-f]{6}")) {
+            throw new ApiException("INVALID_SETTING", label + "颜色无效");
+        }
+    }
+
+    private static void requireBoolean(Map<String, Object> map, String key, String label) {
+        if (!(map.get(key) instanceof Boolean)) throw new ApiException("INVALID_SETTING", label + "开关无效");
+    }
+
+    private static void requireInteger(Map<String, Object> map, String key, int minimum, int maximum, String label) {
+        Object value = map.get(key);
+        if (!(value instanceof Number)) throw new ApiException("INVALID_SETTING", label + "无效");
+        double number = ((Number) value).doubleValue();
+        if (!Double.isFinite(number) || number != Math.rint(number) || number < minimum || number > maximum) {
+            throw new ApiException("INVALID_SETTING", label + "超出范围");
         }
     }
 
@@ -2355,6 +2489,7 @@ public final class DbStudioApiController {
         if (!result.containsKey("editor.dangerousStatementWarningEnabled")) {
             result.put("editor.dangerousStatementWarningEnabled", "true");
         }
+        if (!result.containsKey("appearance.colorSchemes")) result.put("appearance.colorSchemes", DEFAULT_COLOR_SCHEMES);
         if (!result.containsKey("keyboard.shortcuts")) result.put("keyboard.shortcuts", DEFAULT_SHORTCUTS);
         if (!result.containsKey("connection.idleTimeoutMinutes")) result.put("connection.idleTimeoutMinutes", "10");
         if (!result.containsKey("connection.transactionDisconnectRollbackMinutes")) {

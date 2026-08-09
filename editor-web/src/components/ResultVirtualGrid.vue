@@ -624,6 +624,7 @@ defineExpose({ getScrollPosition, setScrollPosition, scrollCellIntoView });
   overflow: auto;
   contain: layout paint style;
   scrollbar-width: thin;
+  background: var(--db-result-bg);
 }
 .result-virtual-grid__canvas { position: relative; }
 .result-virtual-grid__header {
@@ -632,9 +633,12 @@ defineExpose({ getScrollPosition, setScrollPosition, scrollCellIntoView });
   width: 100%;
   flex: none;
   overflow: hidden;
-  background: var(--db-table-header);
-  color: var(--db-text-secondary);
-  font-weight: 600;
+  background: var(--db-result-header-bg);
+  color: var(--db-result-header-color);
+  font-family: var(--db-result-font-family);
+  font-size: var(--db-result-font-size);
+  font-weight: var(--db-result-header-font-weight);
+  font-style: var(--db-result-header-font-style);
 }
 .result-virtual-grid__header-viewport {
   position: absolute;
@@ -672,11 +676,11 @@ defineExpose({ getScrollPosition, setScrollPosition, scrollCellIntoView });
   left: 0;
   border-bottom: 1px solid var(--db-border-soft);
 }
-.result-virtual-grid__row:hover { background: var(--db-accent-soft); }
+.result-virtual-grid__row:hover { background: var(--db-result-selection-bg); }
 .result-virtual-grid.is-seeking .result-virtual-grid__row:hover,
 .result-virtual-grid.is-scrollbar-dragging .result-virtual-grid__row:hover { background: transparent; }
 .result-virtual-grid__row.result-row-selected,
-.result-virtual-grid__row.result-row-selected:hover { background: var(--db-accent-soft); }
+.result-virtual-grid__row.result-row-selected:hover { background: var(--db-result-selection-bg); }
 .result-virtual-grid__row.result-row-inserted { background: color-mix(in srgb, var(--el-color-success) 10%, transparent); }
 .result-virtual-grid__row.result-row-inserted-applied { background: color-mix(in srgb, var(--el-color-success) 6%, transparent); }
 .result-virtual-grid__row.result-row-deleted { background: color-mix(in srgb, var(--el-color-danger) 9%, transparent); opacity: .72; }
@@ -694,21 +698,21 @@ defineExpose({ getScrollPosition, setScrollPosition, scrollCellIntoView });
   top: 0;
   left: 0;
   width: 34px;
-  background: color-mix(in srgb, var(--db-content) 94%, var(--db-muted) 6%);
+  background: color-mix(in srgb, var(--db-result-header-bg) 94%, var(--db-result-header-color) 6%);
 }
 .result-virtual-grid__row .result-virtual-grid__gutter {
   position: sticky;
   z-index: 3;
   left: 0;
-  background: color-mix(in srgb, var(--db-content) 97%, var(--db-muted) 3%);
+  background: color-mix(in srgb, var(--db-result-bg) 97%, var(--db-result-row-number-color) 3%);
 }
 .result-virtual-grid__row:hover .result-virtual-grid__gutter,
 .result-virtual-grid__row.result-row-selected .result-virtual-grid__gutter {
-  background: color-mix(in srgb, var(--db-content) 90%, var(--db-accent) 10%);
+  background: color-mix(in srgb, var(--db-result-bg) 90%, var(--db-result-selection-bg) 10%);
 }
 .result-virtual-grid.is-seeking .result-virtual-grid__row:hover .result-virtual-grid__gutter,
 .result-virtual-grid.is-scrollbar-dragging .result-virtual-grid__row:hover .result-virtual-grid__gutter {
-  background: color-mix(in srgb, var(--db-content) 97%, var(--db-muted) 3%);
+  background: color-mix(in srgb, var(--db-result-bg) 97%, var(--db-result-row-number-color) 3%);
 }
 .result-virtual-grid__gutter::after {
   position: absolute;
@@ -756,13 +760,24 @@ defineExpose({ getScrollPosition, setScrollPosition, scrollCellIntoView });
   border: 1px solid var(--db-accent);
   border-radius: 3px;
   outline: 0;
-  background: var(--db-content);
-  color: var(--db-text);
+  background: var(--db-result-bg);
+  color: var(--db-result-cell-color);
+  font-family: var(--db-result-font-family);
+  font-size: var(--db-result-font-size);
+  font-weight: var(--db-result-cell-font-weight);
+  font-style: var(--db-result-cell-font-style);
   font: inherit;
 }
 .result-cell-readonly {
-  background: color-mix(in srgb, var(--db-table-header) 72%, var(--db-content) 28%);
-  color: var(--db-text-secondary);
+  background: color-mix(in srgb, var(--db-result-header-bg) 72%, var(--db-result-bg) 28%);
+  color: var(--db-result-header-color);
+}
+.result-virtual-grid__cell :deep(.result-cell), .result-virtual-grid__cell.result-cell {
+  color: var(--db-result-cell-color);
+  font-family: var(--db-result-font-family);
+  font-size: var(--db-result-font-size);
+  font-weight: var(--db-result-cell-font-weight);
+  font-style: var(--db-result-cell-font-style);
 }
 .result-cell-pending {
   background: color-mix(in srgb, var(--db-warning) 20%, transparent);

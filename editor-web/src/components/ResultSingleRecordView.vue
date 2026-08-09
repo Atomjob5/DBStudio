@@ -814,11 +814,11 @@ defineExpose({
 
 <style scoped>
 .result-single-record-view { box-sizing: border-box; width: 100%; height: 100%; min-height: 0; outline: none; }
-:deep(.single-record-header-label) { box-sizing: border-box; display: flex; width: 100%; height: 100%; padding: 0 8px; align-items: center; color: var(--db-text-secondary); font-weight: 600; position: relative; gap: 2px; }
+:deep(.single-record-header-label) { box-sizing: border-box; display: flex; width: 100%; height: 100%; padding: 0 8px; align-items: center; color: var(--db-result-header-color); font-family: var(--db-result-font-family); font-size: var(--db-result-font-size); font-weight: var(--db-result-header-font-weight); font-style: var(--db-result-header-font-style); position: relative; gap: 2px; }
 :deep(.single-record-header-label.selected) { background: var(--db-accent-soft); color: var(--db-text); }
 :deep(.single-record-header-title) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 :deep(.single-record-column-resize-handle) { position: absolute; right: 0; top: 0; width: 7px; height: 100%; cursor: col-resize; z-index: 2; }
 :deep(.single-record-column-selection-count) { position: absolute; right: 7px; top: 3px; font-size: 10px; color: var(--db-accent); }
-:deep(.result-cell-readonly) { background: color-mix(in srgb, var(--db-table-header) 72%, var(--db-content) 28%); color: var(--db-text-secondary); }
-:deep(.result-cell.selected), :deep(.result-cell.column-selected) { background: var(--db-accent-soft); color: var(--db-text); }
+:deep(.result-cell-readonly) { background: color-mix(in srgb, var(--db-result-header-bg) 72%, var(--db-result-bg) 28%); color: var(--db-result-header-color); }
+:deep(.result-cell.selected), :deep(.result-cell.column-selected) { background: var(--db-result-selection-bg); color: var(--db-result-cell-color); }
 </style>

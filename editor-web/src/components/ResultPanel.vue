@@ -2285,10 +2285,12 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   outline: none;
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 400;
+  font-family: var(--db-result-font-family);
+  font-size: var(--db-result-font-size);
+  font-weight: var(--db-result-cell-font-weight);
+  font-style: var(--db-result-cell-font-style);
   font-variant-numeric: tabular-nums;
+  background: var(--db-result-bg);
 }
 .table-host:focus-visible { box-shadow: inset 0 0 0 1px var(--db-accent); }
 :deep(.result-cell-pending) {
@@ -2315,9 +2317,10 @@ onBeforeUnmount(() => {
   font: inherit;
 }
 :deep(.result-virtual-grid__viewport) {
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 400;
+  font-family: var(--db-result-font-family);
+  font-size: var(--db-result-font-size);
+  font-weight: var(--db-result-cell-font-weight);
+  font-style: var(--db-result-cell-font-style);
   font-variant-numeric: tabular-nums;
 }
 .result-empty { flex: 1; }
@@ -2338,9 +2341,11 @@ onBeforeUnmount(() => {
   padding: 0 7px;
   overflow: hidden;
   border-radius: 6px;
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 400;
+  font-family: var(--db-result-font-family);
+  font-size: var(--db-result-font-size);
+  font-weight: var(--db-result-cell-font-weight);
+  font-style: var(--db-result-cell-font-style);
+  color: var(--db-result-cell-color);
   font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2348,8 +2353,8 @@ onBeforeUnmount(() => {
   cursor: cell;
   user-select: none;
 }
-:deep(.result-cell.selected) { outline: 1.5px solid var(--db-accent); background: var(--db-accent-soft); }
-:deep(.result-cell.column-selected) { background: var(--db-accent-soft); }
+:deep(.result-cell.selected) { outline: 1.5px solid var(--db-result-selection-border); background: var(--db-result-selection-bg); }
+:deep(.result-cell.column-selected) { background: var(--db-result-selection-bg); }
 :deep(.result-cell.focused) {
   outline: 2px solid var(--db-accent);
   outline-offset: -1px;
@@ -2357,9 +2362,10 @@ onBeforeUnmount(() => {
 :deep(.result-row-number) {
   position: relative; display: block; width: 100%; height: 32px; margin: 0; border: 0; border-radius: 0;
   background: var(--db-row-gutter-bg);
-  color: var(--db-muted); font-size: 10px; line-height: 32px; text-align: center; user-select: none; cursor: default;
+  color: var(--db-result-row-number-color); font-family: var(--db-result-font-family); font-size: var(--db-result-font-size);
+  font-weight: var(--db-result-row-number-font-weight); font-style: var(--db-result-row-number-font-style); line-height: 32px; text-align: center; user-select: none; cursor: default;
 }
-:deep(.result-row-number-header) { background: var(--db-table-header); font-weight: 600; }
+:deep(.result-row-number-header) { background: var(--db-result-header-bg); color: var(--db-result-header-color); font-weight: var(--db-result-header-font-weight); }
 :deep(.result-row-number:not(.result-row-number-header)) { cursor: pointer; }
 :deep(.result-virtual-grid__row:hover .result-row-number) { color: var(--db-text-secondary); }
 :deep(.result-row-number.selected) { outline: 0; background: var(--db-row-gutter-bg); color: var(--db-accent); font-weight: 600; }
@@ -2390,13 +2396,19 @@ onBeforeUnmount(() => {
 .result-column-header {
   position: relative; display: flex; width: 100%; height: 100%; align-items: center; gap: 5px;
   padding: 0 10px; outline: none; user-select: none; cursor: grab;
+  color: var(--db-result-header-color);
+  font-family: var(--db-result-font-family);
+  font-size: var(--db-result-font-size);
+  font-weight: var(--db-result-header-font-weight);
+  font-style: var(--db-result-header-font-style);
+  background: var(--db-result-header-bg);
 }
 .result-column-labels {
   display: flex; min-width: 24px; flex: 1; flex-direction: column; justify-content: center;
   overflow: hidden; line-height: 15px;
 }
 .result-column-header:active { cursor: grabbing; }
-.result-column-header.selected { background: var(--db-accent-soft); color: var(--db-accent); }
+.result-column-header.selected { background: var(--db-result-selection-bg); color: var(--db-result-selection-border); }
 .result-column-header:focus-visible { box-shadow: inset 0 0 0 1.5px var(--db-accent); }
 .result-column-header.drop-before::before, .result-column-header.drop-after::after {
   position: absolute; z-index: 2; top: 2px; bottom: 2px; width: 2px; border-radius: 2px;
@@ -2405,7 +2417,7 @@ onBeforeUnmount(() => {
 .result-column-header.drop-before::before { left: 0; }
 .result-column-header.drop-after::after { right: 0; }
 .result-column-title, .result-column-remarks { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.result-column-title { font-size: 12px; font-weight: 600; }
+.result-column-title { font-size: var(--db-result-font-size); font-weight: var(--db-result-header-font-weight); font-style: var(--db-result-header-font-style); }
 .result-column-remarks { color: var(--db-muted); font-size: 10px; font-weight: 400; }
 .column-selection-count {
   flex: none; padding: 1px 5px; border-radius: 8px; background: var(--db-accent); color: #fff; font-size: 9px;
