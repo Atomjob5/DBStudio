@@ -1,4 +1,4 @@
-import type { ConnectionImportPreview, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "../types";
+import type { ConnectionImportPreview, ObjectDdlStreamEvent, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "../types";
 
 export interface RpcError { code: string; message: string; details?: unknown; requestId?: string; }
 type EventListener = (payload: unknown) => void;
@@ -143,6 +143,37 @@ export class RpcClient {
       if ((code === "WORKSPACE_NOT_OPEN" || code === "EVENT_CHANNEL_REQUIRED") && this.workspaceId) this.startReconnect();
       throw error;
     }
+  }
+
+  async streamObjectDdl(payload: Record<string, unknown>, onEvent: (event: ObjectDdlStreamEvent) => void,
+                        signal?: AbortSignal): Promise<void> {
+    await this.readyPromise;
+    if (this.mock) {
+      const result = await this.mock("metadata.objectDdlStream", payload, this.emitBound) as
+        { events?: ObjectDdlStreamEvent[] } | ObjectDdlStreamEvent[];
+      const events = Array.isArray(result) ? result : result.events ?? [];
+      for (const event of events) { if (signal?.aborted) throw new DOMException("Aborted", "AbortError"); onEvent(event); }
+      return;
+    }
+    if (!this.workspaceId) throw new Error("尚未选择工作空间");
+    const response = await fetch(`/api/v1/workspaces/${this.workspaceId}/metadata/object-ddl-stream`, {
+      method: "POST", credentials: "same-origin", cache: "no-store", signal,
+      headers: { "Content-Type": "application/json", "X-DBStudio-Client-Id": this.browserClientId },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok || !response.body) {
+      const failure = await response.json().catch(() => ({})) as RpcError;
+      throw Object.assign(new Error(failure.message || `对象 DDL 请求失败（${response.status}）`), failure);
+    }
+    const reader = response.body.getReader(); const decoder = new TextDecoder(); let pending = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      pending += decoder.decode(value, { stream: !done });
+      const lines = pending.split("\n"); pending = lines.pop() ?? "";
+      for (const line of lines) if (line.trim()) onEvent(JSON.parse(line) as ObjectDdlStreamEvent);
+      if (done) break;
+    }
+    if (pending.trim()) onEvent(JSON.parse(pending) as ObjectDdlStreamEvent);
   }
 
   on(type: string, listener: EventListener): () => void {
@@ -404,6 +435,7 @@ export class RpcClient {
       case "metadata.completionNamespaces": return { path: `${ws}/metadata/completion-namespaces`, method: "POST", body };
       case "metadata.completionSnapshot": return { path: `${ws}/metadata/completion-snapshot`, method: "POST", body };
       case "metadata.definition": return { path: `${ws}/metadata/definition`, method: "POST", body };
+      case "metadata.objectSection": return { path: `${ws}/metadata/object-section`, method: "POST", body };
       case "metadata.generateQuery": return { path: `${ws}/metadata/query`, method: "POST", body };
       case "editor.create": return { path: `${ws}/editors`, method: "POST", body };
       case "editor.bind": return { path: `${ws}/editors/${editorId}/connection`, method: "PUT", body };

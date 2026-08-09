@@ -9,9 +9,14 @@ import com.dbstudio.spi.DatabaseObject;
 import com.dbstudio.spi.DatabaseObjectType;
 import com.dbstudio.spi.DatabaseSession;
 import com.dbstudio.spi.MetadataAdapter;
+import com.dbstudio.spi.MetadataPage;
+import com.dbstudio.spi.ObjectIndexColumnInfo;
+import com.dbstudio.spi.ObjectIndexInfo;
+import com.dbstudio.spi.ObjectPartitionInfo;
 import com.dbstudio.spi.UniqueKeyInfo;
 import java.io.IOException;
 import java.io.Reader;
+import java.io.Writer;
 import java.sql.Clob;
 import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
@@ -211,6 +216,116 @@ public class OracleMetadataAdapter implements MetadataAdapter {
         return Collections.unmodifiableList(columns);
     }
 
+    @Override public DatabaseObject findObject(DatabaseSession session, String catalog, String schema,
+                                                String objectName) throws SQLException {
+        String owner = upper(schema == null || schema.trim().isEmpty()
+                ? (catalog == null || catalog.trim().isEmpty() ? session.currentSchema() : catalog) : schema);
+        try (PreparedStatement statement = session.jdbcConnection().prepareStatement(
+                "SELECT o.OWNER,o.OBJECT_NAME,o.OBJECT_TYPE,c.COMMENTS FROM ALL_OBJECTS o "
+                        + "LEFT JOIN ALL_TAB_COMMENTS c ON c.OWNER=o.OWNER AND c.TABLE_NAME=o.OBJECT_NAME "
+                        + "WHERE o.OWNER=? AND o.OBJECT_NAME=? AND o.OBJECT_TYPE IN ('TABLE','VIEW')")) {
+            statement.setString(1, owner); statement.setString(2, upper(objectName));
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) return null;
+                DatabaseObjectType type = "VIEW".equals(rows.getString(3))
+                        ? DatabaseObjectType.VIEW : DatabaseObjectType.TABLE;
+                return object(type, rows.getString(1), rows.getString(2), value(rows.getString(4)),
+                        Collections.<String, String>emptyMap());
+            }
+        }
+    }
+
+    @Override public List<ObjectIndexInfo> listIndexes(DatabaseSession session, String catalog, String schema,
+                                                        String objectName) throws SQLException {
+        String owner = upper(schema == null || schema.trim().isEmpty() ? catalog : schema);
+        Map<String, OracleIndexBuilder> indexes = new LinkedHashMap<String, OracleIndexBuilder>();
+        try (PreparedStatement statement = session.jdbcConnection().prepareStatement(
+                "SELECT i.INDEX_NAME,i.UNIQUENESS,i.INDEX_TYPE,i.STATUS,i.VISIBILITY,i.PARTITIONED,i.TABLESPACE_NAME,"
+                        + "c.CONSTRAINT_TYPE,ic.COLUMN_NAME,ic.DESCEND,ic.COLUMN_POSITION "
+                        + "FROM ALL_INDEXES i LEFT JOIN ALL_CONSTRAINTS c ON c.OWNER=i.OWNER "
+                        + "AND c.TABLE_NAME=i.TABLE_NAME AND c.INDEX_NAME=i.INDEX_NAME "
+                        + "LEFT JOIN ALL_IND_COLUMNS ic ON ic.INDEX_OWNER=i.OWNER AND ic.INDEX_NAME=i.INDEX_NAME "
+                        + "WHERE i.TABLE_OWNER=? AND i.TABLE_NAME=? ORDER BY i.INDEX_NAME,ic.COLUMN_POSITION")) {
+            statement.setString(1, owner); statement.setString(2, upper(objectName));
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    String name = rows.getString(1);
+                    OracleIndexBuilder builder = indexes.get(name);
+                    if (builder == null) {
+                        builder = new OracleIndexBuilder(name, "P".equals(rows.getString(8)),
+                                "UNIQUE".equals(rows.getString(2)), value(rows.getString(3)), value(rows.getString(4)),
+                                !"INVISIBLE".equals(rows.getString(5)), "YES".equals(rows.getString(6)),
+                                value(rows.getString(7)));
+                        indexes.put(name, builder);
+                    }
+                    if (rows.getString(9) != null) builder.columns.add(new ObjectIndexColumnInfo(rows.getString(9), "",
+                            value(rows.getString(10)), rows.getInt(11)));
+                }
+            }
+        } catch (SQLException compatibilityFailure) {
+            return MetadataAdapter.super.listIndexes(session, catalog, schema, objectName);
+        }
+        List<ObjectIndexInfo> result = new ArrayList<ObjectIndexInfo>();
+        for (OracleIndexBuilder index : indexes.values()) result.add(index.build());
+        return Collections.unmodifiableList(result);
+    }
+
+    @Override public MetadataPage<ObjectPartitionInfo> listPartitions(DatabaseSession session, String catalog,
+                                                                        String schema, String objectName,
+                                                                        String pageToken, int pageSize) throws SQLException {
+        String owner = upper(schema == null || schema.trim().isEmpty() ? catalog : schema);
+        int offset = decodePageToken(pageToken), limit = Math.max(1, Math.min(500, pageSize));
+        List<ObjectPartitionInfo> items = new ArrayList<ObjectPartitionInfo>();
+        String sql = "SELECT * FROM (SELECT p.PARTITION_NAME,p.PARTITION_POSITION,t.PARTITIONING_TYPE,"
+                + "p.HIGH_VALUE,p.TABLESPACE_NAME,p.NUM_ROWS,p.BLOCKS,t.SUBPARTITIONING_TYPE,ROW_NUMBER() OVER "
+                + "(ORDER BY p.PARTITION_POSITION) rn FROM ALL_TAB_PARTITIONS p JOIN ALL_PART_TABLES t "
+                + "ON t.OWNER=p.TABLE_OWNER AND t.TABLE_NAME=p.TABLE_NAME WHERE p.TABLE_OWNER=? AND p.TABLE_NAME=?) "
+                + "WHERE rn>? AND rn<=? ORDER BY rn";
+        try (PreparedStatement statement = session.jdbcConnection().prepareStatement(sql)) {
+            statement.setString(1, owner); statement.setString(2, upper(objectName));
+            statement.setInt(3, offset); statement.setInt(4, offset + limit + 1);
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) items.add(new ObjectPartitionInfo(value(rows.getString(1)), value(rows.getString(1)),
+                        "", rows.getInt(2), value(rows.getString(3)), "", value(rows.getString(4)),
+                        value(rows.getString(5)), nullableLong(rows, 6), blocksAsBytes(rows, 7),
+                        !"NONE".equalsIgnoreCase(value(rows.getString(8)))));
+            }
+        } catch (SQLException failure) {
+            return new MetadataPage<ObjectPartitionInfo>(Collections.<ObjectPartitionInfo>emptyList(), "", false,
+                    "当前Oracle兼容数据库无法读取分区字典：" + value(failure.getMessage()));
+        }
+        boolean more = items.size() > limit; if (more) items.remove(items.size() - 1);
+        return new MetadataPage<ObjectPartitionInfo>(items, more ? encodePageToken(offset + limit) : "", true, "");
+    }
+
+    @Override public MetadataPage<ObjectPartitionInfo> listSubpartitions(DatabaseSession session, String catalog,
+                                                                           String schema, String objectName,
+                                                                           String parentPartition, String pageToken,
+                                                                           int pageSize) throws SQLException {
+        String owner = upper(schema == null || schema.trim().isEmpty() ? catalog : schema);
+        int offset = decodePageToken(pageToken), limit = Math.max(1, Math.min(500, pageSize));
+        List<ObjectPartitionInfo> items = new ArrayList<ObjectPartitionInfo>();
+        String sql = "SELECT * FROM (SELECT SUBPARTITION_NAME,SUBPARTITION_POSITION,HIGH_VALUE,TABLESPACE_NAME,"
+                + "NUM_ROWS,BLOCKS,ROW_NUMBER() OVER (ORDER BY SUBPARTITION_POSITION) rn "
+                + "FROM ALL_TAB_SUBPARTITIONS WHERE TABLE_OWNER=? AND TABLE_NAME=? AND PARTITION_NAME=?) "
+                + "WHERE rn>? AND rn<=? ORDER BY rn";
+        try (PreparedStatement statement = session.jdbcConnection().prepareStatement(sql)) {
+            statement.setString(1, owner); statement.setString(2, upper(objectName));
+            statement.setString(3, upper(parentPartition)); statement.setInt(4, offset); statement.setInt(5, offset + limit + 1);
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) items.add(new ObjectPartitionInfo(parentPartition + "/" + value(rows.getString(1)),
+                        value(rows.getString(1)), parentPartition, rows.getInt(2), "SUBPARTITION", "",
+                        value(rows.getString(3)), value(rows.getString(4)), nullableLong(rows, 5),
+                        blocksAsBytes(rows, 6), false));
+            }
+        } catch (SQLException failure) {
+            return new MetadataPage<ObjectPartitionInfo>(Collections.<ObjectPartitionInfo>emptyList(), "", false,
+                    "当前Oracle兼容数据库无法读取子分区字典：" + value(failure.getMessage()));
+        }
+        boolean more = items.size() > limit; if (more) items.remove(items.size() - 1);
+        return new MetadataPage<ObjectPartitionInfo>(items, more ? encodePageToken(offset + limit) : "", true, "");
+    }
+
     private List<ColumnInfo> jdbcColumns(DatabaseSession session, String owner, String objectName,
                                          Set<String> primary) throws SQLException {
         List<ColumnInfo> columns = new ArrayList<ColumnInfo>();
@@ -314,6 +429,42 @@ public class OracleMetadataAdapter implements MetadataAdapter {
         }
         throw new SQLException("无法读取 " + object.schema() + "." + object.name()
                 + " 的定义，请确认数据字典访问权限");
+    }
+
+    @Override public void writeRebuildDdl(DatabaseSession session, DatabaseObject object, Writer writer)
+            throws SQLException, IOException {
+        String ddlType = ddlType(object.type());
+        if (!("TABLE".equals(ddlType) || "VIEW".equals(ddlType))) {
+            MetadataAdapter.super.writeRebuildDdl(session, object, writer); return;
+        }
+        try (Statement transform = session.jdbcConnection().createStatement()) {
+            transform.execute("BEGIN DBMS_METADATA.SET_TRANSFORM_PARAM(DBMS_METADATA.SESSION_TRANSFORM,'SQLTERMINATOR',TRUE); "
+                    + "DBMS_METADATA.SET_TRANSFORM_PARAM(DBMS_METADATA.SESSION_TRANSFORM,'CONSTRAINTS',TRUE); "
+                    + "DBMS_METADATA.SET_TRANSFORM_PARAM(DBMS_METADATA.SESSION_TRANSFORM,'REF_CONSTRAINTS',TRUE); END;");
+        } catch (SQLException compatibilityIgnored) { LOG.debug("DDL转换参数不可用", compatibilityIgnored); }
+        writeMetadataClob(session, writer, "SELECT DBMS_METADATA.GET_DDL(?, ?, ?) FROM DUAL",
+                ddlType, upper(object.name()), upper(object.schema()));
+        if (object.type() == DatabaseObjectType.TABLE) {
+            List<String> standalone = new ArrayList<String>();
+            try (PreparedStatement statement = session.jdbcConnection().prepareStatement(
+                    "SELECT i.INDEX_NAME FROM ALL_INDEXES i WHERE i.TABLE_OWNER=? AND i.TABLE_NAME=? "
+                            + "AND NOT EXISTS (SELECT 1 FROM ALL_CONSTRAINTS c WHERE c.OWNER=i.OWNER "
+                            + "AND c.TABLE_NAME=i.TABLE_NAME AND c.INDEX_NAME=i.INDEX_NAME) ORDER BY i.INDEX_NAME")) {
+                statement.setString(1, upper(object.schema())); statement.setString(2, upper(object.name()));
+                try (ResultSet rows = statement.executeQuery()) { while (rows.next()) standalone.add(rows.getString(1)); }
+            }
+            for (String index : standalone) {
+                writer.write("\n");
+                writeMetadataClob(session, writer, "SELECT DBMS_METADATA.GET_DDL('INDEX', ?, ?) FROM DUAL",
+                        index, upper(object.schema()));
+            }
+            try {
+                writer.write("\n");
+                writeMetadataClob(session, writer,
+                        "SELECT DBMS_METADATA.GET_DEPENDENT_DDL('COMMENT', ?, ?) FROM DUAL",
+                        upper(object.name()), upper(object.schema()));
+            } catch (SQLException noComments) { LOG.debug("对象没有可输出的备注DDL"); }
+        }
     }
 
     protected boolean isSystemSchema(String schema) { return SYSTEM_SCHEMAS.contains(upper(schema)); }
@@ -576,6 +727,37 @@ public class OracleMetadataAdapter implements MetadataAdapter {
             return result.toString();
         } catch (IOException exception) { throw new SQLException("读取对象定义失败", exception); }
     }
+    private static void writeMetadataClob(DatabaseSession session, Writer writer, String sql, String... parameters)
+            throws SQLException, IOException {
+        try (PreparedStatement statement = session.jdbcConnection().prepareStatement(sql)) {
+            for (int index = 0; index < parameters.length; index++) statement.setString(index + 1, parameters[index]);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) throw new SQLException("数据库未返回对象定义");
+                Object value = rows.getObject(1);
+                if (!(value instanceof Clob)) { writer.write(value == null ? "" : String.valueOf(value)); return; }
+                try (Reader reader = ((Clob) value).getCharacterStream()) {
+                    char[] buffer = new char[8192]; int read;
+                    while ((read = reader.read(buffer)) >= 0) writer.write(buffer, 0, read);
+                }
+            }
+        }
+    }
+    private static Long nullableLong(ResultSet rows, int index) throws SQLException {
+        long number = rows.getLong(index); return rows.wasNull() ? null : Long.valueOf(number);
+    }
+    private static Long blocksAsBytes(ResultSet rows, int index) throws SQLException {
+        Long blocks = nullableLong(rows, index); return blocks == null ? null : Long.valueOf(blocks.longValue() * 8192L);
+    }
+    private static String encodePageToken(int offset) {
+        return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(
+                String.valueOf(offset).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+    private static int decodePageToken(String token) throws SQLException {
+        if (token == null || token.isEmpty()) return 0;
+        try { return Integer.parseInt(new String(java.util.Base64.getUrlDecoder().decode(token),
+                java.nio.charset.StandardCharsets.UTF_8)); }
+        catch (RuntimeException invalid) { throw new SQLException("分页标识无效", invalid); }
+    }
     private static boolean containsIgnoreCase(Set<String> values, String candidate) {
         for (String value : values) if (value.equalsIgnoreCase(candidate)) return true;
         return false;
@@ -595,5 +777,19 @@ public class OracleMetadataAdapter implements MetadataAdapter {
         private final String name; private final boolean primary;
         private final TreeMap<Integer, String> columns = new TreeMap<Integer, String>();
         private KeyBuilder(String name, boolean primary) { this.name=name; this.primary=primary; }
+    }
+    private static final class OracleIndexBuilder {
+        private final String name; private final boolean primary; private final boolean unique;
+        private final String type; private final String status; private final boolean visible;
+        private final boolean partitioned; private final String tablespace;
+        private final List<ObjectIndexColumnInfo> columns = new ArrayList<ObjectIndexColumnInfo>();
+        private OracleIndexBuilder(String name, boolean primary, boolean unique, String type, String status,
+                                   boolean visible, boolean partitioned, String tablespace) {
+            this.name=name; this.primary=primary; this.unique=unique; this.type=type; this.status=status;
+            this.visible=visible; this.partitioned=partitioned; this.tablespace=tablespace;
+        }
+        private ObjectIndexInfo build() {
+            return new ObjectIndexInfo(name, primary, unique, type, status, visible, partitioned, tablespace, columns);
+        }
     }
 }

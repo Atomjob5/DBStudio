@@ -7,6 +7,10 @@ import com.dbstudio.spi.DatabaseObject;
 import com.dbstudio.spi.DatabaseObjectType;
 import com.dbstudio.spi.DatabaseSession;
 import com.dbstudio.spi.MetadataAdapter;
+import com.dbstudio.spi.MetadataPage;
+import com.dbstudio.spi.ObjectIndexColumnInfo;
+import com.dbstudio.spi.ObjectIndexInfo;
+import com.dbstudio.spi.ObjectPartitionInfo;
 import com.dbstudio.spi.UniqueKeyInfo;
 import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
@@ -207,6 +211,105 @@ public final class MySqlMetadataAdapter implements MetadataAdapter {
             }
         });
         return columns;
+    }
+
+    @Override public DatabaseObject findObject(DatabaseSession session, String catalog, String schema,
+                                                String objectName) throws SQLException {
+        String effectiveCatalog = catalog == null || catalog.isEmpty() ? session.currentCatalog() : catalog;
+        try (PreparedStatement statement = session.jdbcConnection().prepareStatement(
+                "SELECT TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE,TABLE_COMMENT FROM information_schema.TABLES "
+                        + "WHERE TABLE_SCHEMA=? AND TABLE_NAME=?")) {
+            statement.setString(1, effectiveCatalog); statement.setString(2, objectName);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) return null;
+                DatabaseObjectType type = value(rows.getString(3)).toUpperCase(Locale.ROOT).contains("VIEW")
+                        ? DatabaseObjectType.VIEW : DatabaseObjectType.TABLE;
+                return new DatabaseObject(type, rows.getString(1), "", rows.getString(2),
+                        value(rows.getString(4)), Collections.<String, String>emptyMap());
+            }
+        }
+    }
+
+    @Override public List<ObjectIndexInfo> listIndexes(DatabaseSession session, String catalog, String schema,
+                                                        String objectName) throws SQLException {
+        String effectiveCatalog = catalog == null || catalog.isEmpty() ? session.currentCatalog() : catalog;
+        Map<String, IndexBuilder> indexes = new LinkedHashMap<String, IndexBuilder>();
+        try (PreparedStatement statement = session.jdbcConnection().prepareStatement(
+                "SELECT INDEX_NAME,NON_UNIQUE,INDEX_TYPE,SEQ_IN_INDEX,COLUMN_NAME,COLLATION "
+                        + "FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? "
+                        + "ORDER BY INDEX_NAME,SEQ_IN_INDEX")) {
+            statement.setString(1, effectiveCatalog); statement.setString(2, objectName);
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    String name = rows.getString(1);
+                    IndexBuilder builder = indexes.get(name);
+                    if (builder == null) {
+                        builder = new IndexBuilder(name, rows.getBoolean(2), value(rows.getString(3)));
+                        indexes.put(name, builder);
+                    }
+                    int ordinal = rows.getInt(4);
+                    builder.columns.add(new ObjectIndexColumnInfo(value(rows.getString(5)), "",
+                            "D".equalsIgnoreCase(rows.getString(6)) ? "DESC" : "ASC", ordinal));
+                }
+            }
+        }
+        List<ObjectIndexInfo> result = new ArrayList<ObjectIndexInfo>();
+        for (IndexBuilder index : indexes.values()) result.add(index.build());
+        return Collections.unmodifiableList(result);
+    }
+
+    @Override public MetadataPage<ObjectPartitionInfo> listPartitions(DatabaseSession session, String catalog,
+                                                                        String schema, String objectName,
+                                                                        String pageToken, int pageSize) throws SQLException {
+        String effectiveCatalog = catalog == null || catalog.isEmpty() ? session.currentCatalog() : catalog;
+        int offset = decodePageToken(pageToken); int limit = Math.max(1, Math.min(500, pageSize));
+        List<ObjectPartitionInfo> items = new ArrayList<ObjectPartitionInfo>();
+        try (PreparedStatement statement = session.jdbcConnection().prepareStatement(
+                "SELECT PARTITION_NAME,MIN(PARTITION_ORDINAL_POSITION),MAX(PARTITION_METHOD),"
+                        + "MAX(PARTITION_EXPRESSION),MAX(PARTITION_DESCRIPTION),MAX(TABLESPACE_NAME),"
+                        + "SUM(TABLE_ROWS),SUM(DATA_LENGTH),MAX(CASE WHEN SUBPARTITION_NAME IS NULL THEN 0 ELSE 1 END) "
+                        + "FROM information_schema.PARTITIONS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? "
+                        + "AND PARTITION_NAME IS NOT NULL GROUP BY PARTITION_NAME "
+                        + "ORDER BY MIN(PARTITION_ORDINAL_POSITION) LIMIT ? OFFSET ?")) {
+            statement.setString(1, effectiveCatalog); statement.setString(2, objectName);
+            statement.setInt(3, limit + 1); statement.setInt(4, offset);
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) items.add(new ObjectPartitionInfo(
+                        value(rows.getString(1)), value(rows.getString(1)), "", rows.getInt(2),
+                        value(rows.getString(3)), value(rows.getString(4)), value(rows.getString(5)),
+                        value(rows.getString(6)), nullableLong(rows, 7), nullableLong(rows, 8), rows.getInt(9) == 1));
+            }
+        }
+        boolean more = items.size() > limit;
+        if (more) items.remove(items.size() - 1);
+        return new MetadataPage<ObjectPartitionInfo>(items, more ? encodePageToken(offset + limit) : "", true, "");
+    }
+
+    @Override public MetadataPage<ObjectPartitionInfo> listSubpartitions(DatabaseSession session, String catalog,
+                                                                           String schema, String objectName,
+                                                                           String parentPartition, String pageToken,
+                                                                           int pageSize) throws SQLException {
+        String effectiveCatalog = catalog == null || catalog.isEmpty() ? session.currentCatalog() : catalog;
+        int offset = decodePageToken(pageToken); int limit = Math.max(1, Math.min(500, pageSize));
+        List<ObjectPartitionInfo> items = new ArrayList<ObjectPartitionInfo>();
+        try (PreparedStatement statement = session.jdbcConnection().prepareStatement(
+                "SELECT SUBPARTITION_NAME,SUBPARTITION_ORDINAL_POSITION,SUBPARTITION_METHOD,"
+                        + "SUBPARTITION_EXPRESSION,TABLESPACE_NAME,TABLE_ROWS,DATA_LENGTH "
+                        + "FROM information_schema.PARTITIONS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? "
+                        + "AND PARTITION_NAME=? AND SUBPARTITION_NAME IS NOT NULL "
+                        + "ORDER BY SUBPARTITION_ORDINAL_POSITION LIMIT ? OFFSET ?")) {
+            statement.setString(1, effectiveCatalog); statement.setString(2, objectName);
+            statement.setString(3, parentPartition); statement.setInt(4, limit + 1); statement.setInt(5, offset);
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) items.add(new ObjectPartitionInfo(
+                        parentPartition + "/" + value(rows.getString(1)), value(rows.getString(1)), parentPartition,
+                        rows.getInt(2), value(rows.getString(3)), value(rows.getString(4)), "",
+                        value(rows.getString(5)), nullableLong(rows, 6), nullableLong(rows, 7), false));
+            }
+        }
+        boolean more = items.size() > limit;
+        if (more) items.remove(items.size() - 1);
+        return new MetadataPage<ObjectPartitionInfo>(items, more ? encodePageToken(offset + limit) : "", true, "");
     }
 
     private static boolean yes(ResultSet resultSet, String column) {
@@ -433,5 +536,34 @@ public final class MySqlMetadataAdapter implements MetadataAdapter {
 
     static String qualified(String catalog, String name) {
         return catalog == null || catalog.trim().isEmpty() ? quote(name) : quote(catalog) + "." + quote(name);
+    }
+
+    private static Long nullableLong(ResultSet rows, int index) throws SQLException {
+        long value = rows.getLong(index); return rows.wasNull() ? null : Long.valueOf(value);
+    }
+
+    private static String encodePageToken(int offset) {
+        return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(
+                String.valueOf(offset).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    private static int decodePageToken(String token) throws SQLException {
+        if (token == null || token.isEmpty()) return 0;
+        try {
+            return Integer.parseInt(new String(java.util.Base64.getUrlDecoder().decode(token),
+                    java.nio.charset.StandardCharsets.UTF_8));
+        } catch (RuntimeException invalid) { throw new SQLException("分页标识无效", invalid); }
+    }
+
+    private static final class IndexBuilder {
+        private final String name; private final boolean nonUnique; private final String type;
+        private final List<ObjectIndexColumnInfo> columns = new ArrayList<ObjectIndexColumnInfo>();
+        private IndexBuilder(String name, boolean nonUnique, String type) {
+            this.name = name; this.nonUnique = nonUnique; this.type = type;
+        }
+        private ObjectIndexInfo build() {
+            return new ObjectIndexInfo(name, "PRIMARY".equalsIgnoreCase(name), !nonUnique, type, "VALID",
+                    true, false, "", columns);
+        }
     }
 }

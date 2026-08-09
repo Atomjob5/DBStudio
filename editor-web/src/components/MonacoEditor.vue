@@ -1,8 +1,12 @@
-<template><div ref="container" class="monaco-host fill" /></template>
+<template><div class="monaco-shell fill"><div ref="container" class="monaco-host fill" />
+  <ObjectInspectorHost ref="objectInspectors" :opacity="objectInspectorOpacity"
+    @update:opacity="$emit('update:objectInspectorOpacity', $event)"
+    @save-opacity="$emit('saveObjectInspectorOpacity', $event)" /></div></template>
 
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import * as monaco from "monaco-editor";
+import ObjectInspectorHost, { type ObjectInspectorOpenRequest } from "./ObjectInspectorHost.vue";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import type {
   CompletionCandidate,
@@ -17,21 +21,26 @@ import { CompletionModelSynchronizer, isModelVersionChanged } from "../completio
 import { completionDocumentation, truncateCompletionComment } from "../completion/presentation";
 import { compileSqlSnippet, matchingSnippetCandidates } from "../completion/snippets";
 import type { SqlCompletionSnippet } from "../types";
+import { resolveSqlObjectReference } from "../objectReference";
 
 (self as typeof self & { MonacoEnvironment: object }).MonacoEnvironment = { getWorker: () => new EditorWorker() };
 
 const props = defineProps<{ modelKey: string; initialValue: string; theme: "dark" | "light";
   completionKey: string; providerId: string; completionCandidateLimit: number;
   completionPreciseMatchingEnabled: boolean; completionSnippets: SqlCompletionSnippet[];
-  minimapEnabled: boolean; wordWrapEnabled: boolean }>();
+  minimapEnabled: boolean; wordWrapEnabled: boolean; editorId: string; connectionDisplay: string;
+  defaultCatalog?: string; defaultSchema?: string; objectInspectorOpacity: number }>();
 const emit = defineEmits<{
   dirty: [];
   execute: [scope: "current" | "script" | "current-new-tab", selection: string, cursorOffset: number,
     selectionStartOffset: number];
   "selection-change": [selected: boolean];
+  "update:objectInspectorOpacity": [value: number];
+  saveObjectInspectorOpacity: [value: number];
 }>();
 const container = ref<HTMLElement>();
 const instance = shallowRef<monaco.editor.IStandaloneCodeEditor>();
+const objectInspectors = ref<InstanceType<typeof ObjectInspectorHost>>();
 const models = new Map<string, monaco.editor.ITextModel>();
 const modelKeys = new WeakMap<monaco.editor.ITextModel, string>();
 const viewStates = new Map<string, monaco.editor.ICodeEditorViewState>();
@@ -44,6 +53,10 @@ let contentListener: monaco.IDisposable | undefined;
 let completionProvider: monaco.IDisposable | undefined;
 let selectionListener: monaco.IDisposable | undefined;
 let changingModel = false;
+let objectHoverDecoration: string[] = [];
+let objectMouseMove: monaco.IDisposable | undefined;
+let objectMouseDown: monaco.IDisposable | undefined;
+let objectScroll: monaco.IDisposable | undefined;
 
 monaco.editor.defineTheme("dbstudio-apple-light", {
   base: "vs",
@@ -137,6 +150,9 @@ onMounted(() => {
     },
   });
   selectionListener = instance.value.onDidChangeCursorSelection(emitSelectionState);
+  objectMouseMove = instance.value.onMouseMove(handleObjectHover);
+  objectMouseDown = instance.value.onMouseDown(handleObjectClick);
+  objectScroll = instance.value.onDidScrollChange(() => objectInspectors.value?.closeTransient());
   completionProvider = monaco.languages.registerCompletionItemProvider("dbstudio-mysql", {
     triggerCharacters: [".", "`", "\"", " "],
     async provideCompletionItems(model, position, _context, token) {
@@ -256,6 +272,7 @@ watch(() => [props.completionKey, props.providerId], () => {
 
 function switchModel(key: string, value: string): void {
   if (!instance.value || !key) return;
+  clearObjectHover(); objectInspectors.value?.closeTransient();
   const previousModel = instance.value.getModel();
   const previousKey = previousModel && modelKeys.get(previousModel);
   if (previousKey) {
@@ -429,12 +446,55 @@ function releaseEditorSources(key = props.modelKey): void {
 function releaseModel(key: string): void {
   const model = models.get(key);
   if (!model || instance.value?.getModel() === model) return;
+  objectInspectors.value?.sourceReleased(key);
   releaseEditorSources(key);
   mirrorListeners.get(key)?.dispose();
   mirrorListeners.delete(key);
   models.delete(key);
   viewStates.delete(key);
   model.dispose();
+}
+
+function platformModifier(event: MouseEvent): boolean {
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+  return mac ? event.metaKey : event.ctrlKey;
+}
+
+function objectAt(position: monaco.Position) {
+  const model = instance.value?.getModel();
+  if (!model) return null;
+  return resolveSqlObjectReference(model.getValue(), model.getOffsetAt(position), props.providerId, {
+    catalog: props.defaultCatalog, schema: props.defaultSchema,
+  });
+}
+
+function handleObjectHover(event: monaco.editor.IEditorMouseEvent): void {
+  const browserEvent = event.event.browserEvent;
+  if (!event.target.position || !platformModifier(browserEvent)) { clearObjectHover(); return; }
+  const reference = objectAt(event.target.position);
+  if (!reference) { clearObjectHover(); return; }
+  const model = instance.value?.getModel(); if (!model) return;
+  const start = model.getPositionAt(reference.range.start), end = model.getPositionAt(reference.range.end);
+  objectHoverDecoration = model.deltaDecorations(objectHoverDecoration, [{ range: new monaco.Range(
+    start.lineNumber, start.column, end.lineNumber, end.column), options: {
+      inlineClassName: "dbstudio-object-link", stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+    } }]);
+}
+
+function handleObjectClick(event: monaco.editor.IEditorMouseEvent): void {
+  const browserEvent = event.event.browserEvent;
+  if (!event.target.position || !platformModifier(browserEvent)) return;
+  const reference = objectAt(event.target.position); if (!reference || !props.editorId) return;
+  browserEvent.preventDefault(); browserEvent.stopPropagation(); clearObjectHover();
+  const request: ObjectInspectorOpenRequest = { reference, editorId: props.editorId, modelKey: props.modelKey,
+    connectionDisplay: props.connectionDisplay, x: browserEvent.clientX, y: browserEvent.clientY };
+  objectInspectors.value?.open(request);
+}
+
+function clearObjectHover(): void {
+  const model = instance.value?.getModel();
+  if (model && objectHoverDecoration.length) model.deltaDecorations(objectHoverDecoration, []);
+  objectHoverDecoration = [];
 }
 
 function highlightExecutionSource(executionId: string, sql: string, startOffset?: number,
@@ -549,6 +609,7 @@ onBeforeUnmount(() => {
   contentListener?.dispose();
   completionProvider?.dispose();
   selectionListener?.dispose();
+  objectMouseMove?.dispose(); objectMouseDown?.dispose(); objectScroll?.dispose(); clearObjectHover();
   mirrorListeners.forEach((listener) => listener.dispose());
   mirrorListeners.clear();
   modelSynchronizer.releaseAll();
@@ -565,6 +626,8 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .monaco-host { background: var(--db-editor-bg); }
+.monaco-shell { position: relative; min-width: 0; min-height: 0; }
+:global(.dbstudio-object-link) { color: var(--db-accent) !important; text-decoration: underline; cursor: pointer !important; font-weight: 650; }
 :global(.dbstudio-sql-result-highlight) {
   background: color-mix(in srgb, var(--db-accent) 23%, transparent);
   border-radius: 2px;

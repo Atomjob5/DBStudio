@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.dbstudio.spi.ConnectionProfile;
 import com.dbstudio.spi.DatabaseObjectType;
+import com.dbstudio.spi.DatabaseObject;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -52,6 +53,15 @@ class MySqlIntegrationTest {
         try (com.dbstudio.spi.DatabaseSession session = provider.connections().connect(profile, password)) {
             try (java.sql.Statement statement = session.jdbcConnection().createStatement()) {
                 statement.execute("CREATE TABLE contract_test(id INT PRIMARY KEY, name VARCHAR(100))");
+                StringBuilder longDdl = new StringBuilder("CREATE TABLE inspector_long_ddl(id INT PRIMARY KEY");
+                for (int index = 0; index < 400; index++) {
+                    longDdl.append(", inspector_column_").append(index).append("_with_long_name INT DEFAULT ")
+                            .append(index);
+                }
+                longDdl.append(") PARTITION BY RANGE(id) (PARTITION p0 VALUES LESS THAN (10),")
+                        .append(" PARTITION pmax VALUES LESS THAN MAXVALUE)");
+                statement.execute(longDdl.toString());
+                // MySQL DDL commits implicitly, so create all fixtures before exercising rollback.
                 statement.executeUpdate("INSERT INTO contract_test VALUES (1, 'first')");
             }
             assertTrue(provider.metadata().listObjects(
@@ -59,6 +69,17 @@ class MySqlIntegrationTest {
                     .anyMatch(object -> object.name().equals("contract_test")));
             assertEquals(2, provider.metadata().listColumns(
                     session, mysql.getDatabaseName(), "", "contract_test").size());
+            DatabaseObject exact = provider.metadata().findObject(
+                    session, mysql.getDatabaseName(), "", "inspector_long_ddl");
+            assertEquals(DatabaseObjectType.TABLE, exact.type());
+            assertFalse(provider.metadata().listIndexes(
+                    session, mysql.getDatabaseName(), "", exact.name()).isEmpty());
+            assertEquals(2, provider.metadata().listPartitions(
+                    session, mysql.getDatabaseName(), "", exact.name(), "", 200).items().size());
+            java.io.StringWriter fullDdl = new java.io.StringWriter();
+            provider.metadata().writeRebuildDdl(session, exact, fullDdl);
+            assertTrue(fullDdl.toString().length() > 10_000);
+            assertTrue(fullDdl.toString().contains("inspector_column_399_with_long_name"));
             session.rollback();
             try (java.sql.Statement statement = session.jdbcConnection().createStatement();
                  java.sql.ResultSet result = statement.executeQuery("SELECT COUNT(*) FROM contract_test")) {

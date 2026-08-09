@@ -34,6 +34,7 @@ export const useSettingsStore = defineStore("settings", () => {
   const minimapEnabled = ref(true);
   const wordWrapEnabled = ref(false);
   const dangerousStatementWarningEnabled = ref(true);
+  const objectInspectorOpacity = ref(100);
   const shortcuts = ref<ShortcutBindings>({ ...DEFAULT_SHORTCUT_BINDINGS });
   const shortcutRecordingActive = ref(false);
   const recentFiles = ref<string[]>([]);
@@ -71,6 +72,9 @@ export const useSettingsStore = defineStore("settings", () => {
     minimapEnabled.value = settings["editor.minimapEnabled"] !== "false";
     wordWrapEnabled.value = settings["editor.wordWrapEnabled"] === "true";
     dangerousStatementWarningEnabled.value = settings["editor.dangerousStatementWarningEnabled"] !== "false";
+    const inspectorOpacity = Number.parseInt(settings["editor.objectInspectorOpacity"] ?? "100", 10);
+    objectInspectorOpacity.value = Number.isFinite(inspectorOpacity)
+      ? Math.max(1, Math.min(100, inspectorOpacity)) : 100;
     shortcuts.value = parseShortcutBindings(settings["keyboard.shortcuts"]);
     recentFiles.value = recent;
   }
@@ -96,7 +100,7 @@ export const useSettingsStore = defineStore("settings", () => {
     scrollOptimizationBufferScreens,
     maxActiveSessions, autoCommit, idleTimeoutMinutes, transactionDisconnectRollbackMinutes,
     completionCandidateLimit, completionPreciseMatchingEnabled, completionSnippets,
-    minimapEnabled, wordWrapEnabled, dangerousStatementWarningEnabled,
+    minimapEnabled, wordWrapEnabled, dangerousStatementWarningEnabled, objectInspectorOpacity,
     shortcuts, shortcutRecordingActive,
     recentFiles, initialize, setCompletionSnippets, setShortcuts, setShortcut, resetShortcuts };
 });

@@ -41,11 +41,16 @@ import com.dbstudio.spi.DatabaseObject;
 import com.dbstudio.spi.DatabaseObjectType;
 import com.dbstudio.spi.DatabaseProvider;
 import com.dbstudio.spi.DatabaseSession;
+import com.dbstudio.spi.MetadataPage;
+import com.dbstudio.spi.ObjectIndexColumnInfo;
+import com.dbstudio.spi.ObjectIndexInfo;
+import com.dbstudio.spi.ObjectPartitionInfo;
 import com.dbstudio.spi.SqlDmlRiskAnalyzer;
 import com.dbstudio.spi.SqlStatement;
 import com.dbstudio.spi.StatementType;
 import java.io.OutputStreamWriter;
 import java.io.IOException;
+import java.io.Writer;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -108,7 +113,7 @@ public final class DbStudioApiController {
             "connection.transactionDisconnectRollbackMinutes",
             "editor.completionCandidateLimit", "editor.completionPreciseMatchingEnabled",
             "editor.completionSnippets", "editor.minimapEnabled", "editor.wordWrapEnabled",
-            "editor.dangerousStatementWarningEnabled",
+            "editor.dangerousStatementWarningEnabled", "editor.objectInspectorOpacity",
             "keyboard.shortcuts",
             "layout.leftWidth", "layout.editorHeight");
     private static final Set<String> COMPLETION_SNIPPET_FIELDS = new LinkedHashSet<String>(Arrays.asList(
@@ -458,6 +463,80 @@ public final class DbStudioApiController {
             return ApiPayloads.map("definition",
                     context.provider().metadata().definition(context.metadataSession(), object));
         }
+    }
+
+    @PostMapping("/workspaces/{workspaceId}/metadata/object-section")
+    public Map<String, Object> metadataObjectSection(@PathVariable String workspaceId,
+                                                      @RequestBody Map<String, Object> body) throws SQLException {
+        DatabaseContext context = databaseFor(workspaces.require(workspaceId), body);
+        String catalog = ApiPayloads.text(body, "catalog");
+        String schema = ApiPayloads.text(body, "schema");
+        String name = ApiPayloads.required(body, "name");
+        String section = ApiPayloads.required(body, "section");
+        int pageSize = Math.max(1, Math.min(500, integer(body, "pageSize", 200)));
+        synchronized (context.metadataSession()) {
+            DatabaseObject object = context.provider().metadata().findObject(
+                    context.metadataSession(), catalog, schema, name);
+            if (object == null || (object.type() != DatabaseObjectType.TABLE && object.type() != DatabaseObjectType.VIEW)) {
+                throw new ApiException("OBJECT_NOT_FOUND", "未找到表或视图 " + name);
+            }
+            List<Object> items = new ArrayList<Object>();
+            String nextPageToken = ""; boolean supported = true; String warning = "";
+            if ("columns".equals(section)) {
+                for (ColumnInfo column : context.provider().metadata().listColumns(context.metadataSession(),
+                        object.catalog(), object.schema(), object.name())) items.add(objectColumnMap(column));
+            } else if ("indexes".equals(section)) {
+                if (object.type() == DatabaseObjectType.VIEW) supported = false;
+                else for (ObjectIndexInfo index : context.provider().metadata().listIndexes(context.metadataSession(),
+                        object.catalog(), object.schema(), object.name())) items.add(objectIndexMap(index));
+            } else if ("partitions".equals(section) || "subpartitions".equals(section)) {
+                if (object.type() == DatabaseObjectType.VIEW) supported = false;
+                else {
+                    MetadataPage<ObjectPartitionInfo> page = "subpartitions".equals(section)
+                            ? context.provider().metadata().listSubpartitions(context.metadataSession(), object.catalog(),
+                                    object.schema(), object.name(), ApiPayloads.required(body, "parentPartition"),
+                                    ApiPayloads.text(body, "pageToken"), pageSize)
+                            : context.provider().metadata().listPartitions(context.metadataSession(), object.catalog(),
+                                    object.schema(), object.name(), ApiPayloads.text(body, "pageToken"), pageSize);
+                    for (ObjectPartitionInfo partition : page.items()) items.add(objectPartitionMap(partition));
+                    nextPageToken = page.nextPageToken(); supported = page.supported(); warning = page.warning();
+                }
+            } else throw new ApiException("INVALID_METADATA_SECTION", "不支持的对象结构标签");
+            return ApiPayloads.map("object", objectDescriptorMap(object), "items", items,
+                    "nextPageToken", nextPageToken, "supported", supported, "warning", warning);
+        }
+    }
+
+    @PostMapping(value = "/workspaces/{workspaceId}/metadata/object-ddl-stream",
+            produces = "application/x-ndjson")
+    public ResponseEntity<StreamingResponseBody> metadataObjectDdlStream(
+            @PathVariable String workspaceId, @RequestBody Map<String, Object> body) throws SQLException {
+        final DatabaseContext context = databaseFor(workspaces.require(workspaceId), body);
+        final DatabaseObject object;
+        synchronized (context.metadataSession()) {
+            object = context.provider().metadata().findObject(context.metadataSession(),
+                    ApiPayloads.text(body, "catalog"), ApiPayloads.text(body, "schema"),
+                    ApiPayloads.required(body, "name"));
+        }
+        if (object == null) throw new ApiException("OBJECT_NOT_FOUND", "未找到指定表或视图");
+        StreamingResponseBody stream = output -> {
+            NdjsonWriter ndjson = new NdjsonWriter(new OutputStreamWriter(output, StandardCharsets.UTF_8), objectMapper);
+            DdlEventWriter ddl = new DdlEventWriter(ndjson);
+            try {
+                ndjson.line(ApiPayloads.map("type", "begin", "object", objectDescriptorMap(object)));
+                synchronized (context.metadataSession()) {
+                    context.provider().metadata().writeRebuildDdl(context.metadataSession(), object, ddl);
+                }
+                ddl.flush();
+                ndjson.line(ApiPayloads.map("type", "complete", "characters", ddl.characters(),
+                        "bytes", ddl.contentBytes()));
+            } catch (Exception exception) {
+                try { ndjson.line(ApiPayloads.map("type", "error", "code", "DDL_LOAD_FAILED",
+                        "message", safeMessage(exception))); }
+                catch (IOException disconnected) { LOG.debug("对象DDL流已关闭 object={}", object.name()); }
+            }
+        };
+        return ResponseEntity.ok().contentType(MediaType.parseMediaType("application/x-ndjson")).body(stream);
     }
 
     @PostMapping("/workspaces/{workspaceId}/metadata/completion-namespaces")
@@ -1434,6 +1513,14 @@ public final class DbStudioApiController {
                 throw new ApiException("INVALID_SETTING", "预渲染缓冲必须在 0.5 到 3 屏之间，并以 0.5 屏递增");
             }
         }
+        if ("editor.objectInspectorOpacity".equals(key)) {
+            try {
+                int opacity = Integer.parseInt(value);
+                if (opacity < 1 || opacity > 100) throw new NumberFormatException();
+            } catch (NumberFormatException exception) {
+                throw new ApiException("INVALID_SETTING", "对象结构窗口透明度必须在 1 到 100 之间");
+            }
+        }
         if ("result.edit.maxLobBytes".equals(key)) {
             try {
                 long bytes = Long.parseLong(value);
@@ -2262,6 +2349,7 @@ public final class DbStudioApiController {
         if (!result.containsKey("editor.completionSnippets")) result.put("editor.completionSnippets", "[]");
         if (!result.containsKey("editor.minimapEnabled")) result.put("editor.minimapEnabled", "true");
         if (!result.containsKey("editor.wordWrapEnabled")) result.put("editor.wordWrapEnabled", "false");
+        if (!result.containsKey("editor.objectInspectorOpacity")) result.put("editor.objectInspectorOpacity", "100");
         if (!result.containsKey("editor.dangerousStatementWarningEnabled")) {
             result.put("editor.dangerousStatementWarningEnabled", "true");
         }
@@ -2397,6 +2485,39 @@ public final class DbStudioApiController {
         }
     }
 
+    private static Map<String, Object> objectDescriptorMap(DatabaseObject object) {
+        String namespace = object.schema().isEmpty() ? object.catalog() : object.schema();
+        String qualified = namespace.isEmpty() ? object.name() : namespace + "." + object.name();
+        return ApiPayloads.map("catalog", object.catalog(), "schema", object.schema(), "name", object.name(),
+                "type", object.type().name(), "remarks", object.remarks(), "qualifiedName", qualified);
+    }
+
+    private static Map<String, Object> objectColumnMap(ColumnInfo column) {
+        return ApiPayloads.map("name", column.name(), "typeName", column.typeName(), "length", column.size(),
+                "precision", column.size(), "scale", column.scale(), "nullable", column.nullable(),
+                "defaultValue", column.defaultValue(), "primaryKey", column.primaryKey(),
+                "autoIncrement", column.autoIncrement(), "generated", column.generated(),
+                "remarks", column.remarks(), "ordinal", column.ordinal());
+    }
+
+    private static Map<String, Object> objectIndexMap(ObjectIndexInfo index) {
+        List<Object> columns = new ArrayList<Object>();
+        for (ObjectIndexColumnInfo column : index.columns()) columns.add(ApiPayloads.map(
+                "name", column.name(), "expression", column.expression(), "direction", column.direction(),
+                "ordinal", column.ordinal()));
+        return ApiPayloads.map("name", index.name(), "primary", index.primary(), "unique", index.unique(),
+                "type", index.type(), "status", index.status(), "visible", index.visible(),
+                "partitioned", index.partitioned(), "tablespace", index.tablespace(), "columns", columns);
+    }
+
+    private static Map<String, Object> objectPartitionMap(ObjectPartitionInfo partition) {
+        return ApiPayloads.map("id", partition.id(), "name", partition.name(), "parentName", partition.parentName(),
+                "position", partition.position(), "method", partition.method(), "expression", partition.expression(),
+                "boundary", partition.boundary(), "tablespace", partition.tablespace(),
+                "estimatedRows", partition.estimatedRows(), "dataBytes", partition.dataBytes(),
+                "hasSubpartitions", partition.hasSubpartitions());
+    }
+
     private static Map<String, Object> systemMap(SystemEntry value) {
         return ApiPayloads.map("id", value.id(), "name", value.name(), "revision", value.revision());
     }
@@ -2441,6 +2562,29 @@ public final class DbStudioApiController {
         }
 
         private long bytes() { return bytes; }
+    }
+
+    /** Converts provider Writer calls directly into flushed NDJSON chunks. */
+    private static final class DdlEventWriter extends Writer {
+        private final NdjsonWriter target;
+        private int sequence;
+        private long characters;
+        private long contentBytes;
+        private DdlEventWriter(NdjsonWriter target) { this.target = target; }
+        @Override public void write(char[] value, int offset, int length) throws IOException {
+            if (length <= 0) return;
+            write(new String(value, offset, length));
+        }
+        @Override public void write(String value) throws IOException {
+            if (value == null || value.isEmpty()) return;
+            target.line(ApiPayloads.map("type", "chunk", "sequence", sequence++, "text", value));
+            characters += value.length();
+            contentBytes += value.getBytes(StandardCharsets.UTF_8).length;
+        }
+        @Override public void flush() { }
+        @Override public void close() { }
+        private long characters() { return characters; }
+        private long contentBytes() { return contentBytes; }
     }
 
     private static final class CompletionProgressEmitter {

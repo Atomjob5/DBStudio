@@ -18,6 +18,90 @@ export interface SqlTransformTarget {
   cursorOffset: number;
 }
 
+/** A physical table/view reference resolved only from the current SQL statement. */
+export interface SqlObjectReference {
+  catalog?: string;
+  schema?: string;
+  objectName: string;
+  alias?: string;
+  viaAlias: boolean;
+  quoted: boolean;
+  range: { start: number; end: number };
+}
+
+export type ObjectDescriptorType = "TABLE" | "VIEW";
+
+export interface ObjectDescriptor {
+  catalog: string;
+  schema: string;
+  name: string;
+  type: ObjectDescriptorType;
+  remarks: string;
+  qualifiedName: string;
+}
+
+export interface ObjectColumnInfo {
+  name: string;
+  typeName: string;
+  length: number;
+  precision: number;
+  scale: number;
+  nullable: boolean;
+  defaultValue: string | null;
+  primaryKey: boolean;
+  autoIncrement: boolean;
+  generated: boolean;
+  remarks: string;
+  ordinal: number;
+}
+
+export interface ObjectIndexColumnInfo {
+  name: string;
+  expression: string;
+  direction: string;
+  ordinal: number;
+}
+
+export interface ObjectIndexInfo {
+  name: string;
+  primary: boolean;
+  unique: boolean;
+  type: string;
+  status: string;
+  visible: boolean;
+  partitioned: boolean;
+  tablespace: string;
+  columns: ObjectIndexColumnInfo[];
+}
+
+export interface ObjectPartitionInfo {
+  id: string;
+  name: string;
+  parentName: string;
+  position: number;
+  method: string;
+  expression: string;
+  boundary: string;
+  tablespace: string;
+  estimatedRows: number | null;
+  dataBytes: number | null;
+  hasSubpartitions: boolean;
+}
+
+export interface ObjectSectionPage<T> {
+  object: ObjectDescriptor;
+  items: T[];
+  nextPageToken?: string;
+  supported: boolean;
+  warning?: string;
+}
+
+export type ObjectDdlStreamEvent =
+  | { type: "begin"; object: ObjectDescriptor }
+  | { type: "chunk"; sequence: number; text: string }
+  | { type: "complete"; characters: number; bytes: number }
+  | { type: "error"; code: string; message: string };
+
 export type SqlTransformApplyResult = "applied" | "unchanged" | "stale" | "missing";
 export type SqlEditorSelectionAction = "uppercase" | "lowercase" | "lineComment" | "blockComment";
 

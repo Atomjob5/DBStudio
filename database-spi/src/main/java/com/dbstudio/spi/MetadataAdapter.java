@@ -5,6 +5,8 @@ import java.util.Collections;
 import java.util.ArrayList;
 import java.util.Set;
 import java.util.List;
+import java.io.IOException;
+import java.io.Writer;
 
 /**
  * 数据库元数据适配器。
@@ -123,6 +125,52 @@ public interface MetadataAdapter {
                                                 String objectName) throws SQLException {
         return Collections.emptyList();
     }
+
+    /** Resolves exactly one table/view and must not enumerate an entire database. */
+    default DatabaseObject findObject(DatabaseSession session, String catalog, String schema,
+                                      String objectName) throws SQLException {
+        String[] types = new String[] { "TABLE", "VIEW" };
+        try (java.sql.ResultSet rows = session.jdbcConnection().getMetaData().getTables(
+                emptyToNull(catalog), emptyToNull(schema), objectName, types)) {
+            while (rows.next()) {
+                String name = rows.getString("TABLE_NAME");
+                if (!objectName.equalsIgnoreCase(name)) continue;
+                String rawType = rows.getString("TABLE_TYPE");
+                DatabaseObjectType type = rawType != null && rawType.toUpperCase(java.util.Locale.ROOT).contains("VIEW")
+                        ? DatabaseObjectType.VIEW : DatabaseObjectType.TABLE;
+                return new DatabaseObject(type, value(rows.getString("TABLE_CAT")), value(rows.getString("TABLE_SCHEM")),
+                        name, value(rows.getString("REMARKS")), Collections.<String, String>emptyMap());
+            }
+        }
+        return null;
+    }
+
+    default List<ObjectIndexInfo> listIndexes(DatabaseSession session, String catalog, String schema,
+                                               String objectName) throws SQLException {
+        return Collections.emptyList();
+    }
+
+    default MetadataPage<ObjectPartitionInfo> listPartitions(DatabaseSession session, String catalog, String schema,
+                                                               String objectName, String pageToken,
+                                                               int pageSize) throws SQLException {
+        return MetadataPage.empty();
+    }
+
+    default MetadataPage<ObjectPartitionInfo> listSubpartitions(DatabaseSession session, String catalog,
+                                                                  String schema, String objectName,
+                                                                  String parentPartition, String pageToken,
+                                                                  int pageSize) throws SQLException {
+        return MetadataPage.empty();
+    }
+
+    /** Writes the complete rebuild DDL without passing through query result/LOB preview conversion. */
+    default void writeRebuildDdl(DatabaseSession session, DatabaseObject object, Writer writer)
+            throws SQLException, IOException {
+        writer.write(definition(session, object));
+    }
+
+    static String emptyToNull(String value) { return value == null || value.isEmpty() ? null : value; }
+    static String value(String value) { return value == null ? "" : value; }
 
     String definition(DatabaseSession session, DatabaseObject object) throws SQLException;
 }

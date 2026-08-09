@@ -190,8 +190,14 @@
                                 :completion-snippets="settings.completionSnippets"
                                 :minimap-enabled="settings.minimapEnabled"
                                 :word-wrap-enabled="settings.wordWrapEnabled"
+                                :editor-id="editors.active.id" :connection-display="activeConnectionDisplay"
+                                :default-catalog="editors.active.connection?.settings.database || editors.active.connection?.settings.catalog"
+                                :default-schema="editors.active.connection?.settings.schema"
+                                :object-inspector-opacity="settings.objectInspectorOpacity"
                                 @dirty="markActiveDirty" @execute="executeFromEditor"
-                                @selection-change="editorHasSelection = $event" />
+                                @selection-change="editorHasSelection = $event"
+                                @update:object-inspector-opacity="settings.objectInspectorOpacity = $event"
+                                @save-object-inspector-opacity="updateObjectInspectorOpacity" />
                   <el-empty v-else class="workspace-empty" description="新建 SQL 标签开始查询">
                     <template #image><el-icon><Document /></el-icon></template>
                     <el-button round @click="newEditor()">新建查询</el-button>
@@ -2199,6 +2205,12 @@ async function updateWordWrapEnabled(value: boolean): Promise<void> {
   const previous = settings.wordWrapEnabled; settings.wordWrapEnabled = value;
   try { await rpc.request("settings.update", { key: "editor.wordWrapEnabled", value: String(value) }); }
   catch (error) { settings.wordWrapEnabled = previous; reportError(error); }
+}
+async function updateObjectInspectorOpacity(value: number): Promise<void> {
+  const normalized = Math.max(1, Math.min(100, Math.round(value)));
+  settings.objectInspectorOpacity = normalized;
+  try { await rpc.request("settings.update", { key: "editor.objectInspectorOpacity", value: String(normalized) }); }
+  catch (error) { reportError(error); }
 }
 async function updateDangerousStatementWarningEnabled(value: boolean): Promise<void> {
   const previous = settings.dangerousStatementWarningEnabled;

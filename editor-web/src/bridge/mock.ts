@@ -64,6 +64,7 @@ const mockSettings: Record<string, string> = {
   "editor.completionSnippets": "[]",
   "editor.minimapEnabled": "true",
   "editor.wordWrapEnabled": "false",
+  "editor.objectInspectorOpacity": "100",
   "keyboard.shortcuts": serializeShortcutBindings(DEFAULT_SHORTCUT_BINDINGS),
 };
 
@@ -243,6 +244,29 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
   if (type === "sql.format") return { text: payload.text };
   if (type === "sql.compact") return { text: payload.text };
   if (type === "metadata.children") return metadata(payload);
+  if (type === "metadata.objectSection") {
+    const object = { catalog: String(payload.catalog || "eastwealthcrawler"), schema: String(payload.schema || ""),
+      name: String(payload.name), type: String(payload.name).includes("view") ? "VIEW" : "TABLE", remarks: "Mock 对象",
+      qualifiedName: `${String(payload.catalog || "eastwealthcrawler")}.${String(payload.name)}` };
+    if (payload.section === "columns") return { object, supported: true, items: [
+      { name: "id", typeName: "BIGINT", length: 20, precision: 20, scale: 0, nullable: false, defaultValue: null,
+        primaryKey: true, autoIncrement: true, generated: false, remarks: "主键", ordinal: 1 },
+      { name: "name", typeName: "VARCHAR", length: 255, precision: 0, scale: 0, nullable: true, defaultValue: null,
+        primaryKey: false, autoIncrement: false, generated: false, remarks: "名称", ordinal: 2 }
+    ] };
+    if (payload.section === "indexes") return { object, supported: object.type !== "VIEW", items: [
+      { name: "PRIMARY", primary: true, unique: true, type: "BTREE", status: "VALID", visible: true,
+        partitioned: false, tablespace: "", columns: [{ name: "id", expression: "", direction: "ASC", ordinal: 1 }] }
+    ] };
+    return { object, supported: object.type !== "VIEW", items: [], nextPageToken: "" };
+  }
+  if (type === "metadata.objectDdlStream") {
+    const object = { catalog: String(payload.catalog || "eastwealthcrawler"), schema: String(payload.schema || ""),
+      name: String(payload.name), type: "TABLE", remarks: "Mock 对象", qualifiedName: `${String(payload.catalog || "eastwealthcrawler")}.${String(payload.name)}` };
+    const ddl = `CREATE TABLE \`${object.name}\` (\n  \`id\` BIGINT NOT NULL PRIMARY KEY,\n  \`name\` VARCHAR(255)\n);\n-- DDL_END`;
+    return { events: [{ type: "begin", object }, { type: "chunk", sequence: 0, text: ddl },
+      { type: "complete", characters: ddl.length, bytes: new TextEncoder().encode(ddl).length }] };
+  }
   if (type === "metadata.generateQuery") return { sql: `SELECT * FROM \`${payload.name}\` LIMIT 1000;` };
   if (type === "history.list") return [];
   if (type === "query.execute") {
