@@ -32,11 +32,11 @@ describe("result grid transformations", () => {
     expect(result.map((row) => row.sourceIndex)).toEqual([0, 2]);
   });
 
-  it("supports row toggle/range selection and escaped delimited copies", () => {
+  it("supports row toggle/range selection and preserves delimited copy values", () => {
     expect(selectRows([4, 2, 8], [4], 4, 8, false, true).selected).toEqual([4, 2, 8]);
     expect(selectRows([4, 2, 8], [4, 8], 8, 4, true, false).selected).toEqual([8]);
     expect(copyGrid([{ label: "name", index: 1 }], [{ sourceIndex: 0, cells: ["1", "A,\"B\""] }],
-      true, "comma")).toBe('name\n"A,""B"""');
+      true, "comma")).toBe('name\nA,"B"');
   });
 
   it("generates IN predicates with correct NULL semantics", () => {

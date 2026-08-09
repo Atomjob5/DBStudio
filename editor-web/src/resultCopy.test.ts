@@ -5,11 +5,17 @@ describe("result copy formatting", () => {
   const columns = [{ label: "display_id", index: 0 }, { label: "name", index: 2 }];
   const rows = [["1", "ignored", "Alice, Inc."], [null, "ignored", "line\n\"two\""]];
 
-  it("copies headers and loaded rows in the supplied display order with CSV escaping", () => {
+  it("copies headers and loaded rows in the supplied display order without changing values", () => {
     expect(resultCopyText(columns, rows, "headers-and-data", "comma"))
-      .toBe('display_id,name\n1,"Alice, Inc."\nNULL,"line\n""two"""');
+      .toBe('display_id,name\n1,Alice, Inc.\nNULL,line\n"two"');
     expect(resultCopyText(columns, rows, "data", "semicolon"))
-      .toBe('1;Alice, Inc.\nNULL;"line\n""two"""');
+      .toBe('1;Alice, Inc.\nNULL;line\n"two"');
+  });
+
+  it("copies JSON values byte-for-byte", () => {
+    const json = '{"source":"oracle-docker","row":2}';
+    expect(resultCopyText([{ label: "payload", index: 0 }], [[json]], "data", "comma"))
+      .toBe(json);
   });
 
   it("supports all separator presets and empty loaded data", () => {

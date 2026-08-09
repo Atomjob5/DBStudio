@@ -768,7 +768,8 @@ function getCopyText(includeHeaders = false): string | undefined {
     });
     if (!positions.length) return undefined;
     const first = Math.min(...positions); const last = Math.max(...positions); columns = gridColumns.value.slice(first, last + 1);
-    rows = rows.map((row) => ({ sourceIndex: row.sourceIndex,
+    const selectedFields = new Set(selectedCellKeys.value.map((key) => Number(key.split(":")[0])));
+    rows = rows.filter((row) => selectedFields.has(row.sourceIndex)).map((row) => ({ sourceIndex: row.sourceIndex,
       cells: row.cells.map((value, source) => selected.has(keyFor(row.sourceIndex, source)) ? value : "") }));
   }
   if (!columns.length || !rows.length) return undefined;

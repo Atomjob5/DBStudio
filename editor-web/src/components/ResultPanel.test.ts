@@ -574,6 +574,12 @@ describe("ResultPanel streaming rendering", () => {
     expect(singleRecord.props("row")).toEqual({ sourceIndex: 0, cells: ["1", "Apple", null] });
     expect(button().attributes("aria-pressed")).toBe("true");
     expect(button().attributes("aria-label")).toBe("返回结果表格");
+    await wrapper.get('button[aria-label="复制单记录选区"]').trigger("click");
+    await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith("Apple");
+    await wrapper.get(".table-host").trigger("keydown", { metaKey: true, key: "c" });
+    await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith("Apple");
     const previousRecord = () => wrapper.get('button[aria-label="上一条记录"]');
     const nextRecord = () => wrapper.get('button[aria-label="下一条记录"]');
     expect(previousRecord().attributes("disabled")).toBeDefined();

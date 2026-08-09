@@ -84,4 +84,21 @@ describe("ResultSingleRecordView", () => {
     expect(cleared.hasSelection).toBe(false);
   });
 
+  it("copies only selected field rows in the single-record view", async () => {
+    const wrapper = mount(ResultSingleRecordView, {
+      props: { columns, row: { sourceIndex: 3, cells: ["1001", "Alice"] } },
+      global: { plugins: [ElementPlus] }
+    });
+    const grid = wrapper.findComponent({ name: "ResultVirtualGrid" });
+    const pointer = { button: 0, preventDefault: () => undefined } as unknown as PointerEvent;
+    grid.vm.$emit("cell-pointerdown", pointer, 0, 1);
+    await nextTick();
+    const exposed = wrapper.vm as unknown as { getCopyText: () => string | undefined };
+    expect(exposed.getCopyText()).toBe("1001");
+
+    grid.vm.$emit("cell-pointerenter", 1, 1);
+    await nextTick();
+    expect(exposed.getCopyText()).toBe("1001\nAlice");
+  });
+
 });

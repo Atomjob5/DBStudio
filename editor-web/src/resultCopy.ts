@@ -31,7 +31,7 @@ export function resultCopyText(columns: CopyColumn[], rows: Array<Array<string |
                                mode: ResultCopyMode, separator: CopySeparator): string {
   const delimiter = separatorCharacter(separator);
   const line = (values: Array<string | null | undefined>) => values
-    .map((value) => escapeDelimitedValue(value === null || value === undefined ? "NULL" : value, delimiter))
+    .map((value) => value === null || value === undefined ? "NULL" : value)
     .join(delimiter);
   const output: string[] = [];
   if (mode !== "data") output.push(line(columns.map((column) => column.label)));

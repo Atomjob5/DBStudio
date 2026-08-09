@@ -1,5 +1,5 @@
 import type { QueryColumn, QueryMutationKey, QueryMutationTarget } from "./types";
-import { escapeDelimitedValue, separatorCharacter, type CopySeparator } from "./resultCopy";
+import { separatorCharacter, type CopySeparator } from "./resultCopy";
 
 export type SortDirection = "asc" | "desc";
 export type FilterOperator = "contains" | "not-contains" | "eq" | "neq" | "starts" | "ends"
@@ -159,7 +159,7 @@ export function copyGrid(columns: Array<{ label: string; index: number }>, rows:
                          includeHeaders: boolean, separator: CopySeparator): string {
   const delimiter = separatorCharacter(separator);
   const line = (values: Array<string | null | undefined>) => values.map((value) =>
-    escapeDelimitedValue(value === null || value === undefined ? "NULL" : value, delimiter)).join(delimiter);
+    value === null || value === undefined ? "NULL" : value).join(delimiter);
   const output: string[] = [];
   if (includeHeaders) output.push(line(columns.map((column) => column.label)));
   for (const row of rows) output.push(line(columns.map((column) => row.cells[column.index])));
