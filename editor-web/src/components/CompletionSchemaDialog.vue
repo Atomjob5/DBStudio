@@ -9,7 +9,13 @@
     <el-input v-model="filter" clearable placeholder="筛选 Schema" aria-label="筛选补全Schema" />
     <div class="schema-list">
       <section v-if="regularNamespaces.length">
-        <div class="group-title"><strong>业务 Schema</strong><span>首次默认选择</span></div>
+        <div class="group-title">
+          <strong>业务 Schema</strong>
+          <el-checkbox :model-value="regularSelection.checked" :indeterminate="regularSelection.indeterminate"
+                       aria-label="全选业务 Schema" @change="toggleGroupSelection(regularNamespaces, $event)">
+            全选
+          </el-checkbox>
+        </div>
         <el-checkbox-group v-model="selectedKeys">
           <el-checkbox v-for="namespace in regularNamespaces" :key="namespace.key" :value="namespace.key">
             <span>{{ namespace.label }}</span><small v-if="namespace.current">当前</small>
@@ -17,7 +23,13 @@
         </el-checkbox-group>
       </section>
       <section v-if="systemNamespaces.length">
-        <div class="group-title"><strong>系统 Schema</strong><span>默认不选择</span></div>
+        <div class="group-title">
+          <strong>系统 Schema</strong>
+          <el-checkbox :model-value="systemSelection.checked" :indeterminate="systemSelection.indeterminate"
+                       aria-label="全选系统 Schema" @change="toggleGroupSelection(systemNamespaces, $event)">
+            全选
+          </el-checkbox>
+        </div>
         <el-checkbox-group v-model="selectedKeys">
           <el-checkbox v-for="namespace in systemNamespaces" :key="namespace.key" :value="namespace.key">
             <span>{{ namespace.label }}</span><small v-if="namespace.current">当前</small>
@@ -52,6 +64,8 @@ const visibleNamespaces = computed(() => {
 });
 const regularNamespaces = computed(() => visibleNamespaces.value.filter((item) => !item.system));
 const systemNamespaces = computed(() => visibleNamespaces.value.filter((item) => item.system));
+const regularSelection = computed(() => selectionState(regularNamespaces.value));
+const systemSelection = computed(() => selectionState(systemNamespaces.value));
 
 watch(() => props.modelValue, (opened) => {
   if (!opened) return;
@@ -69,6 +83,23 @@ function confirm(): void {
   emit("update:modelValue", false);
 }
 
+function selectionState(namespaces: CompletionNamespaceDescriptor[]): { checked: boolean; indeterminate: boolean } {
+  const selected = new Set(selectedKeys.value);
+  const selectedCount = namespaces.filter((namespace) => selected.has(namespace.key)).length;
+  return {
+    checked: namespaces.length > 0 && selectedCount === namespaces.length,
+    indeterminate: selectedCount > 0 && selectedCount < namespaces.length
+  };
+}
+
+function toggleGroupSelection(namespaces: CompletionNamespaceDescriptor[], value: unknown): void {
+  const keys = new Set(namespaces.map((namespace) => namespace.key));
+  const selected = new Set(selectedKeys.value);
+  if (value === true) keys.forEach((key) => selected.add(key));
+  else keys.forEach((key) => selected.delete(key));
+  selectedKeys.value = [...selected];
+}
+
 function cancel(): void {
   if (decisionMade) { decisionMade = false; return; }
   decisionMade = true;
@@ -81,9 +112,10 @@ function cancel(): void {
 .schema-intro { margin: -4px 0 14px; color: var(--db-muted); font-size: 13px; line-height: 1.55; }
 .schema-list { max-height: 420px; margin-top: 12px; overflow: auto; border: 1px solid var(--db-border-soft); border-radius: 12px; }
 .schema-list section + section { border-top: 1px solid var(--db-border-soft); }
-.group-title { display: flex; justify-content: space-between; padding: 11px 14px 7px; }
+.group-title { display: flex; align-items: center; justify-content: space-between; padding: 11px 14px 7px; }
 .group-title strong { font-size: 13px; }
-.group-title span { color: var(--db-muted); font-size: 11px; }
+.group-title :deep(.el-checkbox) { flex: none; margin-right: 0; }
+.group-title :deep(.el-checkbox__label) { padding-left: 6px; color: var(--db-muted); font-size: 11px; }
 .schema-list :deep(.el-checkbox-group) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 0 14px 10px; gap: 2px 12px; }
 .schema-list :deep(.el-checkbox) { min-width: 0; margin-right: 0; }
 .schema-list :deep(.el-checkbox__label) { display: flex; min-width: 0; align-items: center; gap: 6px; overflow: hidden; }
