@@ -30,8 +30,10 @@
         </div>
       </section>
 
-      <section class="appearance-section appearance-preview-section">
+      <section class="appearance-section appearance-preview-heading">
         <div class="appearance-section-heading"><div><strong>实时预览</strong><span>修改任意细节后立即查看效果</span></div></div>
+      </section>
+      <div class="appearance-preview-sticky">
         <div class="appearance-preview" :style="previewVariables">
           <div class="appearance-preview-editor">
             <div class="preview-code" aria-label="SQL 编辑器预览">
@@ -47,7 +49,7 @@
             <div class="preview-result-row preview-result-selected"><span class="preview-result-row-number">2</span><span>43</span><span class="preview-null">NULL</span><span class="preview-binary">0xC3D4</span></div>
           </div>
         </div>
-      </section>
+      </div>
 
       <section class="appearance-section">
         <div class="appearance-section-heading"><div><strong>编辑器</strong><span>字体、尺寸与编辑器基础颜色</span></div></div>
@@ -239,6 +241,7 @@ function drawerChanged(value: boolean): void {
 .appearance-preset-swatch i { display: block; width: 65%; height: 3px; border-radius: 3px; background: var(--swatch-accent); }
 .appearance-preset-swatch i:nth-child(2) { width: 86%; background: var(--swatch-string); }.appearance-preset-swatch i:nth-child(3) { width: 48%; background: var(--swatch-comment); }
 .appearance-preset-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 3px; }.appearance-preset-copy strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }.appearance-preset-copy small { overflow: hidden; color: var(--db-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }.appearance-preset > .el-icon { color: var(--db-accent); }
+.appearance-preview-sticky { position: sticky; z-index: 4; top: -20px; margin: -20px 0 0; }
 .appearance-preview { display: grid; grid-template-columns: 1.15fr .85fr; min-height: 180px; overflow: hidden; border: 1px solid var(--db-border-soft); border-radius: 10px; background: var(--preview-editor-bg); color: var(--preview-editor-fg); box-shadow: var(--db-shadow-sm); }
 .appearance-preview-editor { display: flex; min-width: 0; padding: 14px 10px; overflow: hidden; font-family: var(--preview-editor-font); font-size: var(--preview-editor-size); line-height: var(--preview-editor-line); }
 .preview-code { min-width: 0; flex: 1; overflow: auto; }
@@ -266,5 +269,6 @@ function drawerChanged(value: boolean): void {
 .preview-null { color: var(--preview-result-null) !important; font-weight: var(--preview-result-null-weight) !important; font-style: var(--preview-result-null-style) !important; }
 .preview-binary { color: var(--preview-result-binary) !important; font-weight: var(--preview-result-binary-weight) !important; font-style: var(--preview-result-binary-style) !important; }
 .appearance-fields { display: grid; gap: 10px; }.appearance-fields-three { grid-template-columns: 1.4fr .8fr .8fr; }.appearance-fields-two { grid-template-columns: 1.4fr .8fr; }.appearance-fields-four { grid-template-columns: repeat(4, minmax(0, 1fr)); }.appearance-fields label { display: flex; min-width: 0; flex-direction: column; gap: 5px; color: var(--db-muted); font-size: 11px; }.appearance-fields select { width: 100%; height: 28px; padding: 0 7px; border: 1px solid var(--db-border); border-radius: 7px; background: var(--db-control-bg); color: var(--db-text); outline: 0; }.appearance-fields :deep(.el-input-number) { width: 100%; }.appearance-token-list { display: flex; flex-direction: column; gap: 5px; }.appearance-token-row { display: grid; grid-template-columns: minmax(95px, 1fr) minmax(125px, 1.3fr) 56px 56px; min-height: 34px; align-items: center; gap: 8px; padding: 3px 0; border-bottom: 1px solid var(--db-border-soft); }.appearance-token-label { font-size: 12px; }.appearance-color-field { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 6px; color: var(--db-muted); font-size: 11px; }.appearance-color-control { display: inline-flex; min-width: 0; align-items: center; gap: 4px; }.appearance-color-control input { width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: transparent; cursor: pointer; }.appearance-color-control code { color: var(--db-text-secondary); font-size: 10px; }.appearance-token-row :deep(.el-checkbox) { margin-right: 0; }.appearance-drawer-footer { width: 100%; }
+@media (max-width: 620px), (max-height: 700px) { .appearance-preview-sticky { position: static; z-index: auto; top: auto; margin: 0; padding: 0; background: transparent; } }
 @media (max-width: 620px) { .appearance-presets { grid-template-columns: repeat(2, minmax(0, 1fr)); }.appearance-preview { grid-template-columns: 1fr; }.appearance-fields-four { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 </style>

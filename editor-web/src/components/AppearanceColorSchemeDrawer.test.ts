@@ -43,6 +43,16 @@ describe("AppearanceColorSchemeDrawer", () => {
     wrapper.unmount();
   });
 
+  it("keeps only the preview frame in the sticky container", async () => {
+    const wrapper = mountDrawer();
+    await flushPromises();
+
+    expect(wrapper.find(".appearance-preview-sticky .appearance-preview").exists()).toBe(true);
+    expect(wrapper.find(".appearance-preview-heading .appearance-section-heading").exists()).toBe(true);
+    expect(wrapper.find(".appearance-preview-sticky .appearance-section-heading").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("exposes every editor color and binds every text style to the preview", async () => {
     const wrapper = mountDrawer();
     await flushPromises();
