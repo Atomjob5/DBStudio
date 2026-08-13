@@ -97,7 +97,7 @@
                        @click="toggleSingleRecordView" />
           </el-tooltip>
           <div class="record-compare-control" role="group" aria-label="比较记录">
-            <el-tooltip :content="recordComparisonEnabled ? '关闭记录比较' : '比较记录'">
+            <el-tooltip :content="recordComparisonTitle">
               <el-button text class="record-compare-button" :icon="ScaleToOriginal"
                          :type="recordComparisonEnabled ? 'primary' : 'default'"
                          :disabled="!canToggleRecordComparison"
@@ -1466,6 +1466,11 @@ const singleRecordTitle = computed(() => shortcutTooltip(
   "result.toggleSingleRecord",
   settings.shortcuts,
 ));
+const recordComparisonTitle = computed(() => shortcutTooltip(
+  recordComparisonEnabled.value ? "关闭记录比较" : "比较记录",
+  "result.toggleRecordComparison",
+  settings.shortcuts,
+));
 const canNavigatePrevious = computed(() => singleRecordMode.value && selectedRecordPosition.value > 0);
 const canNavigateNext = computed(() => singleRecordMode.value
   && selectedRecordPosition.value >= 0 && selectedRecordPosition.value < displayRows.value.length - 1);
@@ -2228,6 +2233,7 @@ function exportCommand(command: string): void {
 defineExpose({
   restoreLayout,
   toggleSingleRecordView,
+  toggleRecordComparison,
   copyCurrentSelection,
   exportLoaded: () => exportCommand("loaded"),
   exportFull: () => exportCommand("full"),

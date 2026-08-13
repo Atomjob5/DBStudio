@@ -130,7 +130,7 @@ public final class DbStudioApiController {
             "editor.toggleMinimap", "editor.toggleWordWrap", "editor.format", "editor.compact",
             "editor.uppercase", "editor.lowercase", "editor.toggleLineComment", "editor.toggleBlockComment",
             "editor.complete",
-            "result.toggleEditMode", "result.toggleSingleRecord", "result.restoreLayout",
+            "result.toggleEditMode", "result.toggleSingleRecord", "result.toggleRecordComparison", "result.restoreLayout",
             "result.copySelection", "result.exportLoaded", "result.exportFull",
             "result.loadNext", "result.loadAll"));
     private static final Set<String> RESERVED_SHORTCUTS = new LinkedHashSet<String>(Arrays.asList(
@@ -151,6 +151,7 @@ public final class DbStudioApiController {
             + "\"editor.lowercase\":null,\"editor.toggleLineComment\":null,\"editor.toggleBlockComment\":null,"
             + "\"editor.complete\":null,"
             + "\"result.toggleEditMode\":null,\"result.toggleSingleRecord\":null,"
+            + "\"result.toggleRecordComparison\":null,"
             + "\"result.restoreLayout\":null,"
             + "\"result.copySelection\":null,\"result.exportLoaded\":null,\"result.exportFull\":null,"
             + "\"result.loadNext\":null,\"result.loadAll\":null}";

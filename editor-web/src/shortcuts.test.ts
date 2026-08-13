@@ -38,6 +38,7 @@ describe("shortcuts", () => {
     expect(DEFAULT_SHORTCUT_BINDINGS["editor.toggleBlockComment"]).toBeNull();
     expect(DEFAULT_SHORTCUT_BINDINGS["result.toggleEditMode"]).toBeNull();
     expect(DEFAULT_SHORTCUT_BINDINGS["result.toggleSingleRecord"]).toBeNull();
+    expect(DEFAULT_SHORTCUT_BINDINGS["result.toggleRecordComparison"]).toBeNull();
     expect(DEFAULT_SHORTCUT_BINDINGS["result.restoreLayout"]).toBeNull();
     expect(Object.values(DEFAULT_SHORTCUT_BINDINGS).filter(Boolean)).toHaveLength(3);
   });
@@ -91,9 +92,11 @@ describe("shortcuts", () => {
     expect(parsed["editor.toggleBlockComment"]).toBeNull();
     expect(parsed["result.toggleEditMode"]).toBeNull();
     expect(parsed["result.toggleSingleRecord"]).toBeNull();
+    expect(parsed["result.toggleRecordComparison"]).toBeNull();
     expect(parsed["result.restoreLayout"]).toBeNull();
     expect(parseShortcutBindings("{broken")).toEqual(DEFAULT_SHORTCUT_BINDINGS);
     expect(JSON.parse(serializeShortcutBindings(parsed))["query.executeCurrent"]).toBeNull();
+    expect(JSON.parse(serializeShortcutBindings(parsed))["result.toggleRecordComparison"]).toBeNull();
   });
 
   it("formats platform-specific Mod labels and recognizes dangerous legacy keys", () => {

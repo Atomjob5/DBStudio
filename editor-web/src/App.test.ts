@@ -556,17 +556,26 @@ describe("App result loading status toolbar", () => {
     expect(rpcRequest.mock.calls.map(([type]) => type)).not.toContain("transaction.rollback");
   });
 
-  it("runs result edit and single-record toolbar actions through configurable shortcuts", async () => {
+  it("runs result edit, record comparison and single-record actions through configurable shortcuts", async () => {
     const settings = useSettingsStore();
     const edits = seedEditableResult(false);
+    useQueryStore().appendRows("bootstrap-editor", 0, [["2", "after"]], ["row-2"]);
     edits.setUnlocked("bootstrap-editor", "execution-edit", 0, false);
     settings.setShortcut("result.toggleEditMode", "F9");
     settings.setShortcut("result.toggleSingleRecord", "F10");
+    settings.setShortcut("result.toggleRecordComparison", "F11");
     await nextTick();
     const tooltipContents = wrapper.findAllComponents({ name: "ElTooltip" })
       .map((tooltip) => String(tooltip.props("content")));
     expect(tooltipContents.some((content) => content.includes("进入结果编辑模式") && content.includes("F9"))).toBe(true);
     expect(tooltipContents.some((content) => content.includes("单个记录查看") && content.includes("F10"))).toBe(true);
+    expect(tooltipContents.some((content) => content.includes("比较记录") && content.includes("F11"))).toBe(true);
+    const compareButton = wrapper.get('button[aria-label="比较记录"]');
+    document.body.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "F11", code: "F11", bubbles: true, cancelable: true,
+    }));
+    await nextTick();
+    expect(compareButton.attributes("aria-pressed")).toBe("false");
 
     document.body.dispatchEvent(new KeyboardEvent("keydown", {
       key: "F9", code: "F9", bubbles: true, cancelable: true,
@@ -583,10 +592,26 @@ describe("App result loading status toolbar", () => {
     await nextTick();
 
     document.body.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "F11", code: "F11", bubbles: true, cancelable: true,
+    }));
+    await nextTick();
+    expect(compareButton.attributes("aria-pressed")).toBe("true");
+    document.body.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "F11", code: "F11", bubbles: true, cancelable: true,
+    }));
+    await nextTick();
+    expect(compareButton.attributes("aria-pressed")).toBe("false");
+
+    document.body.dispatchEvent(new KeyboardEvent("keydown", {
       key: "F10", code: "F10", bubbles: true, cancelable: true,
     }));
     await nextTick();
     expect(wrapper.findComponent({ name: "ResultSingleRecordView" }).exists()).toBe(true);
+    document.body.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "F11", code: "F11", bubbles: true, cancelable: true,
+    }));
+    await nextTick();
+    expect(compareButton.attributes("aria-pressed")).toBe("false");
 
     document.body.dispatchEvent(new KeyboardEvent("keydown", {
       key: "F10", code: "F10", bubbles: true, cancelable: true,

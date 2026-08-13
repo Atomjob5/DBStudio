@@ -419,6 +419,7 @@ const staleResultHighlightActive = new Set<string>();
 const resultPanel = ref<{
   restoreLayout(): void;
   toggleSingleRecordView(): void;
+  toggleRecordComparison(): void;
   copyCurrentSelection(): Promise<void>;
   exportLoaded(): void;
   exportFull(): void;
@@ -1876,6 +1877,7 @@ function runShortcutAction(actionId: ShortcutActionId): void {
   }
   if (actionId === "result.toggleEditMode") { toggleResultEdit(); return; }
   if (actionId === "result.toggleSingleRecord") { resultPanel.value?.toggleSingleRecordView(); return; }
+  if (actionId === "result.toggleRecordComparison") { resultPanel.value?.toggleRecordComparison(); return; }
   if (actionId === "result.restoreLayout") { resultPanel.value?.restoreLayout(); return; }
   if (actionId === "result.copySelection") {
     void resultPanel.value?.copyCurrentSelection().catch(reportError);

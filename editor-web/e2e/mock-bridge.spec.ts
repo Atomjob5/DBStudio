@@ -1200,8 +1200,9 @@ test("supports Apple appearance, system theme settings and compact windows", asy
   await expect(shortcutDrawer).toBeVisible();
   await expect(shortcutDrawer.getByRole("heading", { name: "快捷键", exact: true })).toBeVisible();
   await expect(shortcutDrawer.locator(".shortcut-group")).toHaveCount(5);
-  await expect(shortcutDrawer.locator(".shortcut-row")).toHaveCount(31);
-  await expect(shortcutDrawer.getByText("文件、查询、事务与全局操作 · 13 项", { exact: true })).toBeVisible();
+  await expect(shortcutDrawer.locator(".shortcut-row")).toHaveCount(35);
+  await expect(shortcutDrawer.getByText("文件、查询、事务与全局操作 · 14 项", { exact: true })).toBeVisible();
+  await expect(shortcutDrawer.getByText("结果复制、布局、比较与导出 · 7 项", { exact: true })).toBeVisible();
   await expect(shortcutDrawer.getByText("结果数据加载 · 2 项", { exact: true })).toBeVisible();
   const shortcutBounds = await shortcutDrawer.boundingBox();
   if (!shortcutBounds) throw new Error("Shortcut settings drawer is not measurable");

@@ -666,6 +666,7 @@ describe("ResultPanel streaming rendering", () => {
 
   it("compares visible records from the focused cell and exposes persistent option updates", async () => {
     const settings = useSettingsStore();
+    settings.setShortcut("result.toggleRecordComparison", "F11");
     const wrapper = mount(ResultPanel, {
       props: { activeResultIndex: 0, execution: {
         executionId: "execution-record-compare", editorId: "editor-1", busy: false,
@@ -680,6 +681,9 @@ describe("ResultPanel streaming rendering", () => {
     const optionsButton = wrapper.get('button[aria-label="比较记录选项"]');
     expect(compareButton().attributes("disabled")).toBeDefined();
     expect(optionsButton.find(".el-icon > svg").exists()).toBe(true);
+    expect(wrapper.findAllComponents({ name: "ElTooltip" })
+      .some((tooltip) => String(tooltip.props("content")).includes("比较记录")
+        && String(tooltip.props("content")).includes("F11"))).toBe(true);
     expect(compareButton().element.compareDocumentPosition(wrapper.get("button.single-record-button").element)
       & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
 

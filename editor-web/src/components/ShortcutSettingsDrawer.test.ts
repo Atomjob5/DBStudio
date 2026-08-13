@@ -20,7 +20,7 @@ describe("ShortcutSettingsDrawer", () => {
     await flushPromises();
     expect(wrapper.findAll(".shortcut-settings-section")).toHaveLength(6);
     expect(wrapper.findAll(".shortcut-group")).toHaveLength(5);
-    expect(wrapper.findAll(".shortcut-row")).toHaveLength(34);
+    expect(wrapper.findAll(".shortcut-row")).toHaveLength(35);
     expect(wrapper.get(".shortcut-overview").text()).toContain("录制说明");
     expect(wrapper.text()).toContain("主工具栏");
     expect(wrapper.text()).toContain("工作区侧栏");
@@ -28,7 +28,7 @@ describe("ShortcutSettingsDrawer", () => {
     expect(wrapper.text()).toContain("文件、查询、事务与全局操作 · 14 项");
     expect(wrapper.text()).toContain("对象与连接面板 · 3 项");
     expect(wrapper.text()).toContain("编辑、排版与补全 · 9 项");
-    expect(wrapper.text()).toContain("结果复制、布局与导出 · 6 项");
+    expect(wrapper.text()).toContain("结果复制、布局、比较与导出 · 7 项");
     expect(wrapper.text()).toContain("结果数据加载 · 2 项");
     expect(wrapper.text()).toContain("切换 Minimap");
     expect(wrapper.text()).toContain("切换自动换行");
@@ -37,6 +37,7 @@ describe("ShortcutSettingsDrawer", () => {
     expect(wrapper.text()).toContain("转换小写");
     expect(wrapper.text()).toContain("单行注释");
     expect(wrapper.text()).toContain("全部注释");
+    expect(wrapper.text()).toContain("比较记录");
 
     const recorder = wrapper.get('button[aria-label="录制新建查询快捷键"]');
     await recorder.trigger("click");
@@ -83,13 +84,29 @@ describe("ShortcutSettingsDrawer", () => {
     wrapper.unmount();
   });
 
+  it("records and clears the record comparison shortcut", async () => {
+    const wrapper = mountDrawer();
+    await flushPromises();
+    const recorder = wrapper.get('button[aria-label="录制比较记录快捷键"]');
+    await recorder.trigger("click");
+    await recorder.trigger("keydown", { key: "F11", code: "F11" });
+    expect(wrapper.emitted("updateBinding")?.[0]).toEqual(["result.toggleRecordComparison", "F11"]);
+
+    await wrapper.setProps({ bindings: { ...DEFAULT_SHORTCUT_BINDINGS, "result.toggleRecordComparison": "F11" } });
+    const row = wrapper.findAll(".shortcut-row").find((item) => item.text().includes("比较记录"));
+    expect(row).toBeDefined();
+    await row!.get('button[aria-label="清除快捷键"]').trigger("click");
+    expect(wrapper.emitted("updateBinding")?.at(-1)).toEqual(["result.toggleRecordComparison", null]);
+    wrapper.unmount();
+  });
+
   it("disables reset, recording and clear controls while saving", async () => {
     const wrapper = mountDrawer();
     await wrapper.setProps({ saving: true });
     await flushPromises();
 
     expect(wrapper.get(".shortcut-reset-button").attributes("disabled")).toBeDefined();
-    expect(wrapper.findAll(".shortcut-recorder")).toHaveLength(34);
+    expect(wrapper.findAll(".shortcut-recorder")).toHaveLength(35);
     expect(wrapper.findAll(".shortcut-recorder").every((control) => control.attributes("disabled") !== undefined)).toBe(true);
     expect(wrapper.findAll(".shortcut-clear-button").every((control) => control.attributes("disabled") !== undefined)).toBe(true);
     wrapper.unmount();

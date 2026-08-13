@@ -119,7 +119,7 @@ const GROUP_DESCRIPTIONS: Record<ShortcutGroupId, string> = {
   mainToolbar: "文件、查询、事务与全局操作",
   workspaceSidebar: "对象与连接面板",
   sqlEditor: "编辑、排版与补全",
-  resultSet: "结果复制、布局与导出",
+  resultSet: "结果复制、布局、比较与导出",
   statusBar: "结果数据加载",
 };
 

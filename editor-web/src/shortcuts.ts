@@ -37,6 +37,7 @@ export const SHORTCUT_ACTIONS = [
   { id: "editor.complete", group: "sqlEditor", label: "触发 SQL 补全", defaultBinding: null },
   { id: "result.toggleEditMode", group: "resultSet", label: "编辑模式", defaultBinding: null },
   { id: "result.toggleSingleRecord", group: "resultSet", label: "单个记录查看", defaultBinding: null },
+  { id: "result.toggleRecordComparison", group: "resultSet", label: "比较记录", defaultBinding: null },
   { id: "result.restoreLayout", group: "resultSet", label: "复原列布局", defaultBinding: null },
   { id: "result.copySelection", group: "resultSet", label: "复制选择", defaultBinding: null },
   { id: "result.exportLoaded", group: "resultSet", label: "导出已加载", defaultBinding: null },

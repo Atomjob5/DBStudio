@@ -353,6 +353,7 @@ class LocalServerSecurityTest {
         assertTrue(defaults.getBody().contains("\\\"editor.toggleBlockComment\\\":null"));
         assertTrue(defaults.getBody().contains("\\\"result.toggleEditMode\\\":null"));
         assertTrue(defaults.getBody().contains("\\\"result.toggleSingleRecord\\\":null"));
+        assertTrue(defaults.getBody().contains("\\\"result.toggleRecordComparison\\\":null"));
         assertTrue(defaults.getBody().contains("\\\"result.restoreLayout\\\":null"));
 
         Map<String, String> setting = new HashMap<String, String>();
@@ -364,7 +365,8 @@ class LocalServerSecurityTest {
                 + "\"editor.toggleLineComment\":null,\"editor.toggleBlockComment\":null,"
                 + "\"editor.complete\":\"F6\","
                 + "\"result.toggleEditMode\":\"Mod+Alt+E\","
-                + "\"result.toggleSingleRecord\":\"Mod+Alt+R\"}");
+                + "\"result.toggleSingleRecord\":\"Mod+Alt+R\","
+                + "\"result.toggleRecordComparison\":\"F11\"}");
         assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                 new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
 
