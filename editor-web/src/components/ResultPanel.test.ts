@@ -481,7 +481,7 @@ describe("ResultPanel streaming rendering", () => {
       } }, global: { plugins: [ElementPlus] }
     });
     expect(wrapper.text()).toContain("断线前快照");
-    expect(wrapper.findComponent({ name: "ElDropdown" }).props("disabled")).toBe(true);
+    expect(wrapper.findAllComponents({ name: "ElDropdown" }).at(-1)?.props("disabled")).toBe(true);
   });
 
   it("filters options by metadata and only renders selected columns in source order", async () => {
@@ -662,6 +662,54 @@ describe("ResultPanel streaming rendering", () => {
     expect(wrapper.findComponent({ name: "ResultVirtualGrid" }).exists()).toBe(true);
     expect(wrapper.findComponent({ name: "ResultSingleRecordView" }).props("row"))
       .toEqual({ sourceIndex: 0, cells: ["1"] });
+  });
+
+  it("compares visible records from the focused cell and exposes persistent option updates", async () => {
+    const settings = useSettingsStore();
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: 0, execution: {
+        executionId: "execution-record-compare", editorId: "editor-1", busy: false,
+        cancelled: false, failed: false, durationMs: 8,
+        results: [{ resultIndex: 0, sql: "select name, state", type: "QUERY", columns: ["name", "state"],
+          rows: [["Alpha", null], ["alpha", null], ["Beta", "ready"]],
+          updateCount: -1, truncated: false, durationMs: 7, complete: true }]
+      } }, global: { plugins: [ElementPlus] }
+    });
+    const grid = () => wrapper.findComponent({ name: "ResultVirtualGrid" });
+    const compareButton = () => wrapper.get('button[aria-label="比较记录"]');
+    const optionsButton = wrapper.get('button[aria-label="比较记录选项"]');
+    expect(compareButton().attributes("disabled")).toBeDefined();
+    expect(optionsButton.find(".el-icon > svg").exists()).toBe(true);
+    expect(compareButton().element.compareDocumentPosition(wrapper.get("button.single-record-button").element)
+      & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+
+    grid().vm.$emit("cell-pointerdown",
+      { button: 0, preventDefault: vi.fn(), ctrlKey: false, metaKey: false, shiftKey: false }, 0, 0);
+    window.dispatchEvent(new Event("pointerup"));
+    await nextTick();
+    expect(compareButton().attributes("disabled")).toBeUndefined();
+    await compareButton().trigger("click");
+    await nextTick();
+    expect(grid().props("comparisonCellKeys")).toEqual(["1:0", "1:1"]);
+
+    settings.compareHighlightMode = "different";
+    settings.compareScope = "column";
+    settings.compareCaseSensitive = false;
+    await nextTick();
+    expect(grid().props("comparisonCellKeys")).toEqual(["2:0"]);
+
+    const options = wrapper.findAllComponents({ name: "ElDropdown" })[0];
+    options.vm.$emit("command", "toggle-case-sensitive");
+    options.vm.$emit("command", "scope-record");
+    options.vm.$emit("command", "highlight-identical");
+    expect(wrapper.emitted("update-compare-case-sensitive")?.[0]).toEqual([true]);
+    expect(wrapper.emitted("update-compare-scope")?.[0]).toEqual(["record"]);
+    expect(wrapper.emitted("update-compare-highlight-mode")?.[0]).toEqual(["identical"]);
+
+    await wrapper.get("button.single-record-button").trigger("click");
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ResultSingleRecordView" }).exists()).toBe(true);
+    expect(compareButton().attributes("disabled")).toBeDefined();
   });
 
   it("shows a bounded second header line and emits the physical column selected by a cell", async () => {

@@ -89,6 +89,27 @@ describe("ResultVirtualGrid", () => {
     wrapper.unmount();
   });
 
+  it("marks logical striped rows and comparison cells independently of virtual slots", async () => {
+    const wrapper = mount(ResultVirtualGrid, {
+      props: {
+        rows: rows.slice(0, 8), columns: columns.slice(0, 3), headerHeight: 32,
+        bufferScreens: 1, selectionMode: "cells", selectedRowSources: [], zebraStripesEnabled: true,
+        comparisonCellKeys: ["1:1"]
+      }
+    });
+    const viewport = wrapper.get(".result-virtual-grid__viewport").element as HTMLElement;
+    Object.defineProperties(viewport, {
+      clientWidth: { configurable: true, value: 400 },
+      clientHeight: { configurable: true, value: 128 }
+    });
+    wrapper.vm.setScrollPosition({ left: 0, top: 0 });
+    await nextTick();
+    expect(wrapper.get('[data-grid-source="1"]').element.parentElement?.classList).toContain("result-row-striped");
+    expect(wrapper.get('[data-grid-source="2"]').element.parentElement?.classList).not.toContain("result-row-striped");
+    expect(wrapper.get('[data-grid-row="1"][data-grid-column="1"]').classes()).toContain("result-cell-compared");
+    wrapper.unmount();
+  });
+
   it("ignores cell and row interactions while a native scrollbar drag crosses the grid", async () => {
     const wrapper = mount(ResultVirtualGrid, {
       props: {

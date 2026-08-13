@@ -12,6 +12,7 @@
       :focused-cell-key="focusedCellKey"
       :selected-column-sources="selectedColumnSources"
       :selected-row-sources="selectedRowSources"
+      :zebra-stripes-enabled="zebraStripesEnabled"
       :editing-cell="editingGridCell"
       :editing-value="editingValue"
       :cell-states="gridCellStates"
@@ -94,6 +95,7 @@ const props = withDefaults(defineProps<{
   resultIndex?: number;
   headerSortingEnabled?: boolean;
   headerFilteringEnabled?: boolean;
+  zebraStripesEnabled?: boolean;
   initialSelection?: { mode: "cells" | "rows"; fields: number[] };
   editingColumnIndex?: number;
   editingValue?: string | null;

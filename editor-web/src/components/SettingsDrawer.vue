@@ -242,6 +242,11 @@
                      @update:model-value="$emit('update:showColumnRemarksInHeader', $event === true)" />
         </el-form-item>
         <el-form-item class="compact-setting-row">
+          <template #label><div class="setting-label"><span>斑马纹</span></div></template>
+          <el-switch size="small" aria-label="斑马纹" :model-value="zebraStripesEnabled"
+                     @update:model-value="$emit('update:zebraStripesEnabled', $event === true)" />
+        </el-form-item>
+        <el-form-item class="compact-setting-row">
           <template #label>
             <div class="setting-label"><span>多列复制分隔符</span>
               <el-tooltip content="用于右键复制多列时连接字段；包含分隔符、引号或换行的内容会自动转义。" placement="top">
@@ -286,7 +291,7 @@ defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: Resolv
   streamBatchRows: number; maxLobBytes: number; columnLayoutScope: ColumnLayoutScope; copyHeaderOnDoubleClick: boolean;
   copySeparator: CopySeparator; maxActiveSessions: number; idleTimeoutMinutes: number;
   headerSortingEnabled: boolean; headerFilteringEnabled: boolean;
-  showColumnRemarksInHeader: boolean;
+  showColumnRemarksInHeader: boolean; zebraStripesEnabled: boolean;
   scrollOptimizationBufferScreens: number; showSelectedColumnRemarks: boolean;
   autoCommit: boolean;
   transactionDisconnectRollbackMinutes: number;
@@ -303,6 +308,7 @@ const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme"
   "update:autoCommit": [value: boolean];
   "update:headerSortingEnabled": [value: boolean]; "update:headerFilteringEnabled": [value: boolean];
   "update:showColumnRemarksInHeader": [value: boolean];
+  "update:zebraStripesEnabled": [value: boolean];
   "update:scrollOptimizationBufferScreens": [value: number];
   "update:showSelectedColumnRemarks": [value: boolean];
   "update:idleTimeoutMinutes": [value: number]; "update:transactionDisconnectRollbackMinutes": [value: number];

@@ -5,6 +5,7 @@ import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import ElementPlus, { ElMessage, ElMessageBox } from "element-plus";
 import App from "./App.vue";
 import { useConnectionStore } from "./stores/connection";
+import { useAppStore } from "./stores/app";
 import { useEditorStore } from "./stores/editor";
 import { useMetadataStore } from "./stores/metadata";
 import { useQueryStore } from "./stores/query";
@@ -611,6 +612,35 @@ describe("App result loading status toolbar", () => {
     expect(settings.scrollOptimizationBufferScreens).toBe(1.5);
   });
 
+  it("persists zebra stripes and global record comparison preferences", async () => {
+    const settings = useSettingsStore();
+    const vm = wrapper.vm as unknown as {
+      updateZebraStripesEnabled: (value: boolean) => Promise<void>;
+      updateCompareHighlightMode: (value: "identical" | "different") => Promise<void>;
+      updateCompareScope: (value: "column" | "record") => Promise<void>;
+      updateCompareCaseSensitive: (value: boolean) => Promise<void>;
+    };
+    rpcRequest.mockResolvedValue({});
+    await vm.updateZebraStripesEnabled(true);
+    await vm.updateCompareHighlightMode("different");
+    await vm.updateCompareScope("column");
+    await vm.updateCompareCaseSensitive(true);
+    expect(settings.zebraStripesEnabled).toBe(true);
+    expect(settings.compareHighlightMode).toBe("different");
+    expect(settings.compareScope).toBe("column");
+    expect(settings.compareCaseSensitive).toBe(true);
+    expect(rpcRequest).toHaveBeenCalledWith("settings.update", {
+      key: "result.zebraStripesEnabled", value: "true"
+    });
+    expect(rpcRequest).toHaveBeenCalledWith("settings.update", {
+      key: "result.compareHighlightMode", value: "different"
+    });
+
+    rpcRequest.mockRejectedValueOnce(new Error("save failed"));
+    await vm.updateCompareScope("record");
+    expect(settings.compareScope).toBe("column");
+  });
+
   it("persists editor display settings and rolls back failed saves", async () => {
     const settings = useSettingsStore();
     const vm = wrapper.vm as unknown as {
@@ -639,16 +669,20 @@ describe("App result loading status toolbar", () => {
 
   it("applies color schemes immediately and rolls back a failed save", async () => {
     const settings = useSettingsStore();
+    const app = useAppStore();
     const vm = wrapper.vm as unknown as {
       saveColorSchemes: (value: typeof DEFAULT_COLOR_SCHEMES) => Promise<void>;
     };
     const next = cloneColorSchemes(DEFAULT_COLOR_SCHEMES);
     next.light.editor.background = "#123456";
     next.light.result.selectionBorder = "#654321";
+    next.light.result.compareHighlightBackground = "#FEDCBA";
 
     rpcRequest.mockResolvedValueOnce({});
     await vm.saveColorSchemes(next);
     expect(settings.colorSchemes.light.editor.background).toBe("#123456");
+    expect(document.documentElement.style.getPropertyValue("--db-result-compare-highlight-bg")).toBe("#FEDCBA");
+    expect(wrapper.findComponent({ name: "AppearanceColorSchemeDrawer" }).props("activeMode")).toBe(app.theme);
     expect(rpcRequest).toHaveBeenLastCalledWith("settings.update", {
       key: "appearance.colorSchemes", value: serializeColorSchemeSettings(next),
     });

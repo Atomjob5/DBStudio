@@ -46,7 +46,8 @@
           <div class="preview-result" role="table" aria-label="结果集预览">
             <div class="preview-result-row preview-result-header"><span class="preview-result-row-number">#</span><span>id</span><span>status</span><span>payload</span></div>
             <div class="preview-result-row"><span class="preview-result-row-number">1</span><span>42</span><span class="preview-result-cell">active</span><span class="preview-binary">0xA1B2</span></div>
-            <div class="preview-result-row preview-result-selected"><span class="preview-result-row-number">2</span><span>43</span><span class="preview-null">NULL</span><span class="preview-binary">0xC3D4</span></div>
+            <div class="preview-result-row preview-result-striped"><span class="preview-result-row-number">2</span><span>43</span><span class="preview-result-compared">active</span><span class="preview-null">NULL</span></div>
+            <div class="preview-result-row preview-result-selected"><span class="preview-result-row-number">3</span><span>44</span><span>pending</span><span class="preview-binary">0xC3D4</span></div>
           </div>
         </div>
       </div>
@@ -86,7 +87,7 @@
       </section>
 
       <section class="appearance-section">
-        <div class="appearance-section-heading"><div><strong>结果集</strong><span>表格文字、表头、特殊值及选中状态</span></div></div>
+        <div class="appearance-section-heading"><div><strong>结果集</strong><span>表格文字、斑马纹、比较高亮及选中状态</span></div></div>
         <div class="appearance-fields appearance-fields-two">
           <label>字体<select :value="activeScheme.result.fontFamily" @change="updateFont('result', $event)"><option v-for="font in fonts" :key="font.id" :value="font.id">{{ font.label }}</option></select></label>
           <label>字号<el-input-number :model-value="activeScheme.result.fontSize" :min="10" :max="24" size="small" controls-position="right" @update:model-value="activeScheme.result.fontSize = $event ?? 12; markCustom()" /></label>
@@ -96,6 +97,10 @@
           <ColorField label="表头背景" :value="activeScheme.result.headerBackground" @update="updateColor('result', 'headerBackground', $event)" />
           <ColorField label="选中背景" :value="activeScheme.result.selectionBackground" @update="updateColor('result', 'selectionBackground', $event)" />
           <ColorField label="选中边框" :value="activeScheme.result.selectionBorder" @update="updateColor('result', 'selectionBorder', $event)" />
+        </div>
+        <div class="appearance-fields appearance-fields-two">
+          <ColorField label="斑马纹背景" :value="activeScheme.result.stripeBackground" @update="updateColor('result', 'stripeBackground', $event)" />
+          <ColorField label="比较高亮" :value="activeScheme.result.compareHighlightBackground" @update="updateColor('result', 'compareHighlightBackground', $event)" />
         </div>
         <div class="appearance-token-list">
           <div v-for="token in resultTokens" :key="token.key" class="appearance-token-row">
@@ -140,9 +145,14 @@ const ColorField = defineComponent({
   },
 });
 
-const props = defineProps<{ modelValue: boolean; schemes: ColorSchemeSettings; saving?: boolean }>();
+const props = defineProps<{
+  modelValue: boolean;
+  schemes: ColorSchemeSettings;
+  activeMode: AppearanceMode;
+  saving?: boolean;
+}>();
 const emit = defineEmits<{ "update:modelValue": [value: boolean]; save: [value: ColorSchemeSettings]; cancel: [] }>();
-const mode = ref<AppearanceMode>("light");
+const mode = ref<AppearanceMode>(props.activeMode);
 const draft = ref<ColorSchemeSettings>(cloneColorSchemes(props.schemes));
 const fonts = FONT_FAMILY_OPTIONS;
 const editorTokens: Array<{ key: keyof Pick<ModeColorScheme["editor"], "keyword" | "identifier" | "string" | "number" | "comment" | "quotedIdentifier">; label: string }> = [
@@ -173,6 +183,8 @@ const previewVariables = computed(() => {
     "--preview-comment": editor.comment.color, "--preview-comment-weight": editor.comment.bold ? "700" : "400", "--preview-comment-style": editor.comment.italic ? "italic" : "normal",
     "--preview-quoted": editor.quotedIdentifier.color, "--preview-quoted-weight": editor.quotedIdentifier.bold ? "700" : "400", "--preview-quoted-style": editor.quotedIdentifier.italic ? "italic" : "normal",
     "--preview-result-bg": result.background, "--preview-result-header-bg": result.headerBackground,
+    "--preview-result-stripe": result.stripeBackground,
+    "--preview-result-compare": result.compareHighlightBackground,
     "--preview-result-font": fontFamilyCss(result.fontFamily), "--preview-result-size": `${result.fontSize}px`,
     "--preview-result-cell": result.cell.color, "--preview-result-cell-weight": result.cell.bold ? "700" : "400", "--preview-result-cell-style": result.cell.italic ? "italic" : "normal",
     "--preview-result-header": result.header.color,
@@ -188,7 +200,7 @@ watch(() => props.schemes, (value) => { draft.value = cloneColorSchemes(value); 
 watch(() => props.modelValue, (open) => {
   if (open) {
     draft.value = cloneColorSchemes(props.schemes);
-    mode.value = "light";
+    mode.value = props.activeMode;
   }
 });
 
@@ -219,7 +231,7 @@ function save(): void { emit("save", cloneColorSchemes(draft.value)); }
 function drawerChanged(value: boolean): void {
   if (!value) {
     draft.value = cloneColorSchemes(props.schemes);
-    mode.value = "light";
+    mode.value = props.activeMode;
     emit("cancel");
   }
   emit("update:modelValue", value);
@@ -262,10 +274,12 @@ function drawerChanged(value: boolean): void {
 .preview-result-row { display: grid; grid-template-columns: 28px repeat(3, minmax(0, 1fr)); min-height: 30px; align-items: center; border-bottom: 1px solid color-mix(in srgb, var(--preview-result-header) 18%, transparent); }
 .preview-result-row span { min-width: 0; padding: 0 5px; overflow: hidden; color: var(--preview-result-cell); font-weight: var(--preview-result-cell-weight); font-style: var(--preview-result-cell-style); text-overflow: ellipsis; white-space: nowrap; }
 .preview-result-header { background: var(--preview-result-header-bg); }
+.preview-result-striped { background: var(--preview-result-stripe); }
 .preview-result-header span { color: var(--preview-result-header); font-weight: var(--preview-result-header-weight); font-style: var(--preview-result-header-style); }
 .preview-result-row-number { color: var(--preview-result-row-number) !important; font-weight: var(--preview-result-row-number-weight) !important; font-style: var(--preview-result-row-number-style) !important; text-align: right; }
 .preview-result-header .preview-result-row-number { color: var(--preview-result-header) !important; font-weight: var(--preview-result-header-weight) !important; font-style: var(--preview-result-header-style) !important; }
 .preview-result-selected { outline: 1px solid var(--preview-result-border); background: var(--preview-result-selection); }
+.preview-result-compared { background: var(--preview-result-compare); }
 .preview-null { color: var(--preview-result-null) !important; font-weight: var(--preview-result-null-weight) !important; font-style: var(--preview-result-null-style) !important; }
 .preview-binary { color: var(--preview-result-binary) !important; font-weight: var(--preview-result-binary-weight) !important; font-style: var(--preview-result-binary-style) !important; }
 .appearance-fields { display: grid; gap: 10px; }.appearance-fields-three { grid-template-columns: 1.4fr .8fr .8fr; }.appearance-fields-two { grid-template-columns: 1.4fr .8fr; }.appearance-fields-four { grid-template-columns: repeat(4, minmax(0, 1fr)); }.appearance-fields label { display: flex; min-width: 0; flex-direction: column; gap: 5px; color: var(--db-muted); font-size: 11px; }.appearance-fields select { width: 100%; height: 28px; padding: 0 7px; border: 1px solid var(--db-border); border-radius: 7px; background: var(--db-control-bg); color: var(--db-text); outline: 0; }.appearance-fields :deep(.el-input-number) { width: 100%; }.appearance-token-list { display: flex; flex-direction: column; gap: 5px; }.appearance-token-row { display: grid; grid-template-columns: minmax(95px, 1fr) minmax(125px, 1.3fr) 56px 56px; min-height: 34px; align-items: center; gap: 8px; padding: 3px 0; border-bottom: 1px solid var(--db-border-soft); }.appearance-token-label { font-size: 12px; }.appearance-color-field { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 6px; color: var(--db-muted); font-size: 11px; }.appearance-color-control { display: inline-flex; min-width: 0; align-items: center; gap: 4px; }.appearance-color-control input { width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: transparent; cursor: pointer; }.appearance-color-control code { color: var(--db-text-secondary); font-size: 10px; }.appearance-token-row :deep(.el-checkbox) { margin-right: 0; }.appearance-drawer-footer { width: 100%; }

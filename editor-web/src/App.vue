@@ -220,7 +220,10 @@
                              @toggle-result-edit="toggleResultEdit" @apply-result-changes="postActiveResultChanges"
                              @selected-column="selectedResultColumn = $event"
                              @selected-row-count="selectedResultRowCount = $event"
-                             @selected-status-text="selectedResultStatusText = $event" />
+                             @selected-status-text="selectedResultStatusText = $event"
+                             @update-compare-highlight-mode="updateCompareHighlightMode"
+                             @update-compare-scope="updateCompareScope"
+                             @update-compare-case-sensitive="updateCompareCaseSensitive" />
               </el-splitter-panel>
             </el-splitter>
           </div>
@@ -249,6 +252,7 @@
                   :copy-header-on-double-click="settings.copyHeaderOnDoubleClick" :copy-separator="settings.copySeparator"
                   :header-sorting-enabled="settings.headerSortingEnabled" :header-filtering-enabled="settings.headerFilteringEnabled"
                   :show-column-remarks-in-header="settings.showColumnRemarksInHeader"
+                  :zebra-stripes-enabled="settings.zebraStripesEnabled"
                   :scroll-optimization-buffer-screens="settings.scrollOptimizationBufferScreens"
                   :show-selected-column-remarks="settings.showSelectedColumnRemarks"
                   :max-active-sessions="settings.maxActiveSessions" :auto-commit="settings.autoCommit"
@@ -267,6 +271,7 @@
                   @update:header-sorting-enabled="updateHeaderSortingEnabled"
                   @update:header-filtering-enabled="updateHeaderFilteringEnabled"
                   @update:show-column-remarks-in-header="updateShowColumnRemarksInHeader"
+                  @update:zebra-stripes-enabled="updateZebraStripesEnabled"
                   @update:scroll-optimization-buffer-screens="updateScrollOptimizationBufferScreens"
                   @update:show-selected-column-remarks="updateShowSelectedColumnRemarks"
                   @update:copy-separator="updateCopySeparator" @update:max-active-sessions="updateMaxActiveSessions"
@@ -281,7 +286,8 @@
                   @clear-completion-caches="clearCompletionCaches" @open-shortcuts="openShortcutSettings"
                   @open-appearance="appearanceDrawer = true"
                   @open-completion-snippets="openCompletionSnippetSettings" />
-  <AppearanceColorSchemeDrawer v-model="appearanceDrawer" :schemes="settings.colorSchemes" :saving="appearanceSaving"
+  <AppearanceColorSchemeDrawer v-model="appearanceDrawer" :schemes="settings.colorSchemes" :active-mode="app.theme"
+                               :saving="appearanceSaving"
                                @save="saveColorSchemes" />
   <ShortcutSettingsDrawer v-model="shortcutDrawer" :bindings="settings.shortcuts" :saving="shortcutSaving"
                           @update-binding="updateShortcutBinding" @reset-defaults="resetShortcutBindings"
@@ -351,6 +357,7 @@ import { useSettingsStore } from "./stores/settings";
 import { useStatusBarStore } from "./stores/statusBar";
 import type { ColumnLayoutScope } from "./columnLayout";
 import type { CopySeparator } from "./resultCopy";
+import type { ResultCompareHighlightMode, ResultCompareScope } from "./resultCompare";
 import { applyColorSchemeCss, cloneColorSchemes, serializeColorSchemeSettings, type ColorSchemeSettings } from "./appearance";
 import { applyDocumentTheme } from "./theme";
 import { openRecentSql, openSqlFile, recentSqlFiles, saveSqlFile } from "./files/browserFiles";
@@ -2187,6 +2194,26 @@ async function updateShowColumnRemarksInHeader(value: boolean): Promise<void> {
   const previous = settings.showColumnRemarksInHeader; settings.showColumnRemarksInHeader = value;
   try { await rpc.request("settings.update", { key: "result.showColumnRemarksInHeader", value: String(value) }); }
   catch (error) { settings.showColumnRemarksInHeader = previous; reportError(error); }
+}
+async function updateZebraStripesEnabled(value: boolean): Promise<void> {
+  const previous = settings.zebraStripesEnabled; settings.zebraStripesEnabled = value;
+  try { await rpc.request("settings.update", { key: "result.zebraStripesEnabled", value: String(value) }); }
+  catch (error) { settings.zebraStripesEnabled = previous; reportError(error); }
+}
+async function updateCompareHighlightMode(value: ResultCompareHighlightMode): Promise<void> {
+  const previous = settings.compareHighlightMode; settings.compareHighlightMode = value;
+  try { await rpc.request("settings.update", { key: "result.compareHighlightMode", value }); }
+  catch (error) { settings.compareHighlightMode = previous; reportError(error); }
+}
+async function updateCompareScope(value: ResultCompareScope): Promise<void> {
+  const previous = settings.compareScope; settings.compareScope = value;
+  try { await rpc.request("settings.update", { key: "result.compareScope", value }); }
+  catch (error) { settings.compareScope = previous; reportError(error); }
+}
+async function updateCompareCaseSensitive(value: boolean): Promise<void> {
+  const previous = settings.compareCaseSensitive; settings.compareCaseSensitive = value;
+  try { await rpc.request("settings.update", { key: "result.compareCaseSensitive", value: String(value) }); }
+  catch (error) { settings.compareCaseSensitive = previous; reportError(error); }
 }
 async function updateScrollOptimizationBufferScreens(value: number): Promise<void> {
   const previous = settings.scrollOptimizationBufferScreens; settings.scrollOptimizationBufferScreens = value;

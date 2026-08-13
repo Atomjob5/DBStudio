@@ -32,6 +32,7 @@ export interface ResultColorScheme {
   fontFamily: FontFamilyId;
   fontSize: number;
   background: string;
+  stripeBackground: string;
   headerBackground: string;
   cell: TextStyle;
   header: TextStyle;
@@ -40,6 +41,7 @@ export interface ResultColorScheme {
   rowNumber: TextStyle;
   selectionBackground: string;
   selectionBorder: string;
+  compareHighlightBackground: string;
 }
 
 export interface ModeColorScheme {
@@ -49,7 +51,7 @@ export interface ModeColorScheme {
 }
 
 export interface ColorSchemeSettings {
-  version: 1;
+  version: 2;
   light: ModeColorScheme;
   dark: ModeColorScheme;
 }
@@ -89,10 +91,11 @@ function editor(values: Partial<EditorColorScheme>): EditorColorScheme {
 
 function result(values: Partial<ResultColorScheme>): ResultColorScheme {
   return {
-    fontFamily: "system-ui", fontSize: 12, background: "#FFFFFF", headerBackground: "#F5F5F7",
+    fontFamily: "system-ui", fontSize: 12, background: "#FFFFFF", stripeBackground: "#F7F7F9",
+    headerBackground: "#F5F5F7",
     cell: style("#1D1D1F"), header: style("#6E6E73", true), nullValue: style("#AF52DE", false, true),
     binaryValue: style("#B25000"), rowNumber: style("#86868B"), selectionBackground: "#DCECFB",
-    selectionBorder: "#0071E3", ...values,
+    selectionBorder: "#0071E3", compareHighlightBackground: "#FFF0B3", ...values,
   };
 }
 
@@ -110,15 +113,16 @@ const makeScheme = (presetId: string, mode: AppearanceMode, values: {
       activeLineNumber: "#A1A1A6", cursor: "#2997FF", selection: "#264F78", lineHighlight: "#19191C",
     } : {}), ...(values.editor ?? {}) }),
     result: result({ ...(dark ? {
-      background: "#151517", headerBackground: "#1C1C1E", cell: style("#F5F5F7"),
+      background: "#151517", stripeBackground: "#1B1B1E", headerBackground: "#1C1C1E", cell: style("#F5F5F7"),
       header: style("#A1A1A6", true), nullValue: style("#BF5AF2", false, true), binaryValue: style("#FF9F0A"),
       rowNumber: style("#7D7D83"), selectionBackground: "#264F78", selectionBorder: "#2997FF",
+      compareHighlightBackground: "#554515",
     } : {}), ...(values.result ?? {}) }),
   };
 };
 
 export const DEFAULT_COLOR_SCHEMES: ColorSchemeSettings = {
-  version: 1,
+  version: 2,
   light: makeScheme("dbstudio-light", "light"),
   dark: makeScheme("dbstudio-dark", "dark"),
 };
@@ -132,21 +136,21 @@ export interface ColorSchemePreset {
 }
 
 const lightPresets: ColorSchemePreset[] = [
-  { id: "vs-light", label: "VS Light+", description: "清晰、通用的开发环境", mode: "light", scheme: makeScheme("vs-light", "light", { editor: { keyword: style("#0000FF", false), string: style("#A31515"), number: style("#098658"), comment: style("#008000", false, true), quotedIdentifier: style("#001080") }, result: { header: style("#0451A5", true), nullValue: style("#AF00DB", false, true), binaryValue: style("#A31515") } }) },
-  { id: "github-light", label: "GitHub Light", description: "GitHub 经典亮色", mode: "light", scheme: makeScheme("github-light", "light", { editor: { background: "#FFFFFF", foreground: "#24292F", keyword: style("#CF222E", true), string: style("#0A3069"), number: style("#0550AE"), comment: style("#6E7781", false, true), quotedIdentifier: style("#953800") }, result: { background: "#FFFFFF", headerBackground: "#F6F8FA", cell: style("#24292F"), header: style("#57606A", true), nullValue: style("#8250DF", false, true), binaryValue: style("#9A6700") } }) },
-  { id: "solarized-light", label: "Solarized Light", description: "低对比度护眼配色", mode: "light", scheme: makeScheme("solarized-light", "light", { editor: { background: "#FDF6E3", foreground: "#657B83", keyword: style("#859900", true), string: style("#2AA198"), number: style("#D33682"), comment: style("#93A1A1", false, true), quotedIdentifier: style("#268BD2"), selection: "#EEE8D5", lineHighlight: "#F5EFD9" }, result: { background: "#FDF6E3", headerBackground: "#EEE8D5", cell: style("#657B83"), header: style("#586E75", true), nullValue: style("#6C71C4", false, true), binaryValue: style("#CB4B16") } }) },
-  { id: "one-light", label: "Atom One Light", description: "柔和高可读亮色", mode: "light", scheme: makeScheme("one-light", "light", { editor: { background: "#FAFAFA", foreground: "#383A42", keyword: style("#A626A4", true), string: style("#50A14F"), number: style("#986801"), comment: style("#A0A1A7", false, true), quotedIdentifier: style("#0184BB") }, result: { background: "#FAFAFA", headerBackground: "#EAEAEB", cell: style("#383A42"), header: style("#696C77", true), nullValue: style("#A626A4", false, true), binaryValue: style("#986801") } }) },
-  { id: "quiet-light", label: "Quiet Light", description: "简洁安静的编辑体验", mode: "light", scheme: makeScheme("quiet-light", "light", { editor: { background: "#F5F5F5", foreground: "#333333", keyword: style("#AA0D91", true), string: style("#C41A16"), number: style("#1C00CF"), comment: style("#8E908C", false, true), quotedIdentifier: style("#0451A5") }, result: { background: "#F5F5F5", headerBackground: "#E5E5E5", cell: style("#333333"), header: style("#555555", true), nullValue: style("#AF52DE", false, true), binaryValue: style("#A67F59") } }) },
-  { id: "intellij-light", label: "IntelliJ Light", description: "IDEA 默认亮色风格", mode: "light", scheme: makeScheme("intellij-light", "light", { editor: { background: "#FFFFFF", foreground: "#000000", keyword: style("#0033B3", true), string: style("#067D17"), number: style("#1750EB"), comment: style("#8C8C8C", false, true), quotedIdentifier: style("#871094") }, result: { background: "#FFFFFF", headerBackground: "#F2F2F2", cell: style("#000000"), header: style("#555555", true), nullValue: style("#871094", false, true), binaryValue: style("#9E880D") } }) },
+  { id: "vs-light", label: "VS Light+", description: "清晰、通用的开发环境", mode: "light", scheme: makeScheme("vs-light", "light", { editor: { keyword: style("#0000FF", false), string: style("#A31515"), number: style("#098658"), comment: style("#008000", false, true), quotedIdentifier: style("#001080") }, result: { header: style("#0451A5", true), nullValue: style("#AF00DB", false, true), binaryValue: style("#A31515"), compareHighlightBackground: "#FFF4CE" } }) },
+  { id: "github-light", label: "GitHub Light", description: "GitHub 经典亮色", mode: "light", scheme: makeScheme("github-light", "light", { editor: { background: "#FFFFFF", foreground: "#24292F", keyword: style("#CF222E", true), string: style("#0A3069"), number: style("#0550AE"), comment: style("#6E7781", false, true), quotedIdentifier: style("#953800") }, result: { background: "#FFFFFF", headerBackground: "#F6F8FA", cell: style("#24292F"), header: style("#57606A", true), nullValue: style("#8250DF", false, true), binaryValue: style("#9A6700"), compareHighlightBackground: "#FFF8C5" } }) },
+  { id: "solarized-light", label: "Solarized Light", description: "低对比度护眼配色", mode: "light", scheme: makeScheme("solarized-light", "light", { editor: { background: "#FDF6E3", foreground: "#657B83", keyword: style("#859900", true), string: style("#2AA198"), number: style("#D33682"), comment: style("#93A1A1", false, true), quotedIdentifier: style("#268BD2"), selection: "#EEE8D5", lineHighlight: "#F5EFD9" }, result: { background: "#FDF6E3", headerBackground: "#EEE8D5", cell: style("#657B83"), header: style("#586E75", true), nullValue: style("#6C71C4", false, true), binaryValue: style("#CB4B16"), compareHighlightBackground: "#EFE4B0" } }) },
+  { id: "one-light", label: "Atom One Light", description: "柔和高可读亮色", mode: "light", scheme: makeScheme("one-light", "light", { editor: { background: "#FAFAFA", foreground: "#383A42", keyword: style("#A626A4", true), string: style("#50A14F"), number: style("#986801"), comment: style("#A0A1A7", false, true), quotedIdentifier: style("#0184BB") }, result: { background: "#FAFAFA", headerBackground: "#EAEAEB", cell: style("#383A42"), header: style("#696C77", true), nullValue: style("#A626A4", false, true), binaryValue: style("#986801"), compareHighlightBackground: "#F4E7B2" } }) },
+  { id: "quiet-light", label: "Quiet Light", description: "简洁安静的编辑体验", mode: "light", scheme: makeScheme("quiet-light", "light", { editor: { background: "#F5F5F5", foreground: "#333333", keyword: style("#AA0D91", true), string: style("#C41A16"), number: style("#1C00CF"), comment: style("#8E908C", false, true), quotedIdentifier: style("#0451A5") }, result: { background: "#F5F5F5", headerBackground: "#E5E5E5", cell: style("#333333"), header: style("#555555", true), nullValue: style("#AF52DE", false, true), binaryValue: style("#A67F59"), compareHighlightBackground: "#F2E6B8" } }) },
+  { id: "intellij-light", label: "IntelliJ Light", description: "IDEA 默认亮色风格", mode: "light", scheme: makeScheme("intellij-light", "light", { editor: { background: "#FFFFFF", foreground: "#000000", keyword: style("#0033B3", true), string: style("#067D17"), number: style("#1750EB"), comment: style("#8C8C8C", false, true), quotedIdentifier: style("#871094") }, result: { background: "#FFFFFF", headerBackground: "#F2F2F2", cell: style("#000000"), header: style("#555555", true), nullValue: style("#871094", false, true), binaryValue: style("#9E880D"), compareHighlightBackground: "#FFF1B8" } }) },
 ];
 
 const darkPresets: ColorSchemePreset[] = [
-  { id: "dark-plus", label: "Dark+", description: "VS Code 默认深色", mode: "dark", scheme: makeScheme("dark-plus", "dark", { editor: { background: "#1E1E1E", foreground: "#D4D4D4", keyword: style("#569CD6", true), string: style("#CE9178"), number: style("#B5CEA8"), comment: style("#6A9955", false, true), quotedIdentifier: style("#9CDCFE"), lineNumber: "#858585", activeLineNumber: "#C6C6C6", cursor: "#AEAFAD", selection: "#264F78", lineHighlight: "#2A2D2E" }, result: { background: "#1E1E1E", headerBackground: "#252526", cell: style("#D4D4D4"), header: style("#9CDCFE", true), nullValue: style("#C586C0", false, true), binaryValue: style("#DCDCAA"), rowNumber: style("#858585"), selectionBackground: "#264F78", selectionBorder: "#569CD6" } }) },
-  { id: "one-dark-pro", label: "One Dark Pro", description: "Atom/VS Code 热门深色", mode: "dark", scheme: makeScheme("one-dark-pro", "dark", { editor: { background: "#282C34", foreground: "#ABB2BF", keyword: style("#C678DD", true), string: style("#98C379"), number: style("#D19A66"), comment: style("#5C6370", false, true), quotedIdentifier: style("#E06C75"), lineNumber: "#4B5263", activeLineNumber: "#ABB2BF", cursor: "#528BFF", selection: "#3E4451", lineHighlight: "#2C323C" }, result: { background: "#282C34", headerBackground: "#21252B", cell: style("#ABB2BF"), header: style("#61AFEF", true), nullValue: style("#C678DD", false, true), binaryValue: style("#D19A66"), rowNumber: style("#5C6370"), selectionBackground: "#3E4451", selectionBorder: "#528BFF" } }) },
-  { id: "dracula", label: "Dracula", description: "高对比度紫色深色", mode: "dark", scheme: makeScheme("dracula", "dark", { editor: { background: "#282A36", foreground: "#F8F8F2", keyword: style("#FF79C6", true), string: style("#F1FA8C"), number: style("#BD93F9"), comment: style("#6272A4", false, true), quotedIdentifier: style("#8BE9FD"), lineNumber: "#6272A4", activeLineNumber: "#F8F8F2", cursor: "#F8F8F0", selection: "#44475A", lineHighlight: "#2E303E" }, result: { background: "#282A36", headerBackground: "#44475A", cell: style("#F8F8F2"), header: style("#8BE9FD", true), nullValue: style("#BD93F9", false, true), binaryValue: style("#FFB86C"), rowNumber: style("#6272A4"), selectionBackground: "#44475A", selectionBorder: "#FF79C6" } }) },
-  { id: "monokai", label: "Monokai", description: "经典高饱和深色", mode: "dark", scheme: makeScheme("monokai", "dark", { editor: { background: "#272822", foreground: "#F8F8F2", keyword: style("#F92672", true), string: style("#E6DB74"), number: style("#AE81FF"), comment: style("#75715E", false, true), quotedIdentifier: style("#66D9EF"), lineNumber: "#90908A", activeLineNumber: "#F8F8F2", cursor: "#F8F8F0", selection: "#49483E", lineHighlight: "#2D2E27" }, result: { background: "#272822", headerBackground: "#3E3D32", cell: style("#F8F8F2"), header: style("#A6E22E", true), nullValue: style("#AE81FF", false, true), binaryValue: style("#FD971F"), rowNumber: style("#75715E"), selectionBackground: "#49483E", selectionBorder: "#F92672" } }) },
-  { id: "nord", label: "Nord", description: "冷静舒适的蓝灰色", mode: "dark", scheme: makeScheme("nord", "dark", { editor: { background: "#2E3440", foreground: "#D8DEE9", keyword: style("#81A1C1", true), string: style("#A3BE8C"), number: style("#B48EAD"), comment: style("#616E88", false, true), quotedIdentifier: style("#88C0D0"), lineNumber: "#616E88", activeLineNumber: "#D8DEE9", cursor: "#88C0D0", selection: "#434C5E", lineHighlight: "#353C4A" }, result: { background: "#2E3440", headerBackground: "#3B4252", cell: style("#D8DEE9"), header: style("#88C0D0", true), nullValue: style("#B48EAD", false, true), binaryValue: style("#EBCB8B"), rowNumber: style("#616E88"), selectionBackground: "#434C5E", selectionBorder: "#88C0D0" } }) },
-  { id: "solarized-dark", label: "Solarized Dark", description: "低对比度护眼配色", mode: "dark", scheme: makeScheme("solarized-dark", "dark", { editor: { background: "#002B36", foreground: "#839496", keyword: style("#859900", true), string: style("#2AA198"), number: style("#D33682"), comment: style("#586E75", false, true), quotedIdentifier: style("#268BD2"), lineNumber: "#586E75", activeLineNumber: "#93A1A1", cursor: "#B58900", selection: "#073642", lineHighlight: "#06313B" }, result: { background: "#002B36", headerBackground: "#073642", cell: style("#839496"), header: style("#93A1A1", true), nullValue: style("#6C71C4", false, true), binaryValue: style("#CB4B16"), rowNumber: style("#586E75"), selectionBackground: "#073642", selectionBorder: "#2AA198" } }) },
+  { id: "dark-plus", label: "Dark+", description: "VS Code 默认深色", mode: "dark", scheme: makeScheme("dark-plus", "dark", { editor: { background: "#1E1E1E", foreground: "#D4D4D4", keyword: style("#569CD6", true), string: style("#CE9178"), number: style("#B5CEA8"), comment: style("#6A9955", false, true), quotedIdentifier: style("#9CDCFE"), lineNumber: "#858585", activeLineNumber: "#C6C6C6", cursor: "#AEAFAD", selection: "#264F78", lineHighlight: "#2A2D2E" }, result: { background: "#1E1E1E", headerBackground: "#252526", cell: style("#D4D4D4"), header: style("#9CDCFE", true), nullValue: style("#C586C0", false, true), binaryValue: style("#DCDCAA"), rowNumber: style("#858585"), selectionBackground: "#264F78", selectionBorder: "#569CD6", compareHighlightBackground: "#4B4628" } }) },
+  { id: "one-dark-pro", label: "One Dark Pro", description: "Atom/VS Code 热门深色", mode: "dark", scheme: makeScheme("one-dark-pro", "dark", { editor: { background: "#282C34", foreground: "#ABB2BF", keyword: style("#C678DD", true), string: style("#98C379"), number: style("#D19A66"), comment: style("#5C6370", false, true), quotedIdentifier: style("#E06C75"), lineNumber: "#4B5263", activeLineNumber: "#ABB2BF", cursor: "#528BFF", selection: "#3E4451", lineHighlight: "#2C323C" }, result: { background: "#282C34", headerBackground: "#21252B", cell: style("#ABB2BF"), header: style("#61AFEF", true), nullValue: style("#C678DD", false, true), binaryValue: style("#D19A66"), rowNumber: style("#5C6370"), selectionBackground: "#3E4451", selectionBorder: "#528BFF", compareHighlightBackground: "#3F4938" } }) },
+  { id: "dracula", label: "Dracula", description: "高对比度紫色深色", mode: "dark", scheme: makeScheme("dracula", "dark", { editor: { background: "#282A36", foreground: "#F8F8F2", keyword: style("#FF79C6", true), string: style("#F1FA8C"), number: style("#BD93F9"), comment: style("#6272A4", false, true), quotedIdentifier: style("#8BE9FD"), lineNumber: "#6272A4", activeLineNumber: "#F8F8F2", cursor: "#F8F8F0", selection: "#44475A", lineHighlight: "#2E303E" }, result: { background: "#282A36", headerBackground: "#44475A", cell: style("#F8F8F2"), header: style("#8BE9FD", true), nullValue: style("#BD93F9", false, true), binaryValue: style("#FFB86C"), rowNumber: style("#6272A4"), selectionBackground: "#44475A", selectionBorder: "#FF79C6", compareHighlightBackground: "#4D4934" } }) },
+  { id: "monokai", label: "Monokai", description: "经典高饱和深色", mode: "dark", scheme: makeScheme("monokai", "dark", { editor: { background: "#272822", foreground: "#F8F8F2", keyword: style("#F92672", true), string: style("#E6DB74"), number: style("#AE81FF"), comment: style("#75715E", false, true), quotedIdentifier: style("#66D9EF"), lineNumber: "#90908A", activeLineNumber: "#F8F8F2", cursor: "#F8F8F0", selection: "#49483E", lineHighlight: "#2D2E27" }, result: { background: "#272822", headerBackground: "#3E3D32", cell: style("#F8F8F2"), header: style("#A6E22E", true), nullValue: style("#AE81FF", false, true), binaryValue: style("#FD971F"), rowNumber: style("#75715E"), selectionBackground: "#49483E", selectionBorder: "#F92672", compareHighlightBackground: "#4A482F" } }) },
+  { id: "nord", label: "Nord", description: "冷静舒适的蓝灰色", mode: "dark", scheme: makeScheme("nord", "dark", { editor: { background: "#2E3440", foreground: "#D8DEE9", keyword: style("#81A1C1", true), string: style("#A3BE8C"), number: style("#B48EAD"), comment: style("#616E88", false, true), quotedIdentifier: style("#88C0D0"), lineNumber: "#616E88", activeLineNumber: "#D8DEE9", cursor: "#88C0D0", selection: "#434C5E", lineHighlight: "#353C4A" }, result: { background: "#2E3440", headerBackground: "#3B4252", cell: style("#D8DEE9"), header: style("#88C0D0", true), nullValue: style("#B48EAD", false, true), binaryValue: style("#EBCB8B"), rowNumber: style("#616E88"), selectionBackground: "#434C5E", selectionBorder: "#88C0D0", compareHighlightBackground: "#424A3A" } }) },
+  { id: "solarized-dark", label: "Solarized Dark", description: "低对比度护眼配色", mode: "dark", scheme: makeScheme("solarized-dark", "dark", { editor: { background: "#002B36", foreground: "#839496", keyword: style("#859900", true), string: style("#2AA198"), number: style("#D33682"), comment: style("#586E75", false, true), quotedIdentifier: style("#268BD2"), lineNumber: "#586E75", activeLineNumber: "#93A1A1", cursor: "#B58900", selection: "#073642", lineHighlight: "#06313B" }, result: { background: "#002B36", headerBackground: "#073642", cell: style("#839496"), header: style("#93A1A1", true), nullValue: style("#6C71C4", false, true), binaryValue: style("#CB4B16"), rowNumber: style("#586E75"), selectionBackground: "#073642", selectionBorder: "#2AA198", compareHighlightBackground: "#3F492B" } }) },
 ];
 
 export const COLOR_SCHEME_PRESETS = [...lightPresets, ...darkPresets];
@@ -182,17 +186,18 @@ const validEditor = (value: unknown): value is EditorColorScheme => {
     && [item.keyword, item.identifier, item.string, item.number, item.comment, item.quotedIdentifier].every(validStyle);
 };
 const validResult = (value: unknown): value is ResultColorScheme => {
-  if (!exactKeys(value, ["fontFamily", "fontSize", "background", "headerBackground", "cell", "header", "nullValue", "binaryValue", "rowNumber", "selectionBackground", "selectionBorder"])) return false;
+  if (!exactKeys(value, ["fontFamily", "fontSize", "background", "stripeBackground", "headerBackground", "cell", "header", "nullValue", "binaryValue", "rowNumber", "selectionBackground", "selectionBorder", "compareHighlightBackground"])) return false;
   const item = value as ResultColorScheme;
   return validFont(item.fontFamily) && Number.isInteger(item.fontSize) && item.fontSize >= 10 && item.fontSize <= 24
-    && [item.background, item.headerBackground, item.selectionBackground, item.selectionBorder].every(isHex)
+    && [item.background, item.stripeBackground, item.headerBackground, item.selectionBackground,
+      item.selectionBorder, item.compareHighlightBackground].every(isHex)
     && [item.cell, item.header, item.nullValue, item.binaryValue, item.rowNumber].every(validStyle);
 };
 
 export function isValidColorSchemeSettings(value: unknown): value is ColorSchemeSettings {
   if (!exactKeys(value, ["version", "light", "dark"])) return false;
   const item = value as ColorSchemeSettings;
-  return item.version === 1 && exactKeys(item.light, ["presetId", "editor", "result"]) && exactKeys(item.dark, ["presetId", "editor", "result"])
+  return item.version === 2 && exactKeys(item.light, ["presetId", "editor", "result"]) && exactKeys(item.dark, ["presetId", "editor", "result"])
     && typeof item.light.presetId === "string" && typeof item.dark.presetId === "string"
     && validEditor(item.light.editor) && validEditor(item.dark.editor)
     && validResult(item.light.result) && validResult(item.dark.result);
@@ -201,11 +206,27 @@ export function isValidColorSchemeSettings(value: unknown): value is ColorScheme
 export function parseColorSchemeSettings(value?: string): ColorSchemeSettings {
   if (!value) return cloneColorSchemes(DEFAULT_COLOR_SCHEMES);
   try {
-    const parsed: unknown = JSON.parse(value);
+    const parsed: unknown = migrateColorSchemeSettings(JSON.parse(value));
     return isValidColorSchemeSettings(parsed) ? cloneColorSchemes(parsed) : cloneColorSchemes(DEFAULT_COLOR_SCHEMES);
   } catch {
     return cloneColorSchemes(DEFAULT_COLOR_SCHEMES);
   }
+}
+
+function migrateColorSchemeSettings(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  const item = value as Record<string, unknown>;
+  if (item.version !== 1) return value;
+  const next = clone(item) as Record<string, unknown>;
+  for (const mode of ["light", "dark"] as const) {
+    const modeValue = next[mode] as Record<string, unknown> | undefined;
+    const resultValue = modeValue?.result as Record<string, unknown> | undefined;
+    if (!resultValue) return value;
+    resultValue.stripeBackground = mode === "dark" ? "#1B1B1E" : "#F7F7F9";
+    resultValue.compareHighlightBackground = mode === "dark" ? "#554515" : "#FFF0B3";
+  }
+  next.version = 2;
+  return next;
 }
 
 export function serializeColorSchemeSettings(value: ColorSchemeSettings): string {
@@ -239,6 +260,7 @@ export function applyColorSchemeCss(mode: ResolvedTheme, scheme: ModeColorScheme
   };
   const resultStyles = {
     "--db-result-bg": result.background,
+    "--db-result-stripe-bg": result.stripeBackground,
     "--db-result-header-bg": result.headerBackground,
     "--db-result-font-family": fontFamilyCss(result.fontFamily),
     "--db-result-font-size": `${result.fontSize}px`,
@@ -259,6 +281,7 @@ export function applyColorSchemeCss(mode: ResolvedTheme, scheme: ModeColorScheme
     "--db-result-row-number-font-style": result.rowNumber.italic ? "italic" : "normal",
     "--db-result-selection-bg": result.selectionBackground,
     "--db-result-selection-border": result.selectionBorder,
+    "--db-result-compare-highlight-bg": result.compareHighlightBackground,
   };
   for (const [key, value] of Object.entries({ ...editorStyles, ...resultStyles })) root.style.setProperty(key, value);
   root.dataset.appearanceMode = mode;

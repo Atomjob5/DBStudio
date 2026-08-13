@@ -1176,9 +1176,10 @@ test("supports Apple appearance, system theme settings and compact windows", asy
   await expect(page.getByRole("radio", { name: "跟随系统", exact: true })).toBeVisible();
   await expect(page.getByRole("radio", { name: "当前结果集", exact: true })).toBeChecked();
   await expect(page.getByText("双击表头复制列名", { exact: true })).toBeVisible();
+  await expect(page.getByText("斑马纹", { exact: true })).toBeVisible();
   await expect(page.getByText("多列复制分隔符", { exact: true })).toBeVisible();
   const compactRows = page.locator(".settings-drawer .compact-setting-row");
-  await expect(compactRows).toHaveCount(20);
+  await expect(compactRows).toHaveCount(22);
   expect(await compactRows.evaluateAll((rows) => rows.every((row) => {
     const style = getComputedStyle(row);
     const label = row.querySelector(".el-form-item__label")?.getBoundingClientRect();
@@ -1245,6 +1246,12 @@ test("applies color scheme drafts to Monaco and result CSS only after saving", a
   await page.getByRole("button", { name: "更多操作", exact: true }).click();
   await page.getByRole("menuitem", { name: "设置", exact: true }).click();
   const settings = page.getByRole("dialog", { name: "设置", exact: true });
+  await settings.locator(".el-radio-button").filter({ hasText: "深色" }).click();
+  await settings.getByRole("button", { name: "配置配色方案", exact: true }).click();
+  const darkDrawer = page.getByRole("dialog", { name: "配色方案", exact: true });
+  await expect(darkDrawer.getByRole("radio", { name: "深色", exact: true })).toBeChecked();
+  await expect(darkDrawer.getByRole("textbox", { name: "比较高亮", exact: true })).toHaveValue("#554515");
+  await darkDrawer.getByRole("button", { name: "取消", exact: true }).click();
   await settings.locator(".el-radio-button").filter({ hasText: "亮色" }).click();
   await settings.getByRole("button", { name: "配置配色方案", exact: true }).click();
 
@@ -1269,6 +1276,8 @@ test("applies color scheme drafts to Monaco and result CSS only after saving", a
 
   await drawer.getByRole("textbox", { name: "背景", exact: true }).fill("#123456");
   await drawer.getByRole("textbox", { name: "表格背景", exact: true }).fill("#223344");
+  await drawer.getByRole("textbox", { name: "斑马纹背景", exact: true }).fill("#334455");
+  await drawer.getByRole("textbox", { name: "比较高亮", exact: true }).fill("#FFE080");
   await drawer.getByRole("textbox", { name: "普通标识符颜色", exact: true }).fill("#445566");
   await drawer.getByRole("textbox", { name: "NULL颜色", exact: true }).fill("#AA0000");
   await drawer.getByRole("textbox", { name: "二进制值颜色", exact: true }).fill("#00AA00");
@@ -1279,8 +1288,10 @@ test("applies color scheme drafts to Monaco and result CSS only after saving", a
   await expect.poll(() => page.evaluate(() => ({
     editorBg: getComputedStyle(document.documentElement).getPropertyValue("--db-editor-bg").trim(),
     resultBg: getComputedStyle(document.documentElement).getPropertyValue("--db-result-bg").trim(),
+    stripeBg: getComputedStyle(document.documentElement).getPropertyValue("--db-result-stripe-bg").trim(),
+    compareBg: getComputedStyle(document.documentElement).getPropertyValue("--db-result-compare-highlight-bg").trim(),
     editorFont: getComputedStyle(document.querySelector(".monaco-editor .view-lines")!).fontFamily,
-  }))).toMatchObject({ editorBg: "#123456" });
+  }))).toMatchObject({ editorBg: "#123456", stripeBg: "#334455", compareBg: "#ffe080" });
 
   await settings.getByRole("button", { name: "配置配色方案", exact: true }).click();
   const reopened = page.getByRole("dialog", { name: "配色方案", exact: true });
@@ -1299,6 +1310,18 @@ test("applies color scheme drafts to Monaco and result CSS only after saving", a
   await selectedCell.click();
   await expect.poll(() => selectedCell.evaluate((element) => getComputedStyle(element).outlineColor))
     .toBe("rgb(171, 205, 239)");
+  const compareOptions = page.getByRole("button", { name: "比较记录选项", exact: true });
+  await expect.poll(() => compareOptions.locator(".el-icon > svg").evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    return { width: bounds.width, height: bounds.height };
+  })).toEqual({ width: 10, height: 10 });
+  await compareOptions.click();
+  await expect(page.getByRole("menuitem", { name: "高亮显示相同", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "比较记录", exact: true }).click();
+  await expect(page.locator(".result-cell-compared").first()).toBeVisible();
+  await expect.poll(() => page.locator(".result-cell-compared").first()
+    .evaluate((element) => getComputedStyle(element).backgroundColor)).toBe("rgb(255, 224, 128)");
   const semanticStyles = await page.evaluate(() => {
     const read = (selector: string) => {
       const element = document.querySelector(selector);

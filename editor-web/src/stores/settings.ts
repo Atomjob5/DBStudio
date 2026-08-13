@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import type { ColumnLayoutScope } from "../columnLayout";
 import type { CopySeparator } from "../resultCopy";
+import type { ResultCompareHighlightMode, ResultCompareScope } from "../resultCompare";
 import type { SqlCompletionSnippet } from "../types";
 import { cloneColorSchemes, parseColorSchemeSettings, type ColorSchemeSettings } from "../appearance";
 import { parseSqlCompletionSnippets } from "../completion/snippets";
@@ -23,6 +24,10 @@ export const useSettingsStore = defineStore("settings", () => {
   const headerSortingEnabled = ref(true);
   const headerFilteringEnabled = ref(true);
   const showColumnRemarksInHeader = ref(false);
+  const zebraStripesEnabled = ref(false);
+  const compareHighlightMode = ref<ResultCompareHighlightMode>("identical");
+  const compareScope = ref<ResultCompareScope>("record");
+  const compareCaseSensitive = ref(false);
   const scrollOptimizationBufferScreens = ref(1);
   const showSelectedColumnRemarks = ref(true);
   const maxActiveSessions = ref(10);
@@ -55,6 +60,10 @@ export const useSettingsStore = defineStore("settings", () => {
     headerSortingEnabled.value = settings["result.headerSortingEnabled"] !== "false";
     headerFilteringEnabled.value = settings["result.headerFilteringEnabled"] !== "false";
     showColumnRemarksInHeader.value = settings["result.showColumnRemarksInHeader"] === "true";
+    zebraStripesEnabled.value = settings["result.zebraStripesEnabled"] === "true";
+    compareHighlightMode.value = settings["result.compareHighlightMode"] === "different" ? "different" : "identical";
+    compareScope.value = settings["result.compareScope"] === "column" ? "column" : "record";
+    compareCaseSensitive.value = settings["result.compareCaseSensitive"] === "true";
     const bufferScreens = Number.parseFloat(settings["result.scrollOptimizationBufferScreens"] ?? "1");
     scrollOptimizationBufferScreens.value = Number.isFinite(bufferScreens)
       && bufferScreens >= 0.5 && bufferScreens <= 3 && Number.isInteger(bufferScreens * 2)
@@ -103,7 +112,8 @@ export const useSettingsStore = defineStore("settings", () => {
   }
 
   return { maxResultRows, streamBatchRows, maxResultLobBytes, columnLayoutScope, copyHeaderOnDoubleClick, copySeparator,
-    headerSortingEnabled, headerFilteringEnabled, showColumnRemarksInHeader, showSelectedColumnRemarks,
+    headerSortingEnabled, headerFilteringEnabled, showColumnRemarksInHeader, zebraStripesEnabled,
+    compareHighlightMode, compareScope, compareCaseSensitive, showSelectedColumnRemarks,
     scrollOptimizationBufferScreens,
     maxActiveSessions, autoCommit, idleTimeoutMinutes, transactionDisconnectRollbackMinutes,
     completionCandidateLimit, completionPreciseMatchingEnabled, completionSnippets,

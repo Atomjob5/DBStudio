@@ -19,6 +19,7 @@ describe("SettingsDrawer compact result settings", () => {
         headerSortingEnabled: true,
         headerFilteringEnabled: true,
         showColumnRemarksInHeader: false,
+        zebraStripesEnabled: false,
         scrollOptimizationBufferScreens: 1,
         showSelectedColumnRemarks: true,
         maxActiveSessions: 10,
@@ -43,7 +44,7 @@ describe("SettingsDrawer compact result settings", () => {
   it("renders compact connection and result settings without the old alert", async () => {
     const wrapper = mountDrawer();
     await flushPromises();
-    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(21);
+    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(22);
     expect(wrapper.findComponent({ name: "ElAlert" }).exists()).toBe(false);
     const separator = wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "comma");
@@ -83,7 +84,8 @@ describe("SettingsDrawer compact result settings", () => {
     switches[6].vm.$emit("update:modelValue", false);
     switches[7].vm.$emit("update:modelValue", false);
     switches[8].vm.$emit("update:modelValue", true);
-    switches[9].vm.$emit("update:modelValue", false);
+    switches[9].vm.$emit("update:modelValue", true);
+    switches[10].vm.$emit("update:modelValue", false);
     wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "result")!.vm.$emit("update:modelValue", "editor");
     wrapper.findAllComponents({ name: "ElRadioGroup" })
@@ -104,6 +106,7 @@ describe("SettingsDrawer compact result settings", () => {
     expect(wrapper.emitted("update:headerSortingEnabled")?.[0]).toEqual([false]);
     expect(wrapper.emitted("update:headerFilteringEnabled")?.[0]).toEqual([false]);
     expect(wrapper.emitted("update:showColumnRemarksInHeader")?.[0]).toEqual([true]);
+    expect(wrapper.emitted("update:zebraStripesEnabled")?.[0]).toEqual([true]);
     expect(wrapper.emitted("update:showSelectedColumnRemarks")?.[0]).toEqual([false]);
     expect(wrapper.emitted("update:columnLayoutScope")?.[0]).toEqual(["editor"]);
     expect(wrapper.emitted("update:copySeparator")?.[0]).toEqual(["pipe"]);

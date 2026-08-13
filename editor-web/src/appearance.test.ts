@@ -15,10 +15,22 @@ describe("color scheme settings", () => {
     expect(COLOR_SCHEME_PRESETS.filter((item) => item.mode === "dark")).toHaveLength(6);
     expect(new Set(COLOR_SCHEME_PRESETS.map((item) => item.id)).size).toBe(12);
     for (const preset of COLOR_SCHEME_PRESETS) expect(isValidColorSchemeSettings({
-      version: 1,
+      version: 2,
       light: preset.mode === "light" ? preset.scheme : DEFAULT_COLOR_SCHEMES.light,
       dark: preset.mode === "dark" ? preset.scheme : DEFAULT_COLOR_SCHEMES.dark,
     })).toBe(true);
+  });
+
+  it("assigns a palette-specific comparison highlight to every preset", () => {
+    const expected = {
+      "vs-light": "#FFF4CE", "github-light": "#FFF8C5", "solarized-light": "#EFE4B0",
+      "one-light": "#F4E7B2", "quiet-light": "#F2E6B8", "intellij-light": "#FFF1B8",
+      "dark-plus": "#4B4628", "one-dark-pro": "#3F4938", dracula: "#4D4934",
+      monokai: "#4A482F", nord: "#424A3A", "solarized-dark": "#3F492B",
+    } as const;
+    expect(Object.fromEntries(COLOR_SCHEME_PRESETS.map((preset) => [
+      preset.id, preset.scheme.result.compareHighlightBackground,
+    ]))).toEqual(expected);
   });
 
   it("copies only the selected mode when applying a preset", () => {
@@ -42,5 +54,20 @@ describe("color scheme settings", () => {
     const unknown = cloneColorSchemes(DEFAULT_COLOR_SCHEMES) as typeof DEFAULT_COLOR_SCHEMES & { light: typeof DEFAULT_COLOR_SCHEMES.light & { extra?: boolean } };
     unknown.light.extra = true;
     expect(isValidColorSchemeSettings(unknown)).toBe(false);
+  });
+
+  it("migrates complete version 1 settings without losing customized colors", () => {
+    const legacy = JSON.parse(serializeColorSchemeSettings(DEFAULT_COLOR_SCHEMES));
+    legacy.version = 1;
+    delete legacy.light.result.stripeBackground;
+    delete legacy.light.result.compareHighlightBackground;
+    delete legacy.dark.result.stripeBackground;
+    delete legacy.dark.result.compareHighlightBackground;
+    legacy.light.editor.background = "#123456";
+    const migrated = parseColorSchemeSettings(JSON.stringify(legacy));
+    expect(migrated.version).toBe(2);
+    expect(migrated.light.editor.background).toBe("#123456");
+    expect(migrated.light.result.stripeBackground).toBe("#F7F7F9");
+    expect(migrated.dark.result.compareHighlightBackground).toBe("#554515");
   });
 });

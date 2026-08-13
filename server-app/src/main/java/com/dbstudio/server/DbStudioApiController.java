@@ -106,6 +106,8 @@ public final class DbStudioApiController {
             "ui.theme", "result.maxRows", "result.streamBatchRows", "result.columnLayoutScope",
             "result.copyHeaderOnDoubleClick", "result.copySeparator",
             "result.headerSortingEnabled", "result.headerFilteringEnabled", "result.showColumnRemarksInHeader",
+            "result.zebraStripesEnabled", "result.compareHighlightMode", "result.compareScope",
+            "result.compareCaseSensitive",
             "result.scrollOptimizationBufferScreens",
             "result.edit.maxLobBytes",
             "statusBar.showSelectedColumnRemarks",
@@ -153,17 +155,17 @@ public final class DbStudioApiController {
             + "\"result.copySelection\":null,\"result.exportLoaded\":null,\"result.exportFull\":null,"
             + "\"result.loadNext\":null,\"result.loadAll\":null}";
     private static final String DEFAULT_COLOR_SCHEMES =
-            "{\"version\":1,\"light\":{\"presetId\":\"dbstudio-light\",\"editor\":{"
+            "{\"version\":2,\"light\":{\"presetId\":\"dbstudio-light\",\"editor\":{"
             + "\"fontFamily\":\"sf-mono\",\"fontSize\":13,\"lineHeight\":21,\"background\":\"#FFFFFF\",\"foreground\":\"#1D1D1F\","
             + "\"keyword\":{\"color\":\"#9B2393\",\"bold\":true,\"italic\":false},\"identifier\":{\"color\":\"#1D1D1F\",\"bold\":false,\"italic\":false},"
             + "\"string\":{\"color\":\"#C41A16\",\"bold\":false,\"italic\":false},\"number\":{\"color\":\"#1C00CF\",\"bold\":false,\"italic\":false},"
             + "\"comment\":{\"color\":\"#6C7986\",\"bold\":false,\"italic\":true},\"quotedIdentifier\":{\"color\":\"#0F68A0\",\"bold\":false,\"italic\":false},"
             + "\"lineNumber\":\"#A1A1A6\",\"activeLineNumber\":\"#6E6E73\",\"cursor\":\"#0071E3\",\"selection\":\"#B8D9F8\",\"lineHighlight\":\"#F5F5F7\"},"
             + "\"result\":{"
-            + "\"fontFamily\":\"system-ui\",\"fontSize\":12,\"background\":\"#FFFFFF\",\"headerBackground\":\"#F5F5F7\","
+            + "\"fontFamily\":\"system-ui\",\"fontSize\":12,\"background\":\"#FFFFFF\",\"stripeBackground\":\"#F7F7F9\",\"headerBackground\":\"#F5F5F7\","
             + "\"cell\":{\"color\":\"#1D1D1F\",\"bold\":false,\"italic\":false},\"header\":{\"color\":\"#6E6E73\",\"bold\":true,\"italic\":false},"
             + "\"nullValue\":{\"color\":\"#AF52DE\",\"bold\":false,\"italic\":true},\"binaryValue\":{\"color\":\"#B25000\",\"bold\":false,\"italic\":false},"
-            + "\"rowNumber\":{\"color\":\"#86868B\",\"bold\":false,\"italic\":false},\"selectionBackground\":\"#DCECFB\",\"selectionBorder\":\"#0071E3\"}},"
+            + "\"rowNumber\":{\"color\":\"#86868B\",\"bold\":false,\"italic\":false},\"selectionBackground\":\"#DCECFB\",\"selectionBorder\":\"#0071E3\",\"compareHighlightBackground\":\"#FFF0B3\"}},"
             + "\"dark\":{\"presetId\":\"dbstudio-dark\",\"editor\":{"
             + "\"fontFamily\":\"sf-mono\",\"fontSize\":13,\"lineHeight\":21,\"background\":\"#111113\",\"foreground\":\"#F5F5F7\","
             + "\"keyword\":{\"color\":\"#FC5FA3\",\"bold\":true,\"italic\":false},\"identifier\":{\"color\":\"#F5F5F7\",\"bold\":false,\"italic\":false},"
@@ -171,10 +173,10 @@ public final class DbStudioApiController {
             + "\"comment\":{\"color\":\"#7F8C98\",\"bold\":false,\"italic\":true},\"quotedIdentifier\":{\"color\":\"#5DD8FF\",\"bold\":false,\"italic\":false},"
             + "\"lineNumber\":\"#636366\",\"activeLineNumber\":\"#A1A1A6\",\"cursor\":\"#2997FF\",\"selection\":\"#264F78\",\"lineHighlight\":\"#19191C\"},"
             + "\"result\":{"
-            + "\"fontFamily\":\"system-ui\",\"fontSize\":12,\"background\":\"#151517\",\"headerBackground\":\"#1C1C1E\","
+            + "\"fontFamily\":\"system-ui\",\"fontSize\":12,\"background\":\"#151517\",\"stripeBackground\":\"#1B1B1E\",\"headerBackground\":\"#1C1C1E\","
             + "\"cell\":{\"color\":\"#F5F5F7\",\"bold\":false,\"italic\":false},\"header\":{\"color\":\"#A1A1A6\",\"bold\":true,\"italic\":false},"
             + "\"nullValue\":{\"color\":\"#BF5AF2\",\"bold\":false,\"italic\":true},\"binaryValue\":{\"color\":\"#FF9F0A\",\"bold\":false,\"italic\":false},"
-            + "\"rowNumber\":{\"color\":\"#7D7D83\",\"bold\":false,\"italic\":false},\"selectionBackground\":\"#264F78\",\"selectionBorder\":\"#2997FF\"}}}";
+            + "\"rowNumber\":{\"color\":\"#7D7D83\",\"bold\":false,\"italic\":false},\"selectionBackground\":\"#264F78\",\"selectionBorder\":\"#2997FF\",\"compareHighlightBackground\":\"#554515\"}}}";
 
     private final ProviderRegistry providers;
     private final ConnectionProfileRepository profiles;
@@ -1524,9 +1526,17 @@ public final class DbStudioApiController {
         }
         if (("result.headerSortingEnabled".equals(key) || "result.headerFilteringEnabled".equals(key)
                 || "result.showColumnRemarksInHeader".equals(key)
+                || "result.zebraStripesEnabled".equals(key) || "result.compareCaseSensitive".equals(key)
                 || "statusBar.showSelectedColumnRemarks".equals(key))
                 && !Arrays.asList("true", "false").contains(value)) {
             throw new ApiException("INVALID_SETTING", "开关设置无效");
+        }
+        if ("result.compareHighlightMode".equals(key)
+                && !Arrays.asList("identical", "different").contains(value)) {
+            throw new ApiException("INVALID_SETTING", "记录比较高亮方式设置无效");
+        }
+        if ("result.compareScope".equals(key) && !Arrays.asList("column", "record").contains(value)) {
+            throw new ApiException("INVALID_SETTING", "记录比较范围设置无效");
         }
         if ("result.scrollOptimizationBufferScreens".equals(key)) {
             try {
@@ -1687,16 +1697,17 @@ public final class DbStudioApiController {
             throw new ApiException("INVALID_SETTING", "配色方案设置必须是有效 JSON");
         }
         requireKeys(root, setOf("version", "light", "dark"), "配色方案");
-        requireInteger(root, "version", 1, 1, "配色方案版本");
-        validateColorSchemeMode(requiredMap(root, "light", "亮色方案"), "亮色方案");
-        validateColorSchemeMode(requiredMap(root, "dark", "深色方案"), "深色方案");
+        requireInteger(root, "version", 1, 2, "配色方案版本");
+        int version = ((Number) root.get("version")).intValue();
+        validateColorSchemeMode(requiredMap(root, "light", "亮色方案"), "亮色方案", version);
+        validateColorSchemeMode(requiredMap(root, "dark", "深色方案"), "深色方案", version);
     }
 
-    private void validateColorSchemeMode(Map<String, Object> mode, String label) {
+    private void validateColorSchemeMode(Map<String, Object> mode, String label, int version) {
         requireKeys(mode, setOf("presetId", "editor", "result"), label);
         requireText(mode, "presetId", label + "预设标识", 64);
         validateEditorColorScheme(requiredMap(mode, "editor", label + "编辑器"), label + "编辑器");
-        validateResultColorScheme(requiredMap(mode, "result", label + "结果集"), label + "结果集");
+        validateResultColorScheme(requiredMap(mode, "result", label + "结果集"), label + "结果集", version);
     }
 
     private void validateEditorColorScheme(Map<String, Object> editor, String label) {
@@ -1713,13 +1724,22 @@ public final class DbStudioApiController {
         }
     }
 
-    private void validateResultColorScheme(Map<String, Object> result, String label) {
-        requireKeys(result, setOf("fontFamily", "fontSize", "background", "headerBackground", "cell", "header",
-                "nullValue", "binaryValue", "rowNumber", "selectionBackground", "selectionBorder"), label);
+    private void validateResultColorScheme(Map<String, Object> result, String label, int version) {
+        Set<String> keys = version == 1
+                ? setOf("fontFamily", "fontSize", "background", "headerBackground", "cell", "header",
+                    "nullValue", "binaryValue", "rowNumber", "selectionBackground", "selectionBorder")
+                : setOf("fontFamily", "fontSize", "background", "stripeBackground", "headerBackground", "cell", "header",
+                    "nullValue", "binaryValue", "rowNumber", "selectionBackground", "selectionBorder",
+                    "compareHighlightBackground");
+        requireKeys(result, keys, label);
         requireFont(result, "fontFamily", label);
         requireInteger(result, "fontSize", 10, 24, label + "字号");
         for (String key : Arrays.asList("background", "headerBackground", "selectionBackground", "selectionBorder")) {
             requireColor(result, key, label);
+        }
+        if (version == 2) {
+            requireColor(result, "stripeBackground", label);
+            requireColor(result, "compareHighlightBackground", label);
         }
         for (String key : Arrays.asList("cell", "header", "nullValue", "binaryValue", "rowNumber")) {
             validateTextStyle(requiredMap(result, key, label + key), label + key);
@@ -2471,6 +2491,10 @@ public final class DbStudioApiController {
         if (!result.containsKey("result.headerSortingEnabled")) result.put("result.headerSortingEnabled", "true");
         if (!result.containsKey("result.headerFilteringEnabled")) result.put("result.headerFilteringEnabled", "true");
         if (!result.containsKey("result.showColumnRemarksInHeader")) result.put("result.showColumnRemarksInHeader", "false");
+        if (!result.containsKey("result.zebraStripesEnabled")) result.put("result.zebraStripesEnabled", "false");
+        if (!result.containsKey("result.compareHighlightMode")) result.put("result.compareHighlightMode", "identical");
+        if (!result.containsKey("result.compareScope")) result.put("result.compareScope", "record");
+        if (!result.containsKey("result.compareCaseSensitive")) result.put("result.compareCaseSensitive", "false");
         if (!result.containsKey("result.scrollOptimizationBufferScreens")) {
             result.put("result.scrollOptimizationBufferScreens", "1");
         }

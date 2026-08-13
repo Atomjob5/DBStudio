@@ -28,7 +28,8 @@
       <div class="result-virtual-grid__canvas" :style="canvasStyle">
         <div v-for="entry in visibleRows" :key="entry.slot"
              class="result-virtual-grid__row" role="row"
-             :class="[{ 'result-row-selected': selectionMode === 'rows' && selectedRowSet.has(entry.row.sourceIndex) },
+             :class="[{ 'result-row-selected': selectionMode === 'rows' && selectedRowSet.has(entry.row.sourceIndex),
+                        'result-row-striped': zebraStripesEnabled && entry.index % 2 === 1 },
                        rowClasses?.[entry.row.sourceIndex]]"
              :style="rowStyle(entry.index)">
           <span class="result-row-number result-virtual-grid__gutter"
@@ -97,6 +98,8 @@ const props = defineProps<{
   selectionMode: "cells" | "rows" | "columns";
   cellRange?: CellRange;
   selectedCellKeys?: string[];
+  comparisonCellKeys?: string[];
+  zebraStripesEnabled?: boolean;
   focusedCellKey?: string;
   selectedColumnSources?: number[];
   selectedRowSources: number[];
@@ -133,6 +136,7 @@ const columnWidths = computed(() => props.columns.map((column) => column.width))
 const metrics = computed(() => columnMetrics(columnWidths.value));
 const selectedRowSet = computed(() => new Set(props.selectedRowSources));
 const selectedCellSet = computed(() => new Set(props.selectedCellKeys ?? []));
+const comparisonCellSet = computed(() => new Set(props.comparisonCellKeys ?? []));
 const selectedColumnSet = computed(() => new Set(props.selectedColumnSources ?? []));
 const normalizedSelection = computed(() => props.cellRange ? normalizeRange(props.cellRange) : undefined);
 const visibleRows = computed(() => rowSlots.value
@@ -393,11 +397,14 @@ function cellClasses(rowIndex: number, column: ResultVirtualColumn): Array<strin
     && column.visibleIndex >= range.start.column && column.visibleIndex <= range.end.column;
   const selected = props.selectionMode === "cells" && (selectedByIdentity || selectedByRange);
   const selectedColumn = props.selectionMode === "columns" && selectedColumnSet.value.has(column.sourceIndex);
+  const selectedRow = props.selectionMode === "rows" && !!row && selectedRowSet.value.has(row.sourceIndex);
   const focused = props.selectionMode === "cells" && !!row
     && props.focusedCellKey === `${row.sourceIndex}:${column.sourceIndex}`;
   const state = row ? props.cellStates?.[`${row.sourceIndex}:${column.sourceIndex}`] : undefined;
   return [value === null ? "null-value" : "", value?.startsWith("0x") ? "binary-value" : "",
     !!column.readonly && "result-cell-readonly", column.cellClass ?? false,
+    !selected && !selectedColumn && !selectedRow && !state
+      && comparisonCellSet.value.has(`${row?.sourceIndex}:${column.sourceIndex}`) && "result-cell-compared",
     selectedColumn && "column-selected", selected && "selected", focused && "focused", state === "pending" && "result-cell-pending",
     state === "posted" && "result-cell-posted", state === "error" && "result-cell-error"];
 }
@@ -676,6 +683,7 @@ defineExpose({ getScrollPosition, setScrollPosition, scrollCellIntoView });
   left: 0;
   border-bottom: 1px solid var(--db-border-soft);
 }
+.result-virtual-grid__row.result-row-striped { background: var(--db-result-stripe-bg); }
 .result-virtual-grid__row:hover { background: var(--db-result-selection-bg); }
 .result-virtual-grid.is-seeking .result-virtual-grid__row:hover,
 .result-virtual-grid.is-scrollbar-dragging .result-virtual-grid__row:hover { background: transparent; }
@@ -705,6 +713,9 @@ defineExpose({ getScrollPosition, setScrollPosition, scrollCellIntoView });
   z-index: 3;
   left: 0;
   background: color-mix(in srgb, var(--db-result-bg) 97%, var(--db-result-row-number-color) 3%);
+}
+.result-virtual-grid__row.result-row-striped .result-virtual-grid__gutter {
+  background: color-mix(in srgb, var(--db-result-stripe-bg) 97%, var(--db-result-row-number-color) 3%);
 }
 .result-virtual-grid__row:hover .result-virtual-grid__gutter,
 .result-virtual-grid__row.result-row-selected .result-virtual-grid__gutter {
@@ -791,6 +802,9 @@ defineExpose({ getScrollPosition, setScrollPosition, scrollCellIntoView });
 .result-virtual-grid__cell.result-cell.focused {
   outline: 2px solid var(--db-result-selection-border);
   outline-offset: -1px;
+}
+.result-virtual-grid__cell.result-cell.result-cell-compared {
+  background: var(--db-result-compare-highlight-bg);
 }
 .result-cell-pending {
   background: color-mix(in srgb, var(--db-warning) 20%, transparent);

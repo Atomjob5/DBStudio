@@ -215,6 +215,10 @@ class LocalServerSecurityTest {
         assertTrue(defaults.getBody().contains("\"result.headerSortingEnabled\":\"true\""));
         assertTrue(defaults.getBody().contains("\"result.headerFilteringEnabled\":\"true\""));
         assertTrue(defaults.getBody().contains("\"result.showColumnRemarksInHeader\":\"false\""));
+        assertTrue(defaults.getBody().contains("\"result.zebraStripesEnabled\":\"false\""));
+        assertTrue(defaults.getBody().contains("\"result.compareHighlightMode\":\"identical\""));
+        assertTrue(defaults.getBody().contains("\"result.compareScope\":\"record\""));
+        assertTrue(defaults.getBody().contains("\"result.compareCaseSensitive\":\"false\""));
         assertTrue(defaults.getBody().contains("\"result.scrollOptimizationBufferScreens\":\"1\""));
         assertTrue(defaults.getBody().contains("\"statusBar.showSelectedColumnRemarks\":\"true\""));
         assertTrue(defaults.getBody().contains("\"connection.maxActiveSessions\":\"10\""));
@@ -256,7 +260,7 @@ class LocalServerSecurityTest {
         }
 
         for (String key : Arrays.asList("result.headerSortingEnabled", "result.headerFilteringEnabled",
-                "result.showColumnRemarksInHeader",
+                "result.showColumnRemarksInHeader", "result.zebraStripesEnabled", "result.compareCaseSensitive",
                 "statusBar.showSelectedColumnRemarks", "editor.minimapEnabled", "editor.wordWrapEnabled",
                 "editor.dangerousStatementWarningEnabled")) {
             setting.put("key", key);
@@ -269,6 +273,20 @@ class LocalServerSecurityTest {
             assertEquals(HttpStatus.BAD_REQUEST, invalidToggle.getStatusCode());
             assertTrue(invalidToggle.getBody().contains("INVALID_SETTING"));
         }
+        setting.put("key", "result.compareHighlightMode");
+        setting.put("value", "different");
+        assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+        setting.put("value", "matches");
+        assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+        setting.put("key", "result.compareScope");
+        setting.put("value", "column");
+        assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+        setting.put("value", "rows");
+        assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
         setting.put("key", "result.copySeparator");
         setting.put("value", "space");
         assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
@@ -381,6 +399,17 @@ class LocalServerSecurityTest {
         assertEquals(HttpStatus.OK, reloaded.getStatusCode());
         assertTrue(reloaded.getBody().contains("#123456"));
 
+        Map<String, Object> legacy = colorSchemes();
+        legacy.put("version", 1);
+        for (String mode : Arrays.asList("light", "dark")) {
+            Map<String, Object> result = (Map<String, Object>) ((Map<String, Object>) legacy.get(mode)).get("result");
+            result.remove("stripeBackground");
+            result.remove("compareHighlightBackground");
+        }
+        setting.put("value", mapper.writeValueAsString(legacy));
+        assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+
         Map<String, Object> invalid = colorSchemes();
         ((Map<String, Object>) invalid.get("light")).put("unknown", true);
         setting.put("value", mapper.writeValueAsString(invalid));
@@ -428,7 +457,7 @@ class LocalServerSecurityTest {
 
     private Map<String, Object> colorSchemes() {
         Map<String, Object> value = new LinkedHashMap<String, Object>();
-        value.put("version", 1);
+        value.put("version", 2);
         value.put("light", colorSchemeMode("light"));
         value.put("dark", colorSchemeMode("dark"));
         return value;
@@ -446,10 +475,12 @@ class LocalServerSecurityTest {
         editor.put("lineNumber", "#A1A1A6"); editor.put("activeLineNumber", "#6E6E73"); editor.put("cursor", "#0071E3");
         editor.put("selection", "#B8D9F8"); editor.put("lineHighlight", "#F5F5F7");
         Map<String, Object> result = new LinkedHashMap<String, Object>();
-        result.put("fontFamily", "sf-mono"); result.put("fontSize", 12); result.put("background", "#FFFFFF"); result.put("headerBackground", "#F5F5F7");
+        result.put("fontFamily", "sf-mono"); result.put("fontSize", 12); result.put("background", "#FFFFFF");
+        result.put("stripeBackground", "#F7F7F9"); result.put("headerBackground", "#F5F5F7");
         result.put("cell", textStyle("#1D1D1F", false, false)); result.put("header", textStyle("#6E6E73", true, false));
         result.put("nullValue", textStyle("#AF52DE", false, true)); result.put("binaryValue", textStyle("#B25000", false, false));
-        result.put("rowNumber", textStyle("#86868B", false, false)); result.put("selectionBackground", "#DCECFB"); result.put("selectionBorder", "#0071E3");
+        result.put("rowNumber", textStyle("#86868B", false, false)); result.put("selectionBackground", "#DCECFB");
+        result.put("selectionBorder", "#0071E3"); result.put("compareHighlightBackground", "#FFF0B3");
         mode.put("editor", editor); mode.put("result", result);
         return mode;
     }

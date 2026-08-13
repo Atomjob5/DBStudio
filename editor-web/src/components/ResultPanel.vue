@@ -96,6 +96,38 @@
                        :aria-pressed="singleRecordMode"
                        @click="toggleSingleRecordView" />
           </el-tooltip>
+          <div class="record-compare-control" role="group" aria-label="比较记录">
+            <el-tooltip :content="recordComparisonEnabled ? '关闭记录比较' : '比较记录'">
+              <el-button text class="record-compare-button" :icon="ScaleToOriginal"
+                         :type="recordComparisonEnabled ? 'primary' : 'default'"
+                         :disabled="!canToggleRecordComparison"
+                         :aria-pressed="recordComparisonEnabled" aria-label="比较记录"
+                         @click="toggleRecordComparison" />
+            </el-tooltip>
+            <el-dropdown trigger="click" :disabled="singleRecordMode || !activeResult?.columns.length"
+                         @command="recordComparisonCommand">
+              <el-button text class="record-compare-options" :icon="ArrowDown" aria-label="比较记录选项" />
+              <template #dropdown>
+                <el-dropdown-menu class="record-compare-menu">
+                  <el-dropdown-item command="highlight-identical">
+                    <el-icon><Check v-if="settings.compareHighlightMode === 'identical'" /></el-icon>高亮显示相同
+                  </el-dropdown-item>
+                  <el-dropdown-item command="highlight-different">
+                    <el-icon><Check v-if="settings.compareHighlightMode === 'different'" /></el-icon>高亮显示差异
+                  </el-dropdown-item>
+                  <el-dropdown-item divided command="scope-column">
+                    <el-icon><Check v-if="settings.compareScope === 'column'" /></el-icon>比较单列
+                  </el-dropdown-item>
+                  <el-dropdown-item command="scope-record">
+                    <el-icon><Check v-if="settings.compareScope === 'record'" /></el-icon>比较完整记录
+                  </el-dropdown-item>
+                  <el-dropdown-item divided command="toggle-case-sensitive">
+                    <el-icon><Check v-if="settings.compareCaseSensitive" /></el-icon>区分大小写
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </div>
           <el-tooltip :content="copySelectionTitle">
             <el-button text :icon="CopyDocument" :aria-label="copySelectionTitle" :disabled="!hasDataSelection" @click="copyCurrentSelection()" />
           </el-tooltip>
@@ -128,6 +160,7 @@
                                 :result-index="activeResult?.resultIndex ?? 0"
                                 :header-sorting-enabled="settings.headerSortingEnabled"
                                 :header-filtering-enabled="settings.headerFilteringEnabled"
+                                :zebra-stripes-enabled="settings.zebraStripesEnabled"
                                 :initial-selection="singleRecordInitialSelection"
                                 :editing-column-index="editingCell?.rowIndex === selectedRecordRow.sourceIndex
                                   ? editingCell.columnIndex : undefined"
@@ -148,6 +181,8 @@
                            :focused-cell-key="focusedCellKey"
                            :selected-column-sources="selectedColumnSources"
                            :selected-row-sources="selectedRowSources"
+                           :zebra-stripes-enabled="settings.zebraStripesEnabled"
+                           :comparison-cell-keys="recordComparisonCellKeys"
                            :editing-cell="editingCell" :editing-value="editingCell?.value"
                            :cell-states="resultCellStates"
                            :row-classes="resultRowClasses"
@@ -222,8 +257,8 @@
 import { computed, h, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import {
-  ArrowLeft, ArrowRight, CircleCheck, CopyDocument, DataAnalysis, Document, Download, EditPen,
-  Minus, Plus, Postcard, RefreshLeft
+  ArrowDown, ArrowLeft, ArrowRight, Check, CircleCheck, CopyDocument, DataAnalysis, Document, Download, EditPen,
+  Minus, Plus, Postcard, RefreshLeft, ScaleToOriginal
 } from "@element-plus/icons-vue";
 import type { TabsPaneContext } from "element-plus";
 import type { QueryColumn, QueryExecutionState, QueryResult, SelectedResultColumn } from "../types";
@@ -241,6 +276,7 @@ import { cellSelectionKey, copyCellSql, copyGrid, copyInPredicate, copyRowSql, n
   sumDecimalValues, visibleRows, type CellPoint, type CellRange, type DecimalSumResult,
   type ResultFilter, type ResultSort, type SelectedCell, type SelectedRowColumns, type ViewRow } from "../resultGrid";
 import type { ResultGridScrollPosition, ResultVirtualColumn } from "../resultVirtualGrid";
+import { comparisonCellKeys, type ResultCompareHighlightMode, type ResultCompareScope } from "../resultCompare";
 import ResultHeaderContextMenu, { type HeaderMenuCommand } from "./ResultHeaderContextMenu.vue";
 import ResultHeaderTools from "./ResultHeaderTools.vue";
 import ResultDataContextMenu, { type DataMenuCommand } from "./ResultDataContextMenu.vue";
@@ -281,6 +317,9 @@ const emit = defineEmits<{
   "selected-status-text": [text: string];
   "toggle-result-edit": [];
   "apply-result-changes": [];
+  "update-compare-highlight-mode": [value: ResultCompareHighlightMode];
+  "update-compare-scope": [value: ResultCompareScope];
+  "update-compare-case-sensitive": [value: boolean];
 }>();
 const columnLayouts = useColumnLayoutStore();
 const settings = useSettingsStore();
@@ -381,6 +420,7 @@ const selectionMode = ref<"cells" | "rows" | "columns">("cells");
 const singleRecordMode = ref(false);
 const valueDialog = ref<{ visible: boolean; value: string | null }>({ visible: false, value: null });
 const compareDialog = ref(false);
+const recordComparisonEnabled = ref(false);
 const largeValueEditor = ref<{ visible: boolean; rowIndex: number; columnIndex: number;
   family: "raw" | "clob" | "blob" }>();
 const cloneBusy = ref(false);
@@ -547,6 +587,7 @@ watch(() => execution.value?.executionId, () => {
   clearSelection();
   sumSummary.value = undefined;
   compareDialog.value = false;
+  recordComparisonEnabled.value = false;
   valueDialog.value.visible = false;
   sorts.value = {}; filters.value = {};
   selectedColumns.value = {};
@@ -556,7 +597,8 @@ watch(() => execution.value?.executionId, () => {
 });
 watch(activeIndex, () => {
   editingCell.value = undefined;
-  clearSelection(); sumSummary.value = undefined; compareDialog.value = false; valueDialog.value.visible = false;
+  clearSelection(); sumSummary.value = undefined; compareDialog.value = false; recordComparisonEnabled.value = false;
+  valueDialog.value.visible = false;
   columnQuery.value = ""; closeHeaderMenu(); closeDataMenu();
   singleRecordLayoutDirty.value = false;
 });
@@ -601,6 +643,26 @@ const selectedCellsInView = computed<SelectedCell[]>(() => {
       value: activeResult.value?.rows[cell.sourceRow]?.[cell.sourceColumn] ?? null
     };
   }).filter((cell): cell is SelectedCell => !!cell);
+});
+const recordComparisonAnchor = computed(() => {
+  if (singleRecordMode.value || !focusedCell.value) return undefined;
+  const rowVisible = displayRows.value.some((row) => row.sourceIndex === focusedCell.value?.sourceRow);
+  const columnVisible = visibleColumnOptions.value.some((column) => column.index === focusedCell.value?.sourceColumn);
+  return rowVisible && columnVisible ? focusedCell.value : undefined;
+});
+const canToggleRecordComparison = computed(() => recordComparisonEnabled.value
+  || Boolean(recordComparisonAnchor.value && displayRows.value.length > 1));
+const recordComparisonCellKeys = computed(() => {
+  const anchor = recordComparisonAnchor.value;
+  if (!recordComparisonEnabled.value || !anchor) return [];
+  return comparisonCellKeys(displayRows.value, visibleColumnOptions.value.map((column) => column.index), anchor, {
+    highlightMode: settings.compareHighlightMode,
+    scope: settings.compareScope,
+    caseSensitive: settings.compareCaseSensitive
+  });
+});
+watch([recordComparisonAnchor, () => displayRows.value.length], ([anchor, rowCount]) => {
+  if (recordComparisonEnabled.value && (!anchor || rowCount < 2)) recordComparisonEnabled.value = false;
 });
 watch(() => activeResult.value?.rows, (rows, previous) => {
   if (previous && rows !== previous) sumSummary.value = undefined;
@@ -1475,6 +1537,7 @@ async function leaveSingleRecordView(): Promise<void> {
 function toggleSingleRecordView(): void {
   if (singleRecordMode.value) { void leaveSingleRecordView(); return; }
   if (!selectedRecordRow.value) return;
+  recordComparisonEnabled.value = false;
   singleRecordReturnPosition = currentScrollPosition();
   singleRecordSourceIndex.value = selectedRecordRow.value.sourceIndex;
   singleRecordEntryMode.value = selectionMode.value === "rows" ? "rows" : "cells";
@@ -1489,6 +1552,28 @@ function toggleSingleRecordView(): void {
   singleRecordSelection.value = undefined;
   singleRecordSqlAllowed.value = selectionMode.value === "cells";
   singleRecordMode.value = true;
+}
+
+function toggleRecordComparison(): void {
+  if (recordComparisonEnabled.value) {
+    recordComparisonEnabled.value = false;
+    return;
+  }
+  if (canToggleRecordComparison.value) recordComparisonEnabled.value = true;
+}
+
+type RecordComparisonCommand = "highlight-identical" | "highlight-different" | "scope-column"
+  | "scope-record" | "toggle-case-sensitive";
+function recordComparisonCommand(command: RecordComparisonCommand): void {
+  if (command === "highlight-identical" || command === "highlight-different") {
+    emit("update-compare-highlight-mode", command === "highlight-identical" ? "identical" : "different");
+    return;
+  }
+  if (command === "scope-column" || command === "scope-record") {
+    emit("update-compare-scope", command === "scope-column" ? "column" : "record");
+    return;
+  }
+  emit("update-compare-case-sensitive", !settings.compareCaseSensitive);
 }
 
 function navigateSingleRecord(delta: -1 | 1): void {
@@ -2192,6 +2277,11 @@ onBeforeUnmount(() => {
 .result-actions :deep(.result-edit-mode) { width: auto; padding: 0 8px; font-size: 11px; }
 .result-actions :deep(.el-dropdown) { display: inline-flex; }
 .single-record-navigation { display: inline-flex; align-items: center; gap: 1px; }
+.record-compare-control { display: inline-flex; align-items: center; gap: 0; }
+.result-actions :deep(.record-compare-button) { border-radius: 6px 0 0 6px; }
+.result-actions :deep(.record-compare-options) { width: 18px; border-radius: 0 6px 6px 0; }
+.result-actions :deep(.record-compare-options .el-icon) { margin: 0; font-size: 10px; }
+:global(.record-compare-menu .el-dropdown-menu__item .el-icon) { width: 14px; margin-right: 6px; }
 .single-record-navigation-enter-active {
   animation: single-record-navigation-in 380ms cubic-bezier(.22, 1.35, .36, 1) both;
 }

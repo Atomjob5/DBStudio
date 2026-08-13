@@ -5,9 +5,9 @@ import AppearanceColorSchemeDrawer from "./AppearanceColorSchemeDrawer.vue";
 import { cloneColorSchemes, DEFAULT_COLOR_SCHEMES } from "../appearance";
 
 describe("AppearanceColorSchemeDrawer", () => {
-  function mountDrawer() {
+  function mountDrawer(activeMode: "light" | "dark" = "light") {
     return mount(AppearanceColorSchemeDrawer, {
-      props: { modelValue: true, schemes: cloneColorSchemes(DEFAULT_COLOR_SCHEMES) },
+      props: { modelValue: true, schemes: cloneColorSchemes(DEFAULT_COLOR_SCHEMES), activeMode },
       global: { plugins: [ElementPlus], stubs: { teleport: true } },
     });
   }
@@ -23,6 +23,21 @@ describe("AppearanceColorSchemeDrawer", () => {
     await flushPromises();
     expect(wrapper.findAll(".appearance-preset")).toHaveLength(6);
     expect(wrapper.find(".appearance-preview").attributes("style")).not.toContain("#FDF6E3");
+    wrapper.unmount();
+  });
+
+  it("opens and resets to the currently active appearance mode", async () => {
+    const wrapper = mountDrawer("dark");
+    await flushPromises();
+    expect((wrapper.vm as unknown as { mode: "light" | "dark" }).mode).toBe("dark");
+    expect(wrapper.text()).toContain("编辑深色方案");
+    expect(wrapper.get('input[aria-label="比较高亮"]').attributes("value")).toBe("#554515");
+
+    (wrapper.vm as unknown as { mode: "light" | "dark" }).mode = "light";
+    await wrapper.setProps({ modelValue: false });
+    await wrapper.setProps({ modelValue: true });
+    await flushPromises();
+    expect((wrapper.vm as unknown as { mode: "light" | "dark" }).mode).toBe("dark");
     wrapper.unmount();
   });
 
@@ -77,7 +92,9 @@ describe("AppearanceColorSchemeDrawer", () => {
     expect(wrapper.find(".preview-current-line").exists()).toBe(true);
     expect(wrapper.find(".preview-selection").exists()).toBe(true);
     expect(wrapper.find(".preview-cursor").exists()).toBe(true);
-    expect(wrapper.findAll(".preview-result-row-number")).toHaveLength(3);
+    expect(wrapper.findAll(".preview-result-row-number")).toHaveLength(4);
+    expect(wrapper.find('input[aria-label="斑马纹背景"]').exists()).toBe(true);
+    expect(wrapper.find('input[aria-label="比较高亮"]').exists()).toBe(true);
 
     for (const token of ["keyword", "identifier", "string", "number", "comment", "quoted"]) {
       expect(wrapper.find(`.preview-${token}`).exists()).toBe(true);
