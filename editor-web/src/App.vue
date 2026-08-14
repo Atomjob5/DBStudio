@@ -214,7 +214,7 @@
                              :result-edit-tooltip="resultEditTooltip"
                              :can-apply-result-changes="canPostResultChanges"
                              :apply-result-changes-tooltip="postResultChangesTooltip"
-                             @export-loaded="exportLoaded" @export-full="exportFull" @close-result="closeTemporaryResult"
+                             @export-result="exportResult" @close-result="closeTemporaryResult"
                              @result-tab-click="handleResultTabClick"
                              @tabs-wheel="handleResultTabsWheel"
                              @toggle-result-edit="toggleResultEdit" @apply-result-changes="postActiveResultChanges"
@@ -376,7 +376,7 @@ import {
   type ShortcutBinding,
   type ShortcutBindings,
 } from "./shortcuts";
-import type { BootstrapResponse, CompletionCache, CompletionNamespaceDescriptor, CompletionNamespacesResponse, CompletionProgress, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryExecutionSource, QueryResult, RecoveredEditor, SavedProfile, SelectedResultColumn, SqlCompletionSnippet, SqlEditorSelectionAction, SqlTransformApplyResult, SqlTransformTarget, StatusBarSystemItem, ThemePreference, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "./types";
+import type { BootstrapResponse, CompletionCache, CompletionNamespaceDescriptor, CompletionNamespacesResponse, CompletionProgress, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryExecutionSource, QueryResult, RecoveredEditor, ResultExportRequest, SavedProfile, SelectedResultColumn, SqlCompletionSnippet, SqlEditorSelectionAction, SqlTransformApplyResult, SqlTransformTarget, StatusBarSystemItem, ThemePreference, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "./types";
 
 const app = useAppStore(); const connections = useConnectionStore(); const metadata = useMetadataStore();
 const editors = useEditorStore(); const queries = useQueryStore(); const settings = useSettingsStore();
@@ -418,8 +418,6 @@ const resultPanel = ref<{
   toggleSingleRecordView(): void;
   toggleRecordComparison(): void;
   copyCurrentSelection(): Promise<void>;
-  exportLoaded(): void;
-  exportFull(): void;
 }>();
 const resultContentPanel = ref<HTMLElement>();
 const resultContentOffset = ref(0);
@@ -1872,8 +1870,6 @@ function runShortcutAction(actionId: ShortcutActionId): void {
     void resultPanel.value?.copyCurrentSelection().catch(reportError);
     return;
   }
-  if (actionId === "result.exportLoaded") { resultPanel.value?.exportLoaded(); return; }
-  if (actionId === "result.exportFull") { resultPanel.value?.exportFull(); return; }
   if (actionId === "result.loadNext") {
     if (canLoadMore.value) void loadNextResultPage();
     return;
@@ -2437,35 +2433,21 @@ function handleResultTabsWheel(event: WheelEvent): void {
   nav.dispatchEvent(translated);
   if (translated.defaultPrevented) event.preventDefault();
 }
-async function exportLoaded(executionId: string | number, resultIndex?: number): Promise<void> {
+async function exportResult(request: ResultExportRequest): Promise<void> {
   if (!editors.active || activeExecution.value?.historical) {
-    ElMessage.warning("断线前快照不能通过服务端导出，可继续复制已加载内容");
+    ElMessage.warning(request.scope === "full" ? "断线前快照不能重新执行完整导出" : "断线前快照不能通过服务端导出，可继续复制已加载内容");
     return;
   }
   if (resultEdits.hasChanges(editors.active.id) || editors.active.resultChangesDirty) {
     ElMessage.warning("请先确认并提交或回滚结果修改后再导出");
     return;
   }
-  const resolvedExecutionId = typeof executionId === "string" ? executionId : activeExecution.value?.executionId;
-  const resolvedResultIndex = typeof executionId === "number" ? executionId : resultIndex;
-  if (!resolvedExecutionId || resolvedResultIndex === undefined) return;
-  await rpc.downloadCsv("loaded", editors.active.id, resolvedExecutionId, resolvedResultIndex);
-  ElMessage.success("已开始下载当前已加载结果");
-}
-async function exportFull(executionId: string | number, resultIndex?: number): Promise<void> {
-  if (!editors.active || activeExecution.value?.historical) {
-    ElMessage.warning("断线前快照不能重新执行完整导出");
-    return;
+  try {
+    await rpc.downloadResultExport({ ...request, executionId: request.executionId, resultIndex: request.resultIndex });
+    ElMessage.success(request.scope === "full" ? "已开始流式导出完整结果" : "已开始下载当前可见结果");
+  } catch (error) {
+    reportError(error);
   }
-  if (resultEdits.hasChanges(editors.active.id) || editors.active.resultChangesDirty) {
-    ElMessage.warning("请先确认并提交或回滚结果修改后再导出");
-    return;
-  }
-  const resolvedExecutionId = typeof executionId === "string" ? executionId : activeExecution.value?.executionId;
-  const resolvedResultIndex = typeof executionId === "number" ? executionId : resultIndex;
-  if (!resolvedExecutionId || resolvedResultIndex === undefined) return;
-  await rpc.downloadCsv("full", editors.active.id, resolvedExecutionId, resolvedResultIndex);
-  ElMessage.success("已开始流式导出完整结果");
 }
 function reportError(error: unknown): void { ElMessage.error(message(error)); }
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }

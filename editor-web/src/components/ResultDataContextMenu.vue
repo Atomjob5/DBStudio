@@ -21,6 +21,13 @@
             <el-menu-item index="copy-delete" :disabled="!canDelete">复制为 DELETE 语句</el-menu-item>
           </template>
         </el-sub-menu>
+        <el-sub-menu index="export" popper-class="result-data-context-submenu" :teleported="true"
+                     :show-timeout="100" :hide-timeout="220">
+          <template #title>导出为</template>
+          <el-menu-item index="export-csv" :disabled="!canExportCsv">CSV</el-menu-item>
+          <el-menu-item index="export-excel" :disabled="!canExportExcel">Excel</el-menu-item>
+          <el-menu-item index="export-sql" :disabled="!canExportSql">SQL 文件</el-menu-item>
+        </el-sub-menu>
         <el-menu-item v-if="mode === 'rows' && showClone" index="clone" :disabled="!canClone || cloneBusy">
           {{ cloneBusy ? "正在克隆…" : "克隆" }}
         </el-menu-item>
@@ -39,10 +46,11 @@ import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { fitContextMenuPosition } from "../contextMenuPosition";
 
 export type DataMenuCommand = "copy-data" | "copy-in" | "copy-all" | "copy-insert" | "copy-update" | "copy-delete"
-  | "clone" | "set-null" | "compare" | "sum";
+  | "export-csv" | "export-excel" | "export-sql" | "clone" | "set-null" | "compare" | "sum";
 const props = defineProps<{ visible: boolean; x: number; y: number; mode: "cells" | "rows";
   canIn: boolean; canInsert: boolean; canUpdate: boolean; canDelete: boolean;
   canCompare: boolean; canSum: boolean; canSetNull?: boolean;
+  canExportCsv?: boolean; canExportExcel?: boolean; canExportSql?: boolean;
   showClone?: boolean; canClone?: boolean; cloneBusy?: boolean }>();
 const emit = defineEmits<{ close: []; command: [command: DataMenuCommand] }>();
 const menuHost = ref<HTMLElement>();
@@ -76,7 +84,7 @@ watch([() => props.visible, () => props.x, () => props.y], async ([visible], pre
 });
 function selectCommand(index: string): void {
   if (["copy-data", "copy-in", "copy-all", "copy-insert", "copy-update", "copy-delete",
-    "clone", "set-null", "compare", "sum"].includes(index)) {
+    "export-csv", "export-excel", "export-sql", "clone", "set-null", "compare", "sum"].includes(index)) {
     emit("command", index as DataMenuCommand); emit("close");
   }
 }

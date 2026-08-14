@@ -58,7 +58,7 @@ vi.mock("./bridge/rpc", () => ({
       return () => listeners.delete(handler);
     }),
     uploadCsv: vi.fn(),
-    downloadCsv: vi.fn()
+    downloadResultExport: vi.fn()
   }
 }));
 vi.mock("./completion/client", () => ({ completionClient: completionMock }));

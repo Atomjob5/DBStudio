@@ -1,4 +1,5 @@
-import type { ConnectionImportPreview, ObjectDdlStreamEvent, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "../types";
+import type { ConnectionImportPreview, ObjectDdlStreamEvent, ResultExportRequest, TransportState,
+  WorkspaceOpenResponse, WorkspaceSummary } from "../types";
 
 export interface RpcError { code: string; message: string; details?: unknown; requestId?: string; }
 type EventListener = (payload: unknown) => void;
@@ -277,13 +278,17 @@ export class RpcClient {
       "PUT", payload, 30_000, true, keepalive);
   }
 
-  async downloadCsv(kind: "loaded" | "full", editorId: string, executionId: string, resultIndex: number): Promise<void> {
+  async downloadResultExport(request: ResultExportRequest): Promise<void> {
     await this.ensureOperational();
-    const query = new URLSearchParams({ editorId, executionId, resultIndex: String(resultIndex), clientId: this.browserClientId });
-    const anchor = document.createElement("a");
-    anchor.href = `/api/v1/workspaces/${this.workspaceId}/csv/export/${kind}?${query}`;
-    anchor.download = kind === "full" ? "dbstudio-full-result.csv" : "dbstudio-result.csv";
-    anchor.style.display = "none"; document.body.append(anchor); anchor.click(); anchor.remove();
+    if (this.mock) {
+      await this.mock("result.export", { ...request }, this.emitBound);
+      return;
+    }
+    const body = { ...request, clientId: this.browserClientId };
+    const blob = await this.fetchBlob(`/api/v1/workspaces/${this.workspaceId}/result-exports`, "POST", body, 120_000);
+    const prefix = request.scope === "full" ? "dbstudio-full-result" : "dbstudio-result";
+    const extension = request.format === "excel" ? "xlsx" : request.format === "sql" ? "sql" : "csv";
+    downloadBlob(blob, `${prefix}.${extension}`);
   }
 
   private async initializeAuthentication(): Promise<void> {

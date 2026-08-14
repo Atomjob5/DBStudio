@@ -13,9 +13,11 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -172,6 +174,8 @@ public final class EditorSessionRegistry implements AutoCloseable {
                 new HashMap<UUID, Map<String, String>>();
         private final Map<UUID, Map<Integer, StatementResult>> originalResultSnapshots =
                 new HashMap<UUID, Map<Integer, StatementResult>>();
+        /** Results retained after an aborted JDBC connection are snapshots only and cannot be exported server-side. */
+        private final Set<UUID> historicalExecutions = new HashSet<UUID>();
 
         private EditorSession(UUID id, String title) { this.id = id; this.title = title; }
         public UUID id() { return id; }
@@ -205,6 +209,9 @@ public final class EditorSessionRegistry implements AutoCloseable {
         public synchronized boolean hasExecution(UUID executionId) {
             return executionId != null && retainedExecutions.containsKey(executionId);
         }
+        public synchronized boolean historicalExecution(UUID executionId) {
+            return executionId != null && historicalExecutions.contains(executionId);
+        }
         public String lastSql() { return lastSql; }
         public long lastTouched() { return lastTouched; }
         public boolean transactionOperationActive() { return transactionOperation.get(); }
@@ -223,6 +230,7 @@ public final class EditorSessionRegistry implements AutoCloseable {
         public synchronized boolean beginExecution(UUID executionId, boolean retainPreviousResults) {
             if (activeExecutionId != null || transactionOperation.get()) return false;
             if (!retainPreviousResults) clearRetainedResults();
+            historicalExecutions.remove(executionId);
             activeExecutionId = executionId;
             return true;
         }
@@ -241,6 +249,10 @@ public final class EditorSessionRegistry implements AutoCloseable {
         }
         public synchronized void forceRetireDatabaseWork(UUID executionId) {
             if (executionId == null || executionId.equals(activeExecutionId)) activeExecutionId = null;
+            historicalExecutions.addAll(retainedExecutions.keySet());
+            if (executionId != null && retainedExecutions.containsKey(executionId)) {
+                historicalExecutions.add(executionId);
+            }
             transactionOperation.set(false);
             clearResultChanges();
             touch();
@@ -502,6 +514,7 @@ public final class EditorSessionRegistry implements AutoCloseable {
         public synchronized boolean removeExecution(UUID executionId) {
             if (executionId == null || executionId.equals(activeExecutionId)
                     || retainedExecutions.remove(executionId) == null) return false;
+            historicalExecutions.remove(executionId);
             originalResultValues.remove(executionId);
             originalResultSnapshots.remove(executionId);
             if (executionId.equals(lastExecutionId)) {
@@ -528,6 +541,7 @@ public final class EditorSessionRegistry implements AutoCloseable {
 
         private void clearRetainedResults() {
             retainedExecutions.clear();
+            historicalExecutions.clear();
             clearResultChanges();
         }
 

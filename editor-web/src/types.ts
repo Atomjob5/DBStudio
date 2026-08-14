@@ -532,6 +532,18 @@ export interface QueryResult {
   complete: boolean;
 }
 
+export type ResultExportFormat = "csv" | "excel" | "sql";
+
+export interface ResultExportRequest {
+  format: ResultExportFormat;
+  scope: "visible" | "full";
+  editorId: string;
+  executionId: string;
+  resultIndex: number;
+  rowIndices?: number[];
+  columnIndices?: number[];
+}
+
 export interface QueryColumn {
   label: string;
   name: string;

@@ -40,8 +40,6 @@ export const SHORTCUT_ACTIONS = [
   { id: "result.toggleRecordComparison", group: "resultSet", label: "比较记录", defaultBinding: null },
   { id: "result.restoreLayout", group: "resultSet", label: "复原列布局", defaultBinding: null },
   { id: "result.copySelection", group: "resultSet", label: "复制选择", defaultBinding: null },
-  { id: "result.exportLoaded", group: "resultSet", label: "导出已加载", defaultBinding: null },
-  { id: "result.exportFull", group: "resultSet", label: "完整导出", defaultBinding: null },
   { id: "result.loadNext", group: "statusBar", label: "下一页数据", defaultBinding: null },
   { id: "result.loadAll", group: "statusBar", label: "获取全部数据", defaultBinding: null },
 ] as const;

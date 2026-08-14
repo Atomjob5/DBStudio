@@ -131,15 +131,25 @@
           <el-tooltip :content="copySelectionTitle">
             <el-button text :icon="CopyDocument" :aria-label="copySelectionTitle" :disabled="!hasDataSelection" @click="copyCurrentSelection()" />
           </el-tooltip>
-          <el-dropdown :disabled="!activeResult?.columns.length || execution?.historical" @command="exportCommand">
-            <el-button text :icon="Download" aria-label="导出结果" title="导出结果" />
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item command="loaded"><span>导出已加载行</span><kbd v-if="settings.shortcuts['result.exportLoaded']">{{ displayShortcut(settings.shortcuts["result.exportLoaded"]) }}</kbd></el-dropdown-item>
-                <el-dropdown-item command="full"><span>重新执行并完整导出</span><kbd v-if="settings.shortcuts['result.exportFull']">{{ displayShortcut(settings.shortcuts["result.exportFull"]) }}</kbd></el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
+          <div class="result-export-control">
+            <el-dropdown :disabled="!activeResult?.columns.length || serverExportBlocked" @command="exportCommand">
+              <el-button text :icon="Download" aria-label="导出结果" title="导出结果" />
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="csv">导出为 CSV</el-dropdown-item>
+                  <el-dropdown-item command="excel">导出为 Excel</el-dropdown-item>
+                  <el-dropdown-item command="sql" :disabled="!canExportAllSql">导出为 SQL 文件</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+            <el-popconfirm v-model:visible="exportPromptVisible"
+                           title="当前结果已截断，请选择导出范围"
+                           confirm-button-text="导出可见数据" cancel-button-text="导出全部数据"
+                           :hide-icon="true" @confirm="exportPromptDecision('visible')"
+                           @cancel="exportPromptDecision('full')">
+              <template #reference><span class="result-export-popconfirm-anchor" aria-hidden="true" /></template>
+            </el-popconfirm>
+          </div>
         </div>
       </div>
       <div v-if="showExecutionLoading" class="result-loading" role="status" aria-live="polite"
@@ -213,12 +223,16 @@
                              :can-copy-data="canCopyHeaderData" :can-in="canCopyHeaderIn"
                              :can-move-left="canMoveSelectionLeft"
                              :can-move-right="canMoveSelectionRight" :can-sum="canSumHeaderData"
+                             :can-export-csv="canExportHeader" :can-export-excel="canExportHeader"
+                             :can-export-sql="canExportHeaderSql"
                              @close="closeHeaderMenu"
                              @command="headerMenuCommand" />
     <ResultDataContextMenu :visible="dataMenu.visible" :x="dataMenu.x" :y="dataMenu.y" :mode="dataMenu.mode"
                            :can-in="canCopyIn" :can-insert="canCopyInsert" :can-update="canCopyUpdate"
                            :can-delete="canCopyDelete" :can-compare="canCompareCells" :can-sum="canSumCells"
                            :can-set-null="canSetSelectedCellNull"
+                           :can-export-csv="canExportDataSelection" :can-export-excel="canExportDataSelection"
+                           :can-export-sql="canExportDataSelectionSql"
                            :show-clone="resultEditUnlocked" :can-clone="canCloneSelectedRows"
                            :clone-busy="cloneBusy"
                            @close="closeDataMenu" @command="dataMenuCommand" />
@@ -261,7 +275,8 @@ import {
   Minus, Plus, Postcard, RefreshLeft, ScaleToOriginal
 } from "@element-plus/icons-vue";
 import type { TabsPaneContext } from "element-plus";
-import type { QueryColumn, QueryExecutionState, QueryResult, SelectedResultColumn } from "../types";
+import type { QueryColumn, QueryExecutionState, QueryResult, ResultExportFormat, ResultExportRequest,
+  SelectedResultColumn } from "../types";
 import { matchesColumnQuery, resultColumnOptions, type ColumnOption } from "../columnFilter";
 import { autoColumnWidth, clampColumnWidth, columnIdentityKeys, defaultColumnWidth, moveColumnsToEdge,
   type ColumnEdge, type DropSide } from "../columnLayout";
@@ -287,7 +302,7 @@ import ResultValueDialog from "./ResultValueDialog.vue";
 import ResultValueCompareDialog from "./ResultValueCompareDialog.vue";
 import ResultLargeValueDialog from "./ResultLargeValueDialog.vue";
 import SqlExecutionTimer from "./SqlExecutionTimer.vue";
-import { displayShortcut, shortcutTooltip } from "../shortcuts";
+import { shortcutTooltip } from "../shortcuts";
 import { rpc } from "../bridge/rpc";
 
 const props = withDefaults(defineProps<{
@@ -306,8 +321,7 @@ const props = withDefaults(defineProps<{
   canToggleResultEdit: false, resultEditTooltip: "当前结果不可编辑",
   canApplyResultChanges: false, applyResultChangesTooltip: "没有待应用的本地草稿" });
 const emit = defineEmits<{
-  "export-loaded": [executionId: string, resultIndex: number];
-  "export-full": [executionId: string, resultIndex: number];
+  "export-result": [request: ResultExportRequest];
   "close-result": [executionId: string];
   "tabs-wheel": [event: WheelEvent];
   "result-tab-click": [tabKey: string | number];
@@ -355,6 +369,8 @@ const resizing = ref<{ identity: string; startX: number; startWidth: number }>()
 const headerMenu = ref({ visible: false, x: 0, y: 0 });
 const dataMenu = ref<{ visible: boolean; x: number; y: number; mode: "cells" | "rows" }>(
   { visible: false, x: 0, y: 0, mode: "cells" });
+const exportPromptVisible = ref(false);
+const pendingExportFormat = ref<ResultExportFormat>();
 // A synthetic metadata cell in the single-record adapter can still use the
 // ordinary data menu for copying, but it must not expose SQL-generation
 // commands that would silently target the source value column.
@@ -592,6 +608,8 @@ watch(() => execution.value?.executionId, () => {
   sorts.value = {}; filters.value = {};
   selectedColumns.value = {};
   columnQuery.value = "";
+  exportPromptVisible.value = false;
+  pendingExportFormat.value = undefined;
   singleRecordLayoutDirty.value = false;
   closeHeaderMenu(); closeDataMenu();
 });
@@ -600,6 +618,8 @@ watch(activeIndex, () => {
   clearSelection(); sumSummary.value = undefined; compareDialog.value = false; recordComparisonEnabled.value = false;
   valueDialog.value.visible = false;
   columnQuery.value = ""; closeHeaderMenu(); closeDataMenu();
+  exportPromptVisible.value = false;
+  pendingExportFormat.value = undefined;
   singleRecordLayoutDirty.value = false;
 });
 watch(() => activeResult.value?.columnDetails, () => emitSelectedColumn());
@@ -947,7 +967,27 @@ function selectedOrderedColumns(): ColumnOption[] {
   return visibleColumnOptions.value.filter((column) => selected.has(currentIdentities.value[column.index]));
 }
 
+function canExportSqlColumns(indices: number[]): boolean {
+  const target = activeResult.value?.mutationTarget;
+  const reason = target?.reasonCode?.trim() ?? "";
+  if (serverExportBlocked.value || !target || !indices.length || !target.qualifiedName.trim()
+      || (reason && !["FOR_UPDATE_REQUIRED", "NO_SAFE_ROW_KEY", "NON_TRANSACTIONAL_TABLE"].includes(reason))) return false;
+  const mapped = new Map((target.columns ?? []).map((column) => [column.resultIndex, column]));
+  return indices.every((index) => {
+    const column = mapped.get(index);
+    return !!column?.name?.trim() && !!column.quotedName?.trim();
+  });
+}
+
 const canCopyHeaderData = computed(() => selectedOrderedColumns().length > 0 && displayRows.value.length > 0);
+const serverExportBlocked = computed(() => {
+  const currentExecution = execution.value;
+  return !currentExecution || currentExecution.historical === true || resultEdits.hasChanges(currentExecution.editorId);
+});
+const canExportHeader = computed(() => !serverExportBlocked.value && selectedOrderedColumns().length > 0);
+const canExportHeaderSql = computed(() => canExportSqlColumns(selectedOrderedColumns().map((column) => column.index)));
+const canExportAllSql = computed(() => canExportSqlColumns(
+  activeResult.value?.columns.map((_column, index) => index) ?? []));
 const canCopyHeaderIn = computed(() => selectionMode.value === "columns" && !!headerInPredicate());
 const canMoveSelectionLeft = computed(() => canMoveSelection("left"));
 const canMoveSelectionRight = computed(() => canMoveSelection("right"));
@@ -961,6 +1001,11 @@ function canMoveSelection(edge: ColumnEdge): boolean {
 }
 
 function headerMenuCommand(command: HeaderMenuCommand): void {
+  if (command === "export-csv" || command === "export-excel" || command === "export-sql") {
+    emitVisibleExport(command.replace("export-", "") as ResultExportFormat,
+      displayRows.value.map((row) => row.sourceIndex), selectedOrderedColumns().map((column) => column.index));
+    return;
+  }
   if (command === "copy-headers-with-remarks") {
     void copySelectedColumnRemarks();
     return;
@@ -1722,8 +1767,29 @@ const headerSumResult = computed(() => sumDecimalValues(selectedOrderedColumns()
   displayRows.value.map((row) => row.cells[column.index] ?? null))));
 const canSumHeaderData = computed(() => selectedOrderedColumns().length > 0
   && headerSumResult.value.valid && headerSumResult.value.count > 0);
+const exportDataRows = computed(() => {
+  if (singleRecordMode.value) return [] as number[];
+  if (selectionMode.value === "rows") return selectedRowsInDisplayOrder.value.map((row) => row.sourceIndex);
+  if (selectionMode.value !== "cells" || !selectedCellBounds.value.complete) return [] as number[];
+  return selectedCellBounds.value.rows.map((row) => row.sourceIndex);
+});
+const exportDataColumns = computed(() => {
+  if (singleRecordMode.value) return [] as number[];
+  if (selectionMode.value === "rows") return visibleColumnOptions.value.map((column) => column.index);
+  if (selectionMode.value !== "cells" || !selectedCellBounds.value.complete) return [] as number[];
+  return selectedCellBounds.value.columns.map((column) => column.index);
+});
+const canExportDataSelection = computed(() => !serverExportBlocked.value
+  && exportDataRows.value.length > 0 && exportDataColumns.value.length > 0);
+const canExportDataSelectionSql = computed(() => canExportDataSelection.value
+  && canExportSqlColumns(exportDataColumns.value));
 
 function dataMenuCommand(command: DataMenuCommand): void {
+  if (command === "export-csv" || command === "export-excel" || command === "export-sql") {
+    emitVisibleExport(command.replace("export-", "") as ResultExportFormat,
+      exportDataRows.value, exportDataColumns.value);
+    return;
+  }
   if (command === "clone") {
     void cloneSelectedResultRows();
     return;
@@ -2221,13 +2287,46 @@ function closeResultTab(key: string | number): void {
   if (tab?.execution.temporary) emit("close-result", tab.execution.executionId);
 }
 
+function emitVisibleExport(format: ResultExportFormat, rows: number[], columns: number[]): void {
+  const currentExecution = execution.value;
+  const result = activeResult.value;
+  if (serverExportBlocked.value || !result?.columns.length || !columns.length) return;
+  emit("export-result", {
+    format, scope: "visible", editorId: currentExecution.editorId,
+    executionId: currentExecution.executionId, resultIndex: result.resultIndex,
+    rowIndices: rows, columnIndices: columns
+  });
+}
+
 function exportCommand(command: string): void {
-  if (execution.value?.historical || !activeResult.value?.columns.length) return;
-  const executionId = execution.value?.executionId;
-  const resultIndex = activeResult.value?.resultIndex;
-  if (!executionId || resultIndex === undefined) return;
-  if (command === "loaded") emit("export-loaded", executionId, resultIndex);
-  else if (command === "full") emit("export-full", executionId, resultIndex);
+  if (!["csv", "excel", "sql"].includes(command)) return;
+  if (serverExportBlocked.value) return;
+  const format = command as ResultExportFormat;
+  if (format === "sql" && !canExportAllSql.value) return;
+  if (activeResult.value?.truncated) {
+    pendingExportFormat.value = format;
+    exportPromptVisible.value = true;
+    return;
+  }
+  emitVisibleExport(format, displayRows.value.map((row) => row.sourceIndex),
+    visibleColumnOptions.value.map((column) => column.index));
+}
+
+function exportPromptDecision(scope: "visible" | "full"): void {
+  const format = pendingExportFormat.value;
+  pendingExportFormat.value = undefined;
+  exportPromptVisible.value = false;
+  const currentExecution = execution.value;
+  const result = activeResult.value;
+  if (!format || !currentExecution || !result || serverExportBlocked.value) return;
+  if (scope === "visible") {
+    emitVisibleExport(format, displayRows.value.map((row) => row.sourceIndex),
+      visibleColumnOptions.value.map((column) => column.index));
+    return;
+  }
+  if (format === "sql" && !canExportAllSql.value) return;
+  emit("export-result", { format, scope: "full", editorId: currentExecution.editorId,
+    executionId: currentExecution.executionId, resultIndex: result.resultIndex });
 }
 
 defineExpose({
@@ -2235,8 +2334,6 @@ defineExpose({
   toggleSingleRecordView,
   toggleRecordComparison,
   copyCurrentSelection,
-  exportLoaded: () => exportCommand("loaded"),
-  exportFull: () => exportCommand("full"),
 });
 
 onBeforeUnmount(() => {
@@ -2248,6 +2345,8 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .result-panel { display: flex; flex-direction: column; background: var(--db-content); }
+.result-export-control { position: relative; display: inline-flex; align-items: center; }
+.result-export-popconfirm-anchor { position: absolute; right: 0; top: 50%; width: 1px; height: 1px; }
 .result-loading {
   display: flex;
   min-height: 0;

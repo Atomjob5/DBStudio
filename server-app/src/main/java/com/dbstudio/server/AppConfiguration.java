@@ -56,4 +56,7 @@ public class AppConfiguration {
     @Bean public WorkspaceRepository workspaces(AppDatabase database) { return new WorkspaceRepository(database); }
     @Bean public SecretStore secretStore() { return new SystemSecretStore(); }
     @Bean public CsvService csvService() { return new CsvService(); }
+    @Bean public ResultExportService resultExportService(CsvService csv) {
+        return new ResultExportService(csv);
+    }
 }

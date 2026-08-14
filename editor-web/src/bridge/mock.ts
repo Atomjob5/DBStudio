@@ -136,7 +136,7 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
     return { profile, passwordStatus: source.rememberPassword ? "copied" : "not-remembered" };
   }
   if (type === "connection.profile.delete") { const index = profiles.findIndex((item) => item.id === payload.id); if (index >= 0) profiles.splice(index, 1); return { deleted: true }; }
-  if (type === "connection.import.template" || type === "connection.export") return {};
+  if (type === "connection.import.template" || type === "connection.export" || type === "result.export") return {};
   if (type === "connection.import.preview") return { filename: (payload.file as File | undefined)?.name ?? "connections.xlsx",
     summary: { total: 1, created: 1, updated: 0, invalid: 0, newSystems: 1, newEnvironments: 1 },
     rows: [{ rowId: crypto.randomUUID(), sourceRow: 2, profileId: crypto.randomUUID(),

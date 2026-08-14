@@ -131,8 +131,10 @@ public final class DbStudioApiController {
             "editor.uppercase", "editor.lowercase", "editor.toggleLineComment", "editor.toggleBlockComment",
             "editor.complete",
             "result.toggleEditMode", "result.toggleSingleRecord", "result.toggleRecordComparison", "result.restoreLayout",
-            "result.copySelection", "result.exportLoaded", "result.exportFull",
+            "result.copySelection",
             "result.loadNext", "result.loadAll"));
+    private static final Set<String> LEGACY_SHORTCUT_ACTION_IDS = new LinkedHashSet<String>(Arrays.asList(
+            "result.exportLoaded", "result.exportFull"));
     private static final Set<String> RESERVED_SHORTCUTS = new LinkedHashSet<String>(Arrays.asList(
             "Mod+C", "Mod+V", "Mod+X", "Mod+Z", "Mod+Shift+Z", "Mod+Y", "Mod+A", "Mod+F"));
     private static final Set<String> SHORTCUT_NAMED_KEYS = new LinkedHashSet<String>(Arrays.asList(
@@ -153,7 +155,7 @@ public final class DbStudioApiController {
             + "\"result.toggleEditMode\":null,\"result.toggleSingleRecord\":null,"
             + "\"result.toggleRecordComparison\":null,"
             + "\"result.restoreLayout\":null,"
-            + "\"result.copySelection\":null,\"result.exportLoaded\":null,\"result.exportFull\":null,"
+            + "\"result.copySelection\":null,"
             + "\"result.loadNext\":null,\"result.loadAll\":null}";
     private static final String DEFAULT_COLOR_SCHEMES =
             "{\"version\":2,\"light\":{\"presetId\":\"dbstudio-light\",\"editor\":{"
@@ -186,6 +188,7 @@ public final class DbStudioApiController {
     private final SettingsRepository settings;
     private final SecretStore secrets;
     private final CsvService csv;
+    private final ResultExportService resultExports;
     private final WorkspaceRegistry workspaces;
     private final ConfigurableApplicationContext application;
     private final WorkspaceRepository workspaceRepository;
@@ -198,13 +201,14 @@ public final class DbStudioApiController {
     public DbStudioApiController(ProviderRegistry providers, ConnectionProfileRepository profiles,
                                  ConnectionCatalogRepository catalog,
                                  QueryHistoryRepository history, SettingsRepository settings,
-                                 SecretStore secrets, CsvService csv, WorkspaceRegistry workspaces,
+                                 SecretStore secrets, CsvService csv, ResultExportService resultExports,
+                                 WorkspaceRegistry workspaces,
                                  ConfigurableApplicationContext application,
                                  WorkspaceRepository workspaceRepository, ApplicationRunLifecycle runLifecycle,
                                  ObjectMapper objectMapper, ConnectionWorkbookService connectionWorkbooks,
                                  ConnectionProfileCloneService connectionClones) {
         this.providers = providers; this.profiles = profiles; this.catalog = catalog; this.history = history;
-        this.settings = settings; this.secrets = secrets; this.csv = csv;
+        this.settings = settings; this.secrets = secrets; this.csv = csv; this.resultExports = resultExports;
         this.workspaces = workspaces; this.application = application;
         this.workspaceRepository = workspaceRepository; this.runLifecycle = runLifecycle;
         this.objectMapper = objectMapper;
@@ -1622,7 +1626,7 @@ public final class DbStudioApiController {
         }
         if ("editor.completionSnippets".equals(key)) validateCompletionSnippets(value);
         if ("appearance.colorSchemes".equals(key)) validateColorSchemeSettings(value);
-        if ("keyboard.shortcuts".equals(key)) validateShortcutSettings(value);
+        if ("keyboard.shortcuts".equals(key)) value = validateShortcutSettings(value);
         settings.put(key, value);
         if ("editor.dangerousStatementWarningEnabled".equals(key)) workspaces.clearRiskConfirmations();
         return ApiPayloads.map("key", key, "value", value);
@@ -1848,7 +1852,7 @@ public final class DbStudioApiController {
     }
 
     @SuppressWarnings("unchecked")
-    private void validateShortcutSettings(String value) {
+    private String validateShortcutSettings(String value) {
         if (value == null || value.length() > 8_192) {
             throw new ApiException("INVALID_SETTING", "快捷键设置内容过长");
         }
@@ -1861,9 +1865,12 @@ public final class DbStudioApiController {
             throw new ApiException("INVALID_SETTING", "快捷键设置格式无效");
         }
         Set<String> used = new LinkedHashSet<String>();
+        Map<String, Object> sanitized = new LinkedHashMap<String, Object>();
         for (Map.Entry<String, Object> entry : bindings.entrySet()) {
+            // Older clients may still persist the removed export actions; drop them during migration.
+            if (LEGACY_SHORTCUT_ACTION_IDS.contains(entry.getKey())) continue;
             if (!SHORTCUT_ACTION_IDS.contains(entry.getKey())) {
-                throw new ApiException("INVALID_SETTING", "快捷键设置包含未知操作");
+                throw new ApiException("INVALID_SETTING", "快捷键操作无效");
             }
             if (entry.getValue() == null) continue;
             if (!(entry.getValue() instanceof String)) {
@@ -1876,6 +1883,17 @@ public final class DbStudioApiController {
             if (!used.add(binding)) {
                 throw new ApiException("INVALID_SETTING", "一个快捷键只能绑定一个操作");
             }
+            sanitized.put(entry.getKey(), binding);
+        }
+        for (Map.Entry<String, Object> entry : bindings.entrySet()) {
+            if (SHORTCUT_ACTION_IDS.contains(entry.getKey()) && entry.getValue() == null) {
+                sanitized.put(entry.getKey(), null);
+            }
+        }
+        try {
+            return objectMapper.writeValueAsString(sanitized);
+        } catch (Exception exception) {
+            throw new ApiException("INVALID_SETTING", "快捷键设置格式无效", exception);
         }
     }
 
@@ -1959,40 +1977,57 @@ public final class DbStudioApiController {
         return ApiPayloads.map("taskId", taskId);
     }
 
-    @GetMapping("/workspaces/{workspaceId}/csv/export/loaded")
-    public ResponseEntity<StreamingResponseBody> exportLoaded(@PathVariable String workspaceId,
-                                                               @RequestParam String editorId,
-                                                               @RequestParam(defaultValue = "") String executionId,
-                                                               @RequestParam int resultIndex) {
-        Workspace workspace = workspaces.require(workspaceId);
-        EditorSession editor = workspace.editors().require(editorId);
-        rejectPendingResultChanges(editor, "导出");
-        StatementResult result = result(editor, resultExecution(editor, executionId), resultIndex);
-        StreamingResponseBody body = output -> csv.exportLoadedResult(result,
-                new OutputStreamWriter(output, StandardCharsets.UTF_8), ',');
-        return csvResponse("dbstudio-result.csv", body);
-    }
-
-    @GetMapping("/workspaces/{workspaceId}/csv/export/full")
-    public ResponseEntity<StreamingResponseBody> exportFull(@PathVariable String workspaceId,
-                                                             @RequestParam String editorId,
-                                                             @RequestParam(defaultValue = "") String executionId,
-                                                             @RequestParam int resultIndex) {
+    @PostMapping("/workspaces/{workspaceId}/result-exports")
+    public ResponseEntity<StreamingResponseBody> exportResult(@PathVariable String workspaceId,
+                                                               @RequestBody Map<String, Object> body) {
         final Workspace workspace = workspaces.require(workspaceId);
+        final String editorId = ApiPayloads.required(body, "editorId");
         final EditorSession editor = workspace.editors().require(editorId);
         rejectPendingResultChanges(editor, "导出");
-        final String sql = result(editor, resultExecution(editor, executionId), resultIndex).sql();
-        StreamingResponseBody body = output -> {
-            DatabaseContext context = workspace.requireEditorDatabase(editor);
-            try (DatabaseSession session = context.openEditorSession()) {
-                LOG.info("CSV完整导出开始 workspace={} editor={} resultIndex={} sqlFingerprint={}", workspaceId,
-                        editorId, resultIndex, SqlLogSupport.fingerprint(sql));
-                csv.exportQuery(session, sql, new OutputStreamWriter(output, StandardCharsets.UTF_8), ',', count -> { });
+        ensureEditorContext(workspace, editor);
+        final String format = ApiPayloads.required(body, "format").toLowerCase(Locale.ROOT);
+        if (!Arrays.asList("csv", "excel", "sql").contains(format)) {
+            throw new ApiException("INVALID_EXPORT_FORMAT", "导出格式必须是 csv、excel 或 sql");
+        }
+        final String scope = ApiPayloads.required(body, "scope").toLowerCase(Locale.ROOT);
+        if (!"visible".equals(scope) && !"full".equals(scope)) {
+            throw new ApiException("INVALID_EXPORT_SCOPE", "导出范围必须是 visible 或 full");
+        }
+        final Object rawResultIndex = body == null ? null : body.get("resultIndex");
+        final int resultIndex = rawResultIndex == null ? -1 : exportIndex(rawResultIndex, "结果");
+        if (resultIndex < 0) throw new ApiException("INVALID_RESULT_INDEX", "结果序号无效");
+        final UUID executionId = resultExecution(editor, ApiPayloads.required(body, "executionId"));
+        if (editor.historicalExecution(executionId)) {
+            throw new ApiException("HISTORICAL_RESULT", "断线前结果快照不能通过服务端导出");
+        }
+        final StatementResult source = result(editor, executionId, resultIndex);
+        if (!source.hasRows()) throw new ApiException("RESULT_NOT_EXPORTABLE", "当前结果没有可导出的字段");
+        final DatabaseContext context = workspace.requireEditorDatabase(editor);
+        final List<Integer> rows = "visible".equals(scope)
+                ? exportIndices(body, "rowIndices", source.rows().size(), "行", true) : Collections.<Integer>emptyList();
+        final List<Integer> columns = "visible".equals(scope)
+                ? exportIndices(body, "columnIndices", source.columns().size(), "字段", false) : allIndices(source.columns().size());
+        if ("sql".equals(format) && !resultExports.canExportSql(source, columns, context.provider().dialect())) {
+            throw new ApiException("SQL_EXPORT_UNSUPPORTED", "当前结果无法可靠映射到单一目标表");
+        }
+        StreamingResponseBody responseBody = output -> {
+            try {
+                if ("full".equals(scope)) {
+                    try (DatabaseSession session = context.openEditorSession()) {
+                        LOG.info("结果完整导出开始 workspace={} editor={} format={} resultIndex={} sqlFingerprint={}",
+                                workspaceId, editorId, format, resultIndex, SqlLogSupport.fingerprint(source.sql()));
+                        resultExports.writeFull(session, source, output, format, context.provider().dialect());
+                    }
+                } else {
+                    resultExports.writeLoaded(source, output, format, rows, columns, context.provider().dialect());
+                }
             } catch (SQLException exception) {
                 throw new IOException("完整导出失败：" + SqlLogSupport.sanitizeMessage(exception.getMessage()), exception);
             }
         };
-        return csvResponse("dbstudio-full-result.csv", body);
+        String prefix = "full".equals(scope) ? "dbstudio-full-result" : "dbstudio-result";
+        String extension = "excel".equals(format) ? ".xlsx" : "sql".equals(format) ? ".sql" : ".csv";
+        return resultExportResponse(prefix + extension, format, responseBody);
     }
 
     @PostMapping("/shutdown")
@@ -2481,7 +2516,10 @@ public final class DbStudioApiController {
         Map<String, String> result = new LinkedHashMap<String, String>();
         for (String key : SETTING_KEYS) {
             Optional<String> value = settings.get(key);
-            if (value.isPresent()) result.put(key, value.get());
+            if (value.isPresent()) {
+                result.put(key, "keyboard.shortcuts".equals(key)
+                        ? stripLegacyShortcutBindings(value.get()) : value.get());
+            }
         }
         if (!result.containsKey("ui.theme")) result.put("ui.theme", "system");
         if (!result.containsKey("result.maxRows")) result.put("result.maxRows", "1000");
@@ -2521,6 +2559,20 @@ public final class DbStudioApiController {
             result.put("connection.transactionDisconnectRollbackMinutes", "10");
         }
         return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private String stripLegacyShortcutBindings(String value) {
+        if (value == null || value.trim().isEmpty()) return value;
+        try {
+            Object parsed = objectMapper.readValue(value, Object.class);
+            if (!(parsed instanceof Map)) return value;
+            Map<String, Object> bindings = new LinkedHashMap<String, Object>((Map<String, Object>) parsed);
+            for (String legacy : LEGACY_SHORTCUT_ACTION_IDS) bindings.remove(legacy);
+            return objectMapper.writeValueAsString(bindings);
+        } catch (Exception ignored) {
+            return value;
+        }
     }
 
     private static Map<String, Object> providerMap(DatabaseProvider provider) {
@@ -2836,8 +2888,53 @@ public final class DbStudioApiController {
         return execution.results().get(index);
     }
 
-    private static ResponseEntity<StreamingResponseBody> csvResponse(String filename, StreamingResponseBody body) {
-        return ResponseEntity.ok().contentType(new MediaType("text", "csv", StandardCharsets.UTF_8))
+    private static List<Integer> exportIndices(Map<String, Object> body, String key, int size, String label,
+                                               boolean allowEmpty) {
+        Object raw = body == null ? null : body.get(key);
+        if (!(raw instanceof List) || (!allowEmpty && ((List<?>) raw).isEmpty())) {
+            throw new ApiException("INVALID_EXPORT_RANGE", "导出" + label + "不能为空");
+        }
+        List<Integer> result = new ArrayList<Integer>();
+        Set<Integer> seen = new LinkedHashSet<Integer>();
+        for (Object value : (List<?>) raw) {
+            int index = exportIndex(value, label);
+            if (index < 0 || index >= size) throw new ApiException("STALE_EXPORT_RANGE", "导出" + label + "已过期");
+            if (!seen.add(index)) throw new ApiException("INVALID_EXPORT_RANGE", "导出" + label + "索引不能重复");
+            result.add(index);
+        }
+        if (!allowEmpty && result.isEmpty()) throw new ApiException("INVALID_EXPORT_RANGE", "导出" + label + "不能为空");
+        return result;
+    }
+
+    private static int exportIndex(Object value, String label) {
+        if (value instanceof Number) {
+            double numeric = ((Number) value).doubleValue();
+            if (!Double.isFinite(numeric) || numeric != Math.rint(numeric)
+                    || numeric < Integer.MIN_VALUE || numeric > Integer.MAX_VALUE) {
+                throw new ApiException("INVALID_EXPORT_RANGE", "导出" + label + "索引无效");
+            }
+            return (int) numeric;
+        }
+        try { return Integer.parseInt(String.valueOf(value)); }
+        catch (NumberFormatException exception) {
+            throw new ApiException("INVALID_EXPORT_RANGE", "导出" + label + "索引无效");
+        }
+    }
+
+    private static List<Integer> allIndices(int size) {
+        List<Integer> result = new ArrayList<Integer>(size);
+        for (int index = 0; index < size; index++) result.add(index);
+        return result;
+    }
+
+    private static ResponseEntity<StreamingResponseBody> resultExportResponse(String filename, String format,
+                                                                                StreamingResponseBody body) {
+        MediaType contentType = "excel".equals(format)
+                ? MediaType.parseMediaType(ConnectionWorkbookService.CONTENT_TYPE)
+                : "sql".equals(format)
+                ? new MediaType("text", "plain", StandardCharsets.UTF_8)
+                : new MediaType("text", "csv", StandardCharsets.UTF_8);
+        return ResponseEntity.ok().contentType(contentType)
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
                 .header(HttpHeaders.CACHE_CONTROL, "no-store").body(body);
     }
