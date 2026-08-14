@@ -424,10 +424,6 @@ function setValue(value: string, key = props.modelKey): void {
   if (isCompletionBound()) synchronizeInBackground(key, model);
 }
 
-function getModelVersion(key = props.modelKey): number | undefined {
-  return models.get(key)?.getVersionId();
-}
-
 function sourceKey(source: Pick<QueryExecutionSource, "sql" | "startOffset" | "endOffset">): string {
   return `${source.startOffset}:${source.endOffset}:${source.sql}`;
 }
@@ -638,7 +634,6 @@ function positionAfterText(startLineNumber: number, startColumn: number, text: s
 
 defineExpose({
   getValue,
-  getModelVersion,
   setValue,
   triggerExecute: trigger,
   triggerCompletion,

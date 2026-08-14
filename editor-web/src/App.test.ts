@@ -81,7 +81,6 @@ const MonacoEditorStub = defineComponent({
       captureSqlTransformTarget,
       applySqlTransform,
       runSelectionAction,
-      getModelVersion: () => 1,
       highlightExecutionSource,
       clearResultHighlight,
     });
@@ -216,6 +215,32 @@ describe("App result loading status toolbar", () => {
     await flushPromises();
     expect(highlightExecutionSource.mock.calls.length).toBeGreaterThan(0);
     expect(highlightExecutionSource.mock.calls.every((call) => call.at(-1)?.reveal === false)).toBe(true);
+  });
+
+  it("defers a stale source warning until the result tab is clicked", async () => {
+    const warning = vi.spyOn(ElMessage, "warning").mockImplementation(() => undefined as never);
+    const editors = useEditorStore();
+    const queries = useQueryStore();
+    editors.add({ id: "editor-stale-source", title: "查询 4", content: "SELECT 1", dirty: false,
+      transactionDirty: false, busy: false, executionPhase: "idle", transactionOperation: "idle",
+      connectionState: "unbound" });
+    queries.start("editor-stale-source", "execution-stale-source");
+    queries.addResult("editor-stale-source", { resultIndex: 0, sql: "SELECT 1", type: "QUERY", columns: ["id"],
+      rows: [["1"]], updateCount: -1, truncated: false, durationMs: 1, complete: true,
+      sourceStartOffset: 0, sourceEndOffset: 8 });
+    queries.complete("editor-stale-source", { durationMs: 1 });
+    await flushPromises();
+
+    highlightExecutionSource.mockReset().mockReturnValue("stale");
+    warning.mockClear();
+    wrapper.findComponent({ name: "MonacoEditor" }).vm.$emit("dirty");
+    await flushPromises();
+    expect(warning).not.toHaveBeenCalledWith("执行后 SQL 已修改，无法定位原语句");
+
+    await wrapper.get(".result-tabs .el-tabs__item").trigger("click");
+    await flushPromises();
+    expect(warning).toHaveBeenCalledTimes(1);
+    expect(warning).toHaveBeenCalledWith("执行后 SQL 已修改，无法定位原语句");
   });
 
   it("shows the editor tab context menu in the specified order", async () => {

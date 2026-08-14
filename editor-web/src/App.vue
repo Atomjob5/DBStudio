@@ -396,7 +396,6 @@ const connectionCascaderOpen = ref(false);
 const objectExplorer = ref<InstanceType<typeof ObjectExplorer>>();
 const monacoEditor = ref<{
   getValue(key?: string): string;
-  getModelVersion(key?: string): number | undefined;
   setValue(value: string, key?: string): void;
   triggerExecute(scope: "current" | "script" | "current-new-tab"): void;
   triggerCompletion(): void;
@@ -414,8 +413,6 @@ const monacoEditor = ref<{
 const editorHasSelection = ref(false);
 const activeColorScheme = computed(() => settings.colorSchemes[app.theme]);
 const editorDrag = ref<{ sourceId: string; targetId?: string; position: "before" | "after" }>();
-const staleResultHighlightVersions = new Map<string, number>();
-const staleResultHighlightActive = new Set<string>();
 const resultPanel = ref<{
   restoreLayout(): void;
   toggleSingleRecordView(): void;
@@ -460,7 +457,7 @@ const activeResult = computed(() => activeExecution.value?.results.find((result)
     || (activeExecutions.value.length === 1 && result.resultIndex === activeResultIndex.value)))
   ?? activeExecution.value?.results[0]);
 
-function syncResultHighlight(reveal = false): void {
+function syncResultHighlight(mode: "passive" | "explicit" = "passive"): void {
   const editorId = editors.activeId;
   const execution = activeExecution.value;
   const result = activeResult.value;
@@ -468,26 +465,18 @@ function syncResultHighlight(reveal = false): void {
     monacoEditor.value?.clearResultHighlight?.();
     return;
   }
+  const reveal = mode === "explicit";
   const outcome = monacoEditor.value?.highlightExecutionSource?.(execution.executionId, result.sql,
     result.sourceStartOffset, result.sourceEndOffset, { reveal });
-  const noticeKey = `${execution.executionId}:${result.resultIndex}:${result.sql}:${result.sourceStartOffset}:${result.sourceEndOffset}`;
-  if (outcome === "highlighted") {
-    staleResultHighlightActive.delete(noticeKey);
-    staleResultHighlightVersions.delete(noticeKey);
-    return;
-  }
+  if (outcome === "highlighted" || mode !== "explicit") return;
   const sourceWasProvided = result.sourceStartOffset !== undefined && result.sourceEndOffset !== undefined;
   if (outcome !== "stale" && !(outcome === "missing" && sourceWasProvided)) return;
-  const version = monacoEditor.value?.getModelVersion?.(editorId);
-  if (version === undefined || staleResultHighlightActive.has(noticeKey)) return;
-  staleResultHighlightActive.add(noticeKey);
-  staleResultHighlightVersions.set(noticeKey, version);
   ElMessage.warning("执行后 SQL 已修改，无法定位原语句");
 }
 
 function handleResultTabClick(tabKey: string | number): void {
   activeResultIndex.value = tabKey;
-  void nextTick().then(() => syncResultHighlight(true));
+  void nextTick().then(() => syncResultHighlight("explicit"));
 }
 interface ResultLoadingState {
   editorId: string;
