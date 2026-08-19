@@ -11,8 +11,6 @@ interface StoredLayout {
   sourceOrder: string[];
   order: string[];
   widths: Record<string, number>;
-  /** Undefined means every source column is visible. */
-  visibleIdentities?: string[];
 }
 
 interface ViewState {
@@ -41,13 +39,17 @@ export const useColumnLayoutStore = defineStore("column-layout", () => {
   function keys(context: LayoutContext): { layoutKey: string; viewKey: string; identities: string[] } {
     const identities = columnIdentityKeys(context.result.columns, context.result.columnDetails);
     const prefix = context.namespace ? `${context.namespace}:` : "";
+    // Keep a separate layout for each field set.  Editor-scoped layouts still
+    // share order and widths when the field identities are identical, but a
+    // result with another SELECT list must never replace the previous layout.
+    const fieldSetKey = identities.slice().sort().join("\u0001");
     const scopeKey = context.scope === "editor"
-      ? `editor:${context.editorId}:${context.result.resultIndex}`
+      ? `editor:${context.editorId}:${context.result.resultIndex}:${fieldSetKey}`
       : `result:${context.executionId}:${context.result.resultIndex}`;
     return {
       layoutKey: `${prefix}${scopeKey}`,
       viewKey: context.namespace && context.scope === "editor"
-        ? `${prefix}editor:${context.editorId}:${context.result.resultIndex}`
+        ? `${prefix}editor:${context.editorId}:${context.result.resultIndex}:${fieldSetKey}`
         : `${prefix}${context.executionId}:${context.result.resultIndex}`,
       identities
     };
@@ -80,24 +82,6 @@ export const useColumnLayoutStore = defineStore("column-layout", () => {
 
   function layout(layoutKey: string): StoredLayout | undefined { return layouts.value[layoutKey]; }
   function view(viewKey: string): ViewState { return ensureView(viewKey); }
-
-  function setVisible(layoutKey: string, sourceOrder: string[], visibleIdentities: string[] | undefined): void {
-    const stored = layouts.value[layoutKey];
-    if (!stored) return;
-    const visible = visibleIdentities
-      ? sourceOrder.filter((identity) => visibleIdentities.includes(identity))
-      : undefined;
-    const previous = stored.visibleIdentities;
-    if ((previous === undefined && visible === undefined)
-        || (previous !== undefined && visible !== undefined
-          && previous.length === visible.length && previous.every((identity, index) => identity === visible[index]))) return;
-    layouts.value = { ...layouts.value, [layoutKey]: { ...stored, visibleIdentities: visible } };
-  }
-
-  function visibleIdentities(layoutKey: string): string[] | undefined {
-    const visible = layouts.value[layoutKey]?.visibleIdentities;
-    return visible ? [...visible] : undefined;
-  }
 
   function setFilter(viewKey: string, visibleIdentities: string[], filtered: boolean): void {
     const current = ensureView(viewKey);
@@ -195,7 +179,7 @@ export const useColumnLayoutStore = defineStore("column-layout", () => {
     const widths: Record<string, number> = {};
     identities.forEach((identity, index) => { widths[identity] = defaultWidths[index]; });
     layouts.value = { ...layouts.value, [layoutKey]: {
-      sourceOrder: [...identities], order: [...identities], widths, visibleIdentities: undefined
+      sourceOrder: [...identities], order: [...identities], widths
     } };
     views.value = { ...views.value, [viewKey]: { selected: [], filterSignature: "", customSort: undefined, customFilters: [] } };
   }
@@ -211,13 +195,10 @@ export const useColumnLayoutStore = defineStore("column-layout", () => {
     if (!stored) return false;
     if (orderDirty(layoutKey)) return true;
     if (identities.some((identity, index) => stored.widths[identity] !== defaultWidths[index])) return true;
-    if (stored.visibleIdentities !== undefined
-        && (stored.visibleIdentities.length !== identities.length
-          || stored.visibleIdentities.some((identity, index) => identity !== identities[index]))) return true;
     return false;
   }
 
-  return { layouts, views, ensure, layout, view, setVisible, visibleIdentities, setFilter, customSort, customFilters,
+  return { layouts, views, ensure, layout, view, setFilter, customSort, customFilters,
     setCustomSort, setCustomFilters, displayedOrder, choose, selectOnly, clearSelection, setSelection,
     reorder, moveToEdge, setWidth, reset, orderDirty, dirty };
 });

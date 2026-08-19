@@ -64,6 +64,7 @@ describe("column layout store", () => {
     expect(store.layout(reused.layoutKey)?.widths[first.identities[0]]).toBe(240);
 
     const changed = store.ensure(context("editor", "execution-3", ["a", "b", "d"]));
+    expect(changed.layoutKey).not.toBe(first.layoutKey);
     expect(store.layout(changed.layoutKey)?.order).toEqual(changed.identities);
   });
 
@@ -98,16 +99,16 @@ describe("column layout store", () => {
     expect(store.layout(active.layoutKey)?.order).toEqual([active.identities[0], active.identities[2], active.identities[1]]);
   });
 
-  it("persists visible fields with the editor layout and includes them in reset dirty state", () => {
+  it("keeps layouts for different field sets without overwriting the original", () => {
     const store = useColumnLayoutStore();
     const first = store.ensure(context("editor", "execution-visible-1"));
-    store.setVisible(first.layoutKey, first.identities, [first.identities[0], first.identities[2]]);
-    const reused = store.ensure(context("editor", "execution-visible-2"));
-    expect(store.visibleIdentities(reused.layoutKey)).toEqual([first.identities[0], first.identities[2]]);
-    expect(store.dirty(reused.layoutKey, reused.identities, [120, 120, 120])).toBe(true);
+    store.setWidth(first.layoutKey, first.identities[0], 240);
+    const changed = store.ensure(context("editor", "execution-visible-2", ["city", "county"]));
+    expect(changed.layoutKey).not.toBe(first.layoutKey);
+    expect(store.layout(first.layoutKey)?.widths[first.identities[0]]).toBe(240);
+    expect(store.layout(changed.layoutKey)?.order).toEqual(changed.identities);
 
-    store.reset(reused.layoutKey, reused.viewKey, reused.identities, [120, 120, 120]);
-    expect(store.visibleIdentities(reused.layoutKey)).toBeUndefined();
-    expect(store.dirty(reused.layoutKey, reused.identities, [120, 120, 120])).toBe(false);
+    store.reset(changed.layoutKey, changed.viewKey, changed.identities, [120, 120]);
+    expect(store.dirty(changed.layoutKey, changed.identities, [120, 120])).toBe(false);
   });
 });

@@ -204,9 +204,9 @@
         </el-form-item>
         <el-form-item class="compact-setting-row">
           <template #label>
-            <div class="setting-label"><span>列布局保留范围</span>
-              <el-tooltip content="当前结果集会在新执行时重置；当前编辑标签仅在字段集合完全一致时复用列顺序、宽度和可见字段。" placement="top">
-                <el-icon class="setting-help" tabindex="0" aria-label="列布局保留范围说明"><QuestionFilled /></el-icon>
+            <div class="setting-label"><span>字段筛选保留范围</span>
+              <el-tooltip content="当前结果集始终独立；当前编辑标签下，普通执行会按同一语句位置且字段集合完全一致时继承字段筛选，在新结果集执行时不会继承。" placement="top">
+                <el-icon class="setting-help" tabindex="0" aria-label="字段筛选保留范围说明"><QuestionFilled /></el-icon>
               </el-tooltip>
             </div>
           </template>

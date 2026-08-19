@@ -278,7 +278,7 @@ import type { TabsPaneContext } from "element-plus";
 import type { QueryColumn, QueryExecutionState, QueryResult, ResultExportFormat, ResultExportRequest,
   SelectedResultColumn } from "../types";
 import { matchesColumnQuery, resultColumnOptions, type ColumnOption } from "../columnFilter";
-import { autoColumnWidth, clampColumnWidth, columnIdentityKeys, defaultColumnWidth, moveColumnsToEdge,
+import { autoColumnWidth, clampColumnWidth, columnIdentityKeys, defaultColumnWidth, moveColumnsToEdge, sameColumnSet,
   type ColumnEdge, type DropSide } from "../columnLayout";
 import { useColumnLayoutStore } from "../stores/columnLayout";
 import { useSettingsStore } from "../stores/settings";
@@ -411,6 +411,12 @@ const activeIndex = computed({
   }
 });
 const selectedColumns = ref<Record<string, number[]>>({});
+interface FieldVisibilityTemplate {
+  identities: string[];
+  /** Undefined means every identity in the matching field set is visible. */
+  visibleIdentities?: string[];
+}
+const fieldVisibilityTemplates = ref<Record<string, FieldVisibilityTemplate>>({});
 const columnQuery = ref("");
 const sorts = ref<Record<string, ResultSort | undefined>>({});
 const filters = ref<Record<string, ResultFilter[]>>({});
@@ -550,19 +556,42 @@ const resultCellStates = computed<Record<string, "pending" | "posted" | "error">
 });
 const headerHeight = computed(() => settings.showColumnRemarksInHeader ? 48 : 32);
 const resultKey = computed(() => `${execution.value?.executionId ?? "result"}:${activeResult.value?.resultIndex ?? 0}`);
+function fieldVisibilityTemplateKey(currentExecution = execution.value, result = activeResult.value): string | undefined {
+  if (settings.columnLayoutScope !== "editor" || currentExecution?.temporary === true
+      || result?.sourceStartOffset === undefined) return undefined;
+  return `${currentExecution.editorId}:${result.sourceStartOffset}:${result.resultIndex}`;
+}
+
+function rememberFieldVisibility(selected: number[]): void {
+  const currentExecution = execution.value;
+  const result = activeResult.value;
+  const active = activeLayout.value;
+  if (!currentExecution || !result || !active) return;
+  const identities = selected.map((index) => active.identities[index])
+    .filter((identity): identity is string => !!identity);
+  selectedColumns.value = { ...selectedColumns.value, [resultKey.value]: selected };
+  const templateKey = fieldVisibilityTemplateKey(currentExecution, result);
+  if (!templateKey) return;
+  const visibleIdentities = identities.length && identities.length < active.identities.length ? identities : undefined;
+  fieldVisibilityTemplates.value = { ...fieldVisibilityTemplates.value,
+    [templateKey]: { identities: [...active.identities], visibleIdentities } };
+}
+
+function inheritedFieldVisibility(currentExecution: QueryExecutionState, result: QueryResult,
+                                  identities: string[]): number[] | undefined {
+  const templateKey = fieldVisibilityTemplateKey(currentExecution, result);
+  if (!templateKey) return undefined;
+  const template = fieldVisibilityTemplates.value[templateKey];
+  if (!template || !sameColumnSet(template.identities, identities)) return undefined;
+  if (!template.visibleIdentities) return [];
+  const visible = new Set(template.visibleIdentities);
+  return identities.map((identity, index) => visible.has(identity) ? index : -1).filter((index) => index >= 0);
+}
 const activeSort = computed(() => sorts.value[resultKey.value]);
 const activeFilters = computed(() => filters.value[resultKey.value] ?? []);
 const selectedColumnIndices = computed<number[]>({
   get: () => selectedColumns.value[resultKey.value] ?? [],
-  set: (value) => {
-    selectedColumns.value = { ...selectedColumns.value, [resultKey.value]: value };
-    const active = activeLayout.value;
-    if (!active) return;
-    const identities = value.map((index) => currentIdentities.value[index])
-      .filter((identity): identity is string => !!identity);
-    const selectedIdentities = identities.length && identities.length < active.identities.length ? identities : undefined;
-    columnLayouts.setVisible(active.layoutKey, active.identities, selectedIdentities);
-  }
+  set: (value) => rememberFieldVisibility(value)
 });
 const columnOptions = computed(() => resultColumnOptions(activeResult.value?.columns ?? [], activeResult.value?.columnDetails));
 const filteredColumnOptions = computed(() => columnOptions.value.filter((column) => matchesColumnQuery(column, columnQuery.value)));
@@ -606,7 +635,6 @@ watch(() => execution.value?.executionId, () => {
   recordComparisonEnabled.value = false;
   valueDialog.value.visible = false;
   sorts.value = {}; filters.value = {};
-  selectedColumns.value = {};
   columnQuery.value = "";
   exportPromptVisible.value = false;
   pendingExportFormat.value = undefined;
@@ -788,12 +816,11 @@ function activateLayout(): void {
     scope: settings.columnLayoutScope, executionId: currentExecution.executionId, editorId: currentExecution.editorId,
     result, defaultWidths: columnOptions.value.map((column) => defaultColumnWidth(column.label))
   });
-  const storedVisible = columnLayouts.visibleIdentities(activeLayout.value.layoutKey);
-  const selected = storedVisible
-    ? columnOptions.value.filter((column) => storedVisible.includes(activeLayout.value?.identities[column.index] ?? ""))
-      .map((column) => column.index)
-    : [];
-  selectedColumns.value = { ...selectedColumns.value, [resultKey.value]: selected };
+  const key = resultKey.value;
+  if (!Object.prototype.hasOwnProperty.call(selectedColumns.value, key)) {
+    const inherited = inheritedFieldVisibility(currentExecution, result, activeLayout.value.identities);
+    selectedColumns.value = { ...selectedColumns.value, [key]: inherited ?? [] };
+  }
   syncVisibleFilter();
 }
 
@@ -1164,7 +1191,9 @@ function measureText(text: string): number {
 }
 
 const showRestoreLayout = computed(() => !!activeLayout.value
-  && (columnLayouts.dirty(activeLayout.value.layoutKey, activeLayout.value.identities, defaultWidths.value)
+  && ((selectedColumnIndices.value.length > 0
+      && selectedColumnIndices.value.length < activeLayout.value.identities.length)
+    || columnLayouts.dirty(activeLayout.value.layoutKey, activeLayout.value.identities, defaultWidths.value)
     || singleRecordLayoutDirty.value));
 const restoreLayoutTitle = computed(() =>
   shortcutTooltip("复原列顺序、宽度、字段和单记录视图", "result.restoreLayout", settings.shortcuts));
@@ -1174,8 +1203,8 @@ function restoreLayout(): void {
   const active = activeLayout.value;
   if (active && columnLayouts.dirty(active.layoutKey, active.identities, defaultWidths.value)) {
     columnLayouts.reset(active.layoutKey, active.viewKey, active.identities, defaultWidths.value);
-    selectedColumns.value = { ...selectedColumns.value, [resultKey.value]: [] };
   }
+  rememberFieldVisibility([]);
   sorts.value = { ...sorts.value, [resultKey.value]: undefined };
   filters.value = { ...filters.value, [resultKey.value]: [] };
   sumSummary.value = undefined;

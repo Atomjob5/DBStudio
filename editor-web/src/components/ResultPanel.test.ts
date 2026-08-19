@@ -841,6 +841,7 @@ describe("ResultPanel streaming rendering", () => {
       executionId, editorId: "editor-filter-scope", busy: false, cancelled: false, failed: false,
       durationMs: 4,
       results: [{ resultIndex: 0, sql: "select id, name, status", type: "QUERY",
+        sourceStartOffset: 0, sourceEndOffset: 22,
         columns: ["id", "name", "status"], rows: [["1", "A", "ok"]], updateCount: -1,
         truncated: false, durationMs: 3, complete: true }]
     });
@@ -864,6 +865,109 @@ describe("ResultPanel streaming rendering", () => {
     await nextTick();
     expect(wrapper.findComponent({ name: "ElSelect" }).props("modelValue")).toEqual([]);
     expect(wrapper.find('button[aria-label="复原列布局"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("keeps visible fields isolated across new result executions with different columns", async () => {
+    const settings = useSettingsStore();
+    settings.columnLayoutScope = "editor";
+    const first = {
+      executionId: "execution-visible-first", editorId: "editor-visible-isolation", busy: false,
+      cancelled: false, failed: false, durationMs: 1, temporary: false,
+      results: [{ resultIndex: 0, sql: "select '1' as id, 'alice' as name from dual", type: "QUERY",
+        sourceStartOffset: 0, sourceEndOffset: 43, columns: ["id", "name"], rows: [["1", "alice"]],
+        updateCount: -1, truncated: false, durationMs: 1, complete: true }]
+    };
+    const appended = {
+      executionId: "execution-visible-appended", editorId: "editor-visible-isolation", busy: false,
+      cancelled: false, failed: false, durationMs: 1, temporary: true,
+      results: [{ resultIndex: 0, sql: "select 'beijing' as city, 'china' as county from dual", type: "QUERY",
+        sourceStartOffset: 0, sourceEndOffset: 53, columns: ["city", "county"], rows: [["beijing", "china"]],
+        updateCount: -1, truncated: false, durationMs: 1, complete: true }]
+    };
+    const sameFields = {
+      executionId: "execution-visible-same-fields", editorId: "editor-visible-isolation", busy: false,
+      cancelled: false, failed: false, durationMs: 1, temporary: true,
+      results: [{ resultIndex: 0, sql: "select '2' as id, 'bob' as name from dual", type: "QUERY",
+        sourceStartOffset: 0, sourceEndOffset: 41, columns: ["id", "name"], rows: [["2", "bob"]],
+        updateCount: -1, truncated: false, durationMs: 1, complete: true }]
+    };
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: first.executionId, executions: [first, appended, sameFields] },
+      global: { plugins: [ElementPlus] }
+    });
+
+    let select = wrapper.findComponent({ name: "ElSelect" });
+    select.vm.$emit("update:modelValue", [0]);
+    await nextTick();
+    expect((wrapper.findComponent({ name: "ResultVirtualGrid" }).props("columns") as Array<{ label: string }>)
+      .map((column) => column.label)).toEqual(["id"]);
+
+    await wrapper.setProps({ activeResultIndex: appended.executionId });
+    await nextTick();
+    select = wrapper.findComponent({ name: "ElSelect" });
+    expect(select.props("modelValue")).toEqual([]);
+    select.vm.$emit("update:modelValue", [1]);
+    await nextTick();
+    expect((wrapper.findComponent({ name: "ResultVirtualGrid" }).props("columns") as Array<{ label: string }>)
+      .map((column) => column.label)).toEqual(["county"]);
+
+    await wrapper.setProps({ activeResultIndex: sameFields.executionId });
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ElSelect" }).props("modelValue")).toEqual([]);
+    select = wrapper.findComponent({ name: "ElSelect" });
+    select.vm.$emit("update:modelValue", [1]);
+    await nextTick();
+    expect((wrapper.findComponent({ name: "ResultVirtualGrid" }).props("columns") as Array<{ label: string }>)
+      .map((column) => column.label)).toEqual(["name"]);
+
+    await wrapper.setProps({ activeResultIndex: first.executionId });
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ElSelect" }).props("modelValue")).toEqual([0]);
+    expect((wrapper.findComponent({ name: "ResultVirtualGrid" }).props("columns") as Array<{ label: string }>)
+      .map((column) => column.label)).toEqual(["id"]);
+    wrapper.unmount();
+  });
+
+  it("inherits fields only for ordinary execution of the same statement position", async () => {
+    const settings = useSettingsStore();
+    settings.columnLayoutScope = "editor";
+    const execution = (executionId: string, sourceStartOffset: number | undefined,
+                       sql = "select id, name from sample where id = 1", temporary = false, historical = false) => ({
+      executionId, editorId: "editor-visible-inheritance", busy: false, cancelled: false,
+      failed: false, durationMs: 1, temporary, historical,
+      results: [{ resultIndex: 0, sql, type: "QUERY",
+        ...(sourceStartOffset === undefined ? {} : { sourceStartOffset, sourceEndOffset: sourceStartOffset + sql.length }),
+        columns: ["id", "name"], rows: [["1", "alice"]],
+        updateCount: -1, truncated: false, durationMs: 1, complete: true }]
+    });
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: "execution-inherit-a", executions: [
+        execution("execution-inherit-a", 0),
+        execution("execution-inherit-b", 0, "select id, name from sample where id = 2"),
+        execution("execution-inherit-c", 100), execution("execution-inherit-d", 0, undefined, true),
+        execution("execution-inherit-e", undefined, undefined, false, true)
+      ] },
+      global: { plugins: [ElementPlus] }
+    });
+
+    wrapper.findComponent({ name: "ElSelect" }).vm.$emit("update:modelValue", [0]);
+    await nextTick();
+    await wrapper.setProps({ activeResultIndex: "execution-inherit-b" });
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ElSelect" }).props("modelValue")).toEqual([0]);
+
+    await wrapper.setProps({ activeResultIndex: "execution-inherit-c" });
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ElSelect" }).props("modelValue")).toEqual([]);
+
+    await wrapper.setProps({ activeResultIndex: "execution-inherit-d" });
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ElSelect" }).props("modelValue")).toEqual([]);
+
+    await wrapper.setProps({ activeResultIndex: "execution-inherit-e" });
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ElSelect" }).props("modelValue")).toEqual([]);
     wrapper.unmount();
   });
 
