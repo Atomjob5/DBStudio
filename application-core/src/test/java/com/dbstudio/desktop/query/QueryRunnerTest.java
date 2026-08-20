@@ -7,10 +7,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.dbstudio.spi.DatabaseSession;
 import com.dbstudio.spi.SqlStatement;
 import com.dbstudio.spi.StatementType;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import javax.sql.rowset.serial.SerialClob;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Types;
@@ -21,8 +26,85 @@ import java.util.List;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Assumptions;
 
 class QueryRunnerTest {
+    @Test
+    void appliesConfiguredClobPreviewLengthToLargeJson() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        java.util.Map<String, Object> payload = new java.util.LinkedHashMap<String, Object>();
+        List<String> records = new ArrayList<String>();
+        for (int index = 0; index < 500; index++) {
+            records.add("record-" + index + "-中文内容-abcdefghijklmnopqrstuvwxyz");
+        }
+        payload.put("requestId", "clob-preview-regression");
+        payload.put("records", records);
+        payload.put("tail", "完整 JSON 尾字段");
+        String json = mapper.writeValueAsString(payload);
+        assertTrue(json.length() > 20_000);
+
+        assertEquals(10_000, QueryRunner.displayValue(new SerialClob(json.toCharArray())).length());
+        String expanded = QueryRunner.displayValue(new SerialClob(json.toCharArray()), 30_000);
+        assertEquals(json, expanded);
+        JsonNode parsed = mapper.readTree(expanded);
+        assertEquals("clob-preview-regression", parsed.get("requestId").asText());
+        assertEquals("完整 JSON 尾字段", parsed.get("tail").asText());
+        assertEquals(records.size(), parsed.get("records").size());
+    }
+
+    @Test
+    void validatesConfiguredClobPreviewAgainstRealOracleJsonWhenConfigured() throws Exception {
+        String url = System.getenv("DBSTUDIO_ORACLE_JDBC_URL");
+        String user = System.getenv("DBSTUDIO_ORACLE_USERNAME");
+        String password = System.getenv("DBSTUDIO_ORACLE_PASSWORD");
+        Assumptions.assumeTrue(url != null && !url.trim().isEmpty()
+                && user != null && !user.trim().isEmpty() && password != null,
+                "set DBSTUDIO_ORACLE_JDBC_URL/USERNAME/PASSWORD to run the real CLOB JSON validation");
+
+        ObjectMapper mapper = new ObjectMapper();
+        ObjectNode payload = mapper.createObjectNode();
+        ArrayNode records = payload.putArray("records");
+        for (int index = 0; index < 500; index++) {
+            records.add("record-" + index + "-中文内容-abcdefghijklmnopqrstuvwxyz");
+        }
+        payload.put("tail", "完整 JSON 尾字段");
+        String json = mapper.writeValueAsString(payload);
+        assertTrue(json.length() > 20_000);
+
+        String table = "DBS_CLOB_" + java.util.UUID.randomUUID().toString().replace("-", "")
+                .substring(0, 20).toUpperCase(java.util.Locale.ROOT);
+        try (Connection connection = DriverManager.getConnection(url, user, password)) {
+            try (java.sql.Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE " + table + " (payload CLOB)");
+            }
+            try {
+                try (java.sql.PreparedStatement insert = connection.prepareStatement(
+                        "INSERT INTO " + table + " (payload) VALUES (?)")) {
+                    insert.setCharacterStream(1, new java.io.StringReader(json), json.length());
+                    assertEquals(1, insert.executeUpdate());
+                }
+                try (java.sql.Statement statement = connection.createStatement();
+                     java.sql.ResultSet result = statement.executeQuery("SELECT payload FROM " + table)) {
+                    assertTrue(result.next());
+                    assertEquals(10_000, QueryRunner.displayValue(result.getClob(1)).length());
+                }
+                try (java.sql.Statement statement = connection.createStatement();
+                     java.sql.ResultSet result = statement.executeQuery("SELECT payload FROM " + table)) {
+                    assertTrue(result.next());
+                    String expanded = QueryRunner.displayValue(result.getClob(1), 30_000);
+                    assertEquals(json, expanded);
+                    JsonNode parsed = mapper.readTree(expanded);
+                    assertEquals("完整 JSON 尾字段", parsed.get("tail").asText());
+                    assertEquals(500, parsed.get("records").size());
+                }
+            } finally {
+                try (java.sql.Statement statement = connection.createStatement()) {
+                    statement.execute("DROP TABLE " + table + " PURGE");
+                }
+            }
+        }
+    }
+
     @Test
     void limitsRowsStreamsBatchesAndTracksTransactionState() throws Exception {
         final Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");

@@ -12,6 +12,7 @@ describe("SettingsDrawer compact result settings", () => {
         resolvedTheme: "light",
         maxRows: 1000,
         streamBatchRows: 100,
+        clobMaxCharacters: 10_000,
         maxLobBytes: 268_435_456,
         columnLayoutScope: "result",
         copyHeaderOnDoubleClick: true,
@@ -44,7 +45,7 @@ describe("SettingsDrawer compact result settings", () => {
   it("renders compact connection and result settings without the old alert", async () => {
     const wrapper = mountDrawer();
     await flushPromises();
-    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(22);
+    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(23);
     expect(wrapper.findComponent({ name: "ElAlert" }).exists()).toBe(false);
     const separator = wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "comma");
@@ -59,7 +60,7 @@ describe("SettingsDrawer compact result settings", () => {
     await flushPromises();
     const tooltips = wrapper.findAllComponents({ name: "ElTooltip" });
     const tooltipText = tooltips.map((tooltip) => String(tooltip.props("content"))).join("\n");
-    for (const text of ["完整导出不受影响", "事件触发更频繁", "控制可视区域四周", "字段集合完全一致",
+    for (const text of ["完整导出不受影响", "事件触发更频繁", "CLOB 最多读取的字符数", "控制可视区域四周", "字段集合完全一致",
       "自动转义", "IndexedDB", "每条DML成功执行即提交", "未包含 WHERE"]) {
       expect(tooltipText).toContain(text);
     }
@@ -74,6 +75,7 @@ describe("SettingsDrawer compact result settings", () => {
     numbers[3].vm.$emit("update:modelValue", 250);
     numbers[4].vm.$emit("update:modelValue", 2500);
     numbers[5].vm.$emit("update:modelValue", 50);
+    numbers[6].vm.$emit("update:modelValue", 22000);
     const switches = wrapper.findAllComponents({ name: "ElSwitch" });
     switches[0].vm.$emit("update:modelValue", false);
     switches[1].vm.$emit("update:modelValue", true);
@@ -97,6 +99,7 @@ describe("SettingsDrawer compact result settings", () => {
     expect(wrapper.emitted("update:completionCandidateLimit")?.[0]).toEqual([250]);
     expect(wrapper.emitted("update:maxRows")?.[0]).toEqual([2500]);
     expect(wrapper.emitted("update:streamBatchRows")?.[0]).toEqual([50]);
+    expect(wrapper.emitted("update:clobMaxCharacters")?.[0]).toEqual([22000]);
     expect(wrapper.emitted("update:autoCommit")?.[0]).toEqual([true]);
     expect(wrapper.emitted("update:completionPreciseMatchingEnabled")?.[0]).toEqual([true]);
     expect(wrapper.emitted("update:minimapEnabled")?.[0]).toEqual([false]);

@@ -103,7 +103,7 @@ import org.slf4j.LoggerFactory;
 public final class DbStudioApiController {
     private static final Logger LOG = LoggerFactory.getLogger(DbStudioApiController.class);
     private static final List<String> SETTING_KEYS = Arrays.asList(
-            "ui.theme", "result.maxRows", "result.streamBatchRows", "result.columnLayoutScope",
+            "ui.theme", "result.maxRows", "result.streamBatchRows", "result.clobMaxCharacters", "result.columnLayoutScope",
             "result.copyHeaderOnDoubleClick", "result.copySeparator",
             "result.headerSortingEnabled", "result.headerFilteringEnabled", "result.showColumnRemarksInHeader",
             "result.zebraStripesEnabled", "result.compareHighlightMode", "result.compareScope",
@@ -1523,6 +1523,18 @@ public final class DbStudioApiController {
                 throw new ApiException("INVALID_SETTING", "流式推送行数必须在 1 到 1000 之间");
             }
         }
+        if ("result.clobMaxCharacters".equals(key)) {
+            try {
+                int characters = Integer.parseInt(value);
+                if (characters < QueryRunner.MIN_CLOB_MAX_CHARACTERS
+                        || characters > QueryRunner.MAX_CLOB_MAX_CHARACTERS) {
+                    throw new NumberFormatException();
+                }
+                workspaces.setClobMaxCharacters(characters);
+            } catch (NumberFormatException exception) {
+                throw new ApiException("INVALID_SETTING", "CLOB 长度必须在 1 到 1000000 字符之间");
+            }
+        }
         if ("result.columnLayoutScope".equals(key) && !Arrays.asList("result", "editor").contains(value)) {
             throw new ApiException("INVALID_SETTING", "列布局范围设置无效");
         }
@@ -2524,6 +2536,9 @@ public final class DbStudioApiController {
         if (!result.containsKey("ui.theme")) result.put("ui.theme", "system");
         if (!result.containsKey("result.maxRows")) result.put("result.maxRows", "1000");
         if (!result.containsKey("result.streamBatchRows")) result.put("result.streamBatchRows", "100");
+        if (!result.containsKey("result.clobMaxCharacters")) {
+            result.put("result.clobMaxCharacters", String.valueOf(QueryRunner.DEFAULT_CLOB_MAX_CHARACTERS));
+        }
         if (!result.containsKey("result.columnLayoutScope")) result.put("result.columnLayoutScope", "result");
         if (!result.containsKey("result.copyHeaderOnDoubleClick")) result.put("result.copyHeaderOnDoubleClick", "true");
         if (!result.containsKey("result.copySeparator")) result.put("result.copySeparator", "comma");

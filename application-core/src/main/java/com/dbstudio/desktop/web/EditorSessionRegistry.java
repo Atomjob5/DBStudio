@@ -38,10 +38,17 @@ public final class EditorSessionRegistry implements AutoCloseable {
     private final AtomicInteger sequence = new AtomicInteger(1);
     private volatile int maxRows;
     private volatile int streamBatchRows;
+    private volatile int clobMaxCharacters;
 
     public EditorSessionRegistry(int maxRows, int streamBatchRows) {
+        this(maxRows, streamBatchRows, QueryRunner.DEFAULT_CLOB_MAX_CHARACTERS);
+    }
+
+    public EditorSessionRegistry(int maxRows, int streamBatchRows, int clobMaxCharacters) {
         this.maxRows = Math.max(1, maxRows);
         this.streamBatchRows = Math.max(1, streamBatchRows);
+        this.clobMaxCharacters = Math.max(QueryRunner.MIN_CLOB_MAX_CHARACTERS,
+                Math.min(QueryRunner.MAX_CLOB_MAX_CHARACTERS, clobMaxCharacters));
     }
 
     public EditorSession create() {
@@ -69,7 +76,7 @@ public final class EditorSessionRegistry implements AutoCloseable {
     }
 
     public void activate(EditorSession session) throws SQLException {
-        session.activate(maxRows, streamBatchRows);
+        session.activate(maxRows, streamBatchRows, clobMaxCharacters);
     }
 
     public EditorSession require(String id) {
@@ -147,8 +154,15 @@ public final class EditorSessionRegistry implements AutoCloseable {
         for (EditorSession session : sessions.values()) session.setStreamBatchRows(this.streamBatchRows);
     }
 
+    public void setClobMaxCharacters(int clobMaxCharacters) {
+        this.clobMaxCharacters = Math.max(QueryRunner.MIN_CLOB_MAX_CHARACTERS,
+                Math.min(QueryRunner.MAX_CLOB_MAX_CHARACTERS, clobMaxCharacters));
+        for (EditorSession session : sessions.values()) session.setClobMaxCharacters(this.clobMaxCharacters);
+    }
+
     public int maxRows() { return maxRows; }
     public int streamBatchRows() { return streamBatchRows; }
+    public int clobMaxCharacters() { return clobMaxCharacters; }
 
     @Override public void close() {
         List<EditorSession> copy = new ArrayList<EditorSession>(sessions.values());
@@ -291,13 +305,17 @@ public final class EditorSessionRegistry implements AutoCloseable {
         }
 
         public synchronized void activate(int maxRows, int streamBatchRows) throws SQLException {
+            activate(maxRows, streamBatchRows, QueryRunner.DEFAULT_CLOB_MAX_CHARACTERS);
+        }
+
+        public synchronized void activate(int maxRows, int streamBatchRows, int clobMaxCharacters) throws SQLException {
             if (runner != null) { touch(); return; }
             DatabaseContext current = context;
             if (current == null) throw new RpcException("NOT_CONNECTED", "当前编辑标签尚未选择数据库链接");
             DatabaseSession opened = current.openEditorSession();
             try {
                 ResultColumnResolver resolver = current.resultColumnResolver();
-                runner = new QueryRunner(opened, maxRows, streamBatchRows, resolver,
+                runner = new QueryRunner(opened, maxRows, streamBatchRows, clobMaxCharacters, resolver,
                         current.provider().dialect(), true);
                 opened = null;
             } finally {
@@ -346,6 +364,10 @@ public final class EditorSessionRegistry implements AutoCloseable {
         public boolean cancel() { QueryRunner current = runner; return current != null && current.cancel(); }
         public void setMaxRows(int maxRows) { QueryRunner current = runner; if (current != null) current.setMaxRows(maxRows); }
         public void setStreamBatchRows(int rows) { QueryRunner current = runner; if (current != null) current.setStreamBatchRows(rows); }
+        public void setClobMaxCharacters(int characters) {
+            QueryRunner current = runner;
+            if (current != null) current.setClobMaxCharacters(characters);
+        }
 
         public synchronized void appendResultRows(UUID executionId, int resultIndex, List<List<String>> rows,
                                                   List<String> rowIds, List<List<String>> rowLocators,

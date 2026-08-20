@@ -52,6 +52,7 @@ const mockSettings: Record<string, string> = {
   "ui.theme": "system",
   "result.maxRows": "1000",
   "result.streamBatchRows": "100",
+  "result.clobMaxCharacters": "10000",
   "result.columnLayoutScope": "result",
   "result.copyHeaderOnDoubleClick": "true",
   "result.copySeparator": "comma",

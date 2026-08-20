@@ -247,7 +247,8 @@
   <HistoryDrawer v-model="historyDrawer" @open="openHistory" />
   <JdbcTaskManagerDrawer v-model="jdbcTaskManagerDrawer" />
   <SettingsDrawer v-model="settingsDrawer" :theme="app.themePreference" :resolved-theme="app.theme" :max-rows="settings.maxResultRows"
-                  :stream-batch-rows="settings.streamBatchRows" :max-lob-bytes="settings.maxResultLobBytes"
+                  :stream-batch-rows="settings.streamBatchRows" :clob-max-characters="settings.clobMaxCharacters"
+                  :max-lob-bytes="settings.maxResultLobBytes"
                   :column-layout-scope="settings.columnLayoutScope"
                   :copy-header-on-double-click="settings.copyHeaderOnDoubleClick" :copy-separator="settings.copySeparator"
                   :header-sorting-enabled="settings.headerSortingEnabled" :header-filtering-enabled="settings.headerFilteringEnabled"
@@ -266,7 +267,8 @@
                   :completion-cache-size="completionCacheSize" :completion-cache-environment-count="metadata.completionStats.environmentCount"
                   :completion-cache-loading-count="metadata.completionStats.loadingCount" :can-clear-completion-caches="metadata.canClearCompletions"
                   @update:theme="updateTheme" @update:max-rows="updateMaxRows" @update:max-lob-bytes="updateMaxLobBytes"
-                  @update:stream-batch-rows="updateStreamBatchRows" @update:column-layout-scope="updateColumnLayoutScope"
+                  @update:stream-batch-rows="updateStreamBatchRows" @update:clob-max-characters="updateClobMaxCharacters"
+                  @update:column-layout-scope="updateColumnLayoutScope"
                   @update:copy-header-on-double-click="updateCopyHeaderOnDoubleClick"
                   @update:header-sorting-enabled="updateHeaderSortingEnabled"
                   @update:header-filtering-enabled="updateHeaderFilteringEnabled"
@@ -2156,6 +2158,11 @@ async function updateStreamBatchRows(value: number): Promise<void> {
   const previous = settings.streamBatchRows; settings.streamBatchRows = value;
   try { await rpc.request("settings.update", { key: "result.streamBatchRows", value: String(value) }); }
   catch (error) { settings.streamBatchRows = previous; reportError(error); }
+}
+async function updateClobMaxCharacters(value: number): Promise<void> {
+  const previous = settings.clobMaxCharacters; settings.clobMaxCharacters = value;
+  try { await rpc.request("settings.update", { key: "result.clobMaxCharacters", value: String(value) }); }
+  catch (error) { settings.clobMaxCharacters = previous; reportError(error); }
 }
 async function updateColumnLayoutScope(value: ColumnLayoutScope): Promise<void> {
   const previous = settings.columnLayoutScope; settings.columnLayoutScope = value;

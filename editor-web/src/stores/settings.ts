@@ -17,6 +17,7 @@ import {
 export const useSettingsStore = defineStore("settings", () => {
   const maxResultRows = ref(1000);
   const streamBatchRows = ref(100);
+  const clobMaxCharacters = ref(10_000);
   const maxResultLobBytes = ref(268_435_456);
   const columnLayoutScope = ref<ColumnLayoutScope>("result");
   const copyHeaderOnDoubleClick = ref(true);
@@ -51,6 +52,9 @@ export const useSettingsStore = defineStore("settings", () => {
     maxResultRows.value = Number.isFinite(parsed) ? parsed : 1000;
     const batch = Number.parseInt(settings["result.streamBatchRows"] ?? "100", 10);
     streamBatchRows.value = Number.isFinite(batch) ? batch : 100;
+    const clobCharacters = Number.parseInt(settings["result.clobMaxCharacters"] ?? "10000", 10);
+    clobMaxCharacters.value = Number.isFinite(clobCharacters)
+      ? Math.max(1, Math.min(1_000_000, clobCharacters)) : 10_000;
     const lobBytes = Number.parseInt(settings["result.edit.maxLobBytes"] ?? "268435456", 10);
     maxResultLobBytes.value = Number.isFinite(lobBytes) ? lobBytes : 268_435_456;
     columnLayoutScope.value = settings["result.columnLayoutScope"] === "editor" ? "editor" : "result";
@@ -111,7 +115,7 @@ export const useSettingsStore = defineStore("settings", () => {
     completionSnippets.value = value.map((item) => ({ ...item }));
   }
 
-  return { maxResultRows, streamBatchRows, maxResultLobBytes, columnLayoutScope, copyHeaderOnDoubleClick, copySeparator,
+  return { maxResultRows, streamBatchRows, clobMaxCharacters, maxResultLobBytes, columnLayoutScope, copyHeaderOnDoubleClick, copySeparator,
     headerSortingEnabled, headerFilteringEnabled, showColumnRemarksInHeader, zebraStripesEnabled,
     compareHighlightMode, compareScope, compareCaseSensitive, showSelectedColumnRemarks,
     scrollOptimizationBufferScreens,

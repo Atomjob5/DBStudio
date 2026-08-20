@@ -72,15 +72,23 @@ final class Workspace implements AutoCloseable {
     Workspace(String id, int maxRows, int streamBatchRows, boolean autoCommit,
               ObjectMapper mapper, Path temporaryDirectory,
               EditorConnectionLimiter limiter) {
-        this(id, id, maxRows, streamBatchRows, autoCommit, mapper, temporaryDirectory, limiter);
+        this(id, id, maxRows, streamBatchRows, QueryRunner.DEFAULT_CLOB_MAX_CHARACTERS,
+                autoCommit, mapper, temporaryDirectory, limiter);
     }
 
     Workspace(String id, String name, int maxRows, int streamBatchRows, boolean autoCommit,
               ObjectMapper mapper, Path temporaryDirectory,
               EditorConnectionLimiter limiter) {
+        this(id, name, maxRows, streamBatchRows, QueryRunner.DEFAULT_CLOB_MAX_CHARACTERS,
+                autoCommit, mapper, temporaryDirectory, limiter);
+    }
+
+    Workspace(String id, String name, int maxRows, int streamBatchRows, int clobMaxCharacters,
+              boolean autoCommit, ObjectMapper mapper, Path temporaryDirectory,
+              EditorConnectionLimiter limiter) {
         this.id = id;
         this.name = name;
-        this.editors = new EditorSessionRegistry(maxRows, streamBatchRows);
+        this.editors = new EditorSessionRegistry(maxRows, streamBatchRows, clobMaxCharacters);
         this.autoCommit = autoCommit;
         this.events = new WorkspaceEventChannel(mapper, id);
         this.temporaryDirectory = temporaryDirectory;
@@ -92,8 +100,8 @@ final class Workspace implements AutoCloseable {
                 thread.setDaemon(true); return thread;
             }
         });
-        LOG.info("创建Workspace运行时 workspaceId={} maxRows={} streamBatchRows={} autoCommit={}",
-                id, maxRows, streamBatchRows, autoCommit);
+        LOG.info("创建Workspace运行时 workspaceId={} maxRows={} streamBatchRows={} clobMaxCharacters={} autoCommit={}",
+                id, maxRows, streamBatchRows, clobMaxCharacters, autoCommit);
     }
 
     String id() { return id; }
@@ -759,6 +767,7 @@ final class Workspace implements AutoCloseable {
             WorkspaceJdbcPool.Lease lease = reference.pool.borrow();
             try {
                 QueryRunner runner = new QueryRunner(lease.session(), editors.maxRows(), editors.streamBatchRows(),
+                        editors.clobMaxCharacters(),
                         reference.context.resultColumnResolver(), reference.context.provider().dialect(), false);
                 editor.attachRunner(runner);
                 ActiveLease created = new ActiveLease(reference.pool, lease, runner);

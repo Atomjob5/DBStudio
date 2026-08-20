@@ -176,6 +176,18 @@
         </el-form-item>
         <el-form-item class="compact-setting-row">
           <template #label>
+            <div class="setting-label"><span>CLOB 长度</span>
+              <el-tooltip content="控制结果集展示时每个 CLOB 最多读取的字符数；提高后会增加内存占用和传输量，完整查看与下载不受影响。" placement="top">
+                <el-icon class="setting-help" tabindex="0" aria-label="CLOB 长度说明"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </div>
+          </template>
+          <div class="number-with-unit"><el-input-number class="compact-number" size="small"
+            :model-value="clobMaxCharacters" :min="1" :max="1000000" :step="1000" controls-position="right"
+            @update:model-value="$emit('update:clobMaxCharacters', $event ?? 10000)" /><span>字符</span></div>
+        </el-form-item>
+        <el-form-item class="compact-setting-row">
+          <template #label>
             <div class="setting-label"><span>可编辑大字段上限</span>
               <el-tooltip content="CLOB、BLOB 与 RAW 草稿采用临时文件流式读写；超过上限会在写入数据库前拒绝。" placement="top">
                 <el-icon class="setting-help" tabindex="0" aria-label="可编辑大字段上限说明"><QuestionFilled /></el-icon>
@@ -288,7 +300,7 @@ import type { ColumnLayoutScope } from "../columnLayout";
 import type { CopySeparator } from "../resultCopy";
 
 defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: ResolvedTheme; maxRows: number;
-  streamBatchRows: number; maxLobBytes: number; columnLayoutScope: ColumnLayoutScope; copyHeaderOnDoubleClick: boolean;
+  streamBatchRows: number; clobMaxCharacters: number; maxLobBytes: number; columnLayoutScope: ColumnLayoutScope; copyHeaderOnDoubleClick: boolean;
   copySeparator: CopySeparator; maxActiveSessions: number; idleTimeoutMinutes: number;
   headerSortingEnabled: boolean; headerFilteringEnabled: boolean;
   showColumnRemarksInHeader: boolean; zebraStripesEnabled: boolean;
@@ -302,7 +314,8 @@ defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: Resolv
 const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme": [value: ThemePreference]; "openAppearance": [];
   "update:minimapEnabled": [value: boolean]; "update:wordWrapEnabled": [value: boolean];
   "update:dangerousStatementWarningEnabled": [value: boolean];
-  "update:maxRows": [value: number]; "update:streamBatchRows": [value: number]; "update:maxLobBytes": [value: number];
+  "update:maxRows": [value: number]; "update:streamBatchRows": [value: number]; "update:clobMaxCharacters": [value: number];
+  "update:maxLobBytes": [value: number];
   "update:columnLayoutScope": [value: ColumnLayoutScope]; "update:copyHeaderOnDoubleClick": [value: boolean];
   "update:copySeparator": [value: CopySeparator]; "update:maxActiveSessions": [value: number];
   "update:autoCommit": [value: boolean];

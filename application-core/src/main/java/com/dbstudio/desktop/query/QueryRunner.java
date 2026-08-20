@@ -63,7 +63,10 @@ public final class QueryRunner implements AutoCloseable {
     public static final int JDBC_FETCH_SIZE = 500;
     public static final int DEFAULT_STREAM_BATCH_ROWS = 100;
     public static final int DEFAULT_MAX_ROWS = 1_000;
-    private static final int MAX_LOB_CHARACTERS = 10_000;
+    public static final int DEFAULT_CLOB_MAX_CHARACTERS = 10_000;
+    public static final int MIN_CLOB_MAX_CHARACTERS = 1;
+    public static final int MAX_CLOB_MAX_CHARACTERS = 1_000_000;
+    private static final int DEFAULT_BINARY_LOB_PREVIEW_BYTES = 10_000;
     private static final AtomicInteger THREAD_SEQUENCE = new AtomicInteger();
 
     private final DatabaseSession session;
@@ -77,6 +80,7 @@ public final class QueryRunner implements AutoCloseable {
     private final SqlDialect dialect;
     private volatile int maxRows;
     private volatile int streamBatchRows;
+    private volatile int clobMaxCharacters;
 
     public QueryRunner(DatabaseSession session, int maxRows, int streamBatchRows,
                        ResultColumnResolver columnResolver) {
@@ -90,12 +94,19 @@ public final class QueryRunner implements AutoCloseable {
 
     public QueryRunner(DatabaseSession session, int maxRows, int streamBatchRows,
                        ResultColumnResolver columnResolver, SqlDialect dialect, boolean ownsSession) {
+        this(session, maxRows, streamBatchRows, DEFAULT_CLOB_MAX_CHARACTERS,
+                columnResolver, dialect, ownsSession);
+    }
+
+    public QueryRunner(DatabaseSession session, int maxRows, int streamBatchRows, int clobMaxCharacters,
+                       ResultColumnResolver columnResolver, SqlDialect dialect, boolean ownsSession) {
         this.session = Objects.requireNonNull(session, "session");
         this.ownsSession = ownsSession;
         this.columnResolver = Objects.requireNonNull(columnResolver, "columnResolver");
         this.dialect = dialect;
         this.maxRows = Math.max(1, maxRows);
         this.streamBatchRows = Math.max(1, streamBatchRows);
+        this.clobMaxCharacters = boundedClobMaxCharacters(clobMaxCharacters);
         this.executor = Executors.newSingleThreadExecutor(new ThreadFactory() {
             @Override public Thread newThread(Runnable runnable) {
                 Thread thread = new Thread(runnable, "dbstudio-query-" + THREAD_SEQUENCE.incrementAndGet());
@@ -492,7 +503,7 @@ public final class QueryRunner implements AutoCloseable {
                 String generatedValue = null;
                 try (ResultSet generated = statement.getGeneratedKeys()) {
                     if (generated != null && generated.next()) {
-                        generatedValue = displayValue(generated.getObject(1));
+                        generatedValue = displayValue(generated.getObject(1), clobMaxCharacters);
                         ResultMutationTarget.Column generatedColumn = firstAutoIncrementColumn(target);
                         if (generatedColumn != null) row.set(generatedColumn.resultIndex(), generatedValue);
                     }
@@ -865,8 +876,8 @@ public final class QueryRunner implements AutoCloseable {
         return parameter;
     }
 
-    private static List<String> refreshRow(Connection connection, ResultMutationTarget target,
-                                            OperationLocator locator, List<String> baseRow) throws SQLException {
+    private List<String> refreshRow(Connection connection, ResultMutationTarget target,
+                                    OperationLocator locator, List<String> baseRow) throws SQLException {
         StringBuilder sql = new StringBuilder("SELECT ");
         List<ResultMutationTarget.Column> columns = new ArrayList<ResultMutationTarget.Column>();
         for (ResultMutationTarget.Column column : target.columns()) {
@@ -889,7 +900,8 @@ public final class QueryRunner implements AutoCloseable {
                     row.set(index, baseRow.get(index));
                 }
                 for (int index = 0; index < columns.size(); index++) {
-                    row.set(columns.get(index).resultIndex(), displayValue(result.getObject(index + 1)));
+                    row.set(columns.get(index).resultIndex(),
+                            displayValue(result.getObject(index + 1), clobMaxCharacters));
                 }
                 if (result.next()) throw new QueryExecutionException("重新读取目标行时定位结果不唯一", null);
                 return row;
@@ -897,8 +909,8 @@ public final class QueryRunner implements AutoCloseable {
         }
     }
 
-    private static List<String> refreshResultRow(Connection connection, ResultMutationTarget target,
-                                                  OperationLocator locator, List<String> baseRow)
+    private List<String> refreshResultRow(Connection connection, ResultMutationTarget target,
+                                          OperationLocator locator, List<String> baseRow)
             throws SQLException {
         if (target.refreshSql().isEmpty()) return refreshRow(connection, target, locator, baseRow);
         try (PreparedStatement statement = connection.prepareStatement(target.refreshSql())) {
@@ -907,7 +919,9 @@ public final class QueryRunner implements AutoCloseable {
                 if (!result.next()) return null;
                 int count = visibleColumnCount(target);
                 List<String> row = new ArrayList<String>(count);
-                for (int index = 1; index <= count; index++) row.add(displayValue(result.getObject(index)));
+                for (int index = 1; index <= count; index++) {
+                    row.add(displayValue(result.getObject(index), clobMaxCharacters));
+                }
                 if (result.next()) throw new QueryExecutionException("重新执行原查询时行定位结果不唯一", null);
                 return row;
             }
@@ -1354,6 +1368,9 @@ public final class QueryRunner implements AutoCloseable {
     }
     public void setMaxRows(int maxRows) { this.maxRows = Math.max(1, maxRows); }
     public void setStreamBatchRows(int streamBatchRows) { this.streamBatchRows = Math.max(1, streamBatchRows); }
+    public void setClobMaxCharacters(int clobMaxCharacters) {
+        this.clobMaxCharacters = boundedClobMaxCharacters(clobMaxCharacters);
+    }
 
     private PageResult fetchPageBlocking(String sql, int offset, int limit) {
         Instant started = Instant.now();
@@ -1376,17 +1393,18 @@ public final class QueryRunner implements AutoCloseable {
                 ResultSetMetaData metadata = resultSet.getMetaData();
                 int columnCount = metadata.getColumnCount();
                 int visibleColumnCount = Math.max(0, columnCount - prepared.hiddenColumnCount());
+                final int pageClobMaxCharacters = clobMaxCharacters;
                 List<List<String>> rows = new ArrayList<List<String>>(limit);
                 List<List<String>> locators = new ArrayList<List<String>>(limit);
                 while (rows.size() < limit && !cancelRequested.get() && resultSet.next()) {
                     List<String> row = new ArrayList<String>(visibleColumnCount);
                     for (int index = 1; index <= visibleColumnCount; index++) {
-                        row.add(displayValue(resultSet.getObject(index)));
+                        row.add(displayValue(resultSet.getObject(index), pageClobMaxCharacters));
                     }
                     rows.add(Collections.unmodifiableList(row));
                     List<String> locator = new ArrayList<String>(prepared.hiddenColumnCount());
                     for (int index = visibleColumnCount + 1; index <= columnCount; index++) {
-                        locator.add(displayValue(resultSet.getObject(index)));
+                        locator.add(displayValue(resultSet.getObject(index), pageClobMaxCharacters));
                     }
                     locators.add(Collections.unmodifiableList(locator));
                 }
@@ -1414,8 +1432,8 @@ public final class QueryRunner implements AutoCloseable {
     private QueryExecution executeBlocking(List<SqlStatement> statements, boolean stopOnError,
                                            QueryResultListener listener) {
         Instant started = Instant.now();
-        LOG.info("SQL批次开始 statements={} stopOnError={} maxRows={} streamBatchRows={}",
-                statements.size(), stopOnError, maxRows, streamBatchRows);
+        LOG.info("SQL批次开始 statements={} stopOnError={} maxRows={} streamBatchRows={} clobMaxCharacters={}",
+                statements.size(), stopOnError, maxRows, streamBatchRows, clobMaxCharacters);
         List<StatementResult> results = new ArrayList<StatementResult>();
         boolean cancelled = false;
         for (SqlStatement sqlStatement : statements) {
@@ -1447,6 +1465,7 @@ public final class QueryRunner implements AutoCloseable {
         Instant started = Instant.now();
         final int statementMaxRows = maxRows;
         final int statementBatchRows = streamBatchRows;
+        final int statementClobMaxCharacters = clobMaxCharacters;
         LOG.info("SQL语句开始 index={} type={}", firstResultIndex, sqlStatement.type());
         if (cancelRequested.get()) return Collections.emptyList();
         PreparedResultQuery prepared = columnResolver.prepare(sqlStatement.text());
@@ -1468,7 +1487,7 @@ public final class QueryRunner implements AutoCloseable {
                 if (hasResult) {
                     try (ResultSet resultSet = statement.getResultSet()) {
                         output = readResultSet(sqlStatement, prepared, resultSet, started, resultIndex, listener,
-                                statementMaxRows, statementBatchRows);
+                                statementMaxRows, statementBatchRows, statementClobMaxCharacters);
                     }
                 } else {
                     int updateCount = statement.getUpdateCount();
@@ -1512,7 +1531,8 @@ public final class QueryRunner implements AutoCloseable {
     private StatementResult readResultSet(SqlStatement sqlStatement, PreparedResultQuery prepared,
                                           ResultSet resultSet, Instant started,
                                           int resultIndex, QueryResultListener listener,
-                                          int resultMaxRows, int resultBatchRows) throws SQLException {
+                                          int resultMaxRows, int resultBatchRows,
+                                          int resultClobMaxCharacters) throws SQLException {
         ResultSetMetaData metadata = resultSet.getMetaData();
         int columnCount = metadata.getColumnCount();
         int visibleColumnCount = Math.max(0, columnCount - prepared.hiddenColumnCount());
@@ -1542,10 +1562,12 @@ public final class QueryRunner implements AutoCloseable {
         while (!cancelRequested.get() && resultSet.next()) {
             if (rows.size() >= resultMaxRows) { truncated = true; break; }
             List<String> row = new ArrayList<String>(visibleColumnCount);
-            for (int index = 1; index <= visibleColumnCount; index++) row.add(displayValue(resultSet.getObject(index)));
+            for (int index = 1; index <= visibleColumnCount; index++) {
+                row.add(displayValue(resultSet.getObject(index), resultClobMaxCharacters));
+            }
             List<String> locator = new ArrayList<String>(prepared.hiddenColumnCount());
             for (int index = visibleColumnCount + 1; index <= columnCount; index++) {
-                locator.add(displayValue(resultSet.getObject(index)));
+                locator.add(displayValue(resultSet.getObject(index), resultClobMaxCharacters));
             }
             rows.add(row);
             rowLocators.add(Collections.unmodifiableList(locator));
@@ -1618,17 +1640,21 @@ public final class QueryRunner implements AutoCloseable {
     }
 
     public static String displayValue(Object value) throws SQLException {
+        return displayValue(value, DEFAULT_CLOB_MAX_CHARACTERS);
+    }
+
+    public static String displayValue(Object value, int clobMaxCharacters) throws SQLException {
         if (value == null) return null;
         if (value instanceof byte[]) return "0x" + toHex((byte[]) value);
         if (value instanceof Blob) {
             Blob blob = (Blob) value;
-            long length = Math.min(blob.length(), MAX_LOB_CHARACTERS);
+            long length = Math.min(blob.length(), DEFAULT_BINARY_LOB_PREVIEW_BYTES);
             return "0x" + toHex(blob.getBytes(1, (int) length));
         }
         if (value instanceof Clob) {
             Clob clob = (Clob) value;
             try (Reader reader = clob.getCharacterStream()) {
-                return readCharacters(reader);
+                return readCharacters(reader, boundedClobMaxCharacters(clobMaxCharacters));
             } catch (IOException exception) {
                 throw new SQLException("读取 CLOB 失败", exception);
             }
@@ -1647,16 +1673,20 @@ public final class QueryRunner implements AutoCloseable {
         return new String(result);
     }
 
-    private static String readCharacters(Reader reader) throws IOException {
+    private static String readCharacters(Reader reader, int maximum) throws IOException {
         char[] buffer = new char[2_048];
         StringBuilder result = new StringBuilder();
         int read;
-        while (result.length() < MAX_LOB_CHARACTERS
+        while (result.length() < maximum
                 && (read = reader.read(buffer, 0, Math.min(buffer.length,
-                MAX_LOB_CHARACTERS - result.length()))) >= 0) {
+                maximum - result.length()))) >= 0) {
             result.append(buffer, 0, read);
         }
         return result.toString();
+    }
+
+    private static int boundedClobMaxCharacters(int value) {
+        return Math.max(MIN_CLOB_MAX_CHARACTERS, Math.min(MAX_CLOB_MAX_CHARACTERS, value));
     }
 
     private static String sanitize(SQLException exception) {

@@ -201,6 +201,11 @@ public final class WorkspaceRegistry implements AutoCloseable {
         int bounded=Math.max(1,Math.min(1_000,rows));
         for (Workspace workspace:runtimes.values()) workspace.editors().setStreamBatchRows(bounded);
     }
+    void setClobMaxCharacters(int characters) {
+        int bounded = Math.max(QueryRunner.MIN_CLOB_MAX_CHARACTERS,
+                Math.min(QueryRunner.MAX_CLOB_MAX_CHARACTERS, characters));
+        for (Workspace workspace : runtimes.values()) workspace.editors().setClobMaxCharacters(bounded);
+    }
     void clearRiskConfirmations() {
         for (Workspace workspace : runtimes.values()) workspace.clearRiskConfirmations();
     }
@@ -399,7 +404,10 @@ public final class WorkspaceRegistry implements AutoCloseable {
         }
         Workspace created=new Workspace(id,workspaceName,
                 configuredInt("result.maxRows",QueryRunner.DEFAULT_MAX_ROWS,1,100_000),
-                configuredInt("result.streamBatchRows",QueryRunner.DEFAULT_STREAM_BATCH_ROWS,1,1_000),autoCommit,mapper,
+                configuredInt("result.streamBatchRows",QueryRunner.DEFAULT_STREAM_BATCH_ROWS,1,1_000),
+                configuredInt("result.clobMaxCharacters", QueryRunner.DEFAULT_CLOB_MAX_CHARACTERS,
+                        QueryRunner.MIN_CLOB_MAX_CHARACTERS, QueryRunner.MAX_CLOB_MAX_CHARACTERS),
+                autoCommit,mapper,
                 AppDirectories.dataDirectory().resolve("tmp").resolve(id),limiter);
         created.events().onDisconnected(new WorkspaceEventChannel.DisconnectListener() {
             @Override public void disconnected(String clientId) { browserDisconnected(id,clientId); }

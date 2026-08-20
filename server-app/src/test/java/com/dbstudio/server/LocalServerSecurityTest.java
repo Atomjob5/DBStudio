@@ -209,6 +209,7 @@ class LocalServerSecurityTest {
                 new HttpEntity<String>(headers), String.class);
         assertEquals(HttpStatus.OK, defaults.getStatusCode());
         assertTrue(defaults.getBody().contains("\"result.columnLayoutScope\":\"result\""));
+        assertTrue(defaults.getBody().contains("\"result.clobMaxCharacters\":\"10000\""));
         assertTrue(defaults.getBody().contains("\"editor.dangerousStatementWarningEnabled\":\"true\""));
         assertTrue(defaults.getBody().contains("\"result.copyHeaderOnDoubleClick\":\"true\""));
         assertTrue(defaults.getBody().contains("\"result.copySeparator\":\"comma\""));
@@ -302,6 +303,20 @@ class LocalServerSecurityTest {
             setting.put("value", screens);
             assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                     new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+        }
+
+        setting.put("key", "result.clobMaxCharacters");
+        for (String characters : Arrays.asList("1", "22000", "1000000")) {
+            setting.put("value", characters);
+            assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                    new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+        }
+        for (String characters : Arrays.asList("0", "1000001", "invalid")) {
+            setting.put("value", characters);
+            ResponseEntity<String> invalidClob = http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                    new HttpEntity<Map<String, String>>(setting, headers), String.class);
+            assertEquals(HttpStatus.BAD_REQUEST, invalidClob.getStatusCode());
+            assertTrue(invalidClob.getBody().contains("INVALID_SETTING"));
         }
 
         setting.put("key", "connection.maxActiveSessions");

@@ -115,16 +115,17 @@ sequenceDiagram
 
 对查询结果，读取列标签后先发送 `query.resultMeta`，其中包含 SQL、语句类型、列名和空的 `rows`。对 DML 等没有结果集的语句，也会发送 `query.resultMeta` 和 `query.resultComplete`，最后以 `updateCount` 表示影响行数。
 
-值转换为适合 UI 的字符串：`NULL` 保持为 JSON `null`，二进制和 BLOB 以 `0x` 十六进制显示，CLOB 最多读取 10,000 个字符，避免单个大字段无限占用内存。
+值转换为适合 UI 的字符串：`NULL` 保持为 JSON `null`，二进制和 BLOB 以 `0x` 十六进制显示，CLOB 按 `result.clobMaxCharacters` 最多读取指定字符数，避免单个大字段无限占用内存。完整大字段查看/下载仍通过独立的流式通道读取。
 
 ### 4.3 最大展示行数与推送批次
 
-两个参数相互独立，并在**每个结果集开始读取时**取快照，因此执行过程修改设置只影响下一次执行。
+这些参数相互独立，并在**每个结果集开始读取时**取快照，因此执行过程修改设置只影响下一次执行。
 
 | 设置键 | 默认值 | 合法范围 | 作用 |
 | --- | ---: | ---: | --- |
 | `result.maxRows` | 1000 | 1–100000 | 单个结果集允许读取、保存在执行快照并发送到前端的最大行数。 |
 | `result.streamBatchRows` | 100 | 1–1000 | 一条 `query.rows` WebSocket 事件最多携带的行数。 |
+| `result.clobMaxCharacters` | 10000 | 1–1000000 | 结果展示链路中每个 CLOB/NCLOB 最多读取的字符数；修改后对下一次读取生效。 |
 | `result.scrollOptimizationBufferScreens` | 1 | 0.5 - 3，步长 0.5 | 结果虚拟表格在可视区域四周额外渲染的屏数。 |
 
 读取循环的规则如下：

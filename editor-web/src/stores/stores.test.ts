@@ -334,7 +334,7 @@ describe("application stores", () => {
 
   it("initializes independent result limit and streaming batch settings", () => {
     const settings = useSettingsStore();
-    settings.initialize({ "result.maxRows": "2500", "result.streamBatchRows": "75", "result.columnLayoutScope": "editor",
+    settings.initialize({ "result.maxRows": "2500", "result.streamBatchRows": "75", "result.clobMaxCharacters": "22000", "result.columnLayoutScope": "editor",
       "result.copyHeaderOnDoubleClick": "false", "result.copySeparator": "tab",
       "result.showColumnRemarksInHeader": "true",
       "result.zebraStripesEnabled": "true", "result.compareHighlightMode": "different",
@@ -353,6 +353,7 @@ describe("application stores", () => {
       "keyboard.shortcuts": "{\"query.executeCurrent\":null,\"query.executeAll\":\"Mod+7\"}" }, []);
     expect(settings.maxResultRows).toBe(2500);
     expect(settings.streamBatchRows).toBe(75);
+    expect(settings.clobMaxCharacters).toBe(22000);
     expect(settings.columnLayoutScope).toBe("editor");
     expect(settings.copyHeaderOnDoubleClick).toBe(false);
     expect(settings.copySeparator).toBe("tab");
