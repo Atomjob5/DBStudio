@@ -15,9 +15,11 @@ import com.alibaba.druid.sql.ast.statement.SQLSelectStatement;
 import com.alibaba.druid.sql.ast.statement.SQLUpdateStatement;
 import com.dbstudio.spi.ResultMutationSource;
 import com.dbstudio.spi.ResultEditPlan;
+import com.dbstudio.spi.SqlDiagnostic;
 import com.dbstudio.spi.SqlDialect;
 import com.dbstudio.spi.SqlDmlRiskAnalyzer;
 import com.dbstudio.spi.SqlStatement;
+import com.dbstudio.spi.SqlSyntaxDiagnosticSupport;
 import com.dbstudio.spi.SqlTextCompactor;
 import com.dbstudio.spi.StatementType;
 import com.dbstudio.spi.DatabaseObject;
@@ -224,6 +226,12 @@ public final class MySqlDialect implements SqlDialect {
         } catch (RuntimeException exception) {
             throw new IllegalArgumentException("无法格式化当前 SQL：" + exception.getMessage(), exception);
         }
+    }
+
+    @Override
+    public List<SqlDiagnostic> syntaxDiagnostics(String script) {
+        return SqlSyntaxDiagnosticSupport.analyze(script, split(script), value ->
+                SQLUtils.parseSingleStatement(value, DbType.mysql));
     }
 
     @Override

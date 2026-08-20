@@ -12,7 +12,11 @@ import type {
   CompletionCandidate,
   CompletionResult,
   QueryExecutionSource,
+  LocalSqlDiagnostics,
+  SqlDiagnostic,
+  SqlDiagnosticsResponse,
   SqlEditorSelectionAction,
+  SqlQuickFix,
   SqlTransformApplyResult,
   SqlTransformTarget,
 } from "../types";
@@ -24,15 +28,32 @@ import type { SqlCompletionSnippet } from "../types";
 import { resolveSqlObjectReference } from "../objectReference";
 import type { ModeColorScheme, TextStyle } from "../appearance";
 import { DEFAULT_COLOR_SCHEMES, fontFamilyCss } from "../appearance";
+import { rpc } from "../bridge/rpc";
+import {
+  applicableSqlQuickFixes,
+  filterServerSqlDiagnostics,
+  mergeSqlDiagnostics,
+  sameDiagnosticRun,
+  sqlDiagnosticMarker,
+  SqlDiagnosticScheduler,
+  SQL_DIAGNOSTIC_MARKER_OWNER,
+} from "../completion/diagnosticPresentation";
+import type { DiagnosticRunIdentity } from "../completion/diagnosticPresentation";
 
 (self as typeof self & { MonacoEnvironment: object }).MonacoEnvironment = { getWorker: () => new EditorWorker() };
 
 const props = withDefaults(defineProps<{ modelKey: string; initialValue: string; theme: "dark" | "light"; appearance?: ModeColorScheme;
   completionKey: string; providerId: string; completionCandidateLimit: number;
+  completionRevision: string; completionMetadataReady: boolean;
   completionPreciseMatchingEnabled: boolean; completionSnippets: SqlCompletionSnippet[];
-  minimapEnabled: boolean; wordWrapEnabled: boolean; editorId: string; connectionDisplay: string;
+  minimapEnabled: boolean; wordWrapEnabled: boolean; diagnosticsEnabled: boolean;
+  dangerousStatementWarningEnabled: boolean; editorId: string; connectionDisplay: string;
   defaultCatalog?: string; defaultSchema?: string; objectInspectorOpacity: number }>(), {
   appearance: () => DEFAULT_COLOR_SCHEMES.light,
+  completionRevision: "",
+  completionMetadataReady: false,
+  diagnosticsEnabled: true,
+  dangerousStatementWarningEnabled: true,
 });
 const emit = defineEmits<{
   dirty: [];
@@ -55,12 +76,15 @@ let resultHighlight: { executionId: string; modelKey: string; decorationId: stri
 const modelSynchronizer = new CompletionModelSynchronizer(completionClient);
 let contentListener: monaco.IDisposable | undefined;
 let completionProvider: monaco.IDisposable | undefined;
+let codeActionProvider: monaco.IDisposable | undefined;
 let selectionListener: monaco.IDisposable | undefined;
 let changingModel = false;
 let objectHoverDecoration: string[] = [];
 let objectMouseMove: monaco.IDisposable | undefined;
 let objectMouseDown: monaco.IDisposable | undefined;
 let objectScroll: monaco.IDisposable | undefined;
+const diagnosticStates = new Map<string, { version: number; diagnostics: SqlDiagnostic[]; quickFixes: SqlQuickFix[] }>();
+const diagnosticScheduler = new SqlDiagnosticScheduler();
 
 monaco.editor.defineTheme("dbstudio-apple-light", {
   base: "vs",
@@ -238,6 +262,32 @@ onMounted(() => {
       };
     }
   });
+  codeActionProvider = monaco.languages.registerCodeActionProvider("dbstudio-mysql", {
+    provideCodeActions(model, range, context) {
+      const key = modelKeys.get(model);
+      const state = key ? diagnosticStates.get(key) : undefined;
+      if (!key || !state || state.version !== model.getVersionId()) {
+        return { actions: [], dispose: () => undefined };
+      }
+      const requestedStart = model.getOffsetAt(range.getStartPosition());
+      const requestedEnd = model.getOffsetAt(range.getEndPosition());
+      const markerCodes = new Set(context.markers.map((marker) => markerCode(marker.code)).filter(Boolean));
+      const actions = applicableSqlQuickFixes(state.diagnostics, state.quickFixes, markerCodes,
+        requestedStart, requestedEnd)
+        .map((fix): monaco.languages.CodeAction => ({
+          title: fix.title,
+          kind: "quickfix",
+          isPreferred: fix.isPreferred,
+          diagnostics: context.markers.filter((marker) => markerCode(marker.code) === fix.diagnosticCode),
+          edit: { edits: fix.edits.map((edit) => ({
+            resource: model.uri,
+            textEdit: { range: offsetRange(model, edit.startOffset, edit.endOffset), text: edit.text },
+            versionId: model.getVersionId(),
+          })) },
+        }));
+      return { actions, dispose: () => undefined };
+    },
+  }, { providedCodeActionKinds: ["quickfix"] });
   switchModel(props.modelKey, props.initialValue);
 });
 
@@ -312,11 +362,97 @@ watch(() => props.appearance, (scheme) => {
 }, { deep: true });
 watch(() => props.minimapEnabled, (enabled) => instance.value?.updateOptions({ minimap: { enabled } }));
 watch(() => props.wordWrapEnabled, (enabled) => instance.value?.updateOptions({ wordWrap: enabled ? "on" : "off" }));
-watch(() => [props.completionKey, props.providerId], () => {
+watch(() => [props.completionKey, props.providerId, props.completionRevision, props.completionMetadataReady], () => {
   const model = instance.value?.getModel();
   const key = model && modelKeys.get(model);
-  if (model && key && isCompletionBound()) synchronizeInBackground(key, model);
+  if (model && key && isCompletionBound()) {
+    synchronizeInBackground(key, model);
+    scheduleDiagnostics(key, model, 0);
+  } else clearAllDiagnostics();
 });
+watch(() => props.diagnosticsEnabled, (enabled) => {
+  if (!enabled) { clearAllDiagnostics(); return; }
+  const model = instance.value?.getModel();
+  const key = model && modelKeys.get(model);
+  if (model && key) scheduleDiagnostics(key, model, 0);
+});
+watch(() => props.dangerousStatementWarningEnabled, () => {
+  const model = instance.value?.getModel();
+  const key = model && modelKeys.get(model);
+  if (model && key) scheduleDiagnostics(key, model, 0);
+});
+
+function scheduleDiagnostics(key: string, model: monaco.editor.ITextModel, delay = 400): void {
+  clearModelDiagnostics(key, model);
+  diagnosticScheduler.invalidate();
+  if (!props.diagnosticsEnabled || !isCompletionBound() || props.providerId === "generic"
+      || instance.value?.getModel() !== model) return;
+  const snapshot: DiagnosticRunIdentity = {
+    key,
+    version: model.getVersionId(),
+    providerId: props.providerId,
+    completionKey: props.completionKey,
+    completionRevision: props.completionRevision,
+    completionMetadataReady: props.completionMetadataReady,
+  };
+  diagnosticScheduler.schedule((sequence) => void runDiagnostics(model, snapshot, sequence), delay);
+}
+
+async function runDiagnostics(model: monaco.editor.ITextModel,
+                              snapshot: DiagnosticRunIdentity,
+                              sequence: number): Promise<void> {
+  const localRequest = modelSynchronizer.execute(snapshot.key, model, snapshot.version,
+    () => completionClient.diagnose(snapshot.completionKey, snapshot.providerId, snapshot.key, snapshot.version,
+      snapshot.completionMetadataReady));
+  const serverRequest = rpc.request<SqlDiagnosticsResponse>("sql.diagnostics", {
+    editorId: snapshot.key, text: model.getValue(), modelVersion: snapshot.version,
+  });
+  const [localResult, serverResult] = await Promise.allSettled([localRequest, serverRequest]);
+  const current: DiagnosticRunIdentity = { key: props.modelKey, version: model.getVersionId(),
+    providerId: props.providerId, completionKey: props.completionKey,
+    completionRevision: props.completionRevision,
+    completionMetadataReady: props.completionMetadataReady };
+  if (!diagnosticScheduler.isCurrent(sequence) || instance.value?.getModel() !== model
+      || !sameDiagnosticRun(snapshot, current) || !props.diagnosticsEnabled) return;
+
+  const local: LocalSqlDiagnostics = localResult.status === "fulfilled"
+    ? localResult.value : { diagnostics: [], quickFixes: [] };
+  const server = serverResult.status === "fulfilled"
+      && serverResult.value.modelVersion === snapshot.version
+      && serverResult.value.providerId === snapshot.providerId
+    ? serverResult.value.diagnostics : [];
+  const filteredServer = filterServerSqlDiagnostics(model.getValue(), snapshot.providerId,
+    props.dangerousStatementWarningEnabled, server, local.diagnostics);
+  const diagnostics = mergeSqlDiagnostics(local.diagnostics, filteredServer);
+  diagnosticStates.set(snapshot.key, { version: snapshot.version, diagnostics,
+    quickFixes: local.quickFixes });
+  monaco.editor.setModelMarkers(model, SQL_DIAGNOSTIC_MARKER_OWNER, diagnostics.map((diagnostic) =>
+    sqlDiagnosticMarker(diagnostic, offsetRange(model, diagnostic.startOffset, diagnostic.endOffset),
+      monaco.MarkerSeverity.Error, monaco.MarkerSeverity.Warning)));
+}
+
+function clearModelDiagnostics(key: string, model: monaco.editor.ITextModel): void {
+  monaco.editor.setModelMarkers(model, SQL_DIAGNOSTIC_MARKER_OWNER, []);
+  diagnosticStates.delete(key);
+}
+
+function clearAllDiagnostics(): void {
+  diagnosticScheduler.invalidate();
+  for (const [key, model] of models) clearModelDiagnostics(key, model);
+}
+
+function offsetRange(model: monaco.editor.ITextModel, rawStart: number, rawEnd: number): monaco.Range {
+  const startOffset = Math.max(0, Math.min(model.getValueLength(), rawStart));
+  const endOffset = Math.max(startOffset, Math.min(model.getValueLength(), rawEnd));
+  const start = model.getPositionAt(startOffset);
+  const end = model.getPositionAt(endOffset === startOffset
+    ? Math.min(model.getValueLength(), startOffset + 1) : endOffset);
+  return new monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column);
+}
+
+function markerCode(value: string | { value: string } | undefined): string {
+  return typeof value === "string" ? value : value?.value ?? "";
+}
 
 function switchModel(key: string, value: string): void {
   if (!instance.value || !key) return;
@@ -341,7 +477,10 @@ function switchModel(key: string, value: string): void {
   contentListener?.dispose();
   contentListener = model.onDidChangeContent(() => { if (!changingModel) emit("dirty"); });
   changingModel = false;
-  if (isCompletionBound()) synchronizeInBackground(key, model);
+  if (isCompletionBound()) {
+    synchronizeInBackground(key, model);
+    scheduleDiagnostics(key, model, 0);
+  } else clearModelDiagnostics(key, model);
   emitSelectionState();
   instance.value.focus();
 }
@@ -353,10 +492,13 @@ function isCompletionBound(): boolean {
 function registerMirrorListener(key: string, model: monaco.editor.ITextModel): void {
   if (mirrorListeners.has(key)) return;
   mirrorListeners.set(key, model.onDidChangeContent((event) => {
-    if (!isCompletionBound()) return;
-    modelSynchronizer.change(key, event.versionId, event.changes.map((change) => ({
-      rangeOffset: change.rangeOffset, rangeLength: change.rangeLength, text: change.text
-    })));
+    clearModelDiagnostics(key, model);
+    if (isCompletionBound()) {
+      modelSynchronizer.change(key, event.versionId, event.changes.map((change) => ({
+        rangeOffset: change.rangeOffset, rangeLength: change.rangeLength, text: change.text
+      })));
+      if (instance.value?.getModel() === model) scheduleDiagnostics(key, model);
+    }
   }));
 }
 
@@ -494,6 +636,7 @@ function releaseModel(key: string): void {
   releaseEditorSources(key);
   mirrorListeners.get(key)?.dispose();
   mirrorListeners.delete(key);
+  clearModelDiagnostics(key, model);
   models.delete(key);
   viewStates.delete(key);
   model.dispose();
@@ -649,8 +792,10 @@ defineExpose({
 });
 
 onBeforeUnmount(() => {
+  clearAllDiagnostics();
   contentListener?.dispose();
   completionProvider?.dispose();
+  codeActionProvider?.dispose();
   selectionListener?.dispose();
   objectMouseMove?.dispose(); objectMouseDown?.dispose(); objectScroll?.dispose(); clearObjectHover();
   mirrorListeners.forEach((listener) => listener.dispose());

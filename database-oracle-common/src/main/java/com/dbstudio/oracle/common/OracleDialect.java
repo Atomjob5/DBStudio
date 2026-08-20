@@ -18,9 +18,11 @@ import com.alibaba.druid.sql.ast.statement.SQLUpdateStatement;
 import com.dbstudio.spi.DatabaseObject;
 import com.dbstudio.spi.ResultMutationSource;
 import com.dbstudio.spi.ResultEditPlan;
+import com.dbstudio.spi.SqlDiagnostic;
 import com.dbstudio.spi.SqlDialect;
 import com.dbstudio.spi.SqlDmlRiskAnalyzer;
 import com.dbstudio.spi.SqlStatement;
+import com.dbstudio.spi.SqlSyntaxDiagnosticSupport;
 import com.dbstudio.spi.SqlTextCompactor;
 import com.dbstudio.spi.StatementType;
 import com.dbstudio.spi.TransactionEffect;
@@ -60,6 +62,7 @@ public class OracleDialect implements SqlDialect {
         if (script == null || script.trim().isEmpty()) return Collections.emptyList();
         List<SqlStatement> result = new ArrayList<SqlStatement>();
         State state = State.NORMAL;
+        char alternativeQuoteClosing = '\0';
         int start = 0;
         int lineStart = 0;
         for (int index = 0; index < script.length(); index++) {
@@ -79,7 +82,12 @@ public class OracleDialect implements SqlDialect {
             }
             switch (state) {
                 case NORMAL:
-                    if (current == '\'') state = State.SINGLE_QUOTE;
+                    if ((current == 'q' || current == 'Q') && next == '\'' && index + 2 < script.length()) {
+                        alternativeQuoteClosing = pairedQuoteDelimiter(script.charAt(index + 2));
+                        state = State.ALTERNATIVE_QUOTE;
+                        index += 2;
+                    }
+                    else if (current == '\'') state = State.SINGLE_QUOTE;
                     else if (current == '"') state = State.DOUBLE_QUOTE;
                     else if (current == '-' && next == '-') { state = State.LINE_COMMENT; index++; }
                     else if (current == '/' && next == '*') { state = State.BLOCK_COMMENT; index++; }
@@ -95,6 +103,9 @@ public class OracleDialect implements SqlDialect {
                 case DOUBLE_QUOTE:
                     if (current == '"' && next == '"') index++;
                     else if (current == '"') state = State.NORMAL;
+                    break;
+                case ALTERNATIVE_QUOTE:
+                    if (current == alternativeQuoteClosing && next == '\'') { state = State.NORMAL; index++; }
                     break;
                 case LINE_COMMENT:
                     if (current == '\r' || current == '\n') state = State.NORMAL;
@@ -162,6 +173,11 @@ public class OracleDialect implements SqlDialect {
         catch (RuntimeException exception) {
             throw new IllegalArgumentException("无法格式化当前 Oracle SQL：" + exception.getMessage(), exception);
         }
+    }
+
+    @Override public List<SqlDiagnostic> syntaxDiagnostics(String script) {
+        return SqlSyntaxDiagnosticSupport.analyze(script, split(script), value ->
+                SQLUtils.parseSingleStatement(maskAlternativeQuotedLiterals(value), DbType.oracle));
     }
 
     @Override public String compact(String sql) {
@@ -362,5 +378,52 @@ public class OracleDialect implements SqlDialect {
         while (end < script.length() && script.charAt(end) != '\r' && script.charAt(end) != '\n') end++;
         return end;
     }
-    private enum State { NORMAL, SINGLE_QUOTE, DOUBLE_QUOTE, LINE_COMMENT, BLOCK_COMMENT }
+    /** Druid rejects apostrophes inside some valid q-quoted literals; mask them without moving offsets. */
+    private static String maskAlternativeQuotedLiterals(String sql) {
+        char[] masked = sql.toCharArray();
+        State state = State.NORMAL;
+        for (int index = 0; index < sql.length(); index++) {
+            char current = sql.charAt(index);
+            char next = index + 1 < sql.length() ? sql.charAt(index + 1) : '\0';
+            if (state == State.NORMAL) {
+                if ((current == 'q' || current == 'Q') && next == '\'' && index + 2 < sql.length()) {
+                    char closing = pairedQuoteDelimiter(sql.charAt(index + 2));
+                    int end = alternativeQuoteEnd(sql, index + 3, closing);
+                    if (end < 0) continue;
+                    for (int cursor = index; cursor < end; cursor++) {
+                        if (masked[cursor] != '\r' && masked[cursor] != '\n') masked[cursor] = ' ';
+                    }
+                    masked[index] = '\'';
+                    masked[end - 1] = '\'';
+                    index = end - 1;
+                } else if (current == '\'') state = State.SINGLE_QUOTE;
+                else if (current == '"') state = State.DOUBLE_QUOTE;
+                else if (current == '-' && next == '-') { state = State.LINE_COMMENT; index++; }
+                else if (current == '/' && next == '*') { state = State.BLOCK_COMMENT; index++; }
+            } else if (state == State.SINGLE_QUOTE) {
+                if (current == '\'' && next == '\'') index++;
+                else if (current == '\'') state = State.NORMAL;
+            } else if (state == State.DOUBLE_QUOTE) {
+                if (current == '"' && next == '"') index++;
+                else if (current == '"') state = State.NORMAL;
+            } else if (state == State.LINE_COMMENT) {
+                if (current == '\r' || current == '\n') state = State.NORMAL;
+            } else if (state == State.BLOCK_COMMENT && current == '*' && next == '/') {
+                state = State.NORMAL;
+                index++;
+            }
+        }
+        return new String(masked);
+    }
+    private static int alternativeQuoteEnd(String sql, int start, char closing) {
+        for (int index = start; index + 1 < sql.length(); index++) {
+            if (sql.charAt(index) == closing && sql.charAt(index + 1) == '\'') return index + 2;
+        }
+        return -1;
+    }
+    private static char pairedQuoteDelimiter(char opening) {
+        return opening == '[' ? ']' : opening == '{' ? '}' : opening == '(' ? ')'
+                : opening == '<' ? '>' : opening;
+    }
+    private enum State { NORMAL, SINGLE_QUOTE, DOUBLE_QUOTE, ALTERNATIVE_QUOTE, LINE_COMMENT, BLOCK_COMMENT }
 }

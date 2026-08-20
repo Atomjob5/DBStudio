@@ -5,8 +5,14 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.dbstudio.desktop.persistence.ConnectionCatalogRepository;
+import com.dbstudio.desktop.persistence.ConnectionProfileRepository;
+import com.dbstudio.desktop.persistence.ConnectionProfileRepository.SavedProfile;
+import com.dbstudio.desktop.web.EditorSessionRegistry.EditorSession;
+import com.dbstudio.spi.ConnectionProfile;
 import java.net.URI;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -46,6 +52,8 @@ class LocalServerSecurityTest {
     @Autowired LocalAccessToken token;
     @Autowired WorkspaceRegistry workspaces;
     @Autowired ObjectMapper mapper;
+    @Autowired ConnectionCatalogRepository connectionCatalog;
+    @Autowired ConnectionProfileRepository connectionProfiles;
 
     @Test
     void servesEmbeddedFrontendAndRejectsUnauthenticatedApi() {
@@ -230,6 +238,7 @@ class LocalServerSecurityTest {
         assertTrue(defaults.getBody().contains("\"editor.completionSnippets\":\"[]\""));
         assertTrue(defaults.getBody().contains("\"editor.minimapEnabled\":\"true\""));
         assertTrue(defaults.getBody().contains("\"editor.wordWrapEnabled\":\"false\""));
+        assertTrue(defaults.getBody().contains("\"editor.sqlDiagnosticsEnabled\":\"true\""));
 
         Map<String, String> setting = new HashMap<String, String>();
         setting.put("key", "result.columnLayoutScope");
@@ -263,7 +272,7 @@ class LocalServerSecurityTest {
         for (String key : Arrays.asList("result.headerSortingEnabled", "result.headerFilteringEnabled",
                 "result.showColumnRemarksInHeader", "result.zebraStripesEnabled", "result.compareCaseSensitive",
                 "statusBar.showSelectedColumnRemarks", "editor.minimapEnabled", "editor.wordWrapEnabled",
-                "editor.dangerousStatementWarningEnabled")) {
+                "editor.sqlDiagnosticsEnabled", "editor.dangerousStatementWarningEnabled")) {
             setting.put("key", key);
             setting.put("value", "false");
             assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
@@ -660,6 +669,79 @@ class LocalServerSecurityTest {
                 new HttpEntity<Map<String, Object>>(structureBody, headers), String.class);
         assertEquals(HttpStatus.BAD_REQUEST, missingEditor.getStatusCode());
         assertTrue(missingEditor.getBody().contains("EDITOR_REQUIRED"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void diagnosesAllProvidersFromLogicalBindingsWithoutOpeningJdbc() throws Exception {
+        HttpHeaders headers = authenticatedHeaders();
+        String workspaceId = UUID.randomUUID().toString();
+        assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/workspaces/" + workspaceId), HttpMethod.PUT,
+                new HttpEntity<String>("{}", headers), String.class).getStatusCode());
+        openWorkspace(headers, workspaceId);
+        Workspace workspace = workspaces.require(workspaceId);
+
+        Map<String, Object> unbound = http.exchange(url("/api/v1/workspaces/" + workspaceId + "/editors"),
+                HttpMethod.POST, new HttpEntity<Map<String, Object>>(new HashMap<String, Object>(), headers),
+                Map.class).getBody();
+        assertNotNull(unbound);
+        Map<String, Object> unboundRequest = new HashMap<String, Object>();
+        unboundRequest.put("editorId", unbound.get("id"));
+        unboundRequest.put("text", "SELECT (");
+        unboundRequest.put("modelVersion", 7);
+        Map<String, Object> empty = http.exchange(url("/api/v1/workspaces/" + workspaceId + "/sql/diagnostics"),
+                HttpMethod.POST, new HttpEntity<Map<String, Object>>(unboundRequest, headers), Map.class).getBody();
+        assertEquals(7, empty.get("modelVersion"));
+        assertEquals("", empty.get("providerId"));
+        assertTrue(((List<Object>) empty.get("diagnostics")).isEmpty());
+        unboundRequest.put("modelVersion", 1.5d);
+        ResponseEntity<String> invalidVersion = http.exchange(url("/api/v1/workspaces/" + workspaceId
+                        + "/sql/diagnostics"), HttpMethod.POST,
+                new HttpEntity<Map<String, Object>>(unboundRequest, headers), String.class);
+        assertEquals(HttpStatus.BAD_REQUEST, invalidVersion.getStatusCode());
+        assertTrue(invalidVersion.getBody().contains("INVALID_REQUEST"));
+
+        ConnectionCatalogRepository.SystemEntry system = connectionCatalog.createSystem("诊断系统-" + workspaceId);
+        ConnectionCatalogRepository.EnvironmentEntry environment = connectionCatalog.createEnvironment(
+                system.id(), "诊断环境");
+        for (String providerId : Arrays.asList("mysql", "oracle", "oceanbase-oracle")) {
+            UUID profileId = UUID.randomUUID();
+            ConnectionProfile profile = new ConnectionProfile(profileId, providerId, "诊断-" + providerId,
+                    Collections.<String, String>emptyMap(), "dbstudio/" + profileId);
+            connectionProfiles.save(profile, false, environment.id());
+            SavedProfile saved = connectionProfiles.find(profileId).orElseThrow(AssertionError::new);
+            Map<String, Object> created = http.exchange(url("/api/v1/workspaces/" + workspaceId + "/editors"),
+                    HttpMethod.POST, new HttpEntity<Map<String, Object>>(new HashMap<String, Object>(), headers),
+                    Map.class).getBody();
+            EditorSession editor = workspace.editors().require(String.valueOf(created.get("id")));
+            workspace.bindLogical(editor, saved);
+            assertTrue(!editor.hasContext());
+
+            String sql = "UPDATE orders SET status='x'; SELECT ( FROM orders";
+            Map<String, Object> request = new HashMap<String, Object>();
+            request.put("editorId", editor.id().toString());
+            request.put("text", sql);
+            request.put("modelVersion", 11);
+            Map<String, Object> response = http.exchange(url("/api/v1/workspaces/" + workspaceId
+                            + "/sql/diagnostics"), HttpMethod.POST,
+                    new HttpEntity<Map<String, Object>>(request, headers), Map.class).getBody();
+            assertEquals(11, response.get("modelVersion"));
+            assertEquals(providerId, response.get("providerId"));
+            List<Map<String, Object>> diagnostics = (List<Map<String, Object>>) response.get("diagnostics");
+            assertTrue(diagnostics.stream().anyMatch(value -> "SQL_DML_WITHOUT_WHERE".equals(value.get("code"))));
+            assertTrue(diagnostics.stream().anyMatch(value -> "SQL_SYNTAX_ERROR".equals(value.get("code"))));
+            assertTrue(!editor.hasContext(), "诊断不能激活 JDBC：" + providerId);
+        }
+
+        Map<String, Object> missingEditor = new HashMap<String, Object>();
+        missingEditor.put("editorId", UUID.randomUUID().toString());
+        missingEditor.put("text", "select 1");
+        missingEditor.put("modelVersion", 1);
+        ResponseEntity<String> rejected = http.exchange(url("/api/v1/workspaces/" + workspaceId
+                        + "/sql/diagnostics"), HttpMethod.POST,
+                new HttpEntity<Map<String, Object>>(missingEditor, headers), String.class);
+        assertEquals(HttpStatus.BAD_REQUEST, rejected.getStatusCode());
+        assertTrue(rejected.getBody().contains("EDITOR_NOT_FOUND"));
     }
 
     private HttpHeaders authenticatedHeaders() {

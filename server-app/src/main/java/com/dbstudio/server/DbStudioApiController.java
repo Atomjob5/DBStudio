@@ -28,6 +28,7 @@ import com.dbstudio.desktop.query.ResultMutationTarget;
 import com.dbstudio.desktop.query.StatementResult;
 import com.dbstudio.desktop.security.SecretStore;
 import com.dbstudio.desktop.web.EditorSessionRegistry.EditorSession;
+import com.dbstudio.desktop.web.RpcException;
 import com.dbstudio.spi.ColumnInfo;
 import com.dbstudio.spi.CompletionColumnComments;
 import com.dbstudio.spi.CompletionMetadataListener;
@@ -46,6 +47,7 @@ import com.dbstudio.spi.ObjectIndexColumnInfo;
 import com.dbstudio.spi.ObjectIndexInfo;
 import com.dbstudio.spi.ObjectPartitionInfo;
 import com.dbstudio.spi.SqlDmlRiskAnalyzer;
+import com.dbstudio.spi.SqlDiagnostic;
 import com.dbstudio.spi.SqlStatement;
 import com.dbstudio.spi.StatementType;
 import java.io.OutputStreamWriter;
@@ -115,7 +117,7 @@ public final class DbStudioApiController {
             "connection.transactionDisconnectRollbackMinutes",
             "editor.completionCandidateLimit", "editor.completionPreciseMatchingEnabled",
             "editor.completionSnippets", "editor.minimapEnabled", "editor.wordWrapEnabled",
-            "editor.dangerousStatementWarningEnabled", "editor.objectInspectorOpacity",
+            "editor.sqlDiagnosticsEnabled", "editor.dangerousStatementWarningEnabled", "editor.objectInspectorOpacity",
             "appearance.colorSchemes",
             "keyboard.shortcuts",
             "layout.leftWidth", "layout.editorHeight");
@@ -1466,6 +1468,53 @@ public final class DbStudioApiController {
         return ApiPayloads.map("text", provider.dialect().compact(ApiPayloads.text(body, "text")));
     }
 
+    @PostMapping("/workspaces/{workspaceId}/sql/diagnostics")
+    public Map<String, Object> diagnostics(@PathVariable String workspaceId,
+                                            @RequestBody Map<String, Object> body) {
+        Workspace workspace = workspaces.require(workspaceId);
+        String editorId = ApiPayloads.required(body, "editorId");
+        EditorSession editor;
+        try { editor = workspace.editors().require(editorId); }
+        catch (RpcException exception) {
+            throw new ApiException(exception.code(), exception.getMessage(), exception.details(), exception);
+        }
+        editor.touch();
+        Object rawVersion = body.get("modelVersion");
+        if (!(rawVersion instanceof Number)) {
+            throw new ApiException("INVALID_REQUEST", "modelVersion 必须是正整数");
+        }
+        int modelVersion = ((Number) rawVersion).intValue();
+        if (modelVersion < 1 || ((Number) rawVersion).doubleValue() != modelVersion) {
+            throw new ApiException("INVALID_REQUEST", "modelVersion 必须是正整数");
+        }
+        String text = ApiPayloads.text(body, "text");
+        SavedProfile binding = workspace.binding(editor);
+        if (binding == null) {
+            LOG.debug("SQL诊断完成 provider=unbound characters={} version={} diagnostics=0",
+                    text.length(), modelVersion);
+            return ApiPayloads.map("modelVersion", modelVersion, "providerId", "",
+                    "diagnostics", Collections.emptyList());
+        }
+
+        DatabaseProvider provider = providers.require(binding.profile().providerId());
+        List<SqlDiagnostic> values = new ArrayList<SqlDiagnostic>(provider.dialect().syntaxDiagnostics(text));
+        for (SqlStatement statement : provider.dialect().split(text)) {
+            if (!provider.dialect().requiresWhereClauseConfirmation(statement)) continue;
+            int localOffset = SqlDmlRiskAnalyzer.riskyDmlKeywordOffset(statement.text());
+            if (localOffset < 0) localOffset = 0;
+            int start = Math.min(statement.endOffset(), statement.startOffset() + localOffset);
+            int end = Math.min(statement.endOffset(), start + 6);
+            values.add(new SqlDiagnostic("SQL_DML_WITHOUT_WHERE", SqlDiagnostic.CATEGORY_RISK,
+                    SqlDiagnostic.SEVERITY_WARNING,
+                    "当前 UPDATE/DELETE 未包含顶层 WHERE，可能影响大量数据", start, end));
+        }
+        List<Map<String, Object>> result = new ArrayList<Map<String, Object>>();
+        for (SqlDiagnostic diagnostic : values) result.add(sqlDiagnosticMap(diagnostic));
+        LOG.debug("SQL诊断完成 provider={} characters={} version={} diagnostics={}",
+                provider.id(), text.length(), modelVersion, result.size());
+        return ApiPayloads.map("modelVersion", modelVersion, "providerId", provider.id(), "diagnostics", result);
+    }
+
     @GetMapping("/workspaces/{workspaceId}/sql/completions")
     public List<Map<String, Object>> completions(@PathVariable String workspaceId,
                                                  @RequestParam(defaultValue = "") String prefix,
@@ -1632,6 +1681,7 @@ public final class DbStudioApiController {
             throw new ApiException("INVALID_SETTING", "精准匹配设置无效");
         }
         if (("editor.minimapEnabled".equals(key) || "editor.wordWrapEnabled".equals(key)
+                || "editor.sqlDiagnosticsEnabled".equals(key)
                 || "editor.dangerousStatementWarningEnabled".equals(key))
                 && !Arrays.asList("true", "false").contains(value)) {
             throw new ApiException("INVALID_SETTING", "编辑器开关设置无效");
@@ -2563,6 +2613,7 @@ public final class DbStudioApiController {
         if (!result.containsKey("editor.completionSnippets")) result.put("editor.completionSnippets", "[]");
         if (!result.containsKey("editor.minimapEnabled")) result.put("editor.minimapEnabled", "true");
         if (!result.containsKey("editor.wordWrapEnabled")) result.put("editor.wordWrapEnabled", "false");
+        if (!result.containsKey("editor.sqlDiagnosticsEnabled")) result.put("editor.sqlDiagnosticsEnabled", "true");
         if (!result.containsKey("editor.objectInspectorOpacity")) result.put("editor.objectInspectorOpacity", "100");
         if (!result.containsKey("editor.dangerousStatementWarningEnabled")) {
             result.put("editor.dangerousStatementWarningEnabled", "true");
@@ -2606,6 +2657,12 @@ public final class DbStudioApiController {
         for (DatabaseCapability capability : provider.capabilities().values()) capabilities.add(capability.name());
         return ApiPayloads.map("id", provider.id(), "displayName", provider.displayName(),
                 "fields", fields, "capabilities", capabilities);
+    }
+
+    private static Map<String, Object> sqlDiagnosticMap(SqlDiagnostic diagnostic) {
+        return ApiPayloads.map("code", diagnostic.code(), "category", diagnostic.category(),
+                "severity", diagnostic.severity(), "message", diagnostic.message(),
+                "startOffset", diagnostic.startOffset(), "endOffset", diagnostic.endOffset());
     }
 
     private static Map<String, Object> profileMap(SavedProfile saved) {

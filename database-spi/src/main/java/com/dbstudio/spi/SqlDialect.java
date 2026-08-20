@@ -21,6 +21,11 @@ public interface SqlDialect {
 
     String format(String sql);
 
+    /** Returns parser-backed syntax diagnostics without connecting to a database. */
+    default List<SqlDiagnostic> syntaxDiagnostics(String script) {
+        return Collections.emptyList();
+    }
+
     /**
      * Returns whether this statement is an UPDATE or DELETE without a top-level WHERE predicate.
      * Implementations with an SQL parser should override this method so comments, literals and

@@ -23,6 +23,7 @@ import type {
 } from "../types";
 import type { CompletionWorkerRequest, CompletionWorkerResponse } from "../completion/workerProtocol";
 import { CompletionDocumentMirror } from "../completion/documentMirror";
+import { resolveLocalSqlDiagnostics } from "../completion/sqlDiagnostics";
 
 interface LegacyStoredSnapshot {
   cacheKey: string;
@@ -134,6 +135,12 @@ async function handle(request: CompletionWorkerRequest) {
     return resolveCompletion(entry?.index, { providerId: request.providerId, sql,
       cursorOffset: request.cursorOffset, prefix: request.prefix, limit: request.limit,
       preciseMatchingEnabled: request.preciseMatchingEnabled });
+  }
+  if (request.type === "diagnose") {
+    const sql = documents.read(request.modelKey, request.modelVersion);
+    const entry = request.metadataReady
+      ? await completionIndex(request.cacheKey, request.providerId) : undefined;
+    return resolveLocalSqlDiagnostics(entry?.index, request.providerId, sql);
   }
   if (request.type === "result-columns.resolve") {
     const entry = await completionIndex(request.cacheKey, request.providerId);

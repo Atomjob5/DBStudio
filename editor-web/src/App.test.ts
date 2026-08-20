@@ -696,6 +696,7 @@ describe("App result loading status toolbar", () => {
     const vm = wrapper.vm as unknown as {
       updateMinimapEnabled: (value: boolean) => Promise<void>;
       updateWordWrapEnabled: (value: boolean) => Promise<void>;
+      updateSqlDiagnosticsEnabled: (value: boolean) => Promise<void>;
     };
 
     rpcRequest.mockResolvedValueOnce({});
@@ -711,6 +712,17 @@ describe("App result loading status toolbar", () => {
     expect(rpcRequest).toHaveBeenLastCalledWith("settings.update", {
       key: "editor.wordWrapEnabled", value: "true"
     });
+
+    rpcRequest.mockResolvedValueOnce({});
+    await vm.updateSqlDiagnosticsEnabled(false);
+    expect(settings.sqlDiagnosticsEnabled).toBe(false);
+    expect(rpcRequest).toHaveBeenLastCalledWith("settings.update", {
+      key: "editor.sqlDiagnosticsEnabled", value: "false"
+    });
+
+    rpcRequest.mockRejectedValueOnce(new Error("save failed"));
+    await vm.updateSqlDiagnosticsEnabled(true);
+    expect(settings.sqlDiagnosticsEnabled).toBe(false);
 
     rpcRequest.mockRejectedValueOnce(new Error("save failed"));
     await vm.updateMinimapEnabled(true);

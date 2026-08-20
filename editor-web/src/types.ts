@@ -442,6 +442,36 @@ export interface CompletionResult {
   incomplete: boolean;
 }
 
+export type SqlDiagnosticCategory = "syntax" | "risk" | "semantic";
+export type SqlDiagnosticSeverity = "error" | "warning";
+
+export interface SqlDiagnostic {
+  code: string;
+  category: SqlDiagnosticCategory;
+  severity: SqlDiagnosticSeverity;
+  message: string;
+  startOffset: number;
+  endOffset: number;
+}
+
+export interface SqlQuickFix {
+  diagnosticCode: string;
+  title: string;
+  isPreferred: boolean;
+  edits: Array<{ startOffset: number; endOffset: number; text: string }>;
+}
+
+export interface SqlDiagnosticsResponse {
+  modelVersion: number;
+  providerId: string;
+  diagnostics: SqlDiagnostic[];
+}
+
+export interface LocalSqlDiagnostics {
+  diagnostics: SqlDiagnostic[];
+  quickFixes: SqlQuickFix[];
+}
+
 export interface SqlCompletionSnippet {
   id: string;
   trigger: string;

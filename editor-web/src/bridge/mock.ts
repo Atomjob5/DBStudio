@@ -70,6 +70,8 @@ const mockSettings: Record<string, string> = {
   "editor.completionSnippets": "[]",
   "editor.minimapEnabled": "true",
   "editor.wordWrapEnabled": "false",
+  "editor.sqlDiagnosticsEnabled": "true",
+  "editor.dangerousStatementWarningEnabled": "true",
   "editor.objectInspectorOpacity": "100",
   "appearance.colorSchemes": serializeColorSchemeSettings(DEFAULT_COLOR_SCHEMES),
   "keyboard.shortcuts": serializeShortcutBindings(DEFAULT_SHORTCUT_BINDINGS),
@@ -249,6 +251,11 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
   }
   if (type === "sql.complete") return [];
   if (type === "sql.format") return { text: payload.text };
+  if (type === "sql.diagnostics") return {
+    modelVersion: payload.modelVersion,
+    providerId: editorProfiles.has(String(payload.editorId)) ? "mysql" : "",
+    diagnostics: []
+  };
   if (type === "sql.compact") return { text: payload.text };
   if (type === "metadata.children") return metadata(payload);
   if (type === "metadata.objectSection") {

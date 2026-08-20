@@ -185,11 +185,15 @@
                   <MonacoEditor v-if="editors.active" ref="monacoEditor" class="editor-widget" :model-key="editors.active.id"
                                 :initial-value="editors.active.content" :theme="app.theme" :appearance="activeColorScheme"
                                 :completion-key="activeCompletionKey" :provider-id="editors.active.connection?.providerId || 'generic'"
+                                :completion-revision="activeCompletionRevision"
+                                :completion-metadata-ready="activeCompletionMetadataReady"
                                 :completion-candidate-limit="settings.completionCandidateLimit"
                                 :completion-precise-matching-enabled="settings.completionPreciseMatchingEnabled"
                                 :completion-snippets="settings.completionSnippets"
                                 :minimap-enabled="settings.minimapEnabled"
                                 :word-wrap-enabled="settings.wordWrapEnabled"
+                                :diagnostics-enabled="settings.sqlDiagnosticsEnabled"
+                                :dangerous-statement-warning-enabled="settings.dangerousStatementWarningEnabled"
                                 :editor-id="editors.active.id" :connection-display="activeConnectionDisplay"
                                 :default-catalog="editors.active.connection?.settings.database || editors.active.connection?.settings.catalog"
                                 :default-schema="editors.active.connection?.settings.schema"
@@ -263,6 +267,7 @@
                   :completion-precise-matching-enabled="settings.completionPreciseMatchingEnabled"
                   :completion-snippet-count="settings.completionSnippets.length"
                   :minimap-enabled="settings.minimapEnabled" :word-wrap-enabled="settings.wordWrapEnabled"
+                  :sql-diagnostics-enabled="settings.sqlDiagnosticsEnabled"
                   :dangerous-statement-warning-enabled="settings.dangerousStatementWarningEnabled"
                   :completion-cache-size="completionCacheSize" :completion-cache-environment-count="metadata.completionStats.environmentCount"
                   :completion-cache-loading-count="metadata.completionStats.loadingCount" :can-clear-completion-caches="metadata.canClearCompletions"
@@ -284,6 +289,7 @@
                   @update:completion-precise-matching-enabled="updateCompletionPreciseMatchingEnabled"
                   @update:minimap-enabled="updateMinimapEnabled"
                   @update:word-wrap-enabled="updateWordWrapEnabled"
+                  @update:sql-diagnostics-enabled="updateSqlDiagnosticsEnabled"
                   @update:dangerous-statement-warning-enabled="updateDangerousStatementWarningEnabled"
                   @clear-completion-caches="clearCompletionCaches" @open-shortcuts="openShortcutSettings"
                   @open-appearance="appearanceDrawer = true"
@@ -504,6 +510,15 @@ const allRowsTooltip = computed(() => actionTooltip(resultLoadTooltip("all"), "r
 const activeConnected = computed(() => Boolean(editors.active?.connection && editors.active.connectionState !== "unbound"));
 const activeCompletionContext = computed(() => connections.completionContext(editors.active?.connection));
 const activeCompletionKey = computed(() => activeCompletionContext.value?.key ?? "unbound");
+const activeCompletionRevision = computed(() => {
+  const cache = metadata.completionFor(activeCompletionKey.value);
+  return [cache?.state ?? "empty", cache?.generatedAt ?? "", cache?.summary?.objectCount ?? 0,
+    cache?.summary?.columnCount ?? 0, cache?.summary?.warning ?? ""].join(":");
+});
+const activeCompletionMetadataReady = computed(() => {
+  const cache = metadata.completionFor(activeCompletionKey.value);
+  return cache?.state === "ready" && !cache.summary?.warning;
+});
 const activeObjectTreeKey = computed(() => {
   const environmentId = editors.active?.connection?.environmentId;
   const systemId = connections.environments.find((item) => item.id === environmentId)?.systemId;
@@ -2261,6 +2276,11 @@ async function updateWordWrapEnabled(value: boolean): Promise<void> {
   const previous = settings.wordWrapEnabled; settings.wordWrapEnabled = value;
   try { await rpc.request("settings.update", { key: "editor.wordWrapEnabled", value: String(value) }); }
   catch (error) { settings.wordWrapEnabled = previous; reportError(error); }
+}
+async function updateSqlDiagnosticsEnabled(value: boolean): Promise<void> {
+  const previous = settings.sqlDiagnosticsEnabled; settings.sqlDiagnosticsEnabled = value;
+  try { await rpc.request("settings.update", { key: "editor.sqlDiagnosticsEnabled", value: String(value) }); }
+  catch (error) { settings.sqlDiagnosticsEnabled = previous; reportError(error); }
 }
 async function updateObjectInspectorOpacity(value: number): Promise<void> {
   const normalized = Math.max(1, Math.min(100, Math.round(value)));

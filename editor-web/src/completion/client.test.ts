@@ -62,6 +62,16 @@ describe("CompletionClient worker protocol", () => {
     expect(request).not.toHaveProperty("sql");
   });
 
+  it("sends diagnostics by model identity without copying SQL into the worker request", async () => {
+    vi.stubGlobal("Worker", MockWorker);
+    const client = new CompletionClient();
+    await client.diagnose("cache", "oceanbase-oracle", "editor", 9);
+    const request = MockWorker.latest?.messages[0];
+    expect(request).toMatchObject({ type: "diagnose", cacheKey: "cache",
+      providerId: "oceanbase-oracle", modelKey: "editor", modelVersion: 9, metadataReady: true });
+    expect(request).not.toHaveProperty("sql");
+  });
+
   it("uses the same Worker channel for sync, incremental change, and release", async () => {
     vi.stubGlobal("Worker", MockWorker);
     const client = new CompletionClient();

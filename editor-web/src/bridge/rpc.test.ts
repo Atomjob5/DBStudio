@@ -178,6 +178,25 @@ describe("RpcClient websocket recovery", () => {
     client.dispose();
   });
 
+  it("routes versioned SQL diagnostics through the active workspace", async () => {
+    const response = { modelVersion: 4, providerId: "mysql", diagnostics: [] };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).includes("/open")
+      ? jsonResponse({ workspaceId: "workspace", recoveryDecisionRequired: false, editors: [] })
+      : jsonResponse(response));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new RpcClient();
+    await open(client);
+
+    await expect(client.request("sql.diagnostics", {
+      editorId: "editor-1", text: "SELECT 1", modelVersion: 4,
+    })).resolves.toEqual(response);
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/workspaces/workspace/sql/diagnostics"),
+      expect.objectContaining({ method: "POST", body: JSON.stringify({
+        editorId: "editor-1", text: "SELECT 1", modelVersion: 4,
+      }) }));
+    client.dispose();
+  });
+
   it("routes result changes with the server-owned result index", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).includes("/open")
       ? jsonResponse({ workspaceId: "workspace", recoveryDecisionRequired: false, editors: [] })

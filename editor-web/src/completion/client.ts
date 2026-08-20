@@ -1,4 +1,4 @@
-import type { CompletionCacheStats, CompletionCacheSummary, CompletionResult, ResolvedResultColumnRemark,
+import type { CompletionCacheStats, CompletionCacheSummary, CompletionResult, LocalSqlDiagnostics, ResolvedResultColumnRemark,
   QueryColumn, ResultColumnRemarkLookup } from "../types";
 import type { CompletionWorkerRequest, CompletionWorkerResponse, CompletionWorkerValue } from "./workerProtocol";
 import type { CompletionTextChange } from "./documentMirror";
@@ -41,6 +41,12 @@ export class CompletionClient {
            preciseMatchingEnabled: boolean): Promise<CompletionResult> {
     return this.send({ id: crypto.randomUUID(), type: "complete", cacheKey, providerId, modelKey,
       modelVersion, cursorOffset, prefix, limit, preciseMatchingEnabled }) as Promise<CompletionResult>;
+  }
+
+  diagnose(cacheKey: string, providerId: string, modelKey: string,
+           modelVersion: number, metadataReady = true): Promise<LocalSqlDiagnostics> {
+    return this.send({ id: crypto.randomUUID(), type: "diagnose", cacheKey, providerId, modelKey,
+      modelVersion, metadataReady }) as Promise<LocalSqlDiagnostics>;
   }
 
   resolveResultColumnRemarks(cacheKey: string, providerId: string, sql: string,

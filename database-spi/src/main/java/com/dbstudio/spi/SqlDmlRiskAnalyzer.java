@@ -8,9 +8,20 @@ public final class SqlDmlRiskAnalyzer {
     }
 
     public static boolean requiresWhereClauseConfirmation(String sql) {
-        if (sql == null || sql.trim().isEmpty()) return false;
+        RiskAssessment assessment = assessRisk(sql);
+        return assessment.dmlOffset >= 0 && !assessment.hasWhereClause;
+    }
+
+    /** Returns the UTF-16 offset of the risky top-level UPDATE/DELETE keyword, or -1. */
+    public static int riskyDmlKeywordOffset(String sql) {
+        RiskAssessment assessment = assessRisk(sql);
+        return assessment.dmlOffset >= 0 && !assessment.hasWhereClause ? assessment.dmlOffset : -1;
+    }
+
+    private static RiskAssessment assessRisk(String sql) {
+        if (sql == null || sql.trim().isEmpty()) return RiskAssessment.safe();
         String firstTopLevelWord = null;
-        boolean riskyDml = false;
+        int riskyDmlOffset = -1;
         int depth = 0;
         for (int index = 0; index < sql.length();) {
             char current = sql.charAt(index);
@@ -56,18 +67,18 @@ public final class SqlDmlRiskAnalyzer {
                 String word = sql.substring(index, end).toUpperCase(Locale.ROOT);
                 if (firstTopLevelWord == null) {
                     firstTopLevelWord = word;
-                    if ("UPDATE".equals(word) || "DELETE".equals(word)) riskyDml = true;
-                    else if (!"WITH".equals(word)) return false;
-                } else if ("WITH".equals(firstTopLevelWord) && !riskyDml
+                    if ("UPDATE".equals(word) || "DELETE".equals(word)) riskyDmlOffset = index;
+                    else if (!"WITH".equals(word)) return RiskAssessment.safe();
+                } else if ("WITH".equals(firstTopLevelWord) && riskyDmlOffset < 0
                         && ("UPDATE".equals(word) || "DELETE".equals(word))) {
-                    riskyDml = true;
-                } else if (riskyDml && "WHERE".equals(word)) {
-                    return false;
+                    riskyDmlOffset = index;
+                } else if (riskyDmlOffset >= 0 && "WHERE".equals(word)) {
+                    return new RiskAssessment(riskyDmlOffset, true);
                 }
             }
             index = end;
         }
-        return riskyDml;
+        return new RiskAssessment(riskyDmlOffset, false);
     }
 
     /** Returns whether a top-level SELECT carries a locking FOR UPDATE clause. */
@@ -190,5 +201,17 @@ public final class SqlDmlRiskAnalyzer {
             if (sql.charAt(cursor) == closing && sql.charAt(cursor + 1) == '\'') return cursor + 2;
         }
         return sql.length();
+    }
+
+    private static final class RiskAssessment {
+        private final int dmlOffset;
+        private final boolean hasWhereClause;
+
+        private RiskAssessment(int dmlOffset, boolean hasWhereClause) {
+            this.dmlOffset = dmlOffset;
+            this.hasWhereClause = hasWhereClause;
+        }
+
+        private static RiskAssessment safe() { return new RiskAssessment(-1, false); }
     }
 }

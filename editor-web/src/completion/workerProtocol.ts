@@ -1,4 +1,4 @@
-import type { CompletionCacheStats, CompletionCacheSummary, CompletionResult, ResolvedResultColumnRemark,
+import type { CompletionCacheStats, CompletionCacheSummary, CompletionResult, LocalSqlDiagnostics, ResolvedResultColumnRemark,
   QueryColumn, ResultColumnRemarkLookup } from "../types";
 import type { CompletionTextChange } from "./documentMirror";
 
@@ -11,6 +11,8 @@ export type CompletionWorkerRequest =
   | { id: string; type: "complete"; cacheKey: string; providerId: string; modelKey: string;
       modelVersion: number; cursorOffset: number; prefix: string; limit: number;
       preciseMatchingEnabled: boolean }
+  | { id: string; type: "diagnose"; cacheKey: string; providerId: string; modelKey: string;
+      modelVersion: number; metadataReady: boolean }
   | { id: string; type: "result-columns.resolve"; cacheKey: string; providerId: string;
       sql: string; columns: ResultColumnRemarkLookup[] }
   | { id: string; type: "query.enrich"; cacheKey: string; providerId: string; url: string;
@@ -20,7 +22,7 @@ export type CompletionWorkerRequest =
   | { id: string; type: "clear" };
 
 export type CompletionWorkerValue = CompletionCacheSummary | CompletionResult
-  | ResolvedResultColumnRemark[] | Omit<CompletionCacheStats, "loadingCount"> | undefined;
+  | LocalSqlDiagnostics | ResolvedResultColumnRemark[] | Omit<CompletionCacheStats, "loadingCount"> | undefined;
 
 export interface CompletionWorkerResponse {
   id: string;

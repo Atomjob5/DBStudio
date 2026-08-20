@@ -13,18 +13,18 @@ import type {
   ResultColumnRemarkLookup
 } from "./types";
 
-interface IndexedObject {
+export interface IndexedObject {
   snapshot: CompletionObjectSnapshot;
   columns: CompletionObjectSnapshot["columns"];
 }
 
-interface IndexedNamespace {
+export interface IndexedNamespace {
   snapshot: CompletionNamespaceSnapshot;
   objects: Map<string, IndexedObject>;
   sortedObjects: IndexedObject[];
 }
 
-interface CompletionSource {
+export interface CompletionSource {
   kind: "physical" | "cte" | "derived";
   name: string;
   alias: string;
@@ -32,6 +32,12 @@ interface CompletionSource {
   namespace?: IndexedNamespace;
   object?: IndexedObject;
   columns?: string[];
+  start?: number;
+  end?: number;
+  nameStart?: number;
+  nameEnd?: number;
+  objectStart?: number;
+  objectEnd?: number;
 }
 
 interface CompletionScope {
@@ -591,8 +597,8 @@ function activeScopeRanges(tokens: SqlToken[], beforeTokens: SqlToken[], current
   return ranges;
 }
 
-function parseCtes(index: CompletionIndex, tokens: SqlToken[], start: number, depth: number,
-                   inherited: Map<string, CompletionSource>): Map<string, CompletionSource> {
+export function parseCtes(index: CompletionIndex, tokens: SqlToken[], start: number, depth: number,
+                          inherited: Map<string, CompletionSource>): Map<string, CompletionSource> {
   const ctes = new Map<string, CompletionSource>();
   let cursor = nextWordIndex(tokens, start, depth);
   if (cursor < 0 || tokens[cursor].lower !== "with") return ctes;
@@ -620,7 +626,8 @@ function parseCtes(index: CompletionIndex, tokens: SqlToken[], start: number, de
     const available = new Map([...inherited, ...ctes]);
     const columns = explicitColumns.length ? explicitColumns
       : projectedColumns(index, tokens, open + 1, close, depth + 1, available);
-    ctes.set(normalize(name), { kind: "cte", name, alias: name, columns: uniqueNames(columns) });
+    ctes.set(normalize(name), { kind: "cte", name, alias: name, columns: uniqueNames(columns),
+      start: nameToken.start, end: nameToken.end, nameStart: nameToken.start, nameEnd: nameToken.end });
     cursor = nextSignificant(tokens, close + 1, depth);
     if (tokens[cursor]?.value !== ",") break;
     cursor = nextSignificant(tokens, cursor + 1, depth);
@@ -628,8 +635,8 @@ function parseCtes(index: CompletionIndex, tokens: SqlToken[], start: number, de
   return ctes;
 }
 
-function parseSources(index: CompletionIndex, tokens: SqlToken[], start: number, end: number, depth: number,
-                      ctes: Map<string, CompletionSource>): CompletionSource[] {
+export function parseSources(index: CompletionIndex, tokens: SqlToken[], start: number, end: number, depth: number,
+                             ctes: Map<string, CompletionSource>): CompletionSource[] {
   const sources: CompletionSource[] = [];
   const kind = statementKind(tokens, start, depth);
   let sourceList = false;
@@ -653,7 +660,9 @@ function parseSources(index: CompletionIndex, tokens: SqlToken[], start: number,
       const aliasResult = readAlias(tokens, close + 1, depth);
       const alias = aliasResult.alias || "derived";
       sources.push({ kind: "derived", name: alias, alias,
-        columns: projectedColumns(index, tokens, cursor + 1, close, depth + 1, ctes) });
+        columns: projectedColumns(index, tokens, cursor + 1, close, depth + 1, ctes),
+        start: token.start, end: tokens[Math.max(close, aliasResult.nextIndex - 1)]?.end ?? tokens[close].end,
+        nameStart: token.start, nameEnd: tokens[close].end });
       cursor = aliasResult.nextIndex - 1;
       expectSource = false;
       continue;
@@ -670,18 +679,30 @@ function parseSources(index: CompletionIndex, tokens: SqlToken[], start: number,
     const aliasResult = readAlias(tokens, next, depth);
     const alias = aliasResult.alias || name;
     const cte = names.length === 1 ? ctes.get(normalize(name)) : undefined;
-    sources.push(cte ? { ...cte, alias } : physicalSource(index, names, alias));
+    const sourceEnd = tokens[Math.max(cursor, aliasResult.nextIndex - 1)]?.end ?? token.end;
+    sources.push(cte
+      ? { ...cte, alias, start: token.start, end: sourceEnd, nameStart: token.start,
+        nameEnd: tokens[Math.max(cursor, next - 1)]?.end ?? token.end,
+        objectStart: tokens[Math.max(cursor, next - 1)]?.start ?? token.start,
+        objectEnd: tokens[Math.max(cursor, next - 1)]?.end ?? token.end }
+      : physicalSource(index, names, alias, token.start, sourceEnd,
+        token.start, tokens[Math.max(cursor, next - 1)]?.end ?? token.end,
+        tokens[Math.max(cursor, next - 1)]?.start ?? token.start,
+        tokens[Math.max(cursor, next - 1)]?.end ?? token.end));
     cursor = aliasResult.nextIndex - 1;
     expectSource = false;
   }
   return deduplicateSources(sources);
 }
 
-function physicalSource(index: CompletionIndex, names: string[], alias: string): CompletionSource {
+function physicalSource(index: CompletionIndex, names: string[], alias: string, start?: number, end?: number,
+                        nameStart?: number, nameEnd?: number, objectStart?: number,
+                        objectEnd?: number): CompletionSource {
   const name = names.at(-1) ?? "";
   const namespaceName = names.length > 1 ? names.at(-2) : undefined;
   const namespace = namespaceName ? index.namespaces.get(normalize(namespaceName)) : index.defaultNamespace;
-  return { kind: "physical", name, alias, namespaceName, namespace,
+  return { kind: "physical", name, alias, namespaceName, namespace, start, end, nameStart, nameEnd,
+    objectStart, objectEnd,
     object: namespace?.objects.get(normalize(name)) };
 }
 
@@ -740,7 +761,7 @@ function projectedColumns(index: CompletionIndex, tokens: SqlToken[], start: num
   return uniqueNames(result);
 }
 
-function sourceColumnNames(source: CompletionSource): string[] {
+export function sourceColumnNames(source: CompletionSource): string[] {
   if (source.kind === "physical") return source.object?.columns.map((column) => column.name) ?? [];
   return source.columns ?? [];
 }
@@ -978,7 +999,7 @@ function pushBoundedCandidate(values: CandidateRank[], candidate: CandidateRank,
   values.splice(maximum);
 }
 
-function statementKind(tokens: SqlToken[], start: number, depth: number): string {
+export function statementKind(tokens: SqlToken[], start: number, depth: number): string {
   for (let cursor = start; cursor < tokens.length; cursor += 1) {
     const token = tokens[cursor];
     if (token.depth !== depth || token.kind !== "word" || token.quoted) continue;
@@ -1075,6 +1096,16 @@ function compareName(left: string, right: string): number {
   return left.localeCompare(right, undefined, { sensitivity: "base" });
 }
 
-function normalize(value: string): string {
+export function normalize(value: string): string {
   return value.trim().toLocaleLowerCase();
+}
+
+/** Applies the same identifier matching and ranking used by completion to diagnostic replacements. */
+export function diagnosticNameCandidates(values: string[], input: string, maximum = 3): string[] {
+  const prefix = normalize(input);
+  return uniqueNames(values).filter((value) => identifierMatch(value, prefix, false))
+    .sort((left, right) => compareIdentifierMatch(
+      identifierMatch(left, prefix, false), identifierMatch(right, prefix, false))
+      || compareName(left, right))
+    .slice(0, Math.max(0, maximum));
 }

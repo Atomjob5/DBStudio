@@ -4,6 +4,8 @@ import com.dbstudio.spi.DatabaseObject;
 import com.dbstudio.spi.DatabaseObjectType;
 import com.dbstudio.spi.ResultMutationSource;
 import com.dbstudio.spi.SqlStatement;
+import com.dbstudio.spi.SqlDiagnostic;
+import com.dbstudio.spi.SqlDmlRiskAnalyzer;
 import com.dbstudio.spi.StatementType;
 import com.dbstudio.spi.TransactionEffect;
 import java.sql.Types;
@@ -24,6 +26,16 @@ class OracleDialectTest {
         assertTrue(statements.get(1).text().startsWith("CREATE OR REPLACE PROCEDURE"));
         assertFalse(statements.get(1).text().endsWith("/"));
         assertEquals("SELECT 2 FROM dual", statements.get(2).text());
+    }
+
+    @Test void keepsSemicolonsAndApostrophesInsideAlternativeQuotes() {
+        String script = "SELECT q'[it's; still one value]' FROM dual;\nSELECT 2 FROM dual;";
+        List<SqlStatement> statements = dialect.split(script);
+
+        assertEquals(2, statements.size());
+        assertTrue(statements.get(0).text().contains("it's; still one value"));
+        assertEquals("SELECT 2 FROM dual", statements.get(1).text());
+        assertTrue(dialect.syntaxDiagnostics(script).isEmpty());
     }
 
     @Test void usesOracleQualificationPreviewAndLiterals() {
@@ -54,6 +66,28 @@ class OracleDialectTest {
         assertFalse(dialect.requiresWhereClauseConfirmation(statement("DELETE FROM orders WHERE id = 1")));
         assertFalse(dialect.requiresWhereClauseConfirmation(statement(
                 "MERGE INTO orders d USING source s ON (d.id = s.id) WHEN MATCHED THEN UPDATE SET d.status = 'CLOSED'")));
+    }
+
+    @Test void diagnosesOracleSyntaxAndMultiStatementOffsets() {
+        for (String valid : java.util.Arrays.asList(
+                "SELECT \"Id\", q'[中文 ( text ]' FROM \"Orders\" FETCH FIRST 10 ROWS ONLY",
+                "MERGE INTO target t USING source s ON (t.id=s.id) WHEN MATCHED THEN UPDATE SET t.name=s.name",
+                "BEGIN NULL; END;\n/")) {
+            assertTrue(dialect.syntaxDiagnostics(valid).isEmpty(), valid);
+        }
+        String script = "SELECT '中文😀' FROM dual;\nSELECT ( FROM dual";
+        List<SqlDiagnostic> diagnostics = dialect.syntaxDiagnostics(script);
+        assertEquals(1, diagnostics.size());
+        assertEquals("SQL_SYNTAX_ERROR", diagnostics.get(0).code());
+        assertTrue(diagnostics.get(0).startOffset() >= script.indexOf("SELECT ("));
+        assertTrue(diagnostics.get(0).endOffset() <= script.length());
+        assertFalse(dialect.syntaxDiagnostics("SELECT ( FROM SECRET_ORDERS").get(0).message()
+                .contains("SECRET_ORDERS"));
+    }
+
+    @Test void locatesRiskyOracleKeywordAfterCteInUtf16Units() {
+        String sql = "/* 😀 */ WITH source AS (SELECT 1 FROM dual WHERE 1=1) DELETE FROM orders";
+        assertEquals(sql.indexOf("DELETE"), SqlDmlRiskAnalyzer.riskyDmlKeywordOffset(sql));
     }
 
     @Test void compactsOracleSqlWithoutChangingStringsOrDroppingComments() {

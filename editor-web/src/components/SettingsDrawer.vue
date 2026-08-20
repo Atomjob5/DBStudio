@@ -43,6 +43,17 @@
         </el-form-item>
         <el-form-item class="compact-setting-row">
           <template #label>
+            <div class="setting-label"><span>SQL 实时诊断</span>
+              <el-tooltip content="停止输入 400 毫秒后检查语法、对象、字段及安全风险；诊断提示不会阻止执行。" placement="top">
+                <el-icon class="setting-help" tabindex="0" aria-label="SQL 实时诊断说明"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </div>
+          </template>
+          <el-switch size="small" aria-label="SQL 实时诊断" :model-value="sqlDiagnosticsEnabled"
+                     @update:model-value="$emit('update:sqlDiagnosticsEnabled', $event === true)" />
+        </el-form-item>
+        <el-form-item class="compact-setting-row">
+          <template #label>
             <div class="setting-label"><span>高危语句提醒</span>
               <el-tooltip content="对未包含 WHERE 的 UPDATE、DELETE，首次执行时提示再次执行确认。" placement="top">
                 <el-icon class="setting-help" tabindex="0" aria-label="高危语句提醒说明"><QuestionFilled /></el-icon>
@@ -310,9 +321,11 @@ defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: Resolv
   completionCacheSize: string; completionCacheEnvironmentCount: number; completionCacheLoadingCount: number;
   completionCandidateLimit: number; completionPreciseMatchingEnabled: boolean;
   completionSnippetCount: number; canClearCompletionCaches: boolean;
-  minimapEnabled: boolean; wordWrapEnabled: boolean; dangerousStatementWarningEnabled: boolean }>();
+  minimapEnabled: boolean; wordWrapEnabled: boolean; sqlDiagnosticsEnabled: boolean;
+  dangerousStatementWarningEnabled: boolean }>();
 const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme": [value: ThemePreference]; "openAppearance": [];
   "update:minimapEnabled": [value: boolean]; "update:wordWrapEnabled": [value: boolean];
+  "update:sqlDiagnosticsEnabled": [value: boolean];
   "update:dangerousStatementWarningEnabled": [value: boolean];
   "update:maxRows": [value: number]; "update:streamBatchRows": [value: number]; "update:clobMaxCharacters": [value: number];
   "update:maxLobBytes": [value: number];

@@ -17,6 +17,84 @@ export interface LexedSqlStatement {
   beforeTokens: SqlToken[];
 }
 
+export interface SqlStatementRange { start: number; end: number }
+
+export interface SqlStructureIssue {
+  kind: "unclosed-string" | "unclosed-comment" | "unmatched-parenthesis";
+  start: number;
+  end: number;
+  insertOffset: number;
+  closer?: string;
+}
+
+export interface SqlStructureScan {
+  statements: SqlStatementRange[];
+  issues: SqlStructureIssue[];
+}
+
+/** Scans structure without a parser and preserves JavaScript/Monaco UTF-16 offsets. */
+export function scanSqlStructure(sql: string, dialect: SqlCompletionDialect): SqlStructureScan {
+  const statements: SqlStatementRange[] = [];
+  const issues: SqlStructureIssue[] = [];
+  const parentheses: number[] = [];
+  let statementStart = 0;
+  let index = 0;
+  while (index < sql.length) {
+    const character = sql[index];
+    const next = sql[index + 1] ?? "";
+    if (character === "-" && next === "-") { index = skipLine(sql, index + 2, sql.length); continue; }
+    if (dialect.hashComments && character === "#") { index = skipLine(sql, index + 1, sql.length); continue; }
+    if (character === "/" && next === "*") {
+      const end = sql.indexOf("*/", index + 2);
+      if (end < 0) {
+        issues.push({ kind: "unclosed-comment", start: index, end: Math.min(sql.length, index + 2),
+          insertOffset: sql.length, closer: "*/" });
+        index = sql.length;
+      } else index = end + 2;
+      continue;
+    }
+    if (dialect.id === "oracle" && (character === "q" || character === "Q") && next === "'"
+        && index + 2 < sql.length) {
+      const end = oracleQuoteEnd(sql, index, sql.length);
+      if (end < 0) {
+        const opening = sql[index + 2];
+        issues.push({ kind: "unclosed-string", start: index, end: Math.min(sql.length, index + 3),
+          insertOffset: sql.length, closer: `${pairedOracleDelimiter(opening)}'` });
+        index = sql.length;
+      } else index = end;
+      continue;
+    }
+    const quoted = character === "'"
+      || character === "\""
+      || character === "`" && dialect.backtickIdentifiers;
+    if (quoted) {
+      const end = quotedEnd(sql, index, character, dialect.backslashEscapes, sql.length);
+      if (end < 0) {
+        issues.push({ kind: "unclosed-string", start: index, end: Math.min(sql.length, index + 1),
+          insertOffset: sql.length, closer: character });
+        index = sql.length;
+      } else index = end;
+      continue;
+    }
+    if (character === "(") parentheses.push(index);
+    else if (character === ")") {
+      if (parentheses.length) parentheses.pop();
+      else issues.push({ kind: "unmatched-parenthesis", start: index, end: index + 1,
+        insertOffset: index + 1 });
+    } else if (character === ";" && !parentheses.length) {
+      if (sql.slice(statementStart, index).trim()) statements.push({ start: statementStart, end: index });
+      statementStart = index + 1;
+    }
+    index += 1;
+  }
+  if (sql.slice(statementStart).trim()) statements.push({ start: statementStart, end: sql.length });
+  if (parentheses.length) {
+    issues.push({ kind: "unmatched-parenthesis", start: parentheses[0], end: parentheses[0] + 1,
+      insertOffset: sql.length, closer: ")".repeat(parentheses.length) });
+  }
+  return { statements, issues };
+}
+
 /** Locates and tokenizes the complete statement containing a UTF-16 cursor offset. */
 export function lexStatementAt(sql: string, cursorOffset: number,
                                dialect: SqlCompletionDialect): LexedSqlStatement {
@@ -54,6 +132,12 @@ function statementBounds(sql: string, cursor: number, dialect: SqlCompletionDial
     if (character === "-" && next === "-") { index = skipLine(sql, index + 2, sql.length); continue; }
     if (dialect.hashComments && character === "#") { index = skipLine(sql, index + 1, sql.length); continue; }
     if (character === "/" && next === "*") { index = skipBlockComment(sql, index + 2, sql.length); continue; }
+    if (dialect.id === "oracle" && (character === "q" || character === "Q") && next === "'"
+        && index + 2 < sql.length) {
+      const oracleEnd = oracleQuoteEnd(sql, index, sql.length);
+      index = oracleEnd < 0 ? sql.length : oracleEnd;
+      continue;
+    }
     if (character === "'") { index = skipString(sql, index, "'", dialect.backslashEscapes, sql.length); continue; }
     if (character === "\"" && !dialect.doubleQuoteIdentifiers) {
       index = skipString(sql, index, "\"", dialect.backslashEscapes, sql.length);
@@ -89,6 +173,12 @@ function lexRange(sql: string, start: number, end: number, dialect: SqlCompletio
     if (character === "-" && next === "-") { index = skipLine(sql, index + 2, end); continue; }
     if (dialect.hashComments && character === "#") { index = skipLine(sql, index + 1, end); continue; }
     if (character === "/" && next === "*") { index = skipBlockComment(sql, index + 2, end); continue; }
+    if (dialect.id === "oracle" && (character === "q" || character === "Q") && next === "'"
+        && index + 2 < end) {
+      const oracleEnd = oracleQuoteEnd(sql, index, end);
+      index = oracleEnd < 0 ? end : oracleEnd;
+      continue;
+    }
     if (character === "'") { index = skipString(sql, index, "'", dialect.backslashEscapes, end); continue; }
     if (character === "\"" && !dialect.doubleQuoteIdentifiers) {
       index = skipString(sql, index, "\"", dialect.backslashEscapes, end);
@@ -156,6 +246,31 @@ function skipString(sql: string, start: number, quote: string, backslashEscapes:
     index += 1;
   }
   return limit;
+}
+
+function quotedEnd(sql: string, start: number, quote: string, backslashEscapes: boolean,
+                   limit: number): number {
+  let index = start + 1;
+  while (index < limit) {
+    if (backslashEscapes && sql[index] === "\\") { index = Math.min(limit, index + 2); continue; }
+    if (sql[index] === quote && index + 1 < limit && sql[index + 1] === quote) { index += 2; continue; }
+    if (sql[index] === quote) return index + 1;
+    index += 1;
+  }
+  return -1;
+}
+
+function pairedOracleDelimiter(opening: string): string {
+  return opening === "[" ? "]" : opening === "{" ? "}" : opening === "(" ? ")"
+    : opening === "<" ? ">" : opening;
+}
+
+function oracleQuoteEnd(sql: string, start: number, limit: number): number {
+  const closing = pairedOracleDelimiter(sql[start + 2] ?? "");
+  for (let index = start + 3; index + 1 < limit; index += 1) {
+    if (sql[index] === closing && sql[index + 1] === "'") return index + 2;
+  }
+  return -1;
 }
 
 function readQuotedIdentifier(sql: string, start: number, quote: string,

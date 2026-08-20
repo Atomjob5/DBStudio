@@ -1,6 +1,8 @@
 package com.dbstudio.mysql;
 
 import com.dbstudio.spi.StatementType;
+import com.dbstudio.spi.SqlDiagnostic;
+import com.dbstudio.spi.SqlDmlRiskAnalyzer;
 import java.util.Arrays;
 import java.util.Collections;
 import org.junit.jupiter.api.Test;
@@ -56,6 +58,34 @@ class MySqlDialectTest {
                 "UPDATE orders SET note = 'WHERE' WHERE id = 1")));
         assertFalse(dialect.requiresWhereClauseConfirmation(statement("DELETE FROM orders WHERE id = 1")));
         assertFalse(dialect.requiresWhereClauseConfirmation(statement("SELECT 'UPDATE orders'")));
+    }
+
+    @Test
+    void diagnosesMySqlSyntaxAcrossStatementsAndKeepsUtf16Offsets() {
+        for (String valid : Arrays.asList(
+                "WITH c AS (SELECT 1 id) SELECT `id` FROM c LIMIT 1",
+                "SELECT JSON_EXTRACT('{\"name\":\"demo\"}', '$.name') # comment",
+                "DELIMITER $$\nCREATE PROCEDURE p() BEGIN SELECT 1; END$$\nDELIMITER ;\nCALL p();")) {
+            assertTrue(dialect.syntaxDiagnostics(valid).isEmpty(), valid);
+        }
+
+        String script = "SELECT '中文😀' AS value;\nSELECT ( FROM orders";
+        java.util.List<SqlDiagnostic> diagnostics = dialect.syntaxDiagnostics(script);
+        assertEquals(1, diagnostics.size());
+        SqlDiagnostic diagnostic = diagnostics.get(0);
+        assertEquals("SQL_SYNTAX_ERROR", diagnostic.code());
+        assertTrue(diagnostic.startOffset() >= script.indexOf("SELECT ("));
+        assertTrue(diagnostic.endOffset() <= script.length());
+        assertFalse(diagnostic.message().contains(script));
+        assertFalse(dialect.syntaxDiagnostics("SELECT ( FROM secret_orders").get(0).message()
+                .contains("secret_orders"));
+    }
+
+    @Test
+    void locatesRiskyMySqlKeywordWithoutCountingNestedWhere() {
+        String sql = "/* 中文😀 */ WITH c AS (SELECT 1 WHERE 1=1) UPDATE orders SET status='x'";
+        assertEquals(sql.indexOf("UPDATE"), SqlDmlRiskAnalyzer.riskyDmlKeywordOffset(sql));
+        assertEquals(-1, SqlDmlRiskAnalyzer.riskyDmlKeywordOffset(sql + " WHERE id=1"));
     }
 
     @Test

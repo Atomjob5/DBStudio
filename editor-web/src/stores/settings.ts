@@ -40,6 +40,7 @@ export const useSettingsStore = defineStore("settings", () => {
   const completionSnippets = ref<SqlCompletionSnippet[]>([]);
   const minimapEnabled = ref(true);
   const wordWrapEnabled = ref(false);
+  const sqlDiagnosticsEnabled = ref(true);
   const dangerousStatementWarningEnabled = ref(true);
   const objectInspectorOpacity = ref(100);
   const shortcuts = ref<ShortcutBindings>({ ...DEFAULT_SHORTCUT_BINDINGS });
@@ -86,6 +87,7 @@ export const useSettingsStore = defineStore("settings", () => {
     completionSnippets.value = parseSqlCompletionSnippets(settings["editor.completionSnippets"]);
     minimapEnabled.value = settings["editor.minimapEnabled"] !== "false";
     wordWrapEnabled.value = settings["editor.wordWrapEnabled"] === "true";
+    sqlDiagnosticsEnabled.value = settings["editor.sqlDiagnosticsEnabled"] !== "false";
     dangerousStatementWarningEnabled.value = settings["editor.dangerousStatementWarningEnabled"] !== "false";
     const inspectorOpacity = Number.parseInt(settings["editor.objectInspectorOpacity"] ?? "100", 10);
     objectInspectorOpacity.value = Number.isFinite(inspectorOpacity)
@@ -121,7 +123,7 @@ export const useSettingsStore = defineStore("settings", () => {
     scrollOptimizationBufferScreens,
     maxActiveSessions, autoCommit, idleTimeoutMinutes, transactionDisconnectRollbackMinutes,
     completionCandidateLimit, completionPreciseMatchingEnabled, completionSnippets,
-    minimapEnabled, wordWrapEnabled, dangerousStatementWarningEnabled, objectInspectorOpacity,
+    minimapEnabled, wordWrapEnabled, sqlDiagnosticsEnabled, dangerousStatementWarningEnabled, objectInspectorOpacity,
     shortcuts, shortcutRecordingActive,
     recentFiles, colorSchemes, initialize, setColorSchemes, setCompletionSnippets, setShortcuts, setShortcut, resetShortcuts };
 });

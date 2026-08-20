@@ -58,3 +58,4 @@ Unit and server security tests do not require Docker. MySQL integration tests us
 
 The Element Plus component policy is documented in [docs/element-plus-component-map.md](docs/element-plus-component-map.md). Theme, material and accessibility rules are documented in [docs/apple-ui-style.md](docs/apple-ui-style.md).
 The end-to-end SQL execution, JDBC streaming and result rendering flow is documented in [docs/sql-query-result-flow.md](docs/sql-query-result-flow.md).
+SQL real-time diagnostics, metadata safety rules and Quick Fix boundaries are documented in [docs/sql-diagnostics.md](docs/sql-diagnostics.md).
