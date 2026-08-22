@@ -763,7 +763,11 @@ function getCopyText(includeHeaders = false): string | undefined {
   if (!selectionState().hasSelection) return undefined;
   let columns: ResultVirtualColumn[]; let rows = displayFields.value;
   if (selectionMode.value === "columns") columns = selectedColumns();
-  else if (selectionMode.value === "rows") columns = gridColumns.value;
+  else if (selectionMode.value === "rows") {
+    columns = gridColumns.value;
+    const selected = new Set(selectedRowSources.value);
+    rows = rows.filter((row) => selected.has(row.sourceIndex));
+  }
   else {
     const selected = new Set(selectedCellKeys.value); const positions = selectedCellKeys.value.map((key) => {
       const [, source] = key.split(":").map(Number); return gridColumns.value.findIndex((column) => column.sourceIndex === source);
@@ -781,6 +785,17 @@ function getCopyText(includeHeaders = false): string | undefined {
 function handleKeydown(event: KeyboardEvent): void {
   const target = event.target as HTMLElement | null;
   if (target?.matches("input, textarea, select, [contenteditable='true']")) return;
+  if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "c") {
+    const state = selectionState();
+    const text = state.hasSelection ? getCopyText() : undefined;
+    if (text !== undefined) {
+      event.preventDefault();
+      const message = state.mode === "rows" ? "已复制选中字段"
+        : state.mode === "columns" ? "已复制选中列" : "已复制选中单元格";
+      emit("copy-text", text, message);
+    }
+    return;
+  }
   if (event.key === "Escape") { event.preventDefault(); clearSelection(); closeHeaderMenu(); return; }
   if (!/^Arrow(Up|Down|Left|Right)$/.test(event.key) || event.ctrlKey || event.metaKey || event.altKey) return;
   const firstKey = focusedCellKey.value || selectedCellKeys.value[0]; if (!firstKey) return;

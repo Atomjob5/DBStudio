@@ -577,6 +577,12 @@ describe("ResultPanel streaming rendering", () => {
     await wrapper.get('button[aria-label="复制单记录选区"]').trigger("click");
     await flushPromises();
     expect(clipboardWrite).toHaveBeenLastCalledWith("Apple");
+    await singleRecord.find(".result-single-record-view").trigger("keydown", { ctrlKey: true, key: "c" });
+    await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith("Apple");
+    await singleRecord.find(".result-single-record-view").trigger("keydown", { metaKey: true, key: "c" });
+    await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith("Apple");
     await wrapper.get(".table-host").trigger("keydown", { metaKey: true, key: "c" });
     await flushPromises();
     expect(clipboardWrite).toHaveBeenLastCalledWith("Apple");
