@@ -30,6 +30,63 @@ class MySqlDialectTest {
     }
 
     @Test
+    void ignoresCompleteCommentOnlyFragmentsInDiagnosticsAndExecution() {
+        String script = "SELECT 1;\n-- asd\nSELECT 2; /* test */";
+
+        assertEquals(2, dialect.split(script).size());
+        assertTrue(dialect.syntaxDiagnostics(script).isEmpty());
+        assertTrue(dialect.currentStatement(script, script.indexOf("asd")).isEmpty());
+        assertTrue(dialect.currentStatement(script, script.indexOf("SELECT 2")).isPresent());
+        assertTrue(dialect.currentStatement(script, script.indexOf("test")).get().text().contains("SELECT 2"));
+        String inlineComment = "SELECT 1 /* 中文😀 */ FROM orders";
+        assertTrue(dialect.currentStatement(inlineComment, inlineComment.indexOf("中文")).isPresent());
+        String leadingComment = "-- leading\nSELECT 1";
+        assertEquals(1, dialect.split(leadingComment).size());
+        assertTrue(dialect.syntaxDiagnostics(leadingComment).isEmpty());
+        assertTrue(dialect.split(leadingComment).get(0).text().startsWith("-- leading"));
+        assertTrue(dialect.currentStatement(leadingComment, leadingComment.indexOf("leading")).isEmpty());
+
+        assertTrue(dialect.split("-- only\n# only\n/* only */").isEmpty());
+        assertTrue(dialect.syntaxDiagnostics("-- only\n# only\n/* only */").isEmpty());
+    }
+
+    @Test
+    void selectsOnlyTheSqlAssociatedWithTheExecutableCursorLine() {
+        String hint = "select /*+parallel(8)*/ * from CBSAC.APP_CONFIG a\nwhere a.ID=1 ;";
+        assertTrue(dialect.currentStatement(hint, hint.indexOf("parallel") + 7).get().text()
+                .startsWith("select /*+parallel(8)*/"));
+
+        String trailing = "select * from CBSAC.APP_CONFIG a\nleft join CBSLN.APP_CONFIG b on a.ID=b.ID\n"
+                + "where a.ID=1 ; /* test */";
+        assertTrue(dialect.currentStatement(trailing, trailing.indexOf("test") + 2).get().text()
+                .startsWith("select * from CBSAC.APP_CONFIG"));
+
+        String between = "SELECT 1; /* between */ SELECT 2;";
+        assertEquals("SELECT 1", dialect.currentStatement(between, between.indexOf("between") + 2).get().text());
+        String secondHint = "SELECT 1; SELECT /*+ hint */ 2;";
+        assertEquals("SELECT /*+ hint */ 2", dialect.currentStatement(
+                secondHint, secondHint.indexOf("hint") + 2).get().text());
+
+        String commentInsideStatement = "SELECT *\n-- comment only line\nFROM orders";
+        assertTrue(dialect.currentStatement(commentInsideStatement,
+                commentInsideStatement.indexOf("comment")).isEmpty());
+        String blankBetweenStatements = "SELECT 1;\n\nSELECT 2;";
+        assertTrue(dialect.currentStatement(blankBetweenStatements,
+                blankBetweenStatements.indexOf("\n\n") + 1).isEmpty());
+        String executableComment = "/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE */";
+        assertTrue(dialect.currentStatement(executableComment,
+                executableComment.indexOf("OLD_SQL_MODE")).isPresent());
+    }
+
+    @Test
+    void preservesMysqlCommentBoundariesAndExecutableComments() {
+        assertEquals(1, dialect.split("SELECT '# not a comment', '/* not a comment */', `-- text`;").size());
+        assertEquals(1, dialect.split("/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE */").size());
+        assertEquals(1, dialect.split("--not-a-comment").size());
+        assertTrue(dialect.split("SELECT 1;\n# 注释😀\n/* 尾部 */").get(0).text().startsWith("SELECT 1"));
+    }
+
+    @Test
     void supportsDelimiterDirectivesForRoutines() {
         String script = "DELIMITER $$\nCREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\nEND$$\n"
                 + "DELIMITER ;\nCALL p();\n";

@@ -18,6 +18,7 @@ import com.alibaba.druid.sql.ast.statement.SQLUpdateStatement;
 import com.dbstudio.spi.DatabaseObject;
 import com.dbstudio.spi.ResultMutationSource;
 import com.dbstudio.spi.ResultEditPlan;
+import com.dbstudio.spi.SqlCommentSupport;
 import com.dbstudio.spi.SqlDiagnostic;
 import com.dbstudio.spi.SqlDialect;
 import com.dbstudio.spi.SqlDmlRiskAnalyzer;
@@ -123,17 +124,11 @@ public class OracleDialect implements SqlDialect {
     }
 
     @Override public Optional<SqlStatement> currentStatement(String script, int cursorOffset) {
+        SqlCommentSupport.CursorLine line = SqlCommentSupport.cursorLine(
+                script, cursorOffset, SqlCommentSupport.Dialect.ORACLE);
         List<SqlStatement> statements = split(script);
-        if (statements.isEmpty()) return Optional.empty();
-        int cursor = Math.max(0, Math.min(cursorOffset, script == null ? 0 : script.length()));
-        SqlStatement nearest = statements.get(0);
-        int distance = Integer.MAX_VALUE;
-        for (SqlStatement statement : statements) {
-            if (cursor >= statement.startOffset() && cursor <= statement.endOffset()) return Optional.of(statement);
-            int candidate = cursor < statement.startOffset() ? statement.startOffset() - cursor : cursor - statement.endOffset();
-            if (candidate < distance) { distance = candidate; nearest = statement; }
-        }
-        return Optional.of(nearest);
+        return SqlCommentSupport.statementOnCursorLine(
+                script, SqlCommentSupport.Dialect.ORACLE, statements, cursorOffset, line);
     }
 
     @Override public StatementType classify(String sql) {
@@ -369,7 +364,9 @@ public class OracleDialect implements SqlDialect {
         while (end > start && Character.isWhitespace(script.charAt(end - 1))) end--;
         if (start < end) {
             String text = script.substring(start, end);
-            result.add(new SqlStatement(text, start, end, classify(text)));
+            if (SqlCommentSupport.hasExecutableContent(text, SqlCommentSupport.Dialect.ORACLE)) {
+                result.add(new SqlStatement(text, start, end, classify(text)));
+            }
         }
     }
     private static boolean isPlSql(String value) { return PLSQL_PREFIX.matcher(value).find(); }

@@ -100,7 +100,7 @@ sequenceDiagram
 
 ### 4.1 SQL 选择与调度
 
-控制器根据请求选择执行范围：优先执行 `selectedText`；`scope=script` 时由数据库方言拆分脚本；其余情况通过 `cursorOffset` 找到光标所在语句。没有可执行语句时返回 `EMPTY_SQL`。
+控制器根据请求选择执行范围：优先执行 `selectedText`；`scope=script` 时由数据库方言拆分脚本；其余情况通过 `cursorOffset` 找到光标所在物理行及完整语句。切分器会过滤仅包含空白和完整注释的片段，并保留含 SQL 的前置/内联注释。纯注释行和空白行不执行；SQL 与注释同行时选择与该行相交的完整语句，同一行存在多句时优先光标左侧语句，不跨行回退到临近 SQL。没有可执行语句时返回 `EMPTY_SQL`。
 
 `EditorSessionRegistry` 先检查该标签是否已有活动执行；有则返回 `QUERY_BUSY`。通过检查后立即生成 UUID，记录为 `activeExecutionId`，发布 `query.started`，随后将工作交给该 `QueryRunner` 的单线程执行器。这样同一 JDBC Connection 不会被两个语句并发使用。
 

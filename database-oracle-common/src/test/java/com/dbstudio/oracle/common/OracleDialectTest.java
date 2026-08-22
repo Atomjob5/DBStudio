@@ -38,6 +38,54 @@ class OracleDialectTest {
         assertTrue(dialect.syntaxDiagnostics(script).isEmpty());
     }
 
+    @Test void ignoresCompleteCommentOnlyFragmentsInDiagnosticsAndExecution() {
+        String script = "SELECT 1 FROM dual;\n-- asd\nSELECT 2 FROM dual; /* test */";
+
+        assertEquals(2, dialect.split(script).size());
+        assertTrue(dialect.syntaxDiagnostics(script).isEmpty());
+        assertTrue(dialect.currentStatement(script, script.indexOf("asd")).isEmpty());
+        assertTrue(dialect.currentStatement(script, script.indexOf("SELECT 2")).isPresent());
+        assertTrue(dialect.currentStatement(script, script.indexOf("test")).get().text().contains("SELECT 2"));
+        String inlineComment = "SELECT 1 /* 中文😀 */ FROM dual";
+        assertTrue(dialect.currentStatement(inlineComment, inlineComment.indexOf("中文")).isPresent());
+        String leadingComment = "/* leading */\nSELECT 1 FROM dual";
+        assertEquals(1, dialect.split(leadingComment).size());
+        assertTrue(dialect.syntaxDiagnostics(leadingComment).isEmpty());
+        assertTrue(dialect.split(leadingComment).get(0).text().startsWith("/* leading */"));
+        assertTrue(dialect.currentStatement(leadingComment, leadingComment.indexOf("leading")).isEmpty());
+        assertTrue(dialect.split("-- only\n/* only */").isEmpty());
+        assertTrue(dialect.syntaxDiagnostics("-- only\n/* only */").isEmpty());
+    }
+
+    @Test void selectsOnlyTheOracleSqlAssociatedWithTheExecutableCursorLine() {
+        String hint = "select /*+parallel(8)*/ * from CBSAC.APP_CONFIG a\nwhere a.ID=1 ;";
+        assertTrue(dialect.currentStatement(hint, hint.indexOf("parallel") + 7).get().text()
+                .startsWith("select /*+parallel(8)*/"));
+
+        String trailing = "select * from CBSAC.APP_CONFIG a\nleft join CBSLN.APP_CONFIG b on a.ID=b.ID\n"
+                + "where a.ID=1 ; /* test */";
+        assertTrue(dialect.currentStatement(trailing, trailing.indexOf("test") + 2).get().text()
+                .startsWith("select * from CBSAC.APP_CONFIG"));
+
+        String between = "SELECT 1 FROM dual; /* between */ SELECT 2 FROM dual;";
+        assertEquals("SELECT 1 FROM dual", dialect.currentStatement(
+                between, between.indexOf("between") + 2).get().text());
+        String commentInsideStatement = "SELECT *\n/* comment only line */\nFROM APP_CONFIG";
+        assertTrue(dialect.currentStatement(commentInsideStatement,
+                commentInsideStatement.indexOf("comment")).isEmpty());
+        String blankBetweenStatements = "SELECT 1 FROM dual;\n\nSELECT 2 FROM dual;";
+        assertTrue(dialect.currentStatement(blankBetweenStatements,
+                blankBetweenStatements.indexOf("\n\n") + 1).isEmpty());
+        String quoted = "SELECT q'[-- 中文😀]' FROM dual";
+        assertTrue(dialect.currentStatement(quoted, quoted.indexOf("中文")).isPresent());
+    }
+
+    @Test void keepsOracleCommentMarkersInsideQuotedValuesAndSkipsOnlyHints() {
+        assertEquals(1, dialect.split("SELECT '-- note', '/* text */', \"-- identifier\" FROM dual;").size());
+        assertEquals(1, dialect.split("SELECT /*+ INDEX(t) */ 1 FROM dual").size());
+        assertTrue(dialect.split("/*+ standalone hint */\n-- 注释😀").isEmpty());
+    }
+
     @Test void usesOracleQualificationPreviewAndLiterals() {
         DatabaseObject table = new DatabaseObject(DatabaseObjectType.TABLE, "", "SALES", "Order",
                 "", Collections.<String, String>emptyMap());

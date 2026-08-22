@@ -16,6 +16,7 @@ import com.alibaba.druid.sql.ast.statement.SQLUpdateStatement;
 import com.dbstudio.spi.ResultMutationSource;
 import com.dbstudio.spi.ResultEditPlan;
 import com.dbstudio.spi.SqlDiagnostic;
+import com.dbstudio.spi.SqlCommentSupport;
 import com.dbstudio.spi.SqlDialect;
 import com.dbstudio.spi.SqlDmlRiskAnalyzer;
 import com.dbstudio.spi.SqlStatement;
@@ -162,20 +163,11 @@ public final class MySqlDialect implements SqlDialect {
 
     @Override
     public Optional<SqlStatement> currentStatement(String script, int cursorOffset) {
+        SqlCommentSupport.CursorLine line = SqlCommentSupport.cursorLine(
+                script, cursorOffset, SqlCommentSupport.Dialect.MYSQL);
         List<SqlStatement> statements = split(script);
-        if (statements.isEmpty()) {
-            return Optional.empty();
-        }
-        final int cursor = Math.max(0, Math.min(cursorOffset, script == null ? 0 : script.length()));
-        for (SqlStatement statement : statements) {
-            if (cursor >= statement.startOffset() && cursor <= statement.endOffset()) {
-                return Optional.of(statement);
-            }
-        }
-        return statements.stream()
-                .min((left, right) -> Integer.compare(
-                        distance(cursor, left),
-                        distance(cursor, right)));
+        return SqlCommentSupport.statementOnCursorLine(
+                script, SqlCommentSupport.Dialect.MYSQL, statements, cursorOffset, line);
     }
 
     @Override
@@ -383,7 +375,9 @@ public final class MySqlDialect implements SqlDialect {
         }
         if (start < end) {
             String text = script.substring(start, end);
-            statements.add(new SqlStatement(text, start, end, classify(text)));
+            if (SqlCommentSupport.hasExecutableContent(text, SqlCommentSupport.Dialect.MYSQL)) {
+                statements.add(new SqlStatement(text, start, end, classify(text)));
+            }
         }
     }
 
@@ -429,16 +423,6 @@ public final class MySqlDialect implements SqlDialect {
 
     private static boolean isDashComment(String script, int offset) {
         return offset >= script.length() || Character.isWhitespace(script.charAt(offset));
-    }
-
-    private static int distance(int cursor, SqlStatement statement) {
-        if (cursor < statement.startOffset()) {
-            return statement.startOffset() - cursor;
-        }
-        if (cursor > statement.endOffset()) {
-            return cursor - statement.endOffset();
-        }
-        return 0;
     }
 
     private enum State {

@@ -731,6 +731,28 @@ class LocalServerSecurityTest {
             assertTrue(diagnostics.stream().anyMatch(value -> "SQL_DML_WITHOUT_WHERE".equals(value.get("code"))));
             assertTrue(diagnostics.stream().anyMatch(value -> "SQL_SYNTAX_ERROR".equals(value.get("code"))));
             assertTrue(!editor.hasContext(), "诊断不能激活 JDBC：" + providerId);
+
+            String validTailCommentSql = "mysql".equals(providerId)
+                    ? "SELECT 1; -- asd\nSELECT 2; /* test */"
+                    : "SELECT 1 FROM dual; -- asd\nSELECT 2 FROM dual; /* test */";
+            request.put("text", validTailCommentSql);
+            request.put("modelVersion", 12);
+            response = http.exchange(url("/api/v1/workspaces/" + workspaceId + "/sql/diagnostics"),
+                    HttpMethod.POST, new HttpEntity<Map<String, Object>>(request, headers), Map.class).getBody();
+            assertEquals(12, response.get("modelVersion"));
+            assertEquals(providerId, response.get("providerId"));
+            assertTrue(((List<?>) response.get("diagnostics")).isEmpty(),
+                    "完整尾部注释不应产生语法诊断：" + providerId);
+            assertTrue(!editor.hasContext(), "注释诊断不能激活 JDBC：" + providerId);
+
+            request.put("text", "-- only\n/* only */");
+            request.put("modelVersion", 13);
+            response = http.exchange(url("/api/v1/workspaces/" + workspaceId + "/sql/diagnostics"),
+                    HttpMethod.POST, new HttpEntity<Map<String, Object>>(request, headers), Map.class).getBody();
+            assertEquals(13, response.get("modelVersion"));
+            assertTrue(((List<?>) response.get("diagnostics")).isEmpty(),
+                    "纯注释脚本不应产生语法诊断：" + providerId);
+            assertTrue(!editor.hasContext(), "纯注释诊断不能激活 JDBC：" + providerId);
         }
 
         Map<String, Object> missingEditor = new HashMap<String, Object>();

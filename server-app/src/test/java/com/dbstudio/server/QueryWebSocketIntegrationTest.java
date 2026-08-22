@@ -97,6 +97,39 @@ class QueryWebSocketIntegrationTest {
             assertMutationTarget(executeSql(editorId, workspaceId, cookie, events,
                     "SELECT id AS order_id, amount FROM result_column_comment"));
 
+            List<Map<String, Object>> commentTail = executeSql(editorId, workspaceId, cookie, events,
+                    "SELECT 1; -- trailing comment\n/* block comment */");
+            assertEquals(1, commentTail.stream().filter(event -> "query.resultComplete".equals(event.get("type"))).count());
+            assertTrue(commentTail.stream().filter(event -> "query.resultComplete".equals(event.get("type")))
+                    .allMatch(event -> {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> payload = (Map<String, Object>) event.get("payload");
+                        return payload.get("errorMessage") == null;
+                    }));
+
+            assertEmptySqlRejected(editorId, workspaceId, cookie, events, "-- only\n/* only */", "script", 0);
+            String pureCommentLine = "-- cursor is in this comment\nSELECT 1";
+            assertEmptySqlRejected(editorId, workspaceId, cookie, events, pureCommentLine, "current",
+                    pureCommentLine.indexOf("cursor"));
+            String blankLine = "SELECT 1;\n\nSELECT 2;";
+            assertEmptySqlRejected(editorId, workspaceId, cookie, events, blankLine, "current",
+                    blankLine.indexOf("\n\n") + 1);
+
+            String hintCursorSql = "SELECT /*+parallel(8)*/ 1";
+            List<Map<String, Object>> hintCursor = executeCurrentSql(editorId, workspaceId, cookie, events,
+                    hintCursorSql, hintCursorSql.indexOf("parallel") + 7);
+            assertSuccessfulStatement(hintCursor, hintCursorSql);
+
+            String trailingCursorSql = "SELECT 1; /* test */";
+            List<Map<String, Object>> trailingCursor = executeCurrentSql(editorId, workspaceId, cookie, events,
+                    trailingCursorSql, trailingCursorSql.indexOf("test") + 2);
+            assertSuccessfulStatement(trailingCursor, "SELECT 1");
+
+            String betweenStatements = "SELECT 1; /* between */ SELECT 2;";
+            List<Map<String, Object>> betweenCursor = executeCurrentSql(editorId, workspaceId, cookie, events,
+                    betweenStatements, betweenStatements.indexOf("between") + 2);
+            assertSuccessfulStatement(betweenCursor, "SELECT 1");
+
             updateSetting(cookie, "result.maxRows", "120");
             updateSetting(cookie, "result.streamBatchRows", "50");
             List<Map<String, Object>> first = execute(editorId, workspaceId, cookie, events, 250);
@@ -663,6 +696,47 @@ class QueryWebSocketIntegrationTest {
         throw new AssertionError("Timed out waiting for query.executionComplete; received=" + collected);
     }
 
+    private List<Map<String, Object>> executeCurrentSql(String editorId, String workspaceId, String cookie,
+                                                         BlockingQueue<Map<String, Object>> events, String sql,
+                                                         int cursorOffset) throws Exception {
+        events.clear();
+        Map<String, Object> body = new HashMap<String, Object>();
+        body.put("editorId", editorId);
+        body.put("scope", "current");
+        body.put("stopOnError", true);
+        body.put("text", sql);
+        body.put("cursorOffset", cursorOffset);
+        exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId + "/editors/" + editorId
+                + "/executions", body, cookie);
+        List<Map<String, Object>> collected = new ArrayList<Map<String, Object>>();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
+        while (System.nanoTime() < deadline) {
+            Map<String, Object> event = events.poll(1, TimeUnit.SECONDS);
+            if (event == null) continue;
+            collected.add(event);
+            if ("query.executionComplete".equals(event.get("type"))) return collected;
+        }
+        throw new AssertionError("Timed out waiting for current query execution; received=" + collected);
+    }
+
+    private void assertEmptySqlRejected(String editorId, String workspaceId, String cookie,
+                                        BlockingQueue<Map<String, Object>> events, String sql, String scope,
+                                        int cursorOffset) {
+        events.clear();
+        Map<String, Object> body = new HashMap<String, Object>();
+        body.put("editorId", editorId);
+        body.put("scope", scope);
+        body.put("stopOnError", true);
+        body.put("text", sql);
+        if ("current".equals(scope)) body.put("cursorOffset", cursorOffset);
+        ResponseEntity<Map> response = http.exchange(url("/api/v1/workspaces/" + workspaceId
+                        + "/editors/" + editorId + "/executions"), HttpMethod.POST,
+                new HttpEntity<Map<String, Object>>(body, authenticatedJsonHeaders(cookie)), Map.class);
+        assertEquals(org.springframework.http.HttpStatus.BAD_REQUEST, response.getStatusCode());
+        assertEquals("EMPTY_SQL", response.getBody().get("code"));
+        assertTrue(events.isEmpty(), "空注释不应发布执行事件");
+    }
+
     @SuppressWarnings("unchecked")
     private void assertRiskConfirmationRequired(String workspaceId, String editorId, String cookie, String sql) {
         Map<String, Object> body = new HashMap<String, Object>();
@@ -860,6 +934,22 @@ class QueryWebSocketIntegrationTest {
         assertTrue(types.indexOf("query.resultMeta") < types.indexOf("query.rows"), types.toString());
         assertTrue(types.lastIndexOf("query.rows") < types.indexOf("query.resultComplete"), types.toString());
         assertTrue(types.indexOf("query.resultComplete") < types.indexOf("query.executionComplete"), types.toString());
+    }
+
+    @SuppressWarnings("unchecked")
+    private void assertSuccessfulStatement(List<Map<String, Object>> events, String sql) {
+        Map<String, Object> startedPayload = null;
+        Map<String, Object> resultPayload = null;
+        for (Map<String, Object> event : events) {
+            if ("query.started".equals(event.get("type"))) startedPayload = (Map<String, Object>) event.get("payload");
+            if ("query.resultComplete".equals(event.get("type"))) resultPayload = (Map<String, Object>) event.get("payload");
+        }
+        assertTrue(startedPayload != null, "Missing query.started statement sources");
+        List<Map<String, Object>> statements = (List<Map<String, Object>>) startedPayload.get("statements");
+        assertEquals(1, statements.size());
+        assertEquals(sql, statements.get(0).get("sql"));
+        assertTrue(resultPayload != null, "Missing query.resultComplete");
+        assertEquals(null, resultPayload.get("errorMessage"));
     }
 
     @SuppressWarnings("unchecked")

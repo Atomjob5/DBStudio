@@ -34,4 +34,17 @@ class OceanBaseOracleDialectDiagnosticsTest {
         assertFalse(dialect.requiresWhereClauseConfirmation(dialect.split(
                 "DELETE FROM APP.ORDERS WHERE ID=1").get(0)));
     }
+
+    @Test void ignoresTrailingCommentOnlyFragmentsWithItsOwnProviderContract() {
+        String script = "SELECT 1 FROM dual;\n-- asd\nSELECT 2 FROM dual; /* test */";
+
+        assertEquals("oceanbase-oracle", dialect.id());
+        assertEquals(2, dialect.split(script).size());
+        assertTrue(dialect.syntaxDiagnostics(script).isEmpty());
+        assertTrue(dialect.currentStatement(script, script.indexOf("asd")).isEmpty());
+        assertTrue(dialect.currentStatement(script, script.indexOf("test")).get().text().contains("SELECT 2"));
+        String hint = "SELECT /*+ PARALLEL(8) */ * FROM CBSAC.APP_CONFIG a\nWHERE a.ID=1;";
+        assertTrue(dialect.currentStatement(hint, hint.indexOf("PARALLEL") + 4).isPresent());
+        assertTrue(dialect.split("-- only\n/* only */").isEmpty());
+    }
 }
