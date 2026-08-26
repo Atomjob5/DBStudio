@@ -91,18 +91,18 @@
         </el-form-item>
         <el-form-item class="compact-setting-row">
           <template #label>
-            <div class="setting-label"><span>空闲链接回收时间</span>
+            <div class="setting-label"><span>空闲链接回收时间(分钟)</span>
               <el-tooltip content="仅释放未执行查询且没有未提交事务的空闲会话，再次使用时会自动重连。" placement="top">
                 <el-icon class="setting-help" tabindex="0" aria-label="空闲链接回收时间说明"><QuestionFilled /></el-icon>
               </el-tooltip>
             </div>
           </template>
           <div class="number-with-unit"><el-input-number class="compact-number" size="small" :model-value="idleTimeoutMinutes" :min="1" :max="1440" controls-position="right"
-                           @update:model-value="$emit('update:idleTimeoutMinutes', $event ?? 10)" /><span>分钟</span></div>
+                           @update:model-value="$emit('update:idleTimeoutMinutes', $event ?? 10)" /></div>
         </el-form-item>
         <el-form-item class="compact-setting-row">
           <template #label>
-            <div class="setting-label"><span>事务断连回滚时间</span>
+            <div class="setting-label"><span>事务断连回滚时间(分钟)</span>
               <el-tooltip content="浏览器或事件通道断开后，未提交事务会保留原JDBC至该时间；超时后自动回滚。Java进程退出时无法恢复事务。" placement="top">
                 <el-icon class="setting-help" tabindex="0" aria-label="事务断连回滚时间说明"><QuestionFilled /></el-icon>
               </el-tooltip>
@@ -110,7 +110,7 @@
           </template>
           <div class="number-with-unit"><el-input-number class="compact-number" size="small"
             :model-value="transactionDisconnectRollbackMinutes" :min="1" :max="1440" controls-position="right"
-            @update:model-value="$emit('update:transactionDisconnectRollbackMinutes', $event ?? 10)" /><span>分钟</span></div>
+            @update:model-value="$emit('update:transactionDisconnectRollbackMinutes', $event ?? 10)" /></div>
         </el-form-item>
       </section>
 
@@ -187,7 +187,7 @@
         </el-form-item>
         <el-form-item class="compact-setting-row">
           <template #label>
-            <div class="setting-label"><span>CLOB 长度</span>
+            <div class="setting-label"><span>CLOB 长度(字符)</span>
               <el-tooltip content="控制结果集展示时每个 CLOB 最多读取的字符数；提高后会增加内存占用和传输量，完整查看与下载不受影响。" placement="top">
                 <el-icon class="setting-help" tabindex="0" aria-label="CLOB 长度说明"><QuestionFilled /></el-icon>
               </el-tooltip>
@@ -195,11 +195,11 @@
           </template>
           <div class="number-with-unit"><el-input-number class="compact-number" size="small"
             :model-value="clobMaxCharacters" :min="1" :max="1000000" :step="1000" controls-position="right"
-            @update:model-value="$emit('update:clobMaxCharacters', $event ?? 10000)" /><span>字符</span></div>
+            @update:model-value="$emit('update:clobMaxCharacters', $event ?? 10000)" /></div>
         </el-form-item>
         <el-form-item class="compact-setting-row">
           <template #label>
-            <div class="setting-label"><span>可编辑大字段上限</span>
+            <div class="setting-label"><span>可编辑大字段上限(MiB)</span>
               <el-tooltip content="CLOB、BLOB 与 RAW 草稿采用临时文件流式读写；超过上限会在写入数据库前拒绝。" placement="top">
                 <el-icon class="setting-help" tabindex="0" aria-label="可编辑大字段上限说明"><QuestionFilled /></el-icon>
               </el-tooltip>
@@ -207,11 +207,11 @@
           </template>
           <div class="number-with-unit"><el-input-number class="compact-number" size="small"
             :model-value="Math.round(maxLobBytes / 1048576)" :min="1" :max="1024" :step="16" controls-position="right"
-            @update:model-value="$emit('update:maxLobBytes', ($event ?? 256) * 1048576)" /><span>MiB</span></div>
+            @update:model-value="$emit('update:maxLobBytes', ($event ?? 256) * 1048576)" /></div>
         </el-form-item>
         <el-form-item class="compact-setting-row">
           <template #label>
-            <div class="setting-label"><span>预渲染缓冲</span>
+            <div class="setting-label"><span>预渲染缓冲(屏宽)</span>
               <el-tooltip content="控制可视区域四周最多额外渲染的屏数；宽表会自动收缩缓冲，避免单元格过多导致卡顿。" placement="top">
                 <el-icon class="setting-help" tabindex="0" aria-label="预渲染缓冲说明"><QuestionFilled /></el-icon>
               </el-tooltip>
@@ -222,7 +222,6 @@
                              :model-value="scrollOptimizationBufferScreens"
                              :min="0.5" :max="3" :step="0.5" :precision="1" controls-position="right"
                              @update:model-value="$emit('update:scrollOptimizationBufferScreens', $event ?? 1)" />
-            <span>屏</span>
           </div>
         </el-form-item>
         <el-form-item class="compact-setting-row">
