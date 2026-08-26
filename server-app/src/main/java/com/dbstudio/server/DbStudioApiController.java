@@ -105,7 +105,7 @@ import org.slf4j.LoggerFactory;
 public final class DbStudioApiController {
     private static final Logger LOG = LoggerFactory.getLogger(DbStudioApiController.class);
     private static final List<String> SETTING_KEYS = Arrays.asList(
-            "ui.theme", "result.maxRows", "result.streamBatchRows", "result.clobMaxCharacters", "result.columnLayoutScope",
+            "ui.theme", "result.maxRows", "result.autoRefreshIntervalSeconds", "result.streamBatchRows", "result.clobMaxCharacters", "result.columnLayoutScope",
             "result.copyHeaderOnDoubleClick", "result.copySeparator",
             "result.headerSortingEnabled", "result.headerFilteringEnabled", "result.showColumnRemarksInHeader",
             "result.zebraStripesEnabled", "result.compareHighlightMode", "result.compareScope",
@@ -1563,6 +1563,14 @@ public final class DbStudioApiController {
                 throw new ApiException("INVALID_SETTING", "结果行数必须在 1 到 100000 之间");
             }
         }
+        if ("result.autoRefreshIntervalSeconds".equals(key)) {
+            try {
+                int seconds = Integer.parseInt(value);
+                if (seconds < 1 || seconds > 3_600) throw new NumberFormatException();
+            } catch (NumberFormatException exception) {
+                throw new ApiException("INVALID_SETTING", "定时刷新周期必须在 1 到 3600 秒之间");
+            }
+        }
         if ("result.streamBatchRows".equals(key)) {
             try {
                 int streamBatchRows = Integer.parseInt(value);
@@ -2585,6 +2593,9 @@ public final class DbStudioApiController {
         }
         if (!result.containsKey("ui.theme")) result.put("ui.theme", "system");
         if (!result.containsKey("result.maxRows")) result.put("result.maxRows", "1000");
+        if (!result.containsKey("result.autoRefreshIntervalSeconds")) {
+            result.put("result.autoRefreshIntervalSeconds", "10");
+        }
         if (!result.containsKey("result.streamBatchRows")) result.put("result.streamBatchRows", "100");
         if (!result.containsKey("result.clobMaxCharacters")) {
             result.put("result.clobMaxCharacters", String.valueOf(QueryRunner.DEFAULT_CLOB_MAX_CHARACTERS));

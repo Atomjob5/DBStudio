@@ -15,6 +15,10 @@ const baseProps = {
   showSelectedColumnRemarks: true,
   systemItems: [] as StatusBarSystemItem[],
   canLoadMore: false,
+  canAutoRefresh: false,
+  autoRefreshEnabled: false,
+  autoRefreshIntervalSeconds: 10,
+  autoRefreshTooltip: "定时刷新已关闭 · 每 10 秒",
   nextPageTooltip: "没有更多数据",
   allRowsTooltip: "没有更多数据"
 };
@@ -64,6 +68,41 @@ describe("AppStatusBar", () => {
     });
     expect(wrapper.find('[aria-label="切换结果编辑模式"]').exists()).toBe(false);
     expect(wrapper.find('[aria-label="应用更改"]').exists()).toBe(false);
+  });
+
+  it("places auto refresh before next page and keeps left click separate from the context menu", async () => {
+    const wrapper = mount(AppStatusBar, {
+      props: { ...baseProps, canAutoRefresh: true },
+      global: { plugins: [ElementPlus], stubs: { teleport: true } }
+    });
+    const toolbarButtons = wrapper.get('[aria-label="结果操作工具栏"]').findAll("button");
+    expect(toolbarButtons[0].attributes("aria-label")).toBe("切换定时刷新");
+    expect(toolbarButtons[1].attributes("aria-label")).toBe("下一页数据");
+    expect(toolbarButtons[2].attributes("aria-label")).toBe("获取全部数据");
+
+    await toolbarButtons[0].trigger("click");
+    expect(wrapper.emitted("toggle-auto-refresh")).toHaveLength(1);
+    expect(wrapper.find('[role="menu"]').exists()).toBe(false);
+
+    await wrapper.get(".auto-refresh-trigger").trigger("contextmenu");
+    expect(wrapper.get('[role="menu"]').text()).toContain("5 秒");
+    expect(wrapper.get('[role="menu"]').text()).toContain("自定义");
+    expect(wrapper.emitted("toggle-auto-refresh")).toHaveLength(1);
+    await wrapper.findAll('[role="menuitem"]')[2].trigger("click");
+    expect(wrapper.emitted("update-auto-refresh-interval")?.at(-1)).toEqual([30]);
+    wrapper.unmount();
+  });
+
+  it("shows and announces the enabled state", () => {
+    const wrapper = mount(AppStatusBar, {
+      props: { ...baseProps, canAutoRefresh: true, autoRefreshEnabled: true,
+        autoRefreshIntervalSeconds: 60, autoRefreshTooltip: "定时刷新已开启 · 每 60 秒" },
+      global: { plugins: [ElementPlus], stubs: { teleport: true } }
+    });
+    const button = wrapper.get('[aria-label="切换定时刷新"]');
+    expect(button.attributes("aria-pressed")).toBe("true");
+    expect(button.classes()).toContain("is-auto-refresh-enabled");
+    wrapper.unmount();
   });
 
   it("shows an ellipsized remark without hover metadata and opens the full dialog only on explicit activation", async () => {

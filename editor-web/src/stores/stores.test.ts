@@ -334,7 +334,7 @@ describe("application stores", () => {
 
   it("initializes independent result limit and streaming batch settings", () => {
     const settings = useSettingsStore();
-    settings.initialize({ "result.maxRows": "2500", "result.streamBatchRows": "75", "result.clobMaxCharacters": "22000", "result.columnLayoutScope": "editor",
+    settings.initialize({ "result.maxRows": "2500", "result.autoRefreshIntervalSeconds": "30", "result.streamBatchRows": "75", "result.clobMaxCharacters": "22000", "result.columnLayoutScope": "editor",
       "result.copyHeaderOnDoubleClick": "false", "result.copySeparator": "tab",
       "result.showColumnRemarksInHeader": "true",
       "result.zebraStripesEnabled": "true", "result.compareHighlightMode": "different",
@@ -353,6 +353,7 @@ describe("application stores", () => {
         + "\"trigger\":\"sf\",\"remarks\":\"通用查询\",\"sql\":\"select * from\"}]",
       "keyboard.shortcuts": "{\"query.executeCurrent\":null,\"query.executeAll\":\"Mod+7\"}" }, []);
     expect(settings.maxResultRows).toBe(2500);
+    expect(settings.autoRefreshIntervalSeconds).toBe(30);
     expect(settings.streamBatchRows).toBe(75);
     expect(settings.clobMaxCharacters).toBe(22000);
     expect(settings.columnLayoutScope).toBe("editor");
@@ -384,6 +385,7 @@ describe("application stores", () => {
     expect(settings.shortcuts["query.executeAll"]).toBe("Mod+7");
     expect(settings.shortcuts["query.cancel"]).toBe("Shift+Escape");
     settings.initialize({ "result.columnLayoutScope": "legacy", "result.copySeparator": "legacy" }, []);
+    expect(settings.autoRefreshIntervalSeconds).toBe(10);
     expect(settings.columnLayoutScope).toBe("result");
     expect(settings.copyHeaderOnDoubleClick).toBe(true);
     expect(settings.copySeparator).toBe("comma");
@@ -409,6 +411,8 @@ describe("application stores", () => {
 
     settings.initialize({ "result.scrollOptimizationBufferScreens": "1.25" }, []);
     expect(settings.scrollOptimizationBufferScreens).toBe(1);
+    settings.initialize({ "result.autoRefreshIntervalSeconds": "3601" }, []);
+    expect(settings.autoRefreshIntervalSeconds).toBe(10);
   });
 });
 

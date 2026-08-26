@@ -176,6 +176,16 @@ test("keeps the activity bar flush, restores a collapsed panel and renders a com
   expect(pillParts!.cascaderWidth).toBeCloseTo(pillParts!.pillWidth, 1);
 });
 
+test("keeps result status actions evenly spaced", async ({ page }) => {
+  const labels = ["切换定时刷新", "下一页数据", "获取全部数据"];
+  const centers = await Promise.all(labels.map(async (label) => {
+    const bounds = await page.getByRole("button", { name: label, exact: true }).boundingBox();
+    expect(bounds).not.toBeNull();
+    return bounds!.x + bounds!.width / 2;
+  }));
+  expect(Math.abs((centers[1] - centers[0]) - (centers[2] - centers[1]))).toBeLessThanOrEqual(1);
+});
+
 test("previews connection workbook imports in a responsive confirmation dialog", async ({ page }) => {
   await page.getByRole("button", { name: "新增或批量管理数据库链接" }).click();
   await page.getByRole("menuitem", { name: "批量导入链接" }).click();

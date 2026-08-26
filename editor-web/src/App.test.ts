@@ -141,6 +141,7 @@ describe("App result loading status toolbar", () => {
     ElMessageBox.close();
     document.body.querySelectorAll(".el-overlay").forEach((element) => element.remove());
     wrapper.unmount();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -178,6 +179,100 @@ describe("App result loading status toolbar", () => {
       executionId: expect.any(String)
     }), 120_000);
     expect(wrapper.find(".result-data-toolbar").exists()).toBe(false);
+  });
+
+  it("refreshes the bound result SQL after each completed interval without overlapping", async () => {
+    const editors = useEditorStore();
+    const queries = useQueryStore();
+    const settings = useSettingsStore();
+    editors.patch("bootstrap-editor", { connection: completionProfile(), connectionState: "active",
+      busy: false, executionPhase: "idle", transactionOperation: "idle" });
+    queries.start("bootstrap-editor", "execution-original");
+    queries.addResult("bootstrap-editor", { resultIndex: 0, sql: "select * from metrics", sourceStartOffset: 12,
+      sourceEndOffset: 33, type: "QUERY", columns: ["id"], rows: [["1"]], updateCount: -1,
+      truncated: false, durationMs: 3, complete: true });
+    queries.complete("bootstrap-editor", { durationMs: 3 });
+    settings.autoRefreshIntervalSeconds = 5;
+    await nextTick();
+
+    let executionSequence = 0;
+    rpcRequest.mockImplementation(async (type: string) => type === "query.execute"
+      ? { executionId: `auto-${++executionSequence}` } : {});
+    vi.useFakeTimers();
+    const refreshButton = wrapper.get('button[aria-label="切换定时刷新"]');
+    expect(refreshButton.attributes("disabled")).toBeUndefined();
+    await refreshButton.trigger("click");
+    expect(refreshButton.attributes("aria-pressed")).toBe("true");
+
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(rpcRequest.mock.calls.filter(([type]) => type === "query.execute")).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    await flushPromises();
+    expect(rpcRequest).toHaveBeenCalledWith("query.execute", expect.objectContaining({
+      editorId: "bootstrap-editor", selectedText: "select * from metrics", selectionStartOffset: 12,
+      scope: "current", resultPresentation: "replace"
+    }));
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(rpcRequest.mock.calls.filter(([type]) => type === "query.execute")).toHaveLength(1);
+
+    rpcMock.listeners.get("query.resultMeta")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "auto-1", resultIndex: 0, sql: "select * from metrics",
+      type: "QUERY", columns: ["id"], rows: [], updateCount: -1, truncated: false, durationMs: 1, complete: false
+    }));
+    rpcMock.listeners.get("query.resultComplete")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "auto-1", resultIndex: 0, truncated: false, durationMs: 1
+    }));
+    rpcMock.listeners.get("query.executionComplete")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "auto-1", cancelled: false, failed: false,
+      durationMs: 1, transactionDirty: false
+    }));
+    await nextTick();
+    expect(refreshButton.attributes("aria-pressed")).toBe("true");
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await flushPromises();
+    expect(rpcRequest.mock.calls.filter(([type]) => type === "query.execute")).toHaveLength(2);
+
+    rpcMock.listeners.get("query.executionComplete")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "auto-2", cancelled: false, failed: true,
+      durationMs: 1, transactionDirty: false
+    }));
+    await nextTick();
+    expect(refreshButton.attributes("aria-pressed")).toBe("false");
+  });
+
+  it("persists the refresh interval and rolls back a failed save", async () => {
+    const settings = useSettingsStore();
+    const vm = wrapper.vm as unknown as { updateAutoRefreshInterval: (value: number) => Promise<void> };
+    rpcRequest.mockResolvedValueOnce({});
+    await vm.updateAutoRefreshInterval(30);
+    expect(settings.autoRefreshIntervalSeconds).toBe(30);
+    expect(rpcRequest).toHaveBeenLastCalledWith("settings.update", {
+      key: "result.autoRefreshIntervalSeconds", value: "30"
+    });
+
+    rpcRequest.mockRejectedValueOnce(new Error("保存失败"));
+    await vm.updateAutoRefreshInterval(60);
+    expect(settings.autoRefreshIntervalSeconds).toBe(30);
+  });
+
+  it("stops auto refresh when the active editor changes", async () => {
+    const editors = useEditorStore();
+    const queries = useQueryStore();
+    editors.patch("bootstrap-editor", { connection: completionProfile(), connectionState: "active",
+      busy: false, executionPhase: "idle", transactionOperation: "idle" });
+    queries.start("bootstrap-editor", "execution-original");
+    queries.addResult("bootstrap-editor", { resultIndex: 0, sql: "select 1", type: "QUERY", columns: ["id"],
+      rows: [["1"]], updateCount: -1, truncated: false, durationMs: 1, complete: true });
+    queries.complete("bootstrap-editor", { durationMs: 1 });
+    await nextTick();
+    await wrapper.get('button[aria-label="切换定时刷新"]').trigger("click");
+
+    editors.add({ id: "editor-other", title: "查询 2", content: "", dirty: false, transactionDirty: false,
+      busy: false, executionPhase: "idle", transactionOperation: "idle", connectionState: "unbound" });
+    await nextTick();
+    expect(wrapper.get('button[aria-label="切换定时刷新"]').attributes("aria-pressed")).toBe("false");
   });
 
   it("reveals a result source only after an explicit result-tab click", async () => {

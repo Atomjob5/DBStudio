@@ -16,6 +16,7 @@ import {
 
 export const useSettingsStore = defineStore("settings", () => {
   const maxResultRows = ref(1000);
+  const autoRefreshIntervalSeconds = ref(10);
   const streamBatchRows = ref(100);
   const clobMaxCharacters = ref(10_000);
   const maxResultLobBytes = ref(268_435_456);
@@ -51,6 +52,9 @@ export const useSettingsStore = defineStore("settings", () => {
   function initialize(settings: Record<string, string>, recent: string[]): void {
     const parsed = Number.parseInt(settings["result.maxRows"] ?? "1000", 10);
     maxResultRows.value = Number.isFinite(parsed) ? parsed : 1000;
+    const autoRefreshSeconds = Number.parseInt(settings["result.autoRefreshIntervalSeconds"] ?? "10", 10);
+    autoRefreshIntervalSeconds.value = Number.isFinite(autoRefreshSeconds)
+      && autoRefreshSeconds >= 1 && autoRefreshSeconds <= 3600 ? autoRefreshSeconds : 10;
     const batch = Number.parseInt(settings["result.streamBatchRows"] ?? "100", 10);
     streamBatchRows.value = Number.isFinite(batch) ? batch : 100;
     const clobCharacters = Number.parseInt(settings["result.clobMaxCharacters"] ?? "10000", 10);
@@ -117,7 +121,7 @@ export const useSettingsStore = defineStore("settings", () => {
     completionSnippets.value = value.map((item) => ({ ...item }));
   }
 
-  return { maxResultRows, streamBatchRows, clobMaxCharacters, maxResultLobBytes, columnLayoutScope, copyHeaderOnDoubleClick, copySeparator,
+  return { maxResultRows, autoRefreshIntervalSeconds, streamBatchRows, clobMaxCharacters, maxResultLobBytes, columnLayoutScope, copyHeaderOnDoubleClick, copySeparator,
     headerSortingEnabled, headerFilteringEnabled, showColumnRemarksInHeader, zebraStripesEnabled,
     compareHighlightMode, compareScope, compareCaseSensitive, showSelectedColumnRemarks,
     scrollOptimizationBufferScreens,

@@ -241,7 +241,12 @@
                   :selected-column="selectedResultColumn"
                   :show-selected-column-remarks="settings.showSelectedColumnRemarks" :system-items="systemStatusItems"
                   :can-load-more="canLoadMore" :loading-mode="activeResultLoading?.mode"
+                  :can-auto-refresh="canToggleAutoRefresh" :auto-refresh-enabled="autoRefreshEnabled"
+                  :auto-refresh-interval-seconds="settings.autoRefreshIntervalSeconds"
+                  :auto-refresh-tooltip="autoRefreshTooltip"
                   :next-page-tooltip="nextPageTooltip" :all-rows-tooltip="allRowsTooltip"
+                  @toggle-auto-refresh="toggleAutoRefresh"
+                  @update-auto-refresh-interval="updateAutoRefreshInterval"
                   @load-next="loadNextResultPage" @load-all="loadAllResultRows" @dismiss-task="dismissStatusTask" />
   </el-container>
 
@@ -492,7 +497,19 @@ interface ResultLoadingState {
   phase: "starting" | "running" | "cancelling";
   cancelRequested: boolean;
 }
+interface AutoRefreshState {
+  editorId: string;
+  executionId: string;
+  resultIndex: number;
+  sql: string;
+  sourceStartOffset: number;
+  refreshing: boolean;
+  epoch: number;
+}
 const resultLoading = ref<ResultLoadingState>();
+const autoRefreshState = ref<AutoRefreshState>();
+let autoRefreshTimer: number | undefined;
+let autoRefreshEpoch = 0;
 const selectedResultColumn = ref<SelectedResultColumn>();
 const selectedResultRowCount = ref(0);
 const selectedResultStatusText = ref("");
@@ -508,6 +525,31 @@ const canLoadMore = computed(() => Boolean(activeResult.value?.columns.length &&
 const nextPageTooltip = computed(() => actionTooltip(resultLoadTooltip("next"), "result.loadNext"));
 const allRowsTooltip = computed(() => actionTooltip(resultLoadTooltip("all"), "result.loadAll"));
 const activeConnected = computed(() => Boolean(editors.active?.connection && editors.active.connectionState !== "unbound"));
+const autoRefreshEnabled = computed(() => Boolean(autoRefreshState.value));
+const canStartAutoRefresh = computed(() => Boolean(activeResult.value?.columns.length && activeResult.value.complete
+  && !activeResult.value.errorMessage && !activeExecution.value?.failed
+  && !activeExecution.value?.busy && !activeExecution.value?.historical && !resultLoading.value
+  && app.transportState === "ready" && activeConnected.value
+  && editors.active?.connectionState !== "credentials-required"
+  && editors.active?.connectionState !== "unavailable"
+  && !(editors.active && (resultEdits.hasChanges(editors.active.id) || editors.active.resultChangesDirty))));
+const canToggleAutoRefresh = computed(() => autoRefreshEnabled.value || canStartAutoRefresh.value);
+const autoRefreshTooltip = computed(() => {
+  const seconds = settings.autoRefreshIntervalSeconds;
+  if (autoRefreshEnabled.value) return `定时刷新已开启 · 每 ${seconds} 秒；左键关闭，右键设置周期`;
+  if (!activeResult.value?.columns.length) return `当前没有可定时刷新的查询结果；右键设置周期（${seconds} 秒）`;
+  if (activeExecution.value?.historical) return `断线前结果不能定时刷新；右键设置周期（${seconds} 秒）`;
+  if (editors.active && (resultEdits.hasChanges(editors.active.id) || editors.active.resultChangesDirty)) {
+    return `请先应用或撤销结果修改；右键设置周期（${seconds} 秒）`;
+  }
+  if (app.transportState !== "ready" || !activeConnected.value
+      || editors.active?.connectionState === "credentials-required"
+      || editors.active?.connectionState === "unavailable") {
+    return `数据库连接可用后才能定时刷新；右键设置周期（${seconds} 秒）`;
+  }
+  if (activeDatabaseBusy.value) return `数据库正忙；右键设置周期（${seconds} 秒）`;
+  return `定时刷新已关闭 · 每 ${seconds} 秒；左键开启，右键设置周期`;
+});
 const activeCompletionContext = computed(() => connections.completionContext(editors.active?.connection));
 const activeCompletionKey = computed(() => activeCompletionContext.value?.key ?? "unbound");
 const activeCompletionRevision = computed(() => {
@@ -698,6 +740,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("pagehide", flushDrafts);
   window.removeEventListener("resize", measureResultContentOffset);
   if (layoutSaveTimer !== undefined) window.clearTimeout(layoutSaveTimer);
+  clearAutoRefreshTimer();
   completionNoticeTimers.forEach((timer) => window.clearTimeout(timer));
   draftSaveTimers.forEach((timer) => window.clearTimeout(timer));
 });
@@ -720,6 +763,9 @@ watch(() => [editors.activeId, activeObjectTreeKey.value, activeCompletionKey.va
   metadata.activate(activeObjectTreeKey.value, activeCompletionKey.value);
 });
 watch(() => editors.activeId, (current, previous) => {
+  if (autoRefreshState.value && current !== autoRefreshState.value.editorId) {
+    stopAutoRefresh("已切换查询标签", true);
+  }
   editorHasSelection.value = false;
   selectedResultColumn.value = undefined;
   selectedResultRowCount.value = 0;
@@ -729,6 +775,9 @@ watch(() => editors.activeId, (current, previous) => {
   void nextTick().then(() => syncResultHighlight());
 });
 watch(activeResultIndex, () => {
+  if (autoRefreshState.value && !autoRefreshMatchesActiveResult()) {
+    stopAutoRefresh("已切换结果页签", true);
+  }
   selectedResultColumn.value = undefined;
   selectedResultRowCount.value = 0;
   selectedResultStatusText.value = "";
@@ -739,6 +788,19 @@ watch(() => [activeExecution.value?.executionId, activeResult.value?.resultIndex
   activeResult.value?.sql] as const, () => void nextTick().then(() => syncResultHighlight()));
 watch(() => settings.showSelectedColumnRemarks, (enabled) => {
   if (!enabled) selectedResultColumn.value = undefined;
+});
+watch(() => {
+  const state = autoRefreshState.value;
+  if (!state) return undefined;
+  const tab = editors.tabs.find((item) => item.id === state.editorId);
+  return [app.transportState, tab?.connectionState, tab?.resultChangesDirty,
+    resultEdits.hasChanges(state.editorId)] as const;
+}, (status) => {
+  if (!autoRefreshState.value || !status) return;
+  const [transport, connectionState, resultChangesDirty, pendingChanges] = status;
+  if (resultChangesDirty || pendingChanges) stopAutoRefresh("结果存在待应用的修改", true);
+  else if (transport !== "ready" || connectionState === "unbound" || connectionState === "unavailable"
+      || connectionState === "credentials-required") stopAutoRefresh("数据库连接已不可用", true);
 });
 watch(settingsDrawer, (open) => {
   if (!open) {
@@ -815,6 +877,11 @@ function installEventHandlers(): void {
     const data = raw as { editorId: string; executionId: string; resultPresentation?: "replace" | "append";
       statements?: QueryExecutionSource[] };
     const presentation = data.resultPresentation ?? "replace";
+    const autoRefresh = autoRefreshState.value;
+    if (autoRefresh?.refreshing && autoRefresh.editorId === data.editorId && presentation === "replace") {
+      autoRefresh.executionId = data.executionId;
+      autoRefresh.resultIndex = 0;
+    }
     if (presentation === "replace") {
       resultEdits.finishEditor(data.editorId);
       for (const execution of queries.executionList(data.editorId)) {
@@ -877,10 +944,24 @@ function installEventHandlers(): void {
     scheduleDraft(data.editorId);
     app.status = data.terminationReason === "connection-aborted" ? "连接已被任务管理器强制断开"
       : `${data.cancelled ? "执行已取消" : data.failed ? "执行失败" : "执行完成"} · ${data.durationMs} ms`;
+    const autoRefresh = autoRefreshState.value;
+    if (autoRefresh?.refreshing && autoRefresh.editorId === data.editorId
+        && autoRefresh.executionId === data.executionId) {
+      const queryResult = completedResults.find((result) => result.columns.length > 0);
+      if (data.cancelled || data.failed || data.terminationReason === "connection-aborted" || !queryResult) {
+        stopAutoRefresh(data.cancelled ? "执行已取消"
+          : data.terminationReason === "connection-aborted" ? "数据库连接已断开" : "执行失败", true);
+      } else {
+        autoRefresh.resultIndex = queryResult.resultIndex;
+        autoRefresh.refreshing = false;
+        scheduleAutoRefresh();
+      }
+    }
   }));
   disposers.push(rpc.on("jdbc.connectionAborted", (raw) => {
     const data = raw as { editorId: string; executionId?: string; transactionLost?: boolean;
       resultChangesLost?: boolean; message?: string };
+    if (autoRefreshState.value?.editorId === data.editorId) stopAutoRefresh("数据库连接已断开", true);
     resultEdits.finishEditor(data.editorId);
     queries.markHistorical(data.editorId);
     if (resultLoading.value?.editorId === data.editorId) resultLoading.value = undefined;
@@ -1282,6 +1363,124 @@ async function discardEditorPendingChanges(editorId: string): Promise<void> {
   await Promise.all(discarded.largeValues.map((value) => rpc.deleteResultLargeValueDraft(
     editorId, value.executionId, value.resultIndex, value.columnIndex, value.token).catch(() => undefined)));
 }
+
+function toggleAutoRefresh(): void {
+  if (autoRefreshState.value) {
+    stopAutoRefresh();
+    return;
+  }
+  const tab = editors.active;
+  const execution = activeExecution.value;
+  const result = activeResult.value;
+  if (!tab || !execution || !result || !canStartAutoRefresh.value) return;
+  autoRefreshEpoch += 1;
+  autoRefreshState.value = {
+    editorId: tab.id,
+    executionId: execution.executionId,
+    resultIndex: result.resultIndex,
+    sql: result.sql,
+    sourceStartOffset: result.sourceStartOffset ?? 0,
+    refreshing: false,
+    epoch: autoRefreshEpoch
+  };
+  scheduleAutoRefresh();
+  app.status = `定时刷新已开启 · 每 ${settings.autoRefreshIntervalSeconds} 秒`;
+}
+
+function clearAutoRefreshTimer(): void {
+  if (autoRefreshTimer !== undefined) window.clearTimeout(autoRefreshTimer);
+  autoRefreshTimer = undefined;
+}
+
+function stopAutoRefresh(reason?: string, notify = false): void {
+  if (!autoRefreshState.value) return;
+  clearAutoRefreshTimer();
+  autoRefreshEpoch += 1;
+  autoRefreshState.value = undefined;
+  app.status = reason ? `定时刷新已停止 · ${reason}` : "定时刷新已关闭";
+  if (reason && notify) ElMessage.info(`定时刷新已停止：${reason}`);
+}
+
+function scheduleAutoRefresh(): void {
+  clearAutoRefreshTimer();
+  const state = autoRefreshState.value;
+  if (!state || state.refreshing) return;
+  autoRefreshTimer = window.setTimeout(() => {
+    autoRefreshTimer = undefined;
+    void runAutoRefresh(state.epoch);
+  }, settings.autoRefreshIntervalSeconds * 1_000);
+}
+
+function autoRefreshMatchesActiveResult(): boolean {
+  const state = autoRefreshState.value;
+  if (!state || editors.activeId !== state.editorId || activeExecution.value?.executionId !== state.executionId) return false;
+  if (!activeResult.value) return state.refreshing;
+  return activeResult.value.resultIndex === state.resultIndex;
+}
+
+async function runAutoRefresh(epoch: number): Promise<void> {
+  const state = autoRefreshState.value;
+  if (!state || state.epoch !== epoch) return;
+  if (!autoRefreshMatchesActiveResult()) {
+    stopAutoRefresh("已切换结果页签", true);
+    return;
+  }
+  const tab = editors.tabs.find((item) => item.id === state.editorId);
+  if (!tab || !tab.connection || app.transportState !== "ready"
+      || tab.connectionState === "unbound" || tab.connectionState === "unavailable"
+      || tab.connectionState === "credentials-required") {
+    stopAutoRefresh("数据库连接已不可用", true);
+    return;
+  }
+  if (resultEdits.hasChanges(tab.id) || tab.resultChangesDirty) {
+    stopAutoRefresh("结果存在待应用的修改", true);
+    return;
+  }
+  if (tab.busy || resultLoading.value) {
+    scheduleAutoRefresh();
+    return;
+  }
+  state.refreshing = true;
+  clearAutoRefreshTimer();
+  editors.patch(tab.id, { busy: true, activeExecutionId: undefined,
+    executionStartedAt: Date.now(), executionPhase: "starting" });
+  app.status = "正在定时刷新…";
+  try {
+    await rpc.ensureOperational();
+    const response = await rpc.request<{ executionId: string }>("query.execute", {
+      editorId: tab.id,
+      text: monacoEditor.value?.getValue(tab.id) ?? tab.content,
+      selectedText: state.sql,
+      cursorOffset: 0,
+      selectionStartOffset: state.sourceStartOffset,
+      scope: "current",
+      stopOnError: true,
+      resultPresentation: "replace"
+    });
+    const currentState = autoRefreshState.value;
+    if (currentState?.epoch === epoch) {
+      currentState.executionId = response.executionId;
+      currentState.resultIndex = 0;
+    }
+    resultEdits.finishEditor(tab.id);
+    editors.patch(tab.id, { resultChangesDirty: false });
+    queries.start(tab.id, response.executionId, "replace");
+    activeResultIndex.value = response.executionId;
+    const currentTab = editors.tabs.find((item) => item.id === tab.id);
+    if (currentTab?.busy && currentTab.executionPhase !== "cancelling") {
+      editors.patch(tab.id, { activeExecutionId: response.executionId, executionPhase: "running" });
+    }
+  } catch (error) {
+    const currentTab = editors.tabs.find((item) => item.id === tab.id);
+    if (!currentTab?.activeExecutionId) {
+      editors.patch(tab.id, { busy: false, activeExecutionId: undefined,
+        executionStartedAt: undefined, executionPhase: "idle" });
+    }
+    if (autoRefreshState.value?.epoch === epoch) stopAutoRefresh("执行失败", true);
+    reportError(error);
+  }
+}
+
 type EditorExecutionScope = "current" | "script" | "current-new-tab";
 
 function executeFromEditor(scope: EditorExecutionScope, selectedText: string, cursorOffset: number,
@@ -2163,6 +2362,20 @@ async function updateMaxRows(value: number): Promise<void> {
   const previous = settings.maxResultRows; settings.maxResultRows = value;
   try { await rpc.request("settings.update", { key: "result.maxRows", value: String(value) }); }
   catch (error) { settings.maxResultRows = previous; reportError(error); }
+}
+async function updateAutoRefreshInterval(value: number): Promise<void> {
+  if (!Number.isInteger(value) || value < 1 || value > 3600) return;
+  const previous = settings.autoRefreshIntervalSeconds;
+  settings.autoRefreshIntervalSeconds = value;
+  if (autoRefreshState.value) scheduleAutoRefresh();
+  try {
+    await rpc.request("settings.update", { key: "result.autoRefreshIntervalSeconds", value: String(value) });
+    app.status = `定时刷新周期已设置为 ${value} 秒`;
+  } catch (error) {
+    settings.autoRefreshIntervalSeconds = previous;
+    if (autoRefreshState.value) scheduleAutoRefresh();
+    reportError(error);
+  }
 }
 async function updateMaxLobBytes(value: number): Promise<void> {
   const previous = settings.maxResultLobBytes; settings.maxResultLobBytes = value;

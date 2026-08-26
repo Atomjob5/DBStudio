@@ -218,6 +218,7 @@ class LocalServerSecurityTest {
         assertEquals(HttpStatus.OK, defaults.getStatusCode());
         assertTrue(defaults.getBody().contains("\"result.columnLayoutScope\":\"result\""));
         assertTrue(defaults.getBody().contains("\"result.clobMaxCharacters\":\"10000\""));
+        assertTrue(defaults.getBody().contains("\"result.autoRefreshIntervalSeconds\":\"10\""));
         assertTrue(defaults.getBody().contains("\"editor.dangerousStatementWarningEnabled\":\"true\""));
         assertTrue(defaults.getBody().contains("\"result.copyHeaderOnDoubleClick\":\"true\""));
         assertTrue(defaults.getBody().contains("\"result.copySeparator\":\"comma\""));
@@ -253,6 +254,17 @@ class LocalServerSecurityTest {
                 new HttpEntity<Map<String, String>>(setting, headers), String.class);
         assertEquals(HttpStatus.BAD_REQUEST, rejected.getStatusCode());
         assertTrue(rejected.getBody().contains("INVALID_SETTING"));
+
+        setting.put("key", "result.autoRefreshIntervalSeconds");
+        setting.put("value", "30");
+        assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+        setting.put("value", "0");
+        assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+        setting.put("value", "3601");
+        assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
 
         setting.put("key", "result.copyHeaderOnDoubleClick");
         setting.put("value", "false");
