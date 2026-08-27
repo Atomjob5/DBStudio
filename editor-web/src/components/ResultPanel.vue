@@ -154,7 +154,8 @@
       </div>
       <div v-if="showExecutionLoading" class="result-loading" role="status" aria-live="polite"
            aria-label="正在执行 SQL">
-        <img class="result-loading__image" :src="executionLoadingImage" alt="" aria-hidden="true" />
+        <WavePhysicsLoader v-if="resultLoadingAnimation === 'wave-physics'" :theme="app.theme" />
+        <img v-else class="result-loading__image" :src="executionLoadingImage" alt="" aria-hidden="true" />
         <SqlExecutionTimer :started-at="executionStartedAt" />
       </div>
       <el-alert v-else-if="activeResult?.errorMessage" :title="activeResult.errorMessage" type="error" show-icon :closable="false" />
@@ -213,7 +214,8 @@
     </template>
     <div v-else-if="showExecutionLoading" class="result-loading" role="status" aria-live="polite"
          aria-label="正在执行 SQL">
-      <img class="result-loading__image" :src="executionLoadingImage" alt="" aria-hidden="true" />
+      <WavePhysicsLoader v-if="resultLoadingAnimation === 'wave-physics'" :theme="app.theme" />
+      <img v-else class="result-loading__image" :src="executionLoadingImage" alt="" aria-hidden="true" />
       <SqlExecutionTimer :started-at="executionStartedAt" />
     </div>
     <el-empty v-else class="result-empty" description="执行查询后在这里查看结果">
@@ -302,6 +304,7 @@ import ResultValueDialog from "./ResultValueDialog.vue";
 import ResultValueCompareDialog from "./ResultValueCompareDialog.vue";
 import ResultLargeValueDialog from "./ResultLargeValueDialog.vue";
 import SqlExecutionTimer from "./SqlExecutionTimer.vue";
+import WavePhysicsLoader from "./WavePhysicsLoader.vue";
 import { shortcutTooltip } from "../shortcuts";
 import { rpc } from "../bridge/rpc";
 
@@ -456,6 +459,7 @@ const sumSummary = ref<{ total: string; count: number }>();
 const executionLoadingImage = computed(() => app.theme === "dark"
   ? "/assets/branding/dbstudio-sql-loading-v4-dark.webp"
   : "/assets/branding/dbstudio-sql-loading-v4.webp");
+const resultLoadingAnimation = computed(() => settings.colorSchemes[app.theme].result.loadingAnimation);
 const visibleExecutions = computed(() => props.executions?.length ? props.executions
   : props.execution ? [props.execution] : []);
 interface ResultTab { key: string; execution: QueryExecutionState; result?: QueryExecutionState["results"][number]; }

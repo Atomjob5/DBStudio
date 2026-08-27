@@ -160,14 +160,14 @@ public final class DbStudioApiController {
             + "\"result.copySelection\":null,"
             + "\"result.loadNext\":null,\"result.loadAll\":null}";
     private static final String DEFAULT_COLOR_SCHEMES =
-            "{\"version\":2,\"light\":{\"presetId\":\"dbstudio-light\",\"editor\":{"
+            "{\"version\":3,\"light\":{\"presetId\":\"dbstudio-light\",\"editor\":{"
             + "\"fontFamily\":\"sf-mono\",\"fontSize\":13,\"lineHeight\":21,\"background\":\"#FFFFFF\",\"foreground\":\"#1D1D1F\","
             + "\"keyword\":{\"color\":\"#9B2393\",\"bold\":true,\"italic\":false},\"identifier\":{\"color\":\"#1D1D1F\",\"bold\":false,\"italic\":false},"
             + "\"string\":{\"color\":\"#C41A16\",\"bold\":false,\"italic\":false},\"number\":{\"color\":\"#1C00CF\",\"bold\":false,\"italic\":false},"
             + "\"comment\":{\"color\":\"#6C7986\",\"bold\":false,\"italic\":true},\"quotedIdentifier\":{\"color\":\"#0F68A0\",\"bold\":false,\"italic\":false},"
             + "\"lineNumber\":\"#A1A1A6\",\"activeLineNumber\":\"#6E6E73\",\"cursor\":\"#0071E3\",\"selection\":\"#B8D9F8\",\"lineHighlight\":\"#F5F5F7\"},"
             + "\"result\":{"
-            + "\"fontFamily\":\"system-ui\",\"fontSize\":12,\"background\":\"#FFFFFF\",\"stripeBackground\":\"#F7F7F9\",\"headerBackground\":\"#F5F5F7\","
+            + "\"loadingAnimation\":\"dbstudio\",\"fontFamily\":\"system-ui\",\"fontSize\":12,\"background\":\"#FFFFFF\",\"stripeBackground\":\"#F7F7F9\",\"headerBackground\":\"#F5F5F7\","
             + "\"cell\":{\"color\":\"#1D1D1F\",\"bold\":false,\"italic\":false},\"header\":{\"color\":\"#6E6E73\",\"bold\":true,\"italic\":false},"
             + "\"nullValue\":{\"color\":\"#AF52DE\",\"bold\":false,\"italic\":true},\"binaryValue\":{\"color\":\"#B25000\",\"bold\":false,\"italic\":false},"
             + "\"rowNumber\":{\"color\":\"#86868B\",\"bold\":false,\"italic\":false},\"selectionBackground\":\"#DCECFB\",\"selectionBorder\":\"#0071E3\",\"compareHighlightBackground\":\"#FFF0B3\"}},"
@@ -178,7 +178,7 @@ public final class DbStudioApiController {
             + "\"comment\":{\"color\":\"#7F8C98\",\"bold\":false,\"italic\":true},\"quotedIdentifier\":{\"color\":\"#5DD8FF\",\"bold\":false,\"italic\":false},"
             + "\"lineNumber\":\"#636366\",\"activeLineNumber\":\"#A1A1A6\",\"cursor\":\"#2997FF\",\"selection\":\"#264F78\",\"lineHighlight\":\"#19191C\"},"
             + "\"result\":{"
-            + "\"fontFamily\":\"system-ui\",\"fontSize\":12,\"background\":\"#151517\",\"stripeBackground\":\"#1B1B1E\",\"headerBackground\":\"#1C1C1E\","
+            + "\"loadingAnimation\":\"dbstudio\",\"fontFamily\":\"system-ui\",\"fontSize\":12,\"background\":\"#151517\",\"stripeBackground\":\"#1B1B1E\",\"headerBackground\":\"#1C1C1E\","
             + "\"cell\":{\"color\":\"#F5F5F7\",\"bold\":false,\"italic\":false},\"header\":{\"color\":\"#A1A1A6\",\"bold\":true,\"italic\":false},"
             + "\"nullValue\":{\"color\":\"#BF5AF2\",\"bold\":false,\"italic\":true},\"binaryValue\":{\"color\":\"#FF9F0A\",\"bold\":false,\"italic\":false},"
             + "\"rowNumber\":{\"color\":\"#7D7D83\",\"bold\":false,\"italic\":false},\"selectionBackground\":\"#264F78\",\"selectionBorder\":\"#2997FF\",\"compareHighlightBackground\":\"#554515\"}}}";
@@ -1772,7 +1772,7 @@ public final class DbStudioApiController {
             throw new ApiException("INVALID_SETTING", "配色方案设置必须是有效 JSON");
         }
         requireKeys(root, setOf("version", "light", "dark"), "配色方案");
-        requireInteger(root, "version", 1, 2, "配色方案版本");
+        requireInteger(root, "version", 1, 3, "配色方案版本");
         int version = ((Number) root.get("version")).intValue();
         validateColorSchemeMode(requiredMap(root, "light", "亮色方案"), "亮色方案", version);
         validateColorSchemeMode(requiredMap(root, "dark", "深色方案"), "深色方案", version);
@@ -1800,21 +1800,35 @@ public final class DbStudioApiController {
     }
 
     private void validateResultColorScheme(Map<String, Object> result, String label, int version) {
-        Set<String> keys = version == 1
-                ? setOf("fontFamily", "fontSize", "background", "headerBackground", "cell", "header",
-                    "nullValue", "binaryValue", "rowNumber", "selectionBackground", "selectionBorder")
-                : setOf("fontFamily", "fontSize", "background", "stripeBackground", "headerBackground", "cell", "header",
+        Set<String> keys;
+        if (version == 1) {
+            keys = setOf("fontFamily", "fontSize", "background", "headerBackground", "cell", "header",
+                    "nullValue", "binaryValue", "rowNumber", "selectionBackground", "selectionBorder");
+        } else if (version == 2) {
+            keys = setOf("fontFamily", "fontSize", "background", "stripeBackground", "headerBackground", "cell", "header",
                     "nullValue", "binaryValue", "rowNumber", "selectionBackground", "selectionBorder",
                     "compareHighlightBackground");
+        } else {
+            keys = setOf("loadingAnimation", "fontFamily", "fontSize", "background", "stripeBackground",
+                    "headerBackground", "cell", "header", "nullValue", "binaryValue", "rowNumber",
+                    "selectionBackground", "selectionBorder", "compareHighlightBackground");
+        }
         requireKeys(result, keys, label);
         requireFont(result, "fontFamily", label);
         requireInteger(result, "fontSize", 10, 24, label + "字号");
         for (String key : Arrays.asList("background", "headerBackground", "selectionBackground", "selectionBorder")) {
             requireColor(result, key, label);
         }
-        if (version == 2) {
+        if (version >= 2) {
             requireColor(result, "stripeBackground", label);
             requireColor(result, "compareHighlightBackground", label);
+        }
+        if (version == 3) {
+            Object loadingAnimation = result.get("loadingAnimation");
+            if (!(loadingAnimation instanceof String)
+                    || !Arrays.asList("dbstudio", "wave-physics").contains(loadingAnimation)) {
+                throw new ApiException("INVALID_SETTING", label + "Loading动画无效");
+            }
         }
         for (String key : Arrays.asList("cell", "header", "nullValue", "binaryValue", "rowNumber")) {
             validateTextStyle(requiredMap(result, key, label + key), label + key);

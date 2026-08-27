@@ -68,6 +68,21 @@ describe("AppearanceColorSchemeDrawer", () => {
     wrapper.unmount();
   });
 
+  it("selects and saves a result loading animation independently for each mode", async () => {
+    const wrapper = mountDrawer();
+    await flushPromises();
+    const wave = wrapper.get('button[aria-label="Wave Physics 动画"]');
+    expect(wrapper.get('button[aria-label="DBStudio 动画"]').attributes("aria-checked")).toBe("true");
+    await wave.trigger("click");
+    expect(wave.attributes("aria-checked")).toBe("true");
+    expect(wrapper.findComponent({ name: "WavePhysicsLoader" }).exists()).toBe(true);
+    await wrapper.get(".appearance-drawer-footer .el-button--primary").trigger("click");
+    const saved = wrapper.emitted("save")?.[0]?.[0] as typeof DEFAULT_COLOR_SCHEMES;
+    expect(saved.light.result.loadingAnimation).toBe("wave-physics");
+    expect(saved.dark.result.loadingAnimation).toBe("dbstudio");
+    wrapper.unmount();
+  });
+
   it("exposes every editor color and binds every text style to the preview", async () => {
     const wrapper = mountDrawer();
     await flushPromises();

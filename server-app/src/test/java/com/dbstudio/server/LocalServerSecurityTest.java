@@ -428,6 +428,8 @@ class LocalServerSecurityTest {
         setting.put("key", "appearance.colorSchemes");
         Map<String, Object> valid = colorSchemes();
         ((Map<String, Object>) ((Map<String, Object>) valid.get("light")).get("editor")).put("background", "#123456");
+        ((Map<String, Object>) ((Map<String, Object>) valid.get("dark")).get("result"))
+                .put("loadingAnimation", "wave-physics");
         setting.put("value", mapper.writeValueAsString(valid));
         ResponseEntity<String> saved = http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                 new HttpEntity<Map<String, String>>(setting, headers), String.class);
@@ -436,15 +438,27 @@ class LocalServerSecurityTest {
                 new HttpEntity<String>(headers), String.class);
         assertEquals(HttpStatus.OK, reloaded.getStatusCode());
         assertTrue(reloaded.getBody().contains("#123456"));
+        assertTrue(reloaded.getBody().contains("wave-physics"));
 
         Map<String, Object> legacy = colorSchemes();
         legacy.put("version", 1);
         for (String mode : Arrays.asList("light", "dark")) {
             Map<String, Object> result = (Map<String, Object>) ((Map<String, Object>) legacy.get(mode)).get("result");
+            result.remove("loadingAnimation");
             result.remove("stripeBackground");
             result.remove("compareHighlightBackground");
         }
         setting.put("value", mapper.writeValueAsString(legacy));
+        assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+
+        Map<String, Object> versionTwo = colorSchemes();
+        versionTwo.put("version", 2);
+        for (String mode : Arrays.asList("light", "dark")) {
+            Map<String, Object> result = (Map<String, Object>) ((Map<String, Object>) versionTwo.get(mode)).get("result");
+            result.remove("loadingAnimation");
+        }
+        setting.put("value", mapper.writeValueAsString(versionTwo));
         assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                 new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
 
@@ -486,6 +500,21 @@ class LocalServerSecurityTest {
         assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                 new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
 
+        invalid = colorSchemes();
+        ((Map<String, Object>) ((Map<String, Object>) invalid.get("dark")).get("result"))
+                .put("loadingAnimation", "unknown");
+        setting.put("value", mapper.writeValueAsString(invalid));
+        assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+
+        invalid = colorSchemes();
+        invalid.put("version", 4);
+        setting.put("value", mapper.writeValueAsString(invalid));
+        ResponseEntity<String> futureVersion = http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class);
+        assertEquals(HttpStatus.BAD_REQUEST, futureVersion.getStatusCode());
+        assertTrue(futureVersion.getBody().contains("配色方案版本超出范围"));
+
         StringBuilder oversized = new StringBuilder(64 * 1024 + 1);
         for (int index = 0; index < 64 * 1024 + 1; index++) oversized.append('x');
         setting.put("value", oversized.toString());
@@ -495,7 +524,7 @@ class LocalServerSecurityTest {
 
     private Map<String, Object> colorSchemes() {
         Map<String, Object> value = new LinkedHashMap<String, Object>();
-        value.put("version", 2);
+        value.put("version", 3);
         value.put("light", colorSchemeMode("light"));
         value.put("dark", colorSchemeMode("dark"));
         return value;
@@ -513,6 +542,7 @@ class LocalServerSecurityTest {
         editor.put("lineNumber", "#A1A1A6"); editor.put("activeLineNumber", "#6E6E73"); editor.put("cursor", "#0071E3");
         editor.put("selection", "#B8D9F8"); editor.put("lineHighlight", "#F5F5F7");
         Map<String, Object> result = new LinkedHashMap<String, Object>();
+        result.put("loadingAnimation", "dbstudio");
         result.put("fontFamily", "sf-mono"); result.put("fontSize", 12); result.put("background", "#FFFFFF");
         result.put("stripeBackground", "#F7F7F9"); result.put("headerBackground", "#F5F5F7");
         result.put("cell", textStyle("#1D1D1F", false, false)); result.put("header", textStyle("#6E6E73", true, false));

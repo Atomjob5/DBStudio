@@ -2,6 +2,7 @@ import type { ResolvedTheme } from "./types";
 
 export type AppearanceMode = "light" | "dark";
 export type FontFamilyId = "system-ui" | "system-mono" | "sf-mono" | "menlo" | "monaco" | "consolas" | "jetbrains-mono";
+export type ResultLoadingAnimation = "dbstudio" | "wave-physics";
 
 export interface TextStyle {
   color: string;
@@ -29,6 +30,7 @@ export interface EditorColorScheme {
 }
 
 export interface ResultColorScheme {
+  loadingAnimation: ResultLoadingAnimation;
   fontFamily: FontFamilyId;
   fontSize: number;
   background: string;
@@ -51,7 +53,7 @@ export interface ModeColorScheme {
 }
 
 export interface ColorSchemeSettings {
-  version: 2;
+  version: 3;
   light: ModeColorScheme;
   dark: ModeColorScheme;
 }
@@ -91,7 +93,7 @@ function editor(values: Partial<EditorColorScheme>): EditorColorScheme {
 
 function result(values: Partial<ResultColorScheme>): ResultColorScheme {
   return {
-    fontFamily: "system-ui", fontSize: 12, background: "#FFFFFF", stripeBackground: "#F7F7F9",
+    loadingAnimation: "dbstudio", fontFamily: "system-ui", fontSize: 12, background: "#FFFFFF", stripeBackground: "#F7F7F9",
     headerBackground: "#F5F5F7",
     cell: style("#1D1D1F"), header: style("#6E6E73", true), nullValue: style("#AF52DE", false, true),
     binaryValue: style("#B25000"), rowNumber: style("#86868B"), selectionBackground: "#DCECFB",
@@ -122,7 +124,7 @@ const makeScheme = (presetId: string, mode: AppearanceMode, values: {
 };
 
 export const DEFAULT_COLOR_SCHEMES: ColorSchemeSettings = {
-  version: 2,
+  version: 3,
   light: makeScheme("dbstudio-light", "light"),
   dark: makeScheme("dbstudio-dark", "dark"),
 };
@@ -163,7 +165,9 @@ export function applyPreset(settings: ColorSchemeSettings, mode: AppearanceMode,
   const preset = COLOR_SCHEME_PRESETS.find((item) => item.mode === mode && item.id === presetId);
   if (!preset) return cloneColorSchemes(settings);
   const next = cloneColorSchemes(settings);
+  const loadingAnimation = next[mode].result.loadingAnimation;
   next[mode] = clone(preset.scheme);
+  next[mode].result.loadingAnimation = loadingAnimation;
   return next;
 }
 
@@ -186,9 +190,10 @@ const validEditor = (value: unknown): value is EditorColorScheme => {
     && [item.keyword, item.identifier, item.string, item.number, item.comment, item.quotedIdentifier].every(validStyle);
 };
 const validResult = (value: unknown): value is ResultColorScheme => {
-  if (!exactKeys(value, ["fontFamily", "fontSize", "background", "stripeBackground", "headerBackground", "cell", "header", "nullValue", "binaryValue", "rowNumber", "selectionBackground", "selectionBorder", "compareHighlightBackground"])) return false;
+  if (!exactKeys(value, ["loadingAnimation", "fontFamily", "fontSize", "background", "stripeBackground", "headerBackground", "cell", "header", "nullValue", "binaryValue", "rowNumber", "selectionBackground", "selectionBorder", "compareHighlightBackground"])) return false;
   const item = value as ResultColorScheme;
-  return validFont(item.fontFamily) && Number.isInteger(item.fontSize) && item.fontSize >= 10 && item.fontSize <= 24
+  return (item.loadingAnimation === "dbstudio" || item.loadingAnimation === "wave-physics")
+    && validFont(item.fontFamily) && Number.isInteger(item.fontSize) && item.fontSize >= 10 && item.fontSize <= 24
     && [item.background, item.stripeBackground, item.headerBackground, item.selectionBackground,
       item.selectionBorder, item.compareHighlightBackground].every(isHex)
     && [item.cell, item.header, item.nullValue, item.binaryValue, item.rowNumber].every(validStyle);
@@ -197,7 +202,7 @@ const validResult = (value: unknown): value is ResultColorScheme => {
 export function isValidColorSchemeSettings(value: unknown): value is ColorSchemeSettings {
   if (!exactKeys(value, ["version", "light", "dark"])) return false;
   const item = value as ColorSchemeSettings;
-  return item.version === 2 && exactKeys(item.light, ["presetId", "editor", "result"]) && exactKeys(item.dark, ["presetId", "editor", "result"])
+  return item.version === 3 && exactKeys(item.light, ["presetId", "editor", "result"]) && exactKeys(item.dark, ["presetId", "editor", "result"])
     && typeof item.light.presetId === "string" && typeof item.dark.presetId === "string"
     && validEditor(item.light.editor) && validEditor(item.dark.editor)
     && validResult(item.light.result) && validResult(item.dark.result);
@@ -216,16 +221,19 @@ export function parseColorSchemeSettings(value?: string): ColorSchemeSettings {
 function migrateColorSchemeSettings(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
   const item = value as Record<string, unknown>;
-  if (item.version !== 1) return value;
+  if (item.version !== 1 && item.version !== 2) return value;
   const next = clone(item) as Record<string, unknown>;
   for (const mode of ["light", "dark"] as const) {
     const modeValue = next[mode] as Record<string, unknown> | undefined;
     const resultValue = modeValue?.result as Record<string, unknown> | undefined;
     if (!resultValue) return value;
-    resultValue.stripeBackground = mode === "dark" ? "#1B1B1E" : "#F7F7F9";
-    resultValue.compareHighlightBackground = mode === "dark" ? "#554515" : "#FFF0B3";
+    if (item.version === 1) {
+      resultValue.stripeBackground = mode === "dark" ? "#1B1B1E" : "#F7F7F9";
+      resultValue.compareHighlightBackground = mode === "dark" ? "#554515" : "#FFF0B3";
+    }
+    resultValue.loadingAnimation = "dbstudio";
   }
-  next.version = 2;
+  next.version = 3;
   return next;
 }
 

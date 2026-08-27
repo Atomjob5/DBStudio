@@ -15,7 +15,7 @@ describe("color scheme settings", () => {
     expect(COLOR_SCHEME_PRESETS.filter((item) => item.mode === "dark")).toHaveLength(6);
     expect(new Set(COLOR_SCHEME_PRESETS.map((item) => item.id)).size).toBe(12);
     for (const preset of COLOR_SCHEME_PRESETS) expect(isValidColorSchemeSettings({
-      version: 2,
+      version: 3,
       light: preset.mode === "light" ? preset.scheme : DEFAULT_COLOR_SCHEMES.light,
       dark: preset.mode === "dark" ? preset.scheme : DEFAULT_COLOR_SCHEMES.dark,
     })).toBe(true);
@@ -35,10 +35,12 @@ describe("color scheme settings", () => {
 
   it("copies only the selected mode when applying a preset", () => {
     const original = cloneColorSchemes(DEFAULT_COLOR_SCHEMES);
+    original.dark.result.loadingAnimation = "wave-physics";
     const next = applyPreset(original, "dark", "dracula");
     expect(next.dark.presetId).toBe("dracula");
     expect(next.dark.editor.background).toBe("#282A36");
     expect(next.light).toEqual(original.light);
+    expect(next.dark.result.loadingAnimation).toBe("wave-physics");
     next.dark.editor.keyword.color = "#123456";
     expect(original.dark.editor.keyword.color).not.toBe("#123456");
   });
@@ -65,9 +67,21 @@ describe("color scheme settings", () => {
     delete legacy.dark.result.compareHighlightBackground;
     legacy.light.editor.background = "#123456";
     const migrated = parseColorSchemeSettings(JSON.stringify(legacy));
-    expect(migrated.version).toBe(2);
+    expect(migrated.version).toBe(3);
     expect(migrated.light.editor.background).toBe("#123456");
     expect(migrated.light.result.stripeBackground).toBe("#F7F7F9");
     expect(migrated.dark.result.compareHighlightBackground).toBe("#554515");
+    expect(migrated.light.result.loadingAnimation).toBe("dbstudio");
+  });
+
+  it("migrates version 2 settings to the DBStudio loading animation", () => {
+    const legacy = JSON.parse(serializeColorSchemeSettings(DEFAULT_COLOR_SCHEMES));
+    legacy.version = 2;
+    delete legacy.light.result.loadingAnimation;
+    delete legacy.dark.result.loadingAnimation;
+    const migrated = parseColorSchemeSettings(JSON.stringify(legacy));
+    expect(migrated.version).toBe(3);
+    expect(migrated.light.result.loadingAnimation).toBe("dbstudio");
+    expect(migrated.dark.result.loadingAnimation).toBe("dbstudio");
   });
 });

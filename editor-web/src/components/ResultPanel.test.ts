@@ -8,6 +8,7 @@ import { useAppStore } from "../stores/app";
 import { useQueryStore } from "../stores/query";
 import { useResultEditStore } from "../stores/resultEdits";
 import { useSettingsStore } from "../stores/settings";
+import { cloneColorSchemes } from "../appearance";
 import { rpc } from "../bridge/rpc";
 import type { Column } from "element-plus";
 import type { VNode } from "vue";
@@ -108,6 +109,20 @@ describe("ResultPanel streaming rendering", () => {
     });
     expect(wrapper.find(".result-loading").exists()).toBe(false);
     expect(wrapper.text()).toContain("执行查询后在这里查看结果");
+  });
+
+  it("renders the configured Wave Physics result loader", async () => {
+    const settings = useSettingsStore();
+    const schemes = cloneColorSchemes(settings.colorSchemes);
+    schemes.light.result.loadingAnimation = "wave-physics";
+    settings.setColorSchemes(schemes);
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: 0, executing: true },
+      global: { plugins: [ElementPlus] },
+    });
+    expect(wrapper.findComponent({ name: "WavePhysicsLoader" }).exists()).toBe(true);
+    expect(wrapper.find(".result-loading__image").exists()).toBe(false);
+    wrapper.unmount();
   });
 
   it("emits an explicit intent when a result tab is clicked", async () => {

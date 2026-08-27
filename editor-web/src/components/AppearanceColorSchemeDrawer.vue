@@ -88,6 +88,29 @@
 
       <section class="appearance-section">
         <div class="appearance-section-heading"><div><strong>结果集</strong><span>表格文字、斑马纹、比较高亮及选中状态</span></div></div>
+        <div class="appearance-loading-field">
+          <span>Loading 动画</span>
+          <div class="appearance-loading-options" role="radiogroup" aria-label="结果集 Loading 动画">
+            <button type="button" class="appearance-loading-option"
+                    :class="{ active: activeScheme.result.loadingAnimation === 'dbstudio' }"
+                    role="radio" :aria-checked="activeScheme.result.loadingAnimation === 'dbstudio'"
+                    aria-label="DBStudio 动画" @click="setLoadingAnimation('dbstudio')">
+              <span class="appearance-loading-preview" :style="{ background: activeScheme.result.background }">
+                <img :src="mode === 'dark' ? '/assets/branding/dbstudio-sql-loading-v4-dark.webp' : '/assets/branding/dbstudio-sql-loading-v4.webp'" alt="" />
+              </span>
+              <span><strong>DBStudio</strong><small>品牌插画</small></span><Check v-if="activeScheme.result.loadingAnimation === 'dbstudio'" />
+            </button>
+            <button type="button" class="appearance-loading-option"
+                    :class="{ active: activeScheme.result.loadingAnimation === 'wave-physics' }"
+                    role="radio" :aria-checked="activeScheme.result.loadingAnimation === 'wave-physics'"
+                    aria-label="Wave Physics 动画" @click="setLoadingAnimation('wave-physics')">
+              <span class="appearance-loading-preview" :style="{ background: activeScheme.result.background }">
+                <WavePhysicsLoader :theme="mode" compact />
+              </span>
+              <span><strong>Wave Physics</strong><small>弹跳波浪</small></span><Check v-if="activeScheme.result.loadingAnimation === 'wave-physics'" />
+            </button>
+          </div>
+        </div>
         <div class="appearance-fields appearance-fields-two">
           <label>字体<select :value="activeScheme.result.fontFamily" @change="updateFont('result', $event)"><option v-for="font in fonts" :key="font.id" :value="font.id">{{ font.label }}</option></select></label>
           <label>字号<el-input-number :model-value="activeScheme.result.fontSize" :min="10" :max="24" size="small" controls-position="right" @update:model-value="activeScheme.result.fontSize = $event ?? 12; markCustom()" /></label>
@@ -126,8 +149,9 @@
 <script setup lang="ts">
 import { computed, defineComponent, h, ref, watch } from "vue";
 import { Check, Moon, Sunny } from "@element-plus/icons-vue";
-import type { ColorSchemeSettings, AppearanceMode, ModeColorScheme, FontFamilyId, TextStyle } from "../appearance";
+import type { ColorSchemeSettings, AppearanceMode, ModeColorScheme, FontFamilyId, ResultLoadingAnimation, TextStyle } from "../appearance";
 import { applyPreset, cloneColorSchemes, COLOR_SCHEME_PRESETS, FONT_FAMILY_OPTIONS, fontFamilyCss } from "../appearance";
+import WavePhysicsLoader from "./WavePhysicsLoader.vue";
 
 const ColorField = defineComponent({
   name: "ColorField",
@@ -209,6 +233,7 @@ function styleFor(section: "editor" | "result", key: string): TextStyle {
 }
 
 function markCustom(): void { activeScheme.value.presetId = "custom"; }
+function setLoadingAnimation(value: ResultLoadingAnimation): void { activeScheme.value.result.loadingAnimation = value; }
 function updateFont(section: "editor" | "result", event: Event): void {
   const value = (event.target as HTMLSelectElement).value as FontFamilyId;
   activeScheme.value[section].fontFamily = value;
@@ -246,6 +271,15 @@ function drawerChanged(value: boolean): void {
 .appearance-mode-row span, .appearance-section-heading span, .appearance-drawer-footer > span { color: var(--db-muted); font-size: 11px; }
 .appearance-mode-row :deep(.el-radio-button__inner) { display: inline-flex; align-items: center; gap: 4px; }
 .appearance-section { display: flex; flex-direction: column; gap: 12px; }
+.appearance-loading-field { display: flex; flex-direction: column; gap: 6px; color: var(--db-muted); font-size: 11px; }
+.appearance-loading-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.appearance-loading-option { display: grid; min-width: 0; grid-template-columns: 132px 1fr 16px; align-items: center; gap: 10px; padding: 7px; border: 1px solid var(--db-border-soft); border-radius: 10px; background: var(--db-panel-soft); color: var(--db-text); text-align: left; cursor: pointer; }
+.appearance-loading-option:hover, .appearance-loading-option.active { border-color: var(--db-accent); background: var(--db-accent-soft); }
+.appearance-loading-option > span:nth-child(2) { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.appearance-loading-option strong { font-size: 11px; }.appearance-loading-option small { color: var(--db-muted); font-size: 10px; }
+.appearance-loading-option > svg { width: 14px; color: var(--db-accent); }
+.appearance-loading-preview { display: flex; width: 132px; height: 62px; align-items: center; justify-content: center; overflow: hidden; border: 1px solid var(--db-border-soft); border-radius: 7px; }
+.appearance-loading-preview > img { width: 84px; max-height: 58px; object-fit: contain; }
 .appearance-presets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .appearance-preset { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--db-border-soft); border-radius: 10px; background: var(--db-panel-soft); color: var(--db-text); text-align: left; cursor: pointer; }
 .appearance-preset:hover, .appearance-preset.active { border-color: var(--db-accent); background: var(--db-accent-soft); }
@@ -284,5 +318,5 @@ function drawerChanged(value: boolean): void {
 .preview-binary { color: var(--preview-result-binary) !important; font-weight: var(--preview-result-binary-weight) !important; font-style: var(--preview-result-binary-style) !important; }
 .appearance-fields { display: grid; gap: 10px; }.appearance-fields-three { grid-template-columns: 1.4fr .8fr .8fr; }.appearance-fields-two { grid-template-columns: 1.4fr .8fr; }.appearance-fields-four { grid-template-columns: repeat(4, minmax(0, 1fr)); }.appearance-fields label { display: flex; min-width: 0; flex-direction: column; gap: 5px; color: var(--db-muted); font-size: 11px; }.appearance-fields select { width: 100%; height: 28px; padding: 0 7px; border: 1px solid var(--db-border); border-radius: 7px; background: var(--db-control-bg); color: var(--db-text); outline: 0; }.appearance-fields :deep(.el-input-number) { width: 100%; }.appearance-token-list { display: flex; flex-direction: column; gap: 5px; }.appearance-token-row { display: grid; grid-template-columns: minmax(95px, 1fr) minmax(125px, 1.3fr) 56px 56px; min-height: 34px; align-items: center; gap: 8px; padding: 3px 0; border-bottom: 1px solid var(--db-border-soft); }.appearance-token-label { font-size: 12px; }.appearance-color-field { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 6px; color: var(--db-muted); font-size: 11px; }.appearance-color-control { display: inline-flex; min-width: 0; align-items: center; gap: 4px; }.appearance-color-control input { width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: transparent; cursor: pointer; }.appearance-color-control code { color: var(--db-text-secondary); font-size: 10px; }.appearance-token-row :deep(.el-checkbox) { margin-right: 0; }.appearance-drawer-footer { width: 100%; }
 @media (max-width: 620px), (max-height: 700px) { .appearance-preview-sticky { position: static; z-index: auto; top: auto; margin: 0; padding: 0; background: transparent; } }
-@media (max-width: 620px) { .appearance-presets { grid-template-columns: repeat(2, minmax(0, 1fr)); }.appearance-preview { grid-template-columns: 1fr; }.appearance-fields-four { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 620px) { .appearance-presets, .appearance-loading-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }.appearance-loading-option { grid-template-columns: 1fr 16px; }.appearance-loading-preview { grid-column: 1 / -1; width: 100%; }.appearance-preview { grid-template-columns: 1fr; }.appearance-fields-four { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 </style>
