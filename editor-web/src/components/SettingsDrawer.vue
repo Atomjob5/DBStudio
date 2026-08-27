@@ -13,20 +13,20 @@
             <el-radio-button value="dark"><el-icon><Moon /></el-icon>深色</el-radio-button>
           </el-radio-group>
         </el-form-item>
-        <el-button class="appearance-settings-button" :icon="MagicStick" @click="$emit('openAppearance')">
-          配置配色方案
-          <el-icon class="shortcut-settings-arrow"><ArrowRight /></el-icon>
-        </el-button>
+        <button type="button" class="navigation-setting-row navigation-setting-row--separated" @click="$emit('openAppearance')">
+          <span class="setting-label"><span>配置配色方案</span></span>
+          <el-icon class="navigation-setting-arrow" aria-hidden="true"><ArrowRight /></el-icon>
+        </button>
       </section>
 
       <section class="settings-section shortcut-settings">
         <div class="section-heading">
           <div><strong>快捷键</strong><span>按界面区域配置应用操作快捷键</span></div>
         </div>
-        <el-button class="shortcut-settings-button" :icon="Operation" @click="$emit('openShortcuts')">
-          配置快捷键
-          <el-icon class="shortcut-settings-arrow"><ArrowRight /></el-icon>
-        </el-button>
+        <button type="button" class="navigation-setting-row" @click="$emit('openShortcuts')">
+          <span class="setting-label"><span>配置快捷键</span></span>
+          <el-icon class="navigation-setting-arrow" aria-hidden="true"><ArrowRight /></el-icon>
+        </button>
       </section>
 
       <section class="settings-section editor-settings">
@@ -139,7 +139,7 @@
                            :min="10" :max="1000" :step="10" controls-position="right"
                            @update:model-value="$emit('update:completionCandidateLimit', $event ?? 100)" />
         </el-form-item>
-        <el-form-item class="compact-setting-row completion-cache-row">
+        <el-form-item class="compact-setting-row completion-cache-row navigation-setting-predecessor">
           <template #label>
             <div class="setting-label"><span>补全缓存占用</span>
               <el-tooltip content="统计浏览器IndexedDB中的紧凑补全快照；清理会同时清除已加载的对象树，但不会影响连接或查询结果。" placement="top">
@@ -153,12 +153,10 @@
                        :disabled="!canClearCompletionCaches" @click="$emit('clearCompletionCaches')">清理</el-button>
           </div>
         </el-form-item>
-        <el-button class="shortcut-settings-button completion-snippet-settings-button"
-                   :icon="DocumentCopy" @click="$emit('openCompletionSnippets')">
-          管理 SQL 片段
-          <span class="completion-snippet-count">{{ completionSnippetCount }}项</span>
-          <el-icon class="shortcut-settings-arrow"><ArrowRight /></el-icon>
-        </el-button>
+        <button type="button" class="navigation-setting-row" @click="$emit('openCompletionSnippets')">
+          <span class="setting-label"><span>管理 SQL 片段</span></span>
+          <el-icon class="navigation-setting-arrow" aria-hidden="true"><ArrowRight /></el-icon>
+        </button>
       </section>
 
       <section class="settings-section result-settings">
@@ -304,7 +302,7 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowRight, Delete, DocumentCopy, MagicStick, Monitor, Moon, Operation, QuestionFilled, Sunny } from "@element-plus/icons-vue";
+import { ArrowRight, Delete, Monitor, Moon, QuestionFilled, Sunny } from "@element-plus/icons-vue";
 import type { ResolvedTheme, ThemePreference } from "../types";
 import type { ColumnLayoutScope } from "../columnLayout";
 import type { CopySeparator } from "../resultCopy";
@@ -319,7 +317,7 @@ defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: Resolv
   transactionDisconnectRollbackMinutes: number;
   completionCacheSize: string; completionCacheEnvironmentCount: number; completionCacheLoadingCount: number;
   completionCandidateLimit: number; completionPreciseMatchingEnabled: boolean;
-  completionSnippetCount: number; canClearCompletionCaches: boolean;
+  canClearCompletionCaches: boolean;
   minimapEnabled: boolean; wordWrapEnabled: boolean; sqlDiagnosticsEnabled: boolean;
   dangerousStatementWarningEnabled: boolean }>();
 const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme": [value: ThemePreference]; "openAppearance": [];
@@ -373,16 +371,8 @@ function copyHeaderToggleChanged(value: string | number | boolean): void {
 .theme-options :deep(.el-radio-button) { flex: 1; }
 .theme-options :deep(.el-radio-button__inner) { width: 100%; padding-inline: 8px; }
 .theme-options .el-icon { margin-right: 5px; vertical-align: -2px; }
-.appearance-settings-button { width: 100%; justify-content: flex-start; margin-top: 2px; }
-.appearance-settings-button .shortcut-settings-arrow { margin-left: auto; }
-.shortcut-settings-button { width: 100%; justify-content: flex-start; }
-.shortcut-settings-arrow { margin-left: auto; }
-.completion-snippet-settings-button { margin-top: 10px; }
-.completion-snippet-count { margin-left: auto; color: var(--db-muted); font-size: 11px; }
-.completion-snippet-settings-button .shortcut-settings-arrow { margin-left: 4px; }
-.settings-section :deep(.el-form-item:last-of-type) { margin-bottom: 12px; }
-.result-settings .section-heading { margin-bottom: 8px; }
-.compact-setting-row {
+.compact-setting-row,
+.navigation-setting-row {
   display: grid;
   grid-template-columns: minmax(142px, 1fr) auto;
   min-height: 40px;
@@ -392,7 +382,41 @@ function copyHeaderToggleChanged(value: string | number | boolean): void {
   column-gap: 12px;
   border-bottom: 1px solid var(--db-border-soft);
 }
-.compact-setting-row:last-child { border-bottom: 0; }
+.navigation-setting-row {
+  width: 100%;
+  box-sizing: border-box;
+  border-top: 0;
+  border-right: 0;
+  border-left: 0;
+  border-radius: 0;
+  appearance: none;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.compact-setting-row:last-child,
+.navigation-setting-row:last-child { border-bottom: 0; }
+.navigation-setting-row--separated { border-top: 1px solid var(--db-border-soft); }
+.navigation-setting-row:hover { background: color-mix(in srgb, var(--db-text) 5%, transparent); }
+.navigation-setting-row:active { background: color-mix(in srgb, var(--db-text) 9%, transparent); }
+.navigation-setting-row:focus-visible {
+  border-radius: 6px;
+  outline: 2px solid var(--db-accent);
+  outline-offset: 2px;
+}
+.navigation-setting-arrow { color: var(--db-muted); font-size: 14px; }
+.navigation-setting-predecessor { margin-bottom: 0 !important; }
+.settings-section :deep(.el-form-item:last-of-type) { margin-bottom: 12px; }
+.result-settings .section-heading { margin-bottom: 8px; }
+.compact-setting-row :deep(.el-form-item__label),
+.navigation-setting-row {
+  color: var(--db-text);
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.25;
+}
 .compact-setting-row :deep(.el-form-item__label) {
   width: auto !important;
   height: auto;

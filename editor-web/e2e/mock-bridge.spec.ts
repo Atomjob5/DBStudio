@@ -1189,7 +1189,7 @@ test("supports Apple appearance, system theme settings and compact windows", asy
   await expect(page.getByText("斑马纹", { exact: true })).toBeVisible();
   await expect(page.getByText("多列复制分隔符", { exact: true })).toBeVisible();
   const compactRows = page.locator(".settings-drawer .compact-setting-row");
-  await expect(compactRows).toHaveCount(22);
+  await expect(compactRows).toHaveCount(24);
   expect(await compactRows.evaluateAll((rows) => rows.every((row) => {
     const style = getComputedStyle(row);
     const label = row.querySelector(".el-form-item__label")?.getBoundingClientRect();
@@ -1197,6 +1197,90 @@ test("supports Apple appearance, system theme settings and compact windows", asy
     return style.display === "grid" && row.scrollWidth <= row.clientWidth
       && !!label && !!control && Math.abs((label.top + label.bottom) / 2 - (control.top + control.bottom) / 2) <= 2;
   }))).toBe(true);
+  const navigationRows = page.locator(".settings-drawer .navigation-setting-row");
+  await expect(navigationRows).toHaveCount(3);
+  const navigationLayout = await page.locator(".settings-drawer").evaluate((drawer) => {
+    const reference = drawer.querySelector<HTMLElement>(".completion-settings .compact-setting-row");
+    const referenceLabel = reference?.querySelector<HTMLElement>(".setting-label");
+    const cacheRow = drawer.querySelector<HTMLElement>(".completion-cache-row");
+    const snippetRow = drawer.querySelector<HTMLElement>(".completion-settings .navigation-setting-row");
+    const rows = [...drawer.querySelectorAll<HTMLElement>(".navigation-setting-row")];
+    if (!reference || !referenceLabel || !cacheRow || !snippetRow) return null;
+    const referenceRect = reference.getBoundingClientRect();
+    const referenceLabelStyle = getComputedStyle(referenceLabel);
+    const cacheRect = cacheRow.getBoundingClientRect();
+    const snippetRect = snippetRow.getBoundingClientRect();
+    return {
+      gap: Math.abs(cacheRect.bottom - snippetRect.top),
+      reference: {
+        height: referenceRect.height,
+        right: referenceRect.right,
+        fontSize: referenceLabelStyle.fontSize,
+        fontWeight: referenceLabelStyle.fontWeight,
+        lineHeight: referenceLabelStyle.lineHeight,
+        color: referenceLabelStyle.color,
+      },
+      rows: rows.map((row) => {
+      const rowRect = row.getBoundingClientRect();
+      const label = row.querySelector<HTMLElement>(".setting-label");
+      const arrow = row.querySelector<HTMLElement>(".navigation-setting-arrow");
+      const labelStyle = label ? getComputedStyle(label) : null;
+      const arrowRect = arrow?.getBoundingClientRect();
+        return {
+          tagName: row.tagName,
+          display: getComputedStyle(row).display,
+          height: rowRect.height,
+          right: rowRect.right,
+          overflows: row.scrollWidth > row.clientWidth,
+          fontSize: labelStyle?.fontSize,
+          fontWeight: labelStyle?.fontWeight,
+          lineHeight: labelStyle?.lineHeight,
+          color: labelStyle?.color,
+          arrowRightOffset: arrowRect ? Math.abs(arrowRect.right - rowRect.right) : null,
+          arrowCenterOffset: arrowRect
+            ? Math.abs((arrowRect.top + arrowRect.bottom) / 2 - (rowRect.top + rowRect.bottom) / 2) : null,
+        };
+      }),
+    };
+  });
+  expect(navigationLayout).not.toBeNull();
+  expect(navigationLayout!.gap).toBeLessThanOrEqual(1);
+  for (const row of navigationLayout!.rows) {
+    expect(row).toMatchObject({
+      tagName: "BUTTON",
+      display: "grid",
+      height: navigationLayout!.reference.height,
+      right: navigationLayout!.reference.right,
+      overflows: false,
+      fontSize: navigationLayout!.reference.fontSize,
+      fontWeight: navigationLayout!.reference.fontWeight,
+      lineHeight: navigationLayout!.reference.lineHeight,
+      color: navigationLayout!.reference.color,
+    });
+    expect(row.arrowRightOffset).toBeLessThanOrEqual(1);
+    expect(row.arrowCenterOffset).toBeLessThanOrEqual(1);
+  }
+  const appearanceSettings = page.locator(".settings-drawer .settings-section").first();
+  const appearanceSpacing = await appearanceSettings.evaluate((section) => {
+    const themeSetting = section.querySelector<HTMLElement>(".el-form-item");
+    const navigationRow = section.querySelector<HTMLElement>(".navigation-setting-row");
+    if (!themeSetting || !navigationRow) return null;
+    return navigationRow.getBoundingClientRect().top - themeSetting.getBoundingClientRect().bottom;
+  });
+  expect(appearanceSpacing).toBe(12);
+  const completionSettings = page.locator(".settings-drawer .completion-settings");
+  await page.locator(".settings-drawer .el-radio-button").filter({ hasText: "亮色" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await appearanceSettings.scrollIntoViewIfNeeded();
+  await expect(appearanceSettings).toHaveScreenshot("settings-appearance-navigation-light.png");
+  await completionSettings.scrollIntoViewIfNeeded();
+  await expect(completionSettings).toHaveScreenshot("settings-completion-navigation-light.png");
+  await page.locator(".settings-drawer .el-radio-button").filter({ hasText: "深色" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await appearanceSettings.scrollIntoViewIfNeeded();
+  await expect(appearanceSettings).toHaveScreenshot("settings-appearance-navigation-dark.png");
+  await completionSettings.scrollIntoViewIfNeeded();
+  await expect(completionSettings).toHaveScreenshot("settings-completion-navigation-dark.png");
   for (const label of ["逗号分隔符", "Tab分隔符", "分号分隔符", "竖线分隔符"]) {
     await expect(page.getByRole("radio", { name: label, exact: true })).toBeVisible();
   }
@@ -1210,9 +1294,9 @@ test("supports Apple appearance, system theme settings and compact windows", asy
   await expect(shortcutDrawer).toBeVisible();
   await expect(shortcutDrawer.getByRole("heading", { name: "快捷键", exact: true })).toBeVisible();
   await expect(shortcutDrawer.locator(".shortcut-group")).toHaveCount(5);
-  await expect(shortcutDrawer.locator(".shortcut-row")).toHaveCount(35);
+  await expect(shortcutDrawer.locator(".shortcut-row")).toHaveCount(33);
   await expect(shortcutDrawer.getByText("文件、查询、事务与全局操作 · 14 项", { exact: true })).toBeVisible();
-  await expect(shortcutDrawer.getByText("结果复制、布局、比较与导出 · 7 项", { exact: true })).toBeVisible();
+  await expect(shortcutDrawer.getByText("结果复制、布局、比较与导出 · 5 项", { exact: true })).toBeVisible();
   await expect(shortcutDrawer.getByText("结果数据加载 · 2 项", { exact: true })).toBeVisible();
   const shortcutBounds = await shortcutDrawer.boundingBox();
   if (!shortcutBounds) throw new Error("Shortcut settings drawer is not measurable");

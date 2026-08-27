@@ -32,7 +32,6 @@ describe("SettingsDrawer compact result settings", () => {
         completionCacheLoadingCount: 1,
         completionCandidateLimit: 100,
         completionPreciseMatchingEnabled: false,
-        completionSnippetCount: 0,
         canClearCompletionCaches: true,
         minimapEnabled: true,
         wordWrapEnabled: false,
@@ -53,6 +52,28 @@ describe("SettingsDrawer compact result settings", () => {
     expect(separator).toBeDefined();
     expect(separator!.findAllComponents({ name: "ElRadioButton" }).map((button) => button.props("value")))
       .toEqual(["comma", "tab", "semicolon", "pipe"]);
+    wrapper.unmount();
+  });
+
+  it("renders full-width navigation rows with arrows and emits their existing actions", async () => {
+    const wrapper = mountDrawer();
+    await flushPromises();
+    const rows = wrapper.findAll("button.navigation-setting-row");
+
+    expect(rows).toHaveLength(3);
+    expect(rows.map((row) => row.text())).toEqual(["配置配色方案", "配置快捷键", "管理 SQL 片段"]);
+    expect(rows.every((row) => row.attributes("type") === "button")).toBe(true);
+    expect(rows.every((row) => row.find(".setting-label > span").exists())).toBe(true);
+    expect(rows.every((row) => row.find(".navigation-setting-arrow").exists())).toBe(true);
+    expect(wrapper.findAll(".navigation-setting-predecessor")).toHaveLength(1);
+    expect(wrapper.text()).not.toContain("0项");
+
+    await rows[0].trigger("click");
+    await rows[1].trigger("click");
+    await rows[2].trigger("click");
+    expect(wrapper.emitted("openAppearance")).toHaveLength(1);
+    expect(wrapper.emitted("openShortcuts")).toHaveLength(1);
+    expect(wrapper.emitted("openCompletionSnippets")).toHaveLength(1);
     wrapper.unmount();
   });
 
@@ -117,9 +138,9 @@ describe("SettingsDrawer compact result settings", () => {
     expect(wrapper.emitted("update:columnLayoutScope")?.[0]).toEqual(["editor"]);
     expect(wrapper.emitted("update:copySeparator")?.[0]).toEqual(["pipe"]);
     expect(wrapper.emitted("clearCompletionCaches")).toHaveLength(1);
-    await wrapper.findAll(".shortcut-settings-button")[0].trigger("click");
+    await wrapper.findAll(".navigation-setting-row")[1].trigger("click");
     expect(wrapper.emitted("openShortcuts")).toHaveLength(1);
-    await wrapper.get(".completion-snippet-settings-button").trigger("click");
+    await wrapper.findAll(".navigation-setting-row")[2].trigger("click");
     expect(wrapper.emitted("openCompletionSnippets")).toHaveLength(1);
     wrapper.unmount();
   });

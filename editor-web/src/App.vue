@@ -270,7 +270,6 @@
                   :transaction-disconnect-rollback-minutes="settings.transactionDisconnectRollbackMinutes"
                   :completion-candidate-limit="settings.completionCandidateLimit"
                   :completion-precise-matching-enabled="settings.completionPreciseMatchingEnabled"
-                  :completion-snippet-count="settings.completionSnippets.length"
                   :minimap-enabled="settings.minimapEnabled" :word-wrap-enabled="settings.wordWrapEnabled"
                   :sql-diagnostics-enabled="settings.sqlDiagnosticsEnabled"
                   :dangerous-statement-warning-enabled="settings.dangerousStatementWarningEnabled"
