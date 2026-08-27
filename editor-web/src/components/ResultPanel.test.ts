@@ -1495,6 +1495,73 @@ describe("ResultPanel streaming rendering", () => {
     }, rows()[0].sourceIndex);
   }, 20_000);
 
+  it("generates IN predicates for same-shape sparse cell selections", async () => {
+    const wrapper = mount(ResultPanel, { props: { activeResultIndex: 0, execution: {
+      executionId: "execution-sparse-in", editorId: "editor-1", busy: false, cancelled: false,
+      failed: false, durationMs: 4,
+      results: [{ resultIndex: 0, sql: "select id, middle, name from sample", type: "QUERY",
+        columns: ["id", "middle", "name"],
+        columnDetails: [
+          { label: "id", name: "id", remarks: "", catalog: "db", schema: "", table: "sample", typeName: "BIGINT", jdbcType: -5 },
+          { label: "middle", name: "middle", remarks: "", catalog: "db", schema: "", table: "sample", typeName: "VARCHAR", jdbcType: 12 },
+          { label: "name", name: "name", remarks: "", catalog: "db", schema: "", table: "sample", typeName: "VARCHAR", jdbcType: 12 }
+        ],
+        rows: [["1", "ignored", "Apple"], ["2", "ignored-2", "Banana"]],
+        updateCount: -1, truncated: false, durationMs: 3, complete: true }]
+    } }, global: { plugins: [ElementPlus] } });
+    const table = () => wrapper.findComponent({ name: "ResultVirtualGrid" });
+    const cell = (rowIndex: number, columnIndex: number) => {
+      const columns = table().props("columns") as Column[];
+      const rows = table().props("rows") as Array<{ sourceIndex: number; cells: string[] }>;
+      return columns[columnIndex].cellRenderer?.({ rowData: rows[rowIndex], rowIndex } as never) as VNode;
+    };
+    const pointerdown = (rowIndex: number, columnIndex: number, modifiers: { ctrlKey?: boolean } = {}) => {
+      cell(rowIndex, columnIndex).props?.onPointerdown({
+        button: 0, preventDefault: vi.fn(), ctrlKey: modifiers.ctrlKey ?? false,
+        metaKey: false, shiftKey: false
+      });
+    };
+    const openMenu = (rowIndex: number, columnIndex: number) => {
+      cell(rowIndex, columnIndex).props?.onContextmenu({
+        preventDefault: vi.fn(), stopPropagation: vi.fn(), clientX: 20, clientY: 30
+      });
+    };
+
+    pointerdown(0, 0); window.dispatchEvent(new Event("pointerup"));
+    pointerdown(0, 2, { ctrlKey: true });
+    openMenu(0, 2);
+    await nextTick();
+    let menu = wrapper.findComponent({ name: "ResultDataContextMenu" });
+    expect(menu.props("canIn")).toBe(true);
+    menu.vm.$emit("command", "copy-in"); await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith("(id, name) IN ((1, 'Apple'))");
+    menu.vm.$emit("close"); await nextTick();
+
+    pointerdown(0, 0); window.dispatchEvent(new Event("pointerup"));
+    pointerdown(0, 2, { ctrlKey: true });
+    pointerdown(1, 0, { ctrlKey: true });
+    pointerdown(1, 2, { ctrlKey: true });
+    openMenu(1, 2);
+    await nextTick();
+    menu = wrapper.findComponent({ name: "ResultDataContextMenu" });
+    expect(menu.props("canIn")).toBe(true);
+    menu.vm.$emit("command", "copy-in"); await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith(
+      "(id, name) IN ((1, 'Apple'), (2, 'Banana'))");
+    menu.vm.$emit("close"); await nextTick();
+
+    pointerdown(0, 0); window.dispatchEvent(new Event("pointerup"));
+    pointerdown(1, 2, { ctrlKey: true });
+    openMenu(1, 2);
+    await nextTick();
+    menu = wrapper.findComponent({ name: "ResultDataContextMenu" });
+    expect(menu.props("canIn")).toBe(false);
+    const clipboardBeforeInvalidSelection = clipboardWrite.mock.calls.at(-1);
+    menu.vm.$emit("command", "copy-in"); await flushPromises();
+    expect(clipboardWrite.mock.calls.at(-1)).toEqual(clipboardBeforeInvalidSelection);
+    wrapper.unmount();
+  });
+
   it("sums selected headers across the current filtered rows and clears stale totals", async () => {
     const result = {
       resultIndex: 0, sql: "select amount", type: "QUERY", columns: ["amount"],

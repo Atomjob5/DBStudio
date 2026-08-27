@@ -1510,10 +1510,31 @@ const selectedCellBounds = computed(() => {
       selected.has(cellSelectionKey(row.sourceIndex, column.index))));
   return { columns, rows, complete };
 });
-const selectedCellColumns = computed(() =>
-  selectedCellBounds.value.complete ? selectedCellBounds.value.columns : []);
-const selectedCellRows = computed(() =>
-  selectedCellBounds.value.complete ? selectedCellBounds.value.rows : []);
+const selectedCellInPredicateSelection = computed(() => {
+  const cells = selectedCellsInView.value;
+  if (selectionMode.value !== "cells" || !cells.length) return undefined;
+
+  const columnsByRow = new Map<number, Set<number>>();
+  for (const cell of cells) {
+    const columns = columnsByRow.get(cell.sourceRow) ?? new Set<number>();
+    columns.add(cell.sourceColumn);
+    columnsByRow.set(cell.sourceRow, columns);
+  }
+  const firstColumns = columnsByRow.values().next().value as Set<number> | undefined;
+  if (!firstColumns?.size) return undefined;
+
+  // A tuple IN predicate is only unambiguous when every selected row has the
+  // same set of selected fields. The fields themselves may be non-contiguous.
+  for (const columns of columnsByRow.values()) {
+    if (columns.size !== firstColumns.size || [...firstColumns].some((column) => !columns.has(column))) {
+      return undefined;
+    }
+  }
+
+  const columns = visibleColumnOptions.value.filter((column) => firstColumns.has(column.index));
+  const rows = displayRows.value.filter((row) => columnsByRow.has(row.sourceIndex));
+  return columns.length && rows.length ? { columns, rows } : undefined;
+});
 const selectedRowsInDisplayOrder = computed(() => {
   const selected = new Set(selectedRowSources.value);
   return displayRows.value.filter((row) => selected.has(row.sourceIndex));
@@ -1693,8 +1714,10 @@ async function copyCurrentSelection(includeHeaders = false): Promise<void> {
 }
 
 function inPredicate(): string | undefined {
-  return copyInPredicate(selectedCellColumns.value.map((column) => ({ index: column.index,
-    label: column.label, jdbcType: column.jdbcType ?? 12 })), selectedCellRows.value,
+  const selection = selectedCellInPredicateSelection.value;
+  if (!selection) return undefined;
+  return copyInPredicate(selection.columns.map((column) => ({ index: column.index,
+    label: column.label, jdbcType: column.jdbcType ?? 12 })), selection.rows,
     activeResult.value?.dialectId);
 }
 

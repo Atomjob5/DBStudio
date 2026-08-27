@@ -1166,6 +1166,39 @@ test("sorts, filters, selects cells and copies safe row SQL", async ({ page, con
   await expect(page.locator(".execution-status")).toHaveText("执行完成 · 38 ms");
 });
 
+test("copies IN predicates for same-shape sparse field selections", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:4173" });
+  await connectMock(page);
+  await dismissCompletionSchemaDialog(page);
+  await replaceSql(page, "select wide_result");
+  await page.getByRole("button", { name: "执行", exact: true }).click();
+  await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
+
+  const cell = (value: string) => page.locator(".result-cell").filter({ hasText: new RegExp(`^${value}$`) }).first();
+  const firstId = cell("1");
+  const firstThirdField = cell("R1 C3");
+  await firstId.click();
+  await firstThirdField.click({ modifiers: ["ControlOrMeta"] });
+  await firstThirdField.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "复制", exact: true }).hover();
+  const inItem = page.getByRole("menuitem", { name: "复制为 IN 语句", exact: true });
+  await expect(inItem).not.toHaveClass(/is-disabled/);
+  await inItem.click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toBe("(column_1, column_3) IN ((1, 'R1 C3'))");
+
+  await cell("1").click();
+  await cell("R1 C3").click({ modifiers: ["ControlOrMeta"] });
+  await cell("2").click({ modifiers: ["ControlOrMeta"] });
+  await cell("R2 C3").click({ modifiers: ["ControlOrMeta"] });
+  await cell("R2 C3").click({ button: "right" });
+  await page.getByRole("menuitem", { name: "复制", exact: true }).hover();
+  await expect(inItem).not.toHaveClass(/is-disabled/);
+  await inItem.click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toBe("(column_1, column_3) IN ((1, 'R1 C3'), (2, 'R2 C3'))");
+});
+
 test("supports Apple appearance, system theme settings and compact windows", async ({ page }) => {
   test.setTimeout(45_000);
   await expect(page).toHaveScreenshot("apple-connection-light.png");
