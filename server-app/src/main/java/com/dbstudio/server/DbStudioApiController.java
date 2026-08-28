@@ -104,6 +104,7 @@ import org.slf4j.LoggerFactory;
 @RequestMapping("/api/v1")
 public final class DbStudioApiController {
     private static final Logger LOG = LoggerFactory.getLogger(DbStudioApiController.class);
+    private static final String DEFAULT_EXECUTION_WARNING_MINUTES = "[1,5]";
     private static final List<String> SETTING_KEYS = Arrays.asList(
             "ui.theme", "result.maxRows", "result.autoRefreshIntervalSeconds", "result.streamBatchRows", "result.clobMaxCharacters", "result.columnLayoutScope",
             "result.copyHeaderOnDoubleClick", "result.copySeparator",
@@ -2639,7 +2640,7 @@ public final class DbStudioApiController {
                 if ("keyboard.shortcuts".equals(key)) stored = stripLegacyShortcutBindings(stored);
                 if ("editor.executionWarningMinutes".equals(key)) {
                     try { stored = validateExecutionWarningMinutes(stored); }
-                    catch (ApiException ignored) { stored = "[10,30]"; }
+                    catch (ApiException ignored) { stored = DEFAULT_EXECUTION_WARNING_MINUTES; }
                 }
                 result.put(key, stored);
             }
@@ -2683,7 +2684,7 @@ public final class DbStudioApiController {
             result.put("editor.dangerousStatementWarningEnabled", "true");
         }
         if (!result.containsKey("editor.executionWarningMinutes")) {
-            result.put("editor.executionWarningMinutes", "[10,30]");
+            result.put("editor.executionWarningMinutes", DEFAULT_EXECUTION_WARNING_MINUTES);
         }
         if (!result.containsKey("appearance.colorSchemes")) result.put("appearance.colorSchemes", DEFAULT_COLOR_SCHEMES);
         if (!result.containsKey("keyboard.shortcuts")) result.put("keyboard.shortcuts", DEFAULT_SHORTCUTS);

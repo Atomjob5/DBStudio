@@ -240,7 +240,7 @@ class LocalServerSecurityTest {
         assertTrue(defaults.getBody().contains("\"editor.minimapEnabled\":\"true\""));
         assertTrue(defaults.getBody().contains("\"editor.wordWrapEnabled\":\"false\""));
         assertTrue(defaults.getBody().contains("\"editor.sqlDiagnosticsEnabled\":\"true\""));
-        assertTrue(defaults.getBody().contains("\"editor.executionWarningMinutes\":\"[10,30]\""));
+        assertTrue(defaults.getBody().contains("\"editor.executionWarningMinutes\":\"[1,5]\""));
 
         Map<String, String> setting = new HashMap<String, String>();
         setting.put("key", "result.columnLayoutScope");

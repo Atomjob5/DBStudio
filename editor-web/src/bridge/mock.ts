@@ -73,7 +73,7 @@ const mockSettings: Record<string, string> = {
   "editor.sqlDiagnosticsEnabled": "true",
   "editor.dangerousStatementWarningEnabled": "true",
   "editor.objectInspectorOpacity": "100",
-  "editor.executionWarningMinutes": "[10,30]",
+  "editor.executionWarningMinutes": "[1,5]",
   "appearance.colorSchemes": serializeColorSchemeSettings(DEFAULT_COLOR_SCHEMES),
   "keyboard.shortcuts": serializeShortcutBindings(DEFAULT_SHORTCUT_BINDINGS),
 };

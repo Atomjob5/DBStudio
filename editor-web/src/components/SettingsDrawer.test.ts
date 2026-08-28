@@ -37,9 +37,9 @@ describe("SettingsDrawer compact result settings", () => {
         wordWrapEnabled: false,
         sqlDiagnosticsEnabled: true,
         dangerousStatementWarningEnabled: true,
-        executionWarningMinutes: [10, 30]
+        executionWarningMinutes: [1, 5]
       },
-      global: { plugins: [ElementPlus], stubs: { teleport: true } }
+      global: { plugins: [ElementPlus] }
     });
   }
 
@@ -148,6 +148,7 @@ describe("SettingsDrawer compact result settings", () => {
 
   it("disables clearing when the page has no completion cache or loading task", async () => {
     const wrapper = mountDrawer();
+    await flushPromises();
     await wrapper.setProps({ completionCacheSize: "0 B", completionCacheEnvironmentCount: 0,
       completionCacheLoadingCount: 0, canClearCompletionCaches: false });
     expect(wrapper.get('button[aria-label="清理全部补全缓存"]').attributes("disabled")).toBeDefined();
@@ -172,20 +173,32 @@ describe("SettingsDrawer compact result settings", () => {
     wrapper.unmount();
   });
 
-  it("adds and removes SQL execution warning thresholds", async () => {
+  it("uses a single-line multi-select for SQL execution warning thresholds", async () => {
     const wrapper = mountDrawer();
     await flushPromises();
 
-    expect(wrapper.find('[data-testid="execution-warning-10"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="execution-warning-30"]').exists()).toBe(true);
-    const input = wrapper.get('input[aria-label="新增 SQL 执行超时预警分钟数"]');
-    await input.setValue("20");
-    await wrapper.get('button[aria-label="添加 SQL 执行超时预警"]').trigger("click");
-    expect(wrapper.emitted("update:executionWarningMinutes")?.[0]).toEqual([[10, 20, 30]]);
+    const select = wrapper.findAllComponents({ name: "ElSelect" })
+      .find((item) => item.classes().includes("execution-warning-select"))!;
+    expect(select.exists()).toBe(true);
+    expect(select.props("multiple")).toBe(true);
+    expect(select.props("filterable")).toBe(true);
+    expect(select.props("allowCreate")).toBe(true);
+    expect(select.props("defaultFirstOption")).toBe(true);
+    expect(select.props("reserveKeyword")).toBe(false);
+    expect(select.props("collapseTags")).toBe(true);
+    expect(select.props("maxCollapseTags")).toBe(1);
+    expect(select.props("collapseTagsTooltip")).not.toBe(true);
+    expect(select.props("modelValue")).toEqual(["1", "5"]);
+    expect(wrapper.findAllComponents({ name: "ElOption" }).map((option) => option.props("label")))
+      .toEqual(["1 分钟", "5 分钟"]);
 
-    await wrapper.setProps({ executionWarningMinutes: [10, 20, 30] });
-    await wrapper.get('[data-testid="execution-warning-20"]').find(".el-tag__close").trigger("click");
-    expect(wrapper.emitted("update:executionWarningMinutes")?.[1]).toEqual([[10, 30]]);
+    const model = wrapper.vm as unknown as { executionWarningSelectValues: string[] };
+    model.executionWarningSelectValues = ["30", "20", "30"];
+    expect(wrapper.emitted("update:executionWarningMinutes")?.[0]).toEqual([[20, 30]]);
+    model.executionWarningSelectValues = ["0", "1.5", "abc"];
+    expect(wrapper.emitted("update:executionWarningMinutes")).toHaveLength(1);
+    model.executionWarningSelectValues = [];
+    expect(wrapper.emitted("update:executionWarningMinutes")?.[1]).toEqual([[]]);
     wrapper.unmount();
   });
 });

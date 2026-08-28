@@ -8,6 +8,7 @@ import {
 
 describe("SQL execution warning settings", () => {
   it("uses the default thresholds when the setting is missing or invalid", () => {
+    expect(DEFAULT_EXECUTION_WARNING_MINUTES).toEqual([1, 5]);
     expect(parseExecutionWarningMinutes()).toEqual([...DEFAULT_EXECUTION_WARNING_MINUTES]);
     expect(parseExecutionWarningMinutes("not-json")).toEqual([...DEFAULT_EXECUTION_WARNING_MINUTES]);
     expect(parseExecutionWarningMinutes("{}" as string)).toEqual([...DEFAULT_EXECUTION_WARNING_MINUTES]);
