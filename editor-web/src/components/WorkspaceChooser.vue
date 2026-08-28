@@ -1,5 +1,6 @@
 <template>
   <main class="workspace-chooser" aria-label="选择工作空间">
+    <WorkspaceAurora />
     <section class="workspace-window">
       <header class="workspace-hero">
         <span class="app-mark"><img src="/assets/branding/dbstudio-workspace-line-128.png" alt="DBStudio" /></span>
@@ -51,6 +52,7 @@
 import { nextTick, ref } from "vue";
 import { Delete, EditPen, FolderOpened, MoreFilled, Plus, Refresh } from "@element-plus/icons-vue";
 import type { WorkspaceSummary } from "../types";
+import WorkspaceAurora from "./WorkspaceAurora.vue";
 
 defineProps<{ workspaces: WorkspaceSummary[]; loading: boolean }>();
 const emit = defineEmits<{ open: [workspace: WorkspaceSummary]; create: [name: string];
@@ -75,9 +77,9 @@ function formatTime(value: string): string {
 </script>
 
 <style scoped>
-.workspace-chooser { display:grid; min-height:100%; place-items:center; padding:32px; background:var(--db-bg); }
+.workspace-chooser { position:relative; display:grid; min-height:100%; place-items:center; isolation:isolate; overflow:hidden; padding:32px; background:var(--db-bg); }
 .workspace-window { display:flex; width:min(760px,100%); height:min(680px,calc(100vh - 64px)); flex-direction:column; overflow:hidden;
-  border:1px solid var(--db-border); border-radius:22px; background:var(--db-content); box-shadow:0 24px 70px rgba(0,0,0,.12); }
+  position:relative; z-index:1; border:1px solid var(--db-border); border-radius:22px; background:color-mix(in srgb,var(--db-content) 88%,transparent); box-shadow:0 24px 70px rgba(0,0,0,.12); backdrop-filter:blur(20px) saturate(115%); -webkit-backdrop-filter:blur(20px) saturate(115%); }
 .workspace-hero { display:grid; grid-template-columns:64px 1fr auto; gap:18px; align-items:center; padding:26px 28px 22px;
   border-bottom:1px solid var(--db-border-soft); }
 .app-mark { display:grid; width:60px; height:60px; place-items:center; border:1px solid rgba(0,113,227,.12); border-radius:16px;
