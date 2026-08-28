@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { useAppStore } from "./app";
 import { useConnectionStore } from "./connection";
 import { useEditorStore } from "./editor";
+import { useExecutionAttentionStore } from "./executionAttention";
 import { formatCompletionBytes, useMetadataStore } from "./metadata";
 import { useQueryStore } from "./query";
 import { useSettingsStore } from "./settings";
@@ -11,6 +12,29 @@ import type { CompletionCacheSummary, MetadataNode } from "../types";
 beforeEach(() => setActivePinia(createPinia()));
 
 describe("application stores", () => {
+  it("tracks unread execution outcomes with failures taking priority", () => {
+    const attention = useExecutionAttentionStore();
+    attention.markUnread("editor-1", "success-1", "success");
+    expect(attention.outcome("editor-1")).toBe("success");
+    attention.markUnread("editor-1", "error-1", "error");
+    expect(attention.outcome("editor-1")).toBe("error");
+
+    attention.clearExecution("editor-1", "error-1");
+    expect(attention.outcome("editor-1")).toBe("success");
+    attention.markViewed("editor-1");
+    expect(attention.outcome("editor-1")).toBeUndefined();
+  });
+
+  it("keeps execution attention session-only and clears an editor safely", () => {
+    const attention = useExecutionAttentionStore();
+    attention.markUnread("editor-1", "execution-1", "error");
+    attention.clearEditor("editor-1");
+    expect(attention.outcome("editor-1")).toBeUndefined();
+    attention.markUnread("editor-2", "execution-2", "success");
+    attention.clear();
+    expect(attention.outcome("editor-2")).toBeUndefined();
+  });
+
   it("applies theme and starts without a workspace-wide connection", () => {
     const app = useAppStore();
     app.applyBootstrap({

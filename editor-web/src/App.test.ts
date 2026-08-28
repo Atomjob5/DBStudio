@@ -7,6 +7,7 @@ import App from "./App.vue";
 import { useConnectionStore } from "./stores/connection";
 import { useAppStore } from "./stores/app";
 import { useEditorStore } from "./stores/editor";
+import { useExecutionAttentionStore } from "./stores/executionAttention";
 import { useMetadataStore } from "./stores/metadata";
 import { useQueryStore } from "./stores/query";
 import { useResultEditStore } from "./stores/resultEdits";
@@ -1876,6 +1877,96 @@ describe("App result loading status toolbar", () => {
     await nextTick();
 
     expect(wrapper.get(".status-system-zone").text()).toContain("链接正常 · 自动提交开启");
+  });
+
+  it("uses tab colors for dirty, running and unread execution states", async () => {
+    const editors = useEditorStore();
+    const queries = useQueryStore();
+    editors.patch("bootstrap-editor", { dirty: true });
+    await nextTick();
+    const tabDropdown = () => wrapper.findAll(".editor-tabs .el-dropdown")[0];
+    expect(tabDropdown().get(".dirty-dot").classes()).toContain("editor-tab-status-dirty");
+    expect(tabDropdown().get(".dirty-dot").attributes("aria-label")).toBe("未保存");
+
+    editors.patch("bootstrap-editor", { busy: true, activeExecutionId: "execution-running",
+      executionPhase: "running" });
+    await nextTick();
+    expect(tabDropdown().get(".dirty-dot").classes()).toContain("editor-tab-status-running");
+    expect(tabDropdown().get(".dirty-dot").attributes("aria-label")).toBe("SQL 正在执行");
+
+    editors.add({ id: "background-editor", title: "后台", content: "", dirty: false, transactionDirty: false,
+      busy: false, executionPhase: "idle", transactionOperation: "idle", connectionState: "unbound" });
+    await nextTick();
+    queries.start("bootstrap-editor", "execution-success");
+    editors.patch("bootstrap-editor", { busy: true, activeExecutionId: "execution-success", executionPhase: "running" });
+    rpcMock.listeners.get("query.executionComplete")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-success", cancelled: false, failed: false,
+      durationMs: 4, transactionDirty: false
+    }));
+    await nextTick();
+    expect(tabDropdown().get(".dirty-dot").classes()).toContain("editor-tab-status-success");
+    expect(tabDropdown().get(".dirty-dot").attributes("aria-label")).toBe("SQL 执行成功，待查看");
+
+    editors.patch("bootstrap-editor", { dirty: false });
+    editors.activeId = "bootstrap-editor";
+    await nextTick();
+    expect(tabDropdown().find(".dirty-dot").exists()).toBe(false);
+  });
+
+  it("marks cancelled and disconnected background executions as unread failures", async () => {
+    const editors = useEditorStore();
+    const queries = useQueryStore();
+    editors.add({ id: "background-editor", title: "后台", content: "", dirty: false, transactionDirty: false,
+      busy: false, executionPhase: "idle", transactionOperation: "idle", connectionState: "unbound" });
+    await nextTick();
+
+    const tabDropdown = () => wrapper.findAll(".editor-tabs .el-dropdown")[0];
+    queries.start("bootstrap-editor", "execution-cancelled");
+    editors.patch("bootstrap-editor", { busy: true, activeExecutionId: "execution-cancelled", executionPhase: "running" });
+    rpcMock.listeners.get("query.executionComplete")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-cancelled", cancelled: true, failed: false,
+      durationMs: 3, transactionDirty: false
+    }));
+    await nextTick();
+    expect(tabDropdown().get(".dirty-dot").classes()).toContain("editor-tab-status-error");
+
+    editors.activeId = "background-editor";
+    await nextTick();
+    queries.start("bootstrap-editor", "execution-aborted");
+    editors.patch("bootstrap-editor", { busy: true, activeExecutionId: "execution-aborted", executionPhase: "running" });
+    rpcMock.listeners.get("jdbc.connectionAborted")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-aborted", message: "连接已断开"
+    }));
+    await nextTick();
+    expect(tabDropdown().get(".dirty-dot").classes()).toContain("editor-tab-status-error");
+
+    editors.activeId = "bootstrap-editor";
+    await nextTick();
+    expect(tabDropdown().find(".dirty-dot").exists()).toBe(false);
+  });
+
+  it("marks a failed execution request red when its editor is backgrounded", async () => {
+    const editors = useEditorStore();
+    editors.patch("bootstrap-editor", { connection: completionProfile(), connectionState: "active" });
+    editors.add({ id: "background-editor", title: "后台", content: "", dirty: false, transactionDirty: false,
+      busy: false, executionPhase: "idle", transactionOperation: "idle", connectionState: "unbound" });
+    editors.activeId = "bootstrap-editor";
+    let rejectExecute: ((error: Error) => void) | undefined;
+    rpcRequest.mockImplementation(async (type: string) => {
+      if (type === "query.execute") return await new Promise<{ executionId: string }>((_resolve, reject) => {
+        rejectExecute = reject;
+      });
+      return {};
+    });
+    const vm = wrapper.vm as unknown as { executeActive: (scope: "current") => Promise<void> };
+    const executing = vm.executeActive("current");
+    await flushPromises();
+    editors.activeId = "background-editor";
+    rejectExecute?.(new Error("执行请求失败"));
+    await executing;
+    await nextTick();
+    const sourceDropdown = wrapper.findAll(".editor-tabs .el-dropdown")[0];
+    expect(sourceDropdown.get(".dirty-dot").classes()).toContain("editor-tab-status-error");
   });
 
   it("replaces execute with a yellow cancel button and keeps it until matching completion", async () => {

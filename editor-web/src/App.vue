@@ -165,7 +165,10 @@
                                 @dragend="endEditorTabDrag"
                                      @command="(command) => handleEditorTabCommand(String(command), tab.id)">
                           <span class="editor-tab-label">
-                            <i v-if="tab.dirty" class="dirty-dot" aria-label="未保存" />
+                            <i v-if="editorTabIndicator(tab)" class="dirty-dot"
+                               :class="`editor-tab-status-${editorTabIndicator(tab)}`"
+                               :aria-label="editorTabIndicatorLabel(tab)"
+                               :title="editorTabIndicatorLabel(tab)" />
                             <span class="editor-tab-title">{{ tab.title }}</span>
                           </span>
                           <template #dropdown>
@@ -364,6 +367,7 @@ import WorkspaceChooser from "./components/WorkspaceChooser.vue";
 import { useAppStore } from "./stores/app";
 import { useConnectionStore } from "./stores/connection";
 import { useEditorStore } from "./stores/editor";
+import { useExecutionAttentionStore, type ExecutionAttentionOutcome } from "./stores/executionAttention";
 import { formatCompletionBytes, useMetadataStore } from "./stores/metadata";
 import { useQueryStore } from "./stores/query";
 import { useResultEditStore, type ResultEditSession } from "./stores/resultEdits";
@@ -395,7 +399,8 @@ import {
 import type { BootstrapResponse, CompletionCache, CompletionNamespaceDescriptor, CompletionNamespacesResponse, CompletionProgress, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryExecutionSource, QueryResult, RecoveredEditor, ResultExportRequest, SavedProfile, SelectedResultColumn, SqlCompletionSnippet, SqlEditorSelectionAction, SqlTransformApplyResult, SqlTransformTarget, StatusBarSystemItem, ThemePreference, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "./types";
 
 const app = useAppStore(); const connections = useConnectionStore(); const metadata = useMetadataStore();
-const editors = useEditorStore(); const queries = useQueryStore(); const settings = useSettingsStore();
+const editors = useEditorStore(); const executionAttention = useExecutionAttentionStore();
+const queries = useQueryStore(); const settings = useSettingsStore();
 const resultEdits = useResultEditStore();
 const statusBar = useStatusBarStore();
 const connectionDialog = ref(false); const historyDrawer = ref(false); const jdbcTaskManagerDrawer = ref(false);
@@ -470,6 +475,29 @@ const activeResult = computed(() => activeExecution.value?.results.find((result)
     || (activeExecution.value.executionId === String(activeResultIndex.value) && result.resultIndex === 0)
     || (activeExecutions.value.length === 1 && result.resultIndex === activeResultIndex.value)))
   ?? activeExecution.value?.results[0]);
+
+type EditorTabIndicator = "dirty" | "running" | ExecutionAttentionOutcome;
+
+function executionRequestFailureKey(editorId: string): string {
+  return `request:${editorId}`;
+}
+
+function editorTabIndicator(tab: EditorTab): EditorTabIndicator | undefined {
+  if (tab.busy || tab.executionPhase !== "idle") return "running";
+  const outcome = executionAttention.outcome(tab.id);
+  if (outcome) return outcome;
+  return tab.dirty ? "dirty" : undefined;
+}
+
+function editorTabIndicatorLabel(tab: EditorTab): string {
+  switch (editorTabIndicator(tab)) {
+    case "running": return "SQL 正在执行";
+    case "success": return "SQL 执行成功，待查看";
+    case "error": return "SQL 执行失败，待查看";
+    case "dirty": return "未保存";
+    default: return "";
+  }
+}
 
 function syncResultHighlight(mode: "passive" | "explicit" = "passive"): void {
   const editorId = editors.activeId;
@@ -773,6 +801,7 @@ onBeforeUnmount(() => {
   if (layoutSaveTimer !== undefined) window.clearTimeout(layoutSaveTimer);
   clearAutoRefreshTimer();
   executionNotifications.clear();
+  executionAttention.clear();
   completionNoticeTimers.forEach((timer) => window.clearTimeout(timer));
   draftSaveTimers.forEach((timer) => window.clearTimeout(timer));
 });
@@ -795,6 +824,7 @@ watch(() => [editors.activeId, activeObjectTreeKey.value, activeCompletionKey.va
   metadata.activate(activeObjectTreeKey.value, activeCompletionKey.value);
 });
 watch(() => editors.activeId, (current, previous) => {
+  if (current) executionAttention.markViewed(current);
   if (autoRefreshState.value && current !== autoRefreshState.value.editorId) {
     stopAutoRefresh("已切换查询标签", true);
   }
@@ -916,6 +946,8 @@ function installEventHandlers(): void {
   disposers.push(rpc.on("query.started", (raw) => {
     const data = raw as { editorId: string; executionId: string; resultPresentation?: "replace" | "append";
       statements?: QueryExecutionSource[] };
+    executionAttention.clearExecution(data.editorId, executionRequestFailureKey(data.editorId));
+    executionAttention.clearExecution(data.editorId, data.executionId);
     const presentation = data.resultPresentation ?? "replace";
     const autoRefresh = autoRefreshState.value;
     if (autoRefresh?.refreshing && autoRefresh.editorId === data.editorId && presentation === "replace") {
@@ -974,6 +1006,10 @@ function installEventHandlers(): void {
     const tab = editors.tabs.find((item) => item.id === data.editorId);
     executionNotifications.complete(data);
     if (!tab || tab.activeExecutionId !== data.executionId) return;
+    const outcome: ExecutionAttentionOutcome = data.cancelled || data.failed
+      || data.terminationReason === "connection-aborted" ? "error" : "success";
+    if (editors.activeId === data.editorId) executionAttention.clearExecution(data.editorId, data.executionId);
+    else executionAttention.markUnread(data.editorId, data.executionId, outcome);
     const completedResults = queries.execution(data.editorId, data.executionId)?.results
       .filter((result) => result.complete && !result.errorMessage) ?? [];
     queries.complete(data.editorId, data, data.executionId);
@@ -1008,7 +1044,12 @@ function installEventHandlers(): void {
       resultChangesLost?: boolean; message?: string };
     const abortedExecutionId = data.executionId
       ?? editors.tabs.find((item) => item.id === data.editorId)?.activeExecutionId;
+    const tab = editors.tabs.find((item) => item.id === data.editorId);
     if (abortedExecutionId) executionNotifications.abort(data.editorId, abortedExecutionId);
+    if (abortedExecutionId && tab) {
+      if (editors.activeId === data.editorId) executionAttention.clearExecution(data.editorId, abortedExecutionId);
+      else executionAttention.markUnread(data.editorId, abortedExecutionId, "error");
+    }
     if (autoRefreshState.value?.editorId === data.editorId) stopAutoRefresh("数据库连接已断开", true);
     resultEdits.finishEditor(data.editorId);
     queries.markHistorical(data.editorId);
@@ -1151,6 +1192,7 @@ async function bootstrapWorkspace(recovered: RecoveredEditor[]): Promise<void> {
       }
     }
     executionNotifications.clear();
+    executionAttention.clear();
     editors.clear(); queries.clear(); resultEdits.clear(); statusBar.clear(); resultLoading.value = undefined;
     monacoEditor.value?.clearResultHighlight?.();
     for (const value of [...recovered].sort((left, right) => left.sortOrder - right.sortOrder)) {
@@ -1582,6 +1624,9 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
     ElMessage.warning(tab.connection ? "原数据库链接已不可用，请重新选择链接" : "请先为当前编辑标签选择数据库链接");
     return;
   }
+  const requestFailureId = executionRequestFailureKey(tab.id);
+  executionAttention.clearExecution(tab.id, requestFailureId);
+  let executionAttempted = false;
   try {
     await rpc.ensureOperational();
     if (!await ensureEditorCredentials(tab)) return;
@@ -1599,6 +1644,7 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
     }
     editors.patch(tab.id, { busy: true, activeExecutionId: undefined,
       executionStartedAt: Date.now(), executionPhase: "starting" }); app.status = "正在执行…";
+    executionAttempted = true;
     const response = await rpc.request<{ executionId: string }>("query.execute", {
       editorId: tab.id, text: monacoEditor.value?.getValue(tab.id) ?? tab.content,
       selectedText, cursorOffset, selectionStartOffset, scope, stopOnError: true, resultPresentation: presentation
@@ -1631,6 +1677,10 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
     if ((error as { code?: string }).code === "RISK_REEXECUTION_REQUIRED") {
       ElMessage.warning("当前语句未包含 WHERE，可能影响大量数据；请再次执行以继续");
       return;
+    }
+    if (executionAttempted && current) {
+      if (editors.activeId === tab.id) executionAttention.clearExecution(tab.id, requestFailureId);
+      else executionAttention.markUnread(tab.id, requestFailureId, "error");
     }
     ElMessage.error(message(error));
   }
@@ -2262,6 +2312,7 @@ async function closeTab(id: string): Promise<boolean> {
     executionNotifications.clearExecution(execution.executionId);
   }
   if (tab.activeExecutionId) executionNotifications.clearExecution(tab.activeExecutionId);
+  executionAttention.clearEditor(id);
   resultEdits.finishEditor(id); queries.clearEditor(id); editors.remove(id);
   void nextTick().then(() => monacoEditor.value?.releaseModel?.(id));
   return true;
@@ -3067,6 +3118,10 @@ function message(error: unknown): string { return error instanceof Error ? error
 .editor-tab-label { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; }
 .editor-tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dirty-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--db-accent); }
+.dirty-dot.editor-tab-status-dirty { background: var(--db-accent); }
+.dirty-dot.editor-tab-status-running { background: var(--db-warning); }
+.dirty-dot.editor-tab-status-success { background: var(--db-success); }
+.dirty-dot.editor-tab-status-error { background: var(--db-danger); }
 .editor-widget { flex: 1; min-height: 0; }
 :global(.result-transaction-decision p) { margin: 0 0 16px; }
 :global(.result-transaction-decision__hint) {
