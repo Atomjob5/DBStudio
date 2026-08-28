@@ -1,2 +1,0 @@
-DBStudio Oracle BFILE test payload.
-中文内容用于验证字符集与外部大对象读取。

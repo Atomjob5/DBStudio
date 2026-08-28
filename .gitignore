@@ -1,16 +1,61 @@
+# Operating systems
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
+
+# IDEs and editors
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+out/
+
+# Java, Maven and Gradle
+**/target/
+**/build/
 .gradle/
 .mvn/local/
 .mvn/repository/
-.idea/
-**/build/
-**/target/
+
+# Node.js and frontend builds
 **/node_modules/
-editor-web/dist/
+**/dist/
+**/coverage/
+**/.vite/
+*.tsbuildinfo
+.npm/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Test and browser automation output
 **/test-results/
 **/playwright-report/
-*.iml
+**/blob-report/
+**/playwright/.cache/
+
+# Runtime data and logs
+/data/
+/logs/
 *.log
-.DS_Store
-out/
-dist/
-data/
+*.pid
+*.tmp
+*.temp
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.jks
+*.p12
+*.pfx
+
+# Temporary and backup files
+*.bak
+*.swp
+*.swo
+*~
