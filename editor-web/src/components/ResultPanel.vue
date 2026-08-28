@@ -2470,21 +2470,22 @@ onBeforeUnmount(() => {
   animation: result-edit-operation-in 360ms cubic-bezier(.22, 1.35, .36, 1) both;
 }
 .result-edit-actions-enter-active .result-edit-operation:nth-child(5) { animation-delay: 0ms; }
-.result-edit-actions-enter-active .result-edit-operation:nth-child(4) { animation-delay: 36ms; }
-.result-edit-actions-enter-active .result-edit-operation:nth-child(3) { animation-delay: 72ms; }
-.result-edit-actions-enter-active .result-edit-operation:nth-child(2) { animation-delay: 108ms; }
-.result-edit-actions-enter-active .result-edit-operation:nth-child(1) { animation-delay: 144ms; }
+.result-edit-actions-enter-active .result-edit-operation:nth-child(4) { animation-delay: var(--duration-stagger); }
+.result-edit-actions-enter-active .result-edit-operation:nth-child(3) {
+  animation-delay: calc(var(--duration-stagger) + var(--duration-stagger));
+}
+.result-edit-actions-enter-active .result-edit-operation:nth-child(2) {
+  animation-delay: calc(var(--duration-stagger) + var(--duration-stagger) + var(--duration-stagger));
+}
+.result-edit-actions-enter-active .result-edit-operation:nth-child(1) {
+  animation-delay: calc(var(--duration-stagger) + var(--duration-stagger) + var(--duration-stagger) + var(--duration-stagger));
+}
 .result-edit-actions-leave-active {
-  transition: max-width 260ms cubic-bezier(.4, 0, .7, .2);
+  transition: max-width var(--duration-quick) var(--ease-smooth-out);
 }
 .result-edit-actions-leave-active .result-edit-operation {
-  animation: result-edit-operation-out 140ms ease-in both;
+  animation: result-edit-operation-out var(--duration-quick) var(--ease-smooth-out) both;
 }
-.result-edit-actions-leave-active .result-edit-operation:nth-child(1) { animation-delay: 0ms; }
-.result-edit-actions-leave-active .result-edit-operation:nth-child(2) { animation-delay: 24ms; }
-.result-edit-actions-leave-active .result-edit-operation:nth-child(3) { animation-delay: 48ms; }
-.result-edit-actions-leave-active .result-edit-operation:nth-child(4) { animation-delay: 72ms; }
-.result-edit-actions-leave-active .result-edit-operation:nth-child(5) { animation-delay: 96ms; }
 .result-edit-actions-leave-to { max-width: 0; }
 @keyframes result-edit-actions-expand {
   0% { max-width: 0; }

@@ -345,7 +345,7 @@ function errorMessage(error: unknown): string { return error instanceof Error ? 
 .jdbc-slot-header { min-height: 76px; display: flex; align-items: center; gap: 10px; padding: 9px 12px; }
 .jdbc-slot-toggle { flex: 0 0 auto; display: flex; align-items: center; gap: 5px; padding: 4px 0; border: 0;
   color: var(--db-text-secondary); background: transparent; cursor: pointer; font: inherit; }
-.jdbc-slot-arrow { transition: transform 180ms ease; }
+.jdbc-slot-arrow { transition: transform var(--duration-fast) var(--ease-smooth-out); }
 .is-expanded .jdbc-slot-arrow { transform: rotate(90deg); }
 .jdbc-slot-number { min-width: 54px; font-size: 11px; font-weight: 650; }
 .jdbc-slot-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }

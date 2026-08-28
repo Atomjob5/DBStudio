@@ -2898,7 +2898,9 @@ function message(error: unknown): string { return error instanceof Error ? error
 .query-actions :deep(.el-button.is-disabled) { opacity: 0.58; }
 .transaction-actions-enter-active { animation: transaction-actions-in 360ms cubic-bezier(.22, 1.35, .36, 1); }
 .transaction-actions-leave-active {
-  transition: max-width 180ms ease-in, opacity 140ms ease-in, transform 180ms ease-in;
+  transition: max-width var(--duration-quick) var(--ease-smooth-out),
+              opacity var(--duration-quick) var(--ease-smooth-out),
+              transform var(--duration-quick) var(--ease-smooth-out);
 }
 .transaction-actions-leave-to {
   max-width: 0;

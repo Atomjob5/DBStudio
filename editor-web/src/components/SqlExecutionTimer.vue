@@ -84,7 +84,10 @@ onBeforeUnmount(stopTimer);
   text-align: right;
 }
 .clock-flip-enter-active,
-.clock-flip-leave-active { transition: transform 150ms cubic-bezier(.2, .75, .25, 1), opacity 120ms ease; }
+.clock-flip-leave-active {
+  transition: transform var(--duration-quick) var(--ease-in-out),
+              opacity var(--duration-quick) var(--ease-in-out);
+}
 .clock-flip-enter-from { opacity: 0; transform: rotateX(-88deg) translateY(35%); }
 .clock-flip-leave-to { opacity: 0; transform: rotateX(88deg) translateY(-35%); }
 
