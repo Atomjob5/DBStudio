@@ -1017,6 +1017,56 @@ test("selects result headers, reorders columns and resizes with the header handl
   expect(fitted?.width ?? 1000).toBeLessThanOrEqual(600);
 });
 
+test("opens a resizable structure view with selectable remarks and horizontal scrolling", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:4173" });
+  await connectMock(page);
+  const editor = page.locator(".monaco-editor .view-lines");
+  await editor.click();
+  await page.keyboard.press("ControlOrMeta+A");
+  await page.keyboard.insertText("select * from product");
+  await editor.getByText("product", { exact: true }).click({ modifiers: ["ControlOrMeta"] });
+
+  const inspector = page.locator(".object-inspector");
+  await expect(inspector).toBeVisible();
+  await expect(inspector.getByRole("cell", { name: "主键", exact: true })).toBeVisible();
+  await expect(inspector.getByRole("cell", { name: "名称", exact: true })).toBeVisible();
+  const remarkCell = inspector.getByRole("cell", { name: "名称", exact: true });
+  await expect.poll(() => remarkCell.evaluate((element) => getComputedStyle(element).userSelect)).toBe("text");
+
+  const grid = inspector.locator(".grid-scroll");
+  const initialGrid = await grid.evaluate((element) => ({
+    clientWidth: element.clientWidth, scrollWidth: element.scrollWidth, scrollLeft: element.scrollLeft
+  }));
+  expect(initialGrid.scrollWidth).toBeGreaterThan(initialGrid.clientWidth);
+  expect(initialGrid.scrollLeft).toBe(0);
+
+  const header = inspector.getByRole("columnheader", { name: /字段名/ });
+  const resizeHandle = inspector.getByRole("separator", { name: "调整 字段名 列宽", exact: true });
+  const before = await header.boundingBox();
+  const handleBounds = await resizeHandle.boundingBox();
+  if (!before || !handleBounds) throw new Error("Structure column header is not measurable");
+  await page.mouse.move(handleBounds.x + 2, handleBounds.y + handleBounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handleBounds.x + 82, handleBounds.y + handleBounds.height / 2);
+  await page.mouse.up();
+  const after = await header.boundingBox();
+  expect(after?.width ?? 0).toBeGreaterThan(before.width + 60);
+
+  await grid.hover();
+  await page.mouse.wheel(520, 0);
+  await expect.poll(() => grid.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+
+  const nameCell = inspector.getByRole("cell", { name: "名称", exact: true });
+  const nameBounds = await nameCell.boundingBox();
+  if (!nameBounds) throw new Error("Remark cell is not measurable");
+  await page.mouse.move(nameBounds.x + 36, nameBounds.y + nameBounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(nameBounds.x + 8, nameBounds.y + nameBounds.height / 2);
+  await page.mouse.up();
+  await page.keyboard.press("ControlOrMeta+C");
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("名称");
+});
+
 test("copies result headers and loaded rows from the header context menu", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:4173" });
   await connectMock(page);

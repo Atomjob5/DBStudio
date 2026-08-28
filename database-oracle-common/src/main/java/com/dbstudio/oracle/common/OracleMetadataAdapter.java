@@ -205,15 +205,80 @@ public class OracleMetadataAdapter implements MetadataAdapter {
         List<ColumnInfo> columns = jdbcColumns(session, owner, objectName, primary);
         String normalizedOwner = upper(owner);
         String normalizedTable = upper(objectName);
+        String resolvedOwner = owner;
+        String resolvedTable = objectName;
         if (columns.isEmpty() && (!normalizedOwner.equals(owner) || !normalizedTable.equals(objectName))) {
             columns = jdbcColumns(session, normalizedOwner, normalizedTable, primary);
+            resolvedOwner = normalizedOwner;
+            resolvedTable = normalizedTable;
         }
+        columns = supplementColumnComments(session, resolvedOwner, resolvedTable, columns);
         Collections.sort(columns, new Comparator<ColumnInfo>() {
             @Override public int compare(ColumnInfo left, ColumnInfo right) {
                 return Integer.compare(left.ordinal(), right.ordinal());
             }
         });
         return Collections.unmodifiableList(columns);
+    }
+
+    /**
+     * Oracle's JDBC metadata commonly leaves COLUMN_REMARKS empty even when ALL_COL_COMMENTS contains a
+     * comment.  Read the dictionary for this one object and merge only useful values so a missing dictionary
+     * privilege never prevents the structure window from opening.
+     */
+    private List<ColumnInfo> supplementColumnComments(DatabaseSession session, String owner, String objectName,
+                                                       List<ColumnInfo> columns) {
+        if (columns.isEmpty() || owner == null || owner.trim().isEmpty()
+                || objectName == null || objectName.trim().isEmpty()) return columns;
+        try {
+            String objectNameColumn = completionCommentObjectNameColumn(session);
+            Map<String, String> comments = columnComments(session, objectNameColumn, owner, objectName);
+            String normalizedOwner = upper(owner);
+            String normalizedObject = upper(objectName);
+            if (comments.isEmpty() && (!normalizedOwner.equals(owner) || !normalizedObject.equals(objectName))) {
+                comments = columnComments(session, objectNameColumn, normalizedOwner, normalizedObject);
+            }
+            if (comments.isEmpty()) return columns;
+            List<ColumnInfo> enriched = new ArrayList<ColumnInfo>(columns.size());
+            for (ColumnInfo column : columns) {
+                String comment = comments.get(column.name());
+                if (comment == null) {
+                    for (Map.Entry<String, String> entry : comments.entrySet()) {
+                        if (entry.getKey().equalsIgnoreCase(column.name())) {
+                            comment = entry.getValue();
+                            break;
+                        }
+                    }
+                }
+                if (comment == null || comment.trim().isEmpty()) {
+                    enriched.add(column);
+                } else {
+                    enriched.add(new ColumnInfo(column.name(), column.typeName(), column.size(), column.scale(),
+                            column.nullable(), column.defaultValue(), column.primaryKey(), column.ordinal(), comment,
+                            column.autoIncrement(), column.generated()));
+                }
+            }
+            return enriched;
+        } catch (SQLException | RuntimeException failure) {
+            LOG.debug("Oracle兼容数据库字段备注读取失败 owner={} object={} reason={}", owner, objectName,
+                    failure.getMessage());
+            return columns;
+        }
+    }
+
+    private Map<String, String> columnComments(DatabaseSession session, String objectNameColumn,
+                                                String owner, String objectName) throws SQLException {
+        Map<String, String> comments = new LinkedHashMap<String, String>();
+        String sql = "SELECT COLUMN_NAME,COMMENTS FROM ALL_COL_COMMENTS WHERE OWNER=? AND "
+                + objectNameColumn + "=? ORDER BY COLUMN_NAME";
+        try (PreparedStatement statement = session.jdbcConnection().prepareStatement(sql)) {
+            statement.setString(1, owner);
+            statement.setString(2, objectName);
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) comments.put(rows.getString(1), value(rows.getString(2)));
+            }
+        }
+        return comments;
     }
 
     @Override public DatabaseObject findObject(DatabaseSession session, String catalog, String schema,

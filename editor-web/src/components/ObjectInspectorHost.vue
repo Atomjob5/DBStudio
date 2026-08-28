@@ -51,27 +51,57 @@
         <div v-if="windowState.error" class="section-message error">{{ windowState.error }}</div>
         <div v-else-if="windowState.loading[windowState.activeTab]" class="section-message">正在读取对象结构…</div>
         <template v-else-if="windowState.activeTab === 'columns'">
-          <div class="grid-scroll"><table><thead><tr><th class="text-left">字段名</th><th class="text-left">类型</th><th class="text-right">长度</th><th class="text-right">精度</th><th class="text-center">可空</th><th class="text-left">默认值</th><th class="text-center">主键</th><th class="text-center">生成属性</th><th class="text-left">备注</th></tr></thead>
-            <tbody><tr v-for="column in windowState.columns" :key="column.ordinal"><td class="text-left">{{ column.name }}</td><td class="text-left">{{ column.typeName }}</td>
-              <td class="text-right">{{ column.length || '' }}</td><td class="text-right">{{ precision(column) }}</td><td class="text-center">{{ column.nullable ? '是' : '否' }}</td>
-              <td class="text-left">{{ column.defaultValue ?? '' }}</td><td class="text-center">{{ column.primaryKey ? '是' : '' }}</td>
-              <td class="text-center">{{ column.autoIncrement ? '自增' : column.generated ? '生成' : '' }}</td><td class="text-left">{{ column.remarks }}</td></tr></tbody></table></div>
+          <div class="grid-scroll"><table class="structure-grid" :style="{ width: gridTableWidth(windowState, 'columns') }">
+            <colgroup><col v-for="(header, index) in gridColumns('columns')" :key="header.key" :style="{ width: `${columnWidth(windowState, 'columns', index)}px` }" /></colgroup>
+            <thead><tr><th v-for="(header, index) in gridColumns('columns')" :key="header.key" :class="header.align"
+                  :style="{ width: `${columnWidth(windowState, 'columns', index)}px` }">
+              <span class="grid-header-label">{{ header.label }}</span>
+              <span class="grid-column-resize-handle" role="separator" tabindex="0"
+                    :aria-label="`调整 ${header.label} 列宽`" title="拖动调整列宽，双击自动匹配"
+                    @pointerdown.stop.prevent="startColumnResize($event, windowState, 'columns', index)"
+                    @dblclick.stop="fitColumnWidth($event, windowState, 'columns', index)"
+                    @keydown="keyboardResizeColumn($event, windowState, 'columns', index)" />
+            </th></tr></thead>
+            <tbody><tr v-for="column in windowState.columns" :key="column.ordinal"><td class="text-left" :title="column.name">{{ column.name }}</td><td class="text-left" :title="column.typeName">{{ column.typeName }}</td>
+              <td class="text-right" :title="cellTitle(column.length)">{{ column.length || '' }}</td><td class="text-right" :title="precision(column)">{{ precision(column) }}</td><td class="text-center">{{ column.nullable ? '是' : '否' }}</td>
+              <td class="text-left" :title="cellTitle(column.defaultValue)">{{ column.defaultValue ?? '' }}</td><td class="text-center">{{ column.primaryKey ? '是' : '' }}</td>
+              <td class="text-center">{{ column.autoIncrement ? '自增' : column.generated ? '生成' : '' }}</td><td class="text-left" :title="cellTitle(column.remarks)">{{ column.remarks }}</td></tr></tbody></table></div>
         </template>
         <template v-else-if="windowState.activeTab === 'indexes'">
-          <div class="grid-scroll"><table><thead><tr><th class="text-left">索引名</th><th class="text-center">主键</th><th class="text-center">唯一</th><th class="text-left">类型</th><th class="text-left">状态</th><th class="text-center">可见</th><th class="text-center">分区</th><th class="text-left">表空间</th><th class="text-left">字段/表达式</th></tr></thead>
-            <tbody><tr v-for="index in windowState.indexes" :key="index.name"><td class="text-left">{{ index.name }}</td><td class="text-center">{{ index.primary ? '是' : '' }}</td>
-              <td class="text-center">{{ index.unique ? '是' : '否' }}</td><td class="text-left">{{ index.type }}</td><td class="text-left">{{ index.status }}</td><td class="text-center">{{ index.visible ? '是' : '否' }}</td>
-              <td class="text-center">{{ index.partitioned ? '是' : '' }}</td><td class="text-left">{{ index.tablespace }}</td><td class="text-left">{{ index.columns.map(indexColumnLabel).join(', ') }}</td></tr></tbody></table></div>
+          <div class="grid-scroll"><table class="structure-grid" :style="{ width: gridTableWidth(windowState, 'indexes') }">
+            <colgroup><col v-for="(header, index) in gridColumns('indexes')" :key="header.key" :style="{ width: `${columnWidth(windowState, 'indexes', index)}px` }" /></colgroup>
+            <thead><tr><th v-for="(header, index) in gridColumns('indexes')" :key="header.key" :class="header.align"
+                  :style="{ width: `${columnWidth(windowState, 'indexes', index)}px` }">
+              <span class="grid-header-label">{{ header.label }}</span>
+              <span class="grid-column-resize-handle" role="separator" tabindex="0"
+                    :aria-label="`调整 ${header.label} 列宽`" title="拖动调整列宽，双击自动匹配"
+                    @pointerdown.stop.prevent="startColumnResize($event, windowState, 'indexes', index)"
+                    @dblclick.stop="fitColumnWidth($event, windowState, 'indexes', index)"
+                    @keydown="keyboardResizeColumn($event, windowState, 'indexes', index)" />
+            </th></tr></thead>
+            <tbody><tr v-for="index in windowState.indexes" :key="index.name"><td class="text-left" :title="cellTitle(index.name)">{{ index.name }}</td><td class="text-center">{{ index.primary ? '是' : '' }}</td>
+              <td class="text-center">{{ index.unique ? '是' : '否' }}</td><td class="text-left" :title="cellTitle(index.type)">{{ index.type }}</td><td class="text-left" :title="cellTitle(index.status)">{{ index.status }}</td><td class="text-center">{{ index.visible ? '是' : '否' }}</td>
+              <td class="text-center">{{ index.partitioned ? '是' : '' }}</td><td class="text-left" :title="cellTitle(index.tablespace)">{{ index.tablespace }}</td><td class="text-left" :title="cellTitle(index.columns.map(indexColumnLabel).join(', '))">{{ index.columns.map(indexColumnLabel).join(', ') }}</td></tr></tbody></table></div>
         </template>
         <template v-else-if="windowState.activeTab === 'partitions'">
-          <div class="grid-scroll"><table><thead><tr><th class="text-center"></th><th class="text-left">分区名</th><th class="text-right">位置</th><th class="text-left">方式</th><th class="text-left">表达式</th><th class="text-left">边界</th><th class="text-left">表空间</th><th class="text-right">估算行数</th><th class="text-right">数据大小</th></tr></thead>
+          <div class="grid-scroll"><table class="structure-grid" :style="{ width: gridTableWidth(windowState, 'partitions') }">
+            <colgroup><col v-for="(header, index) in gridColumns('partitions')" :key="header.key" :style="{ width: `${columnWidth(windowState, 'partitions', index)}px` }" /></colgroup>
+            <thead><tr><th v-for="(header, index) in gridColumns('partitions')" :key="header.key" :class="header.align"
+                  :style="{ width: `${columnWidth(windowState, 'partitions', index)}px` }">
+              <span class="grid-header-label">{{ header.label }}</span>
+              <span class="grid-column-resize-handle" role="separator" tabindex="0"
+                    :aria-label="`调整 ${header.label || '展开'} 列宽`" title="拖动调整列宽，双击自动匹配"
+                    @pointerdown.stop.prevent="startColumnResize($event, windowState, 'partitions', index)"
+                    @dblclick.stop="fitColumnWidth($event, windowState, 'partitions', index)"
+                    @keydown="keyboardResizeColumn($event, windowState, 'partitions', index)" />
+            </th></tr></thead>
             <tbody><template v-for="partition in windowState.partitions" :key="partition.id">
               <tr><td class="text-center"><button v-if="partition.hasSubpartitions" class="expand" :aria-label="windowState.expanded.has(partition.id) ? '收起子分区' : '展开子分区'" @click="togglePartition(windowState, partition)">{{ windowState.expanded.has(partition.id) ? '−' : '+' }}</button></td>
-                <td class="text-left">{{ partition.name }}</td><td class="text-right">{{ partition.position }}</td><td class="text-left">{{ partition.method }}</td><td class="text-left">{{ partition.expression }}</td><td class="text-left">{{ partition.boundary }}</td>
-                <td class="text-left">{{ partition.tablespace }}</td><td class="text-right">{{ partition.estimatedRows ?? '' }}</td><td class="text-right">{{ formatBytes(partition.dataBytes) }}</td></tr>
+                <td class="text-left" :title="cellTitle(partition.name)">{{ partition.name }}</td><td class="text-right">{{ partition.position }}</td><td class="text-left" :title="cellTitle(partition.method)">{{ partition.method }}</td><td class="text-left" :title="cellTitle(partition.expression)">{{ partition.expression }}</td><td class="text-left" :title="cellTitle(partition.boundary)">{{ partition.boundary }}</td>
+                <td class="text-left" :title="cellTitle(partition.tablespace)">{{ partition.tablespace }}</td><td class="text-right">{{ partition.estimatedRows ?? '' }}</td><td class="text-right">{{ formatBytes(partition.dataBytes) }}</td></tr>
               <tr v-for="sub in windowState.subpartitions[partition.id] || []" v-show="windowState.expanded.has(partition.id)" :key="sub.id" class="subpartition">
-                <td class="text-center"></td><td class="text-left">↳ {{ sub.name }}</td><td class="text-right">{{ sub.position }}</td><td class="text-left">{{ sub.method }}</td><td class="text-left">{{ sub.expression }}</td><td class="text-left">{{ sub.boundary }}</td>
-                <td class="text-left">{{ sub.tablespace }}</td><td class="text-right">{{ sub.estimatedRows ?? '' }}</td><td class="text-right">{{ formatBytes(sub.dataBytes) }}</td></tr>
+                <td class="text-center"></td><td class="text-left" :title="cellTitle(sub.name)">↳ {{ sub.name }}</td><td class="text-right">{{ sub.position }}</td><td class="text-left" :title="cellTitle(sub.method)">{{ sub.method }}</td><td class="text-left" :title="cellTitle(sub.expression)">{{ sub.expression }}</td><td class="text-left" :title="cellTitle(sub.boundary)">{{ sub.boundary }}</td>
+                <td class="text-left" :title="cellTitle(sub.tablespace)">{{ sub.tablespace }}</td><td class="text-right">{{ sub.estimatedRows ?? '' }}</td><td class="text-right">{{ formatBytes(sub.dataBytes) }}</td></tr>
             </template></tbody></table></div>
           <button v-if="windowState.partitionNext" class="load-more" @click="loadPartitions(windowState, true)">继续加载分区</button>
         </template>
@@ -99,6 +129,46 @@ import type { ObjectColumnInfo, ObjectDescriptor, ObjectIndexColumnInfo, ObjectI
   ObjectPartitionInfo, ObjectSectionPage, SqlObjectReference } from "../types";
 
 type Tab = "columns" | "indexes" | "partitions" | "ddl";
+type GridTab = Exclude<Tab, "ddl">;
+type GridAlignment = "text-left" | "text-center" | "text-right";
+interface GridColumnDefinition { key: string; label: string; align: GridAlignment; defaultWidth: number; }
+const gridColumnDefinitions: Record<GridTab, GridColumnDefinition[]> = {
+  columns: [
+    { key: "name", label: "字段名", align: "text-left", defaultWidth: 150 },
+    { key: "type", label: "类型", align: "text-left", defaultWidth: 145 },
+    { key: "length", label: "长度", align: "text-right", defaultWidth: 80 },
+    { key: "precision", label: "精度", align: "text-right", defaultWidth: 80 },
+    { key: "nullable", label: "可空", align: "text-center", defaultWidth: 70 },
+    { key: "default", label: "默认值", align: "text-left", defaultWidth: 180 },
+    { key: "primary", label: "主键", align: "text-center", defaultWidth: 70 },
+    { key: "generated", label: "生成属性", align: "text-center", defaultWidth: 110 },
+    { key: "remarks", label: "备注", align: "text-left", defaultWidth: 240 },
+  ],
+  indexes: [
+    { key: "name", label: "索引名", align: "text-left", defaultWidth: 130 },
+    { key: "primary", label: "主键", align: "text-center", defaultWidth: 70 },
+    { key: "unique", label: "唯一", align: "text-center", defaultWidth: 70 },
+    { key: "type", label: "类型", align: "text-left", defaultWidth: 110 },
+    { key: "status", label: "状态", align: "text-left", defaultWidth: 100 },
+    { key: "visible", label: "可见", align: "text-center", defaultWidth: 70 },
+    { key: "partitioned", label: "分区", align: "text-center", defaultWidth: 70 },
+    { key: "tablespace", label: "表空间", align: "text-left", defaultWidth: 150 },
+    { key: "columns", label: "字段/表达式", align: "text-left", defaultWidth: 240 },
+  ],
+  partitions: [
+    { key: "expand", label: "", align: "text-center", defaultWidth: 42 },
+    { key: "name", label: "分区名", align: "text-left", defaultWidth: 150 },
+    { key: "position", label: "位置", align: "text-right", defaultWidth: 70 },
+    { key: "method", label: "方式", align: "text-left", defaultWidth: 110 },
+    { key: "expression", label: "表达式", align: "text-left", defaultWidth: 180 },
+    { key: "boundary", label: "边界", align: "text-left", defaultWidth: 220 },
+    { key: "tablespace", label: "表空间", align: "text-left", defaultWidth: 150 },
+    { key: "estimatedRows", label: "估算行数", align: "text-right", defaultWidth: 100 },
+    { key: "dataBytes", label: "数据大小", align: "text-right", defaultWidth: 110 },
+  ],
+};
+const GRID_MIN_WIDTH = 56;
+const GRID_MAX_WIDTH = 640;
 export interface ObjectInspectorOpenRequest {
   reference: SqlObjectReference; editorId: string; modelKey: string; connectionDisplay: string;
   x: number; y: number;
@@ -109,15 +179,32 @@ interface InspectorState {
   pinned: boolean; hovered: boolean; focused: boolean; opacityOpen: boolean; activeTab: Tab; object?: ObjectDescriptor;
   columns: ObjectColumnInfo[]; indexes: ObjectIndexInfo[]; partitions: ObjectPartitionInfo[];
   subpartitions: Record<string, ObjectPartitionInfo[]>; expanded: Set<string>; partitionNext: string;
+  columnWidths: Record<GridTab, number[]>;
   loaded: Record<Tab, boolean>; loading: Record<Tab, boolean>; error: string; warning: string;
   ddl: string; ddlComplete: boolean; ddlLoading: boolean; ddlAbort?: AbortController; sourceReleased: boolean;
+}
+interface ColumnResizeState {
+  state: InspectorState;
+  tab: GridTab;
+  index: number;
+  startX: number;
+  startWidth: number;
 }
 const props = defineProps<{ opacity: number }>();
 const emit = defineEmits<{ "update:opacity": [value: number]; "save-opacity": [value: number] }>();
 const windows = reactive<InspectorState[]>([]); let zIndex = 3000;
+let columnResizeState: ColumnResizeState | undefined;
 const tabs = [{ key: "columns", label: "列" }, { key: "indexes", label: "索引" },
   { key: "partitions", label: "分区" }, { key: "ddl", label: "查看 SQL" }] as const;
 const resizeEdges = ["n", "ne", "e", "se", "s", "sw", "w", "nw"] as const;
+
+function createColumnWidths(): Record<GridTab, number[]> {
+  return {
+    columns: gridColumnDefinitions.columns.map(column => column.defaultWidth),
+    indexes: gridColumnDefinitions.indexes.map(column => column.defaultWidth),
+    partitions: gridColumnDefinitions.partitions.map(column => column.defaultWidth),
+  };
+}
 
 function open(request: ObjectInspectorOpenRequest): void {
   const key = `${request.editorId}\0${request.reference.catalog || ''}\0${request.reference.schema || ''}\0${request.reference.objectName}`.toLocaleLowerCase();
@@ -129,7 +216,8 @@ function open(request: ObjectInspectorOpenRequest): void {
     x: clamp(request.x + 12, 0, Math.max(0, innerWidth - 720)), y: clamp(request.y + 12, 0, Math.max(0, innerHeight - 480)),
     width: Math.min(720, innerWidth), height: Math.min(480, innerHeight), z: ++zIndex, pinned: false,
     hovered: false, focused: false, opacityOpen: false, activeTab: "columns", columns: [], indexes: [], partitions: [],
-    subpartitions: {}, expanded: new Set(), partitionNext: "", loaded: { columns: false, indexes: false, partitions: false, ddl: false },
+    subpartitions: {}, expanded: new Set(), partitionNext: "", columnWidths: createColumnWidths(),
+    loaded: { columns: false, indexes: false, partitions: false, ddl: false },
     loading: { columns: false, indexes: false, partitions: false, ddl: false }, error: "", warning: "", ddl: "",
     ddlComplete: false, ddlLoading: false, sourceReleased: false });
   windows.push(state); void loadSection(state, "columns");
@@ -193,6 +281,107 @@ async function loadDdl(state: InspectorState): Promise<void> {
 }
 function cancelDdl(state: InspectorState): void { state.ddlAbort?.abort(); state.ddlLoading = false; state.ddlComplete = false; }
 async function copyDdl(state: InspectorState): Promise<void> { if (state.ddlComplete) await navigator.clipboard.writeText(state.ddl); }
+function gridColumns(tab: GridTab): GridColumnDefinition[] { return gridColumnDefinitions[tab]; }
+function columnWidth(state: InspectorState, tab: GridTab, index: number): number {
+  return state.columnWidths[tab][index] ?? gridColumnDefinitions[tab][index].defaultWidth;
+}
+function gridTableWidth(state: InspectorState, tab: GridTab): string {
+  const total = state.columnWidths[tab].reduce((sum, width) => sum + width, 0);
+  return `${total}px`;
+}
+function cellTitle(value: unknown): string | undefined { return value == null ? undefined : String(value); }
+function startColumnResize(event: PointerEvent, state: InspectorState, tab: GridTab, index: number): void {
+  finishColumnResize();
+  columnResizeState = { state, tab, index, startX: event.clientX, startWidth: columnWidth(state, tab, index) };
+  window.addEventListener("pointermove", resizeColumn, true);
+  window.addEventListener("pointerup", finishColumnResize, { once: true, capture: true });
+  window.addEventListener("pointercancel", finishColumnResize, { once: true, capture: true });
+}
+function resizeColumn(event: PointerEvent): void {
+  const active = columnResizeState;
+  if (!active) return;
+  active.state.columnWidths[active.tab][active.index] = clamp(active.startWidth + event.clientX - active.startX,
+    GRID_MIN_WIDTH, GRID_MAX_WIDTH);
+}
+function finishColumnResize(): void {
+  window.removeEventListener("pointermove", resizeColumn, true);
+  window.removeEventListener("pointerup", finishColumnResize, true);
+  window.removeEventListener("pointercancel", finishColumnResize, true);
+  columnResizeState = undefined;
+}
+function gridCellValue(state: InspectorState, tab: GridTab, row: unknown, index: number): string {
+  if (tab === "columns") {
+    const column = row as ObjectColumnInfo;
+    switch (index) {
+      case 0: return column.name;
+      case 1: return column.typeName;
+      case 2: return cellTitle(column.length) || "";
+      case 3: return precision(column);
+      case 4: return column.nullable ? "是" : "否";
+      case 5: return cellTitle(column.defaultValue) || "";
+      case 6: return column.primaryKey ? "是" : "";
+      case 7: return column.autoIncrement ? "自增" : column.generated ? "生成" : "";
+      default: return column.remarks;
+    }
+  }
+  if (tab === "indexes") {
+    const indexInfo = row as ObjectIndexInfo;
+    switch (index) {
+      case 0: return indexInfo.name;
+      case 1: return indexInfo.primary ? "是" : "";
+      case 2: return indexInfo.unique ? "是" : "否";
+      case 3: return indexInfo.type;
+      case 4: return indexInfo.status;
+      case 5: return indexInfo.visible ? "是" : "否";
+      case 6: return indexInfo.partitioned ? "是" : "";
+      case 7: return indexInfo.tablespace;
+      default: return indexInfo.columns.map(indexColumnLabel).join(", ");
+    }
+  }
+  const partition = row as ObjectPartitionInfo;
+  switch (index) {
+    case 0: return "";
+    case 1: return partition.name;
+    case 2: return cellTitle(partition.position) || "";
+    case 3: return partition.method;
+    case 4: return partition.expression;
+    case 5: return partition.boundary;
+    case 6: return partition.tablespace;
+    case 7: return cellTitle(partition.estimatedRows) || "";
+    default: return formatBytes(partition.dataBytes);
+  }
+}
+function gridColumnValues(state: InspectorState, tab: GridTab, index: number): string[] {
+  let rows: unknown[];
+  if (tab === "columns") rows = state.columns;
+  else if (tab === "indexes") rows = state.indexes;
+  else rows = state.partitions.concat(Object.values(state.subpartitions).flat());
+  return rows.map(row => gridCellValue(state, tab, row, index));
+}
+let gridMeasureContext: CanvasRenderingContext2D | null | undefined;
+function measureGridText(value: string): number {
+  if (typeof document === "undefined") return Array.from(value).length * 8;
+  if (gridMeasureContext === undefined) {
+    try { gridMeasureContext = document.createElement("canvas").getContext("2d"); }
+    catch (_) { gridMeasureContext = null; }
+  }
+  if (!gridMeasureContext) return Array.from(value).length * 8;
+  gridMeasureContext.font = getComputedStyle(document.body).font || "12px sans-serif";
+  return gridMeasureContext.measureText(value).width;
+}
+function fitColumnWidth(event: Event, state: InspectorState, tab: GridTab, index: number): void {
+  event.preventDefault(); event.stopPropagation();
+  const header = gridColumnDefinitions[tab][index];
+  const widest = Math.max(measureGridText(header.label), ...gridColumnValues(state, tab, index).map(measureGridText));
+  state.columnWidths[tab][index] = clamp(Math.ceil(widest + 28), GRID_MIN_WIDTH, GRID_MAX_WIDTH);
+}
+function keyboardResizeColumn(event: KeyboardEvent, state: InspectorState, tab: GridTab, index: number): void {
+  if (event.key === "Enter") { fitColumnWidth(event, state, tab, index); return; }
+  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+  event.preventDefault(); event.stopPropagation();
+  state.columnWidths[tab][index] = clamp(columnWidth(state, tab, index) + (event.key === "ArrowRight" ? 10 : -10),
+    GRID_MIN_WIDTH, GRID_MAX_WIDTH);
+}
 function changeOpacity(value: number | number[]): void {
   const next = Array.isArray(value) ? value[0] : value;
   if (Number.isFinite(next)) emit("update:opacity", Math.max(1, Math.min(100, Number(next))));
@@ -232,6 +421,7 @@ onMounted(() => {
   document.addEventListener("pointerdown", onDocumentPointer, true);
 });
 onBeforeUnmount(() => {
+  finishColumnResize();
   window.removeEventListener("keydown", onKey);
   document.removeEventListener("pointerdown", onDocumentPointer, true);
   windows.forEach(item => item.ddlAbort?.abort());
@@ -392,11 +582,14 @@ defineExpose({ open, closeTransient, sourceReleased });
 table {
   width: max-content;
   min-width: 100%;
+  table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
+.structure-grid th,
+.structure-grid td { max-width: none; }
 th,
 td {
   box-sizing: border-box;
@@ -420,6 +613,30 @@ th {
   font-size: 11px;
   font-weight: 600;
 }
+.structure-grid th { padding-right: 17px; user-select: none; -webkit-user-select: none; }
+.structure-grid td { cursor: text; user-select: text; -webkit-user-select: text; }
+.grid-header-label { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grid-column-resize-handle {
+  position: absolute;
+  z-index: 2;
+  top: 2px;
+  right: -3px;
+  bottom: 2px;
+  width: 7px;
+  cursor: col-resize;
+  outline: none;
+}
+.grid-column-resize-handle::after {
+  position: absolute;
+  top: 4px;
+  right: 3px;
+  bottom: 4px;
+  width: 1px;
+  background: var(--db-border-soft);
+  content: "";
+}
+.grid-column-resize-handle:hover::after,
+.grid-column-resize-handle:focus-visible::after { width: 2px; background: var(--db-accent); }
 tbody tr:hover td { background: var(--db-accent-soft); }
 .text-left { text-align: left; }
 .text-center { text-align: center; }

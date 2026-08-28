@@ -101,12 +101,44 @@ class OracleMetadataAdapterCompletionTest {
 
     @Test void fallsBackToUppercaseForUnquotedOracleTableMetadata() throws Exception {
         FakeJdbc jdbc = new FakeJdbc();
+        jdbc.dictionaryComment = "账户号码";
 
         List<ColumnInfo> columns = adapter.listColumns(session(jdbc.connection()), "", "cbsltdcn1", "kdpa_acct_info");
 
         assertEquals(Collections.singletonList("LBLTY_ACCT_NUM"), Collections.singletonList(columns.get(0).name()));
+        assertEquals("账户号码", columns.get(0).remarks());
         assertEquals(Arrays.asList(Arrays.asList("cbsltdcn1", "kdpa_acct_info"),
                 Arrays.asList("CBSLTDCN1", "KDPA_ACCT_INFO")), jdbc.columnMetadataRequests);
+    }
+
+    @Test void keepsJdbcRemarkWhenDictionaryCommentIsEmpty() throws Exception {
+        FakeJdbc jdbc = new FakeJdbc();
+        jdbc.jdbcRemark = "JDBC备注";
+
+        List<ColumnInfo> columns = adapter.listColumns(session(jdbc.connection()), "", "cbsltdcn1", "kdpa_acct_info");
+
+        assertEquals("JDBC备注", columns.get(0).remarks());
+    }
+
+    @Test void keepsColumnsWhenColumnCommentDictionaryIsUnavailable() throws Exception {
+        FakeJdbc jdbc = new FakeJdbc();
+        jdbc.failColumnComments = true;
+
+        List<ColumnInfo> columns = adapter.listColumns(session(jdbc.connection()), "", "cbsltdcn1", "kdpa_acct_info");
+
+        assertEquals(1, columns.size());
+        assertEquals("LBLTY_ACCT_NUM", columns.get(0).name());
+    }
+
+    @Test void supplementsColumnCommentsWhenOceanBaseUsesObjectNameColumn() throws Exception {
+        FakeJdbc jdbc = new FakeJdbc("OBJECT_NAME");
+        jdbc.dictionaryComment = "兼容库字段备注";
+
+        List<ColumnInfo> columns = adapter.listColumns(session(jdbc.connection()), "", "cbsltdcn1", "kdpa_acct_info");
+
+        assertEquals("兼容库字段备注", columns.get(0).remarks());
+        assertTrue(jdbc.sql.stream().anyMatch(value -> value.startsWith(
+                "SELECT COLUMN_NAME,COMMENTS FROM ALL_COL_COMMENTS WHERE OWNER=? AND OBJECT_NAME=?")));
     }
 
     @Test void detectsOceanBaseObjectNameColumn() throws Exception {
@@ -155,6 +187,9 @@ class OracleMetadataAdapterCompletionTest {
         private final List<List<String>> columnMetadataRequests = new ArrayList<List<String>>();
         private final String commentObjectColumn;
         private boolean failAllTables;
+        private boolean failColumnComments;
+        private String jdbcRemark = "";
+        private String dictionaryComment = "";
 
         private FakeJdbc() {
             this("TABLE_NAME");
@@ -185,7 +220,7 @@ class OracleMetadataAdapterCompletionTest {
                                 "NULLABLE", "COLUMN_DEF", "ORDINAL_POSITION", "REMARKS", "IS_AUTOINCREMENT",
                                 "IS_GENERATEDCOLUMN"), Collections.singletonList(Arrays.<Object>asList(
                                 "LBLTY_ACCT_NUM", "VARCHAR2", 64, 0, DatabaseMetaData.columnNullable,
-                                null, 1, "", "NO", "NO")));
+                                null, 1, jdbcRemark, "NO", "NO")));
                     }
                     return resultSet(Collections.<String>emptyList(), Collections.<List<Object>>emptyList());
                 }
@@ -214,6 +249,9 @@ class OracleMetadataAdapterCompletionTest {
                     if (failAllTables && query.startsWith("SELECT OWNER,TABLE_NAME FROM ALL_TABLES")) {
                         throw new java.sql.SQLException("ALL_TABLES unavailable");
                     }
+                    if (failColumnComments && query.startsWith("SELECT COLUMN_NAME,COMMENTS FROM ALL_COL_COMMENTS")) {
+                        throw new java.sql.SQLException("ALL_COL_COMMENTS unavailable");
+                    }
                     return result(query);
                 }
                 return defaultValue(method.getReturnType());
@@ -238,6 +276,9 @@ class OracleMetadataAdapterCompletionTest {
                 rows.add(Arrays.<Object>asList("CBSAC", "ORDERS"));
             } else if (query.equals("SELECT * FROM ALL_COL_COMMENTS WHERE 1=0")) {
                 labels = Arrays.asList("OWNER", commentObjectColumn, "COLUMN_NAME", "COMMENTS");
+            } else if (query.startsWith("SELECT COLUMN_NAME,COMMENTS FROM ALL_COL_COMMENTS WHERE OWNER=? AND")) {
+                labels = Arrays.asList("COLUMN_NAME", "COMMENTS");
+                rows.add(Arrays.<Object>asList("LBLTY_ACCT_NUM", dictionaryComment));
             } else if (query.startsWith("SELECT OWNER," + commentObjectColumn
                     + ",COLUMN_NAME,COMMENTS FROM ALL_COL_COMMENTS")) {
                 labels = Arrays.asList("OWNER", commentObjectColumn, "COLUMN_NAME", "COMMENTS");

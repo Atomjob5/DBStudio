@@ -89,4 +89,83 @@ describe("ObjectInspectorHost visual controls", () => {
     expect(document.body.querySelector(".object-inspector")).not.toBeNull();
     wrapper.unmount();
   });
+
+  it("renders remarks, supports native cell selection, and exposes resizable columns", async () => {
+    rpcRequest.mockResolvedValueOnce({
+      object: { catalog: "sales", schema: "", name: "orders", type: "TABLE", remarks: "订单", qualifiedName: "sales.orders" },
+      items: [{ name: "customer_name", typeName: "VARCHAR2", length: 255, precision: 0, scale: 0,
+        nullable: true, defaultValue: null, primaryKey: false, autoIncrement: false, generated: false,
+        remarks: "客户姓名备注", ordinal: 1 }],
+    });
+    const wrapper = mountHost();
+    (wrapper.vm as unknown as { open: (value: ObjectInspectorOpenRequest) => void }).open(request);
+    await flushPromises();
+
+    const inspector = document.body.querySelector<HTMLElement>(".object-inspector")!;
+    expect(inspector.textContent).toContain("客户姓名备注");
+    expect(inspector.querySelectorAll(".grid-column-resize-handle")).toHaveLength(9);
+    const remarkCell = inspector.querySelector<HTMLElement>('td[title="客户姓名备注"]')!;
+    expect(remarkCell.textContent).toBe("客户姓名备注");
+
+    const nameHandle = inspector.querySelector<HTMLElement>('.grid-column-resize-handle[aria-label="调整 字段名 列宽"]')!;
+    const firstColumn = inspector.querySelector<HTMLTableColElement>("col")!;
+    const originalWidth = firstColumn.style.width;
+    nameHandle.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 100 }));
+    window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 180 }));
+    window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 180 }));
+    await nextTick();
+    expect(firstColumn.style.width).not.toBe(originalWidth);
+
+    nameHandle.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    await nextTick();
+    expect(firstColumn.style.width).not.toBe(originalWidth);
+
+    const remarkHandle = inspector.querySelector<HTMLElement>('.grid-column-resize-handle[aria-label="调整 备注 列宽"]')!;
+    remarkHandle.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    await nextTick();
+    const remarkWidth = Number.parseFloat(inspector.querySelectorAll<HTMLTableColElement>("col")[8].style.width);
+    expect(remarkWidth).toBeGreaterThanOrEqual(56);
+    expect(remarkWidth).toBeLessThanOrEqual(640);
+
+    nameHandle.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 100 }));
+    window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 2_000 }));
+    window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 2_000 }));
+    await nextTick();
+    expect(Number.parseFloat(firstColumn.style.width)).toBe(640);
+
+    nameHandle.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    for (let index = 0; index < 100; index += 1) {
+      nameHandle.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    }
+    await nextTick();
+    expect(Number.parseFloat(firstColumn.style.width)).toBe(56);
+    wrapper.unmount();
+  });
+
+  it("keeps widths when switching structure tabs but resets after reopening", async () => {
+    rpcRequest.mockResolvedValue({
+      object: { catalog: "sales", schema: "", name: "orders", type: "TABLE", remarks: "", qualifiedName: "sales.orders" },
+      items: [],
+    });
+    const wrapper = mountHost();
+    const vm = wrapper.vm as unknown as { open: (value: ObjectInspectorOpenRequest) => void };
+    vm.open(request);
+    await flushPromises();
+    const inspector = document.body.querySelector<HTMLElement>(".object-inspector")!;
+    const handle = inspector.querySelector<HTMLElement>('.grid-column-resize-handle[aria-label="调整 字段名 列宽"]')!;
+    const firstColumn = inspector.querySelector<HTMLTableColElement>("col")!;
+    handle.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    await nextTick();
+    const changedWidth = firstColumn.style.width;
+    inspector.querySelectorAll<HTMLButtonElement>(".inspector-tabs button")[1].click();
+    await flushPromises();
+    inspector.querySelectorAll<HTMLButtonElement>(".inspector-tabs button")[0].click();
+    await nextTick();
+    expect(inspector.querySelector<HTMLTableColElement>("col")!.style.width).toBe(changedWidth);
+    await inspector.querySelector<HTMLButtonElement>('button[aria-label="关闭"]')?.click();
+    vm.open(request);
+    await flushPromises();
+    expect(document.body.querySelector<HTMLTableColElement>(".object-inspector col")!.style.width).not.toBe(changedWidth);
+    wrapper.unmount();
+  });
 });
