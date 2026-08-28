@@ -63,6 +63,31 @@
           <el-switch size="small" aria-label="高危语句提醒" :model-value="dangerousStatementWarningEnabled"
                      @update:model-value="$emit('update:dangerousStatementWarningEnabled', $event === true)" />
         </el-form-item>
+        <el-form-item class="compact-setting-row execution-warning-row">
+          <template #label>
+            <div class="setting-label"><span>SQL 执行超时预警</span>
+              <el-tooltip content="仅当来源编辑器处于后台时提醒；预警不会自动停止 SQL。删除全部时间即可关闭。" placement="top">
+                <el-icon class="setting-help" tabindex="0" aria-label="SQL 执行超时预警说明"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </div>
+          </template>
+          <div class="execution-warning-control">
+            <div class="execution-warning-tags" aria-label="已配置的 SQL 执行超时预警时间">
+              <el-tag v-for="minute in executionWarningMinutes" :key="minute" size="small" closable
+                      :data-testid="`execution-warning-${minute}`" @close="removeExecutionWarningMinute(minute)">
+                {{ minute }} 分钟
+              </el-tag>
+              <span v-if="!executionWarningMinutes.length" class="execution-warning-empty">未启用</span>
+            </div>
+            <div class="execution-warning-add">
+              <input v-model.number="executionWarningDraft" class="execution-warning-input" type="number"
+                     min="1" max="1440" step="1" aria-label="新增 SQL 执行超时预警分钟数"
+                     placeholder="分钟" @keydown.enter.prevent="addExecutionWarningMinute" />
+              <el-button size="small" :disabled="!canAddExecutionWarningMinute"
+                         aria-label="添加 SQL 执行超时预警" @click="addExecutionWarningMinute">添加</el-button>
+            </div>
+          </div>
+        </el-form-item>
       </section>
 
       <section class="settings-section connection-settings">
@@ -302,12 +327,15 @@
 </template>
 
 <script setup lang="ts">
+import { computed, ref } from "vue";
 import { ArrowRight, Delete, Monitor, Moon, QuestionFilled, Sunny } from "@element-plus/icons-vue";
 import type { ResolvedTheme, ThemePreference } from "../types";
 import type { ColumnLayoutScope } from "../columnLayout";
 import type { CopySeparator } from "../resultCopy";
+import { MAX_EXECUTION_WARNING_COUNT, MAX_EXECUTION_WARNING_MINUTES,
+  MIN_EXECUTION_WARNING_MINUTES, normalizeExecutionWarningMinutes } from "../executionWarningSettings";
 
-defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: ResolvedTheme; maxRows: number;
+const props = defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: ResolvedTheme; maxRows: number;
   streamBatchRows: number; clobMaxCharacters: number; maxLobBytes: number; columnLayoutScope: ColumnLayoutScope; copyHeaderOnDoubleClick: boolean;
   copySeparator: CopySeparator; maxActiveSessions: number; idleTimeoutMinutes: number;
   headerSortingEnabled: boolean; headerFilteringEnabled: boolean;
@@ -319,7 +347,8 @@ defineProps<{ modelValue: boolean; theme: ThemePreference; resolvedTheme: Resolv
   completionCandidateLimit: number; completionPreciseMatchingEnabled: boolean;
   canClearCompletionCaches: boolean;
   minimapEnabled: boolean; wordWrapEnabled: boolean; sqlDiagnosticsEnabled: boolean;
-  dangerousStatementWarningEnabled: boolean }>();
+  dangerousStatementWarningEnabled: boolean;
+  executionWarningMinutes: number[] }>();
 const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme": [value: ThemePreference]; "openAppearance": [];
   "update:minimapEnabled": [value: boolean]; "update:wordWrapEnabled": [value: boolean];
   "update:sqlDiagnosticsEnabled": [value: boolean];
@@ -337,7 +366,23 @@ const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme"
   "update:idleTimeoutMinutes": [value: number]; "update:transactionDisconnectRollbackMinutes": [value: number];
   "update:completionCandidateLimit": [value: number];
   "update:completionPreciseMatchingEnabled": [value: boolean];
+  "update:executionWarningMinutes": [value: number[]];
   clearCompletionCaches: []; openShortcuts: []; openCompletionSnippets: [] }>();
+const executionWarningDraft = ref<number | undefined>();
+const canAddExecutionWarningMinute = computed(() => Number.isInteger(executionWarningDraft.value)
+  && (executionWarningDraft.value ?? 0) >= MIN_EXECUTION_WARNING_MINUTES
+  && (executionWarningDraft.value ?? 0) <= MAX_EXECUTION_WARNING_MINUTES
+  && !props.executionWarningMinutes.includes(executionWarningDraft.value as number)
+  && props.executionWarningMinutes.length < MAX_EXECUTION_WARNING_COUNT);
+function addExecutionWarningMinute(): void {
+  if (!canAddExecutionWarningMinute.value) return;
+  const next = normalizeExecutionWarningMinutes([...props.executionWarningMinutes, executionWarningDraft.value]);
+  emit("update:executionWarningMinutes", next);
+  executionWarningDraft.value = undefined;
+}
+function removeExecutionWarningMinute(minute: number): void {
+  emit("update:executionWarningMinutes", props.executionWarningMinutes.filter((item) => item !== minute));
+}
 function themeChanged(value: string | number | boolean | undefined): void {
   if (value === "system" || value === "dark" || value === "light") emit("update:theme", value);
 }
@@ -444,6 +489,13 @@ function copyHeaderToggleChanged(value: string | number | boolean): void {
 .compact-number { width: 132px; }
 .compact-setting-row :deep(.el-radio-button__inner) { padding-inline: 9px; }
 .number-with-unit { display: flex; align-items: center; gap: 6px; color: var(--db-muted); font-size: 11px; }
+.execution-warning-row { align-items: start; }
+.execution-warning-control { display: flex; min-width: 0; flex-direction: column; align-items: flex-end; gap: 8px; }
+.execution-warning-tags { display: flex; max-width: 220px; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+.execution-warning-empty { color: var(--db-muted); font-size: 11px; line-height: 24px; }
+.execution-warning-add { display: flex; align-items: center; gap: 6px; }
+.execution-warning-input { width: 80px; height: 24px; box-sizing: border-box; padding: 0 7px; border: 1px solid var(--db-border-soft); border-radius: 5px; background: var(--db-content); color: var(--db-text); font: inherit; font-size: 11px; }
+.execution-warning-input:focus { border-color: var(--db-accent); outline: 2px solid color-mix(in srgb, var(--db-accent) 22%, transparent); outline-offset: 1px; }
 .separator-options :deep(.el-radio-button__inner) { min-width: 38px; padding-inline: 8px; }
 .completion-cache-control { display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: 5px; }
 .completion-cache-control > span { max-width: 178px; overflow: hidden; color: var(--db-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }

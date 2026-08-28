@@ -325,6 +325,20 @@ test("connects and renders a streamed query result with the development bridge",
   expect(darkSpectrum.innerContent).toBe("none");
 });
 
+test("notifies when a background editor execution completes and returns on click", async ({ page }) => {
+  await connectMock(page);
+  await replaceSql(page, "select /*notify_delay*/ 1");
+  await page.getByRole("button", { name: "执行", exact: true }).click();
+  await page.getByRole("button", { name: "新建查询", exact: true }).click();
+
+  const notification = page.locator(".el-notification").filter({ hasText: "[查询 1]执行成功" });
+  await expect(notification).toBeVisible();
+  await expect(notification).toContainText("耗时 38ms，点击查看");
+  await notification.click();
+  await expect(page.locator(".editor-tabs .el-tabs__item.is-active .editor-tab-title")).toHaveText("查询 1");
+  await expect(notification).toBeHidden();
+});
+
 test("manages global JDBC slots, execution history, probing, abort and cleanup", async ({ page }) => {
   await connectMock(page);
   await replaceSql(page, "select id, name from sample for update");

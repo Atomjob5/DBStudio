@@ -118,6 +118,7 @@ public final class DbStudioApiController {
             "editor.completionCandidateLimit", "editor.completionPreciseMatchingEnabled",
             "editor.completionSnippets", "editor.minimapEnabled", "editor.wordWrapEnabled",
             "editor.sqlDiagnosticsEnabled", "editor.dangerousStatementWarningEnabled", "editor.objectInspectorOpacity",
+            "editor.executionWarningMinutes",
             "appearance.colorSchemes",
             "keyboard.shortcuts",
             "layout.leftWidth", "layout.editorHeight");
@@ -1695,11 +1696,44 @@ public final class DbStudioApiController {
             throw new ApiException("INVALID_SETTING", "编辑器开关设置无效");
         }
         if ("editor.completionSnippets".equals(key)) validateCompletionSnippets(value);
+        if ("editor.executionWarningMinutes".equals(key)) value = validateExecutionWarningMinutes(value);
         if ("appearance.colorSchemes".equals(key)) validateColorSchemeSettings(value);
         if ("keyboard.shortcuts".equals(key)) value = validateShortcutSettings(value);
         settings.put(key, value);
         if ("editor.dangerousStatementWarningEnabled".equals(key)) workspaces.clearRiskConfirmations();
         return ApiPayloads.map("key", key, "value", value);
+    }
+
+    @SuppressWarnings("unchecked")
+    private String validateExecutionWarningMinutes(String value) {
+        if (value == null || value.length() > 8 * 1024) {
+            throw new ApiException("INVALID_SETTING", "SQL执行超时预警设置内容过长");
+        }
+        final List<Object> minutes;
+        try {
+            Object parsed = objectMapper.readValue(value, Object.class);
+            if (!(parsed instanceof List)) throw new IllegalArgumentException();
+            minutes = (List<Object>) parsed;
+        } catch (Exception exception) {
+            throw new ApiException("INVALID_SETTING", "SQL执行超时预警设置必须是整数数组");
+        }
+        if (minutes.size() > 20) throw new ApiException("INVALID_SETTING", "SQL执行超时预警最多配置20个时间");
+        Set<Integer> normalized = new java.util.TreeSet<Integer>();
+        for (Object item : minutes) {
+            if (!(item instanceof Number)) throw new ApiException("INVALID_SETTING", "SQL执行超时预警时间必须是整数");
+            Number number = (Number) item;
+            double numeric = number.doubleValue();
+            if (!Double.isFinite(numeric) || numeric != Math.rint(numeric)
+                    || numeric < 1 || numeric > 1_440) {
+                throw new ApiException("INVALID_SETTING", "SQL执行超时预警时间必须在1到1440分钟之间");
+            }
+            normalized.add(Integer.valueOf((int) numeric));
+        }
+        try {
+            return objectMapper.writeValueAsString(normalized);
+        } catch (Exception exception) {
+            throw new ApiException("INVALID_SETTING", "SQL执行超时预警设置无法保存");
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -2601,8 +2635,13 @@ public final class DbStudioApiController {
         for (String key : SETTING_KEYS) {
             Optional<String> value = settings.get(key);
             if (value.isPresent()) {
-                result.put(key, "keyboard.shortcuts".equals(key)
-                        ? stripLegacyShortcutBindings(value.get()) : value.get());
+                String stored = value.get();
+                if ("keyboard.shortcuts".equals(key)) stored = stripLegacyShortcutBindings(stored);
+                if ("editor.executionWarningMinutes".equals(key)) {
+                    try { stored = validateExecutionWarningMinutes(stored); }
+                    catch (ApiException ignored) { stored = "[10,30]"; }
+                }
+                result.put(key, stored);
             }
         }
         if (!result.containsKey("ui.theme")) result.put("ui.theme", "system");
@@ -2642,6 +2681,9 @@ public final class DbStudioApiController {
         if (!result.containsKey("editor.objectInspectorOpacity")) result.put("editor.objectInspectorOpacity", "100");
         if (!result.containsKey("editor.dangerousStatementWarningEnabled")) {
             result.put("editor.dangerousStatementWarningEnabled", "true");
+        }
+        if (!result.containsKey("editor.executionWarningMinutes")) {
+            result.put("editor.executionWarningMinutes", "[10,30]");
         }
         if (!result.containsKey("appearance.colorSchemes")) result.put("appearance.colorSchemes", DEFAULT_COLOR_SCHEMES);
         if (!result.containsKey("keyboard.shortcuts")) result.put("keyboard.shortcuts", DEFAULT_SHORTCUTS);

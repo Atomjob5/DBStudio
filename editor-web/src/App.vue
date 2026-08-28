@@ -273,6 +273,7 @@
                   :minimap-enabled="settings.minimapEnabled" :word-wrap-enabled="settings.wordWrapEnabled"
                   :sql-diagnostics-enabled="settings.sqlDiagnosticsEnabled"
                   :dangerous-statement-warning-enabled="settings.dangerousStatementWarningEnabled"
+                  :execution-warning-minutes="settings.executionWarningMinutes"
                   :completion-cache-size="completionCacheSize" :completion-cache-environment-count="metadata.completionStats.environmentCount"
                   :completion-cache-loading-count="metadata.completionStats.loadingCount" :can-clear-completion-caches="metadata.canClearCompletions"
                   @update:theme="updateTheme" @update:max-rows="updateMaxRows" @update:max-lob-bytes="updateMaxLobBytes"
@@ -295,6 +296,7 @@
                   @update:word-wrap-enabled="updateWordWrapEnabled"
                   @update:sql-diagnostics-enabled="updateSqlDiagnosticsEnabled"
                   @update:dangerous-statement-warning-enabled="updateDangerousStatementWarningEnabled"
+                  @update:execution-warning-minutes="updateExecutionWarningMinutes"
                   @clear-completion-caches="clearCompletionCaches" @open-shortcuts="openShortcutSettings"
                   @open-appearance="appearanceDrawer = true"
                   @open-completion-snippets="openCompletionSnippetSettings" />
@@ -376,6 +378,8 @@ import { openRecentSql, openSqlFile, recentSqlFiles, saveSqlFile } from "./files
 import { completionClient } from "./completion/client";
 import { initialCompletionNamespaceKeys } from "./completion/schemaSelection";
 import { serializeSqlCompletionSnippets } from "./completion/snippets";
+import { createExecutionNotificationScheduler } from "./executionNotifications";
+import { normalizeExecutionWarningMinutes, serializeExecutionWarningMinutes } from "./executionWarningSettings";
 import {
   DEFAULT_SHORTCUT_BINDINGS,
   actionForShortcut,
@@ -487,6 +491,17 @@ function syncResultHighlight(mode: "passive" | "explicit" = "passive"): void {
 function handleResultTabClick(tabKey: string | number): void {
   activeResultIndex.value = tabKey;
   void nextTick().then(() => syncResultHighlight("explicit"));
+}
+
+function openExecutionResult(editorId: string, executionId: string): void {
+  if (!editors.tabs.some((tab) => tab.id === editorId)) return;
+  editors.activeId = editorId;
+  void nextTick().then(() => {
+    if (!editors.tabs.some((tab) => tab.id === editorId)
+        || !queries.execution(editorId, executionId)) return;
+    activeResultIndex.value = executionId;
+    return nextTick().then(() => syncResultHighlight("explicit"));
+  });
 }
 interface ResultLoadingState {
   editorId: string;
@@ -691,6 +706,20 @@ const colorSchemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
 let layoutSaveTimer: number | undefined;
 let resultContentResizeObserver: ResizeObserver | undefined;
 const completionNoticeTimers = new Map<string, number>();
+const executionNotifications = createExecutionNotificationScheduler({
+  now: () => Date.now(),
+  setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
+  clearTimeout: (timer) => window.clearTimeout(timer),
+  getThresholds: () => settings.executionWarningMinutes,
+  isBackground: (editorId) => editors.activeId !== editorId,
+  isRunning: (editorId, executionId) => {
+    const tab = editors.tabs.find((item) => item.id === editorId);
+    return Boolean(tab?.busy && tab.activeExecutionId === executionId);
+  },
+  getEditorTitle: (editorId) => editors.tabs.find((item) => item.id === editorId)?.title,
+  notify: (request) => ElNotification(request),
+  openExecution: openExecutionResult
+});
 let confirmedShortcutBindings: ShortcutBindings = { ...DEFAULT_SHORTCUT_BINDINGS };
 let shortcutSaveQueue: Promise<void> = Promise.resolve();
 let shortcutSaveEpoch = 0;
@@ -701,6 +730,9 @@ let confirmedCompletionSnippets: SqlCompletionSnippet[] = [];
 let completionSnippetSaveQueue: Promise<void> = Promise.resolve();
 let completionSnippetSaveEpoch = 0;
 let completionSnippetSaveCount = 0;
+let confirmedExecutionWarningMinutes = [...settings.executionWarningMinutes];
+let executionWarningSaveQueue: Promise<void> = Promise.resolve();
+let executionWarningSaveEpoch = 0;
 
 watch(leftWidth, (value) => {
   const width = numericPanelWidth(value);
@@ -740,6 +772,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("resize", measureResultContentOffset);
   if (layoutSaveTimer !== undefined) window.clearTimeout(layoutSaveTimer);
   clearAutoRefreshTimer();
+  executionNotifications.clear();
   completionNoticeTimers.forEach((timer) => window.clearTimeout(timer));
   draftSaveTimers.forEach((timer) => window.clearTimeout(timer));
 });
@@ -788,6 +821,7 @@ watch(() => [activeExecution.value?.executionId, activeResult.value?.resultIndex
 watch(() => settings.showSelectedColumnRemarks, (enabled) => {
   if (!enabled) selectedResultColumn.value = undefined;
 });
+watch(() => settings.executionWarningMinutes, () => executionNotifications.reschedule(), { deep: true });
 watch(() => {
   const state = autoRefreshState.value;
   if (!state) return undefined;
@@ -862,6 +896,7 @@ function installEventHandlers(): void {
       activeExecutionId?: string | null }> };
     for (const state of data.editors ?? []) {
       const tab = editors.tabs.find((item) => item.id === state.editorId); if (!tab) continue;
+      const previousExecutionId = tab.activeExecutionId;
       if (tab.busy && !state.busy) queries.markHistorical(tab.id);
       editors.patch(tab.id, { busy: state.busy, transactionDirty: state.transactionDirty,
         resultChangesDirty: state.resultChangesDirty,
@@ -870,6 +905,12 @@ function installEventHandlers(): void {
         executionPhase: state.busy && state.activeExecutionId ? "running" : state.busy ? "starting" : "idle",
         executionStartedAt: state.busy ? tab.executionStartedAt ?? Date.now() : undefined,
         transactionOperation: "idle" });
+      if (state.busy && state.activeExecutionId) {
+        executionNotifications.start({ editorId: tab.id, executionId: state.activeExecutionId,
+          startedAt: tab.executionStartedAt, editorTitle: tab.title });
+      } else if (previousExecutionId) {
+        executionNotifications.clearExecution(previousExecutionId);
+      }
     }
   }));
   disposers.push(rpc.on("query.started", (raw) => {
@@ -892,6 +933,10 @@ function installEventHandlers(): void {
       monacoEditor.value?.registerExecutionSources?.(data.executionId, data.statements, data.editorId);
     }
     const tab = editors.tabs.find((item) => item.id === data.editorId);
+    if (tab) {
+      executionNotifications.start({ editorId: data.editorId, executionId: data.executionId,
+        startedAt: tab.executionStartedAt, editorTitle: tab.title });
+    }
     if (tab?.busy && tab.executionPhase !== "cancelling") {
       editors.patch(data.editorId, { activeExecutionId: data.executionId,
         executionStartedAt: tab.executionStartedAt ?? Date.now(), executionPhase: "running",
@@ -927,6 +972,7 @@ function installEventHandlers(): void {
     const data = raw as { editorId: string; executionId: string; cancelled: boolean; failed: boolean;
       durationMs: number; transactionDirty: boolean; resultChangesDirty?: boolean; terminationReason?: string };
     const tab = editors.tabs.find((item) => item.id === data.editorId);
+    executionNotifications.complete(data);
     if (!tab || tab.activeExecutionId !== data.executionId) return;
     const completedResults = queries.execution(data.editorId, data.executionId)?.results
       .filter((result) => result.complete && !result.errorMessage) ?? [];
@@ -960,6 +1006,9 @@ function installEventHandlers(): void {
   disposers.push(rpc.on("jdbc.connectionAborted", (raw) => {
     const data = raw as { editorId: string; executionId?: string; transactionLost?: boolean;
       resultChangesLost?: boolean; message?: string };
+    const abortedExecutionId = data.executionId
+      ?? editors.tabs.find((item) => item.id === data.editorId)?.activeExecutionId;
+    if (abortedExecutionId) executionNotifications.abort(data.editorId, abortedExecutionId);
     if (autoRefreshState.value?.editorId === data.editorId) stopAutoRefresh("数据库连接已断开", true);
     resultEdits.finishEditor(data.editorId);
     queries.markHistorical(data.editorId);
@@ -1087,6 +1136,7 @@ async function bootstrapWorkspace(recovered: RecoveredEditor[]): Promise<void> {
     confirmedShortcutBindings = { ...settings.shortcuts };
     confirmedCompletionPreciseMatchingEnabled = settings.completionPreciseMatchingEnabled;
     confirmedCompletionSnippets = settings.completionSnippets.map((item) => ({ ...item }));
+    confirmedExecutionWarningMinutes = [...settings.executionWarningMinutes];
     void refreshCompletionStats();
     for (const recent of await recentSqlFiles().catch(() => [])) {
       recentHandles.set(recent.name, recent.handle);
@@ -1100,6 +1150,7 @@ async function bootstrapWorkspace(recovered: RecoveredEditor[]): Promise<void> {
         monacoEditor.value?.releaseExecutionSources?.(execution.executionId);
       }
     }
+    executionNotifications.clear();
     editors.clear(); queries.clear(); resultEdits.clear(); statusBar.clear(); resultLoading.value = undefined;
     monacoEditor.value?.clearResultHighlight?.();
     for (const value of [...recovered].sort((left, right) => left.sortOrder - right.sortOrder)) {
@@ -1464,6 +1515,10 @@ async function runAutoRefresh(epoch: number): Promise<void> {
     resultEdits.finishEditor(tab.id);
     editors.patch(tab.id, { resultChangesDirty: false });
     queries.start(tab.id, response.executionId, "replace");
+    if (queries.execution(tab.id, response.executionId)?.busy) {
+      executionNotifications.start({ editorId: tab.id, executionId: response.executionId,
+        startedAt: tab.executionStartedAt, editorTitle: tab.title });
+    }
     activeResultIndex.value = response.executionId;
     const currentTab = editors.tabs.find((item) => item.id === tab.id);
     if (currentTab?.busy && currentTab.executionPhase !== "cancelling") {
@@ -1553,6 +1608,10 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
       editors.patch(tab.id, { resultChangesDirty: false });
     }
     queries.start(tab.id, response.executionId, presentation);
+    if (queries.execution(tab.id, response.executionId)?.busy) {
+      executionNotifications.start({ editorId: tab.id, executionId: response.executionId,
+        startedAt: tab.executionStartedAt, editorTitle: tab.title });
+    }
     activeResultIndex.value = response.executionId;
     const current = editors.tabs.find((item) => item.id === tab.id);
     if (current?.busy && current.executionPhase !== "cancelling") {
@@ -2200,7 +2259,9 @@ async function closeTab(id: string): Promise<boolean> {
   } else await rpc.request("editor.close", { editorId: id, action: "close" });
   for (const execution of queries.executionList(id)) {
     monacoEditor.value?.releaseExecutionSources?.(execution.executionId);
+    executionNotifications.clearExecution(execution.executionId);
   }
+  if (tab.activeExecutionId) executionNotifications.clearExecution(tab.activeExecutionId);
   resultEdits.finishEditor(id); queries.clearEditor(id); editors.remove(id);
   void nextTick().then(() => monacoEditor.value?.releaseModel?.(id));
   return true;
@@ -2315,6 +2376,7 @@ async function closeApplication(activeTasks = 0): Promise<void> {
     }
     draftSaveTimers.forEach((timer) => window.clearTimeout(timer)); draftSaveTimers.clear();
     for (const tab of editors.tabs) if (!discardDrafts.has(tab.id)) await persistDraftById(tab.id, true);
+    executionNotifications.clear();
     await rpc.finalizeWorkspace();
     await rpc.request("app.closeDecision", { allow: true });
   } catch (error) {
@@ -2511,6 +2573,26 @@ async function updateDangerousStatementWarningEnabled(value: boolean): Promise<v
     settings.dangerousStatementWarningEnabled = previous;
     reportError(error);
   }
+}
+function updateExecutionWarningMinutes(value: number[]): void {
+  const candidate = normalizeExecutionWarningMinutes(value);
+  settings.executionWarningMinutes = candidate;
+  const epoch = ++executionWarningSaveEpoch;
+  executionWarningSaveQueue = executionWarningSaveQueue.then(async () => {
+    try {
+      await rpc.request("settings.update", {
+        key: "editor.executionWarningMinutes",
+        value: serializeExecutionWarningMinutes(candidate),
+      });
+      if (epoch === executionWarningSaveEpoch) {
+        confirmedExecutionWarningMinutes = [...candidate];
+      }
+    } catch (error) {
+      if (epoch !== executionWarningSaveEpoch) return;
+      settings.executionWarningMinutes = [...confirmedExecutionWarningMinutes];
+      reportError(error);
+    }
+  });
 }
 function updateCompletionPreciseMatchingEnabled(value: boolean): void {
   settings.completionPreciseMatchingEnabled = value;

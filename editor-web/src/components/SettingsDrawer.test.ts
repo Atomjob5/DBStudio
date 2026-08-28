@@ -36,7 +36,8 @@ describe("SettingsDrawer compact result settings", () => {
         minimapEnabled: true,
         wordWrapEnabled: false,
         sqlDiagnosticsEnabled: true,
-        dangerousStatementWarningEnabled: true
+        dangerousStatementWarningEnabled: true,
+        executionWarningMinutes: [10, 30]
       },
       global: { plugins: [ElementPlus], stubs: { teleport: true } }
     });
@@ -45,7 +46,7 @@ describe("SettingsDrawer compact result settings", () => {
   it("renders compact connection and result settings without the old alert", async () => {
     const wrapper = mountDrawer();
     await flushPromises();
-    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(24);
+    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(25);
     expect(wrapper.findComponent({ name: "ElAlert" }).exists()).toBe(false);
     const separator = wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "comma");
@@ -168,6 +169,23 @@ describe("SettingsDrawer compact result settings", () => {
     expect(wrapper.emitted("update:scrollOptimizationBufferScreens")?.[0]).toEqual([1.5]);
 
     expect(wrapper.findAllComponents({ name: "ElInputNumber" }).at(-1)?.props("modelValue")).toBe(2);
+    wrapper.unmount();
+  });
+
+  it("adds and removes SQL execution warning thresholds", async () => {
+    const wrapper = mountDrawer();
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="execution-warning-10"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="execution-warning-30"]').exists()).toBe(true);
+    const input = wrapper.get('input[aria-label="新增 SQL 执行超时预警分钟数"]');
+    await input.setValue("20");
+    await wrapper.get('button[aria-label="添加 SQL 执行超时预警"]').trigger("click");
+    expect(wrapper.emitted("update:executionWarningMinutes")?.[0]).toEqual([[10, 20, 30]]);
+
+    await wrapper.setProps({ executionWarningMinutes: [10, 20, 30] });
+    await wrapper.get('[data-testid="execution-warning-20"]').find(".el-tag__close").trigger("click");
+    expect(wrapper.emitted("update:executionWarningMinutes")?.[1]).toEqual([[10, 30]]);
     wrapper.unmount();
   });
 });

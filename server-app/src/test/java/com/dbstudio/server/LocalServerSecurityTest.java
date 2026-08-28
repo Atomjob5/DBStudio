@@ -240,6 +240,7 @@ class LocalServerSecurityTest {
         assertTrue(defaults.getBody().contains("\"editor.minimapEnabled\":\"true\""));
         assertTrue(defaults.getBody().contains("\"editor.wordWrapEnabled\":\"false\""));
         assertTrue(defaults.getBody().contains("\"editor.sqlDiagnosticsEnabled\":\"true\""));
+        assertTrue(defaults.getBody().contains("\"editor.executionWarningMinutes\":\"[10,30]\""));
 
         Map<String, String> setting = new HashMap<String, String>();
         setting.put("key", "result.columnLayoutScope");
@@ -369,6 +370,32 @@ class LocalServerSecurityTest {
         assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                 new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
         setting.put("value", "1441");
+        assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+
+        setting.put("key", "editor.executionWarningMinutes");
+        setting.put("value", "[30,10,30,60]");
+        ResponseEntity<String> warningMinutes = http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class);
+        assertEquals(HttpStatus.OK, warningMinutes.getStatusCode());
+        assertTrue(warningMinutes.getBody().contains("\"value\":\"[10,30,60]\""));
+        setting.put("value", "[]");
+        assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+        for (String invalid : Arrays.asList("{}", "[0]", "[1441]", "[1.5]", "[\"10\"]")) {
+            setting.put("value", invalid);
+            ResponseEntity<String> rejectedWarning = http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                    new HttpEntity<Map<String, String>>(setting, headers), String.class);
+            assertEquals(HttpStatus.BAD_REQUEST, rejectedWarning.getStatusCode());
+            assertTrue(rejectedWarning.getBody().contains("INVALID_SETTING"));
+        }
+        StringBuilder tooMany = new StringBuilder("[");
+        for (int index = 1; index <= 21; index++) {
+            if (index > 1) tooMany.append(',');
+            tooMany.append(index);
+        }
+        tooMany.append(']');
+        setting.put("value", tooMany.toString());
         assertEquals(HttpStatus.BAD_REQUEST, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                 new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
     }

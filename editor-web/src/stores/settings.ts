@@ -6,6 +6,7 @@ import type { ResultCompareHighlightMode, ResultCompareScope } from "../resultCo
 import type { SqlCompletionSnippet } from "../types";
 import { cloneColorSchemes, parseColorSchemeSettings, type ColorSchemeSettings } from "../appearance";
 import { parseSqlCompletionSnippets } from "../completion/snippets";
+import { parseExecutionWarningMinutes } from "../executionWarningSettings";
 import {
   DEFAULT_SHORTCUT_BINDINGS,
   parseShortcutBindings,
@@ -44,6 +45,7 @@ export const useSettingsStore = defineStore("settings", () => {
   const sqlDiagnosticsEnabled = ref(true);
   const dangerousStatementWarningEnabled = ref(true);
   const objectInspectorOpacity = ref(100);
+  const executionWarningMinutes = ref<number[]>(parseExecutionWarningMinutes());
   const shortcuts = ref<ShortcutBindings>({ ...DEFAULT_SHORTCUT_BINDINGS });
   const shortcutRecordingActive = ref(false);
   const recentFiles = ref<string[]>([]);
@@ -96,6 +98,7 @@ export const useSettingsStore = defineStore("settings", () => {
     const inspectorOpacity = Number.parseInt(settings["editor.objectInspectorOpacity"] ?? "100", 10);
     objectInspectorOpacity.value = Number.isFinite(inspectorOpacity)
       ? Math.max(1, Math.min(100, inspectorOpacity)) : 100;
+    executionWarningMinutes.value = parseExecutionWarningMinutes(settings["editor.executionWarningMinutes"]);
     shortcuts.value = parseShortcutBindings(settings["keyboard.shortcuts"]);
     recentFiles.value = recent;
     colorSchemes.value = parseColorSchemeSettings(settings["appearance.colorSchemes"]);
@@ -128,6 +131,7 @@ export const useSettingsStore = defineStore("settings", () => {
     maxActiveSessions, autoCommit, idleTimeoutMinutes, transactionDisconnectRollbackMinutes,
     completionCandidateLimit, completionPreciseMatchingEnabled, completionSnippets,
     minimapEnabled, wordWrapEnabled, sqlDiagnosticsEnabled, dangerousStatementWarningEnabled, objectInspectorOpacity,
+    executionWarningMinutes,
     shortcuts, shortcutRecordingActive,
     recentFiles, colorSchemes, initialize, setColorSchemes, setCompletionSnippets, setShortcuts, setShortcut, resetShortcuts };
 });

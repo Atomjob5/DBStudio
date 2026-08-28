@@ -73,6 +73,7 @@ const mockSettings: Record<string, string> = {
   "editor.sqlDiagnosticsEnabled": "true",
   "editor.dangerousStatementWarningEnabled": "true",
   "editor.objectInspectorOpacity": "100",
+  "editor.executionWarningMinutes": "[10,30]",
   "appearance.colorSchemes": serializeColorSchemeSettings(DEFAULT_COLOR_SCHEMES),
   "keyboard.shortcuts": serializeShortcutBindings(DEFAULT_SHORTCUT_BINDINGS),
 };
@@ -307,6 +308,7 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
     jdbc.historyCount = history.length; jdbc.lastExecutionAt = history[0].startedAt;
     emit("jdbc.connections.changed", { updatedAt: Date.now() });
     const sqlText = String(payload.text ?? "");
+    const delayedExecution = /\bnotify_delay\b/i.test(sqlText);
     const wideResult = sqlText.includes("wide_result");
     const specialResult = /\bcolor_scheme_test\b/i.test(sqlText);
     const resultColumns = specialResult ? ["id", "status", "payload"]
@@ -362,7 +364,7 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
       jdbc!.transactionDirty = editableForUpdate; jdbc!.executionId = undefined;
       jdbc!.stateVersion = Number(jdbc!.stateVersion) + 1; jdbc!.lastActiveAt = Date.now();
       emit("jdbc.connections.changed", { updatedAt: Date.now() });
-    }, 0);
+    }, delayedExecution ? 350 : 0);
     return { executionId };
   }
   if (type === "query.fetchRows") {
