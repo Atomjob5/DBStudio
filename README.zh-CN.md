@@ -18,7 +18,7 @@ DBStudio 将浏览器端工作台与本地 Java 服务相结合，提供现代�
 
 项目目前支持 MySQL 8、Oracle 19c/21c，以及 Oracle 兼容模式的 OceanBase。数据库差异通过 SPI 隔离，因此可以在不修改编辑器工作台的情况下扩展新的数据库提供器。
 
-> DBStudio 正在积极开发中，首个稳定版本发布前，接口、存储格式和功能可能发生变化。
+> DBStudio 1.0.0 是项目的首个稳定版本，后续仍会持续开发与维护。
 
 ## 开发方式
 
@@ -96,7 +96,7 @@ DBStudio 服务仅绑定随机的 `127.0.0.1` 端口。启动时会打开包含�
 克隆仓库并执行完整验证构建：
 
 ```shell
-git clone <你的仓库地址>
+git clone https://github.com/Atomjob5/DBStudio.git
 cd dbstudio
 ./mvnw clean verify
 ```
@@ -203,3 +203,7 @@ DBStudio 使用了下列主要直接依赖或显式固定版本的第三方库�
 ## 参与贡献
 
 欢迎提交 Issue 和 Pull Request。提交修改前请运行 `./mvnw clean verify`，并尽量将数据库专属行为保留在对应的提供器模块中。
+
+## 许可证
+
+DBStudio 自有源代码使用 [Apache License 2.0](LICENSE) 发布。项目引用或打包的第三方组件仍分别遵循上文列出的各自许可证。

@@ -18,7 +18,7 @@ DBStudio combines a browser-based workbench with a local Java service to provide
 
 The project currently supports MySQL 8, Oracle 19c/21c, and OceanBase in Oracle compatibility mode. Database-specific behavior is isolated behind an SPI, making it possible to add new providers without changing the editor workbench.
 
-> DBStudio is under active development. Interfaces, storage formats, and features may change before the first stable release.
+> DBStudio 1.0.0 is the first stable release. The project remains under active development.
 
 ## Development approach
 
@@ -96,7 +96,7 @@ The packaged application only requires a Java 8 or newer JRE.
 Clone the repository and run the complete verification build:
 
 ```shell
-git clone <your-repository-url>
+git clone https://github.com/Atomjob5/DBStudio.git
 cd dbstudio
 ./mvnw clean verify
 ```
@@ -203,3 +203,7 @@ DBStudio builds on the following major direct or explicitly pinned third-party l
 ## Contributing
 
 Issues and pull requests are welcome. Before submitting a change, run `./mvnw clean verify` and keep database-specific behavior inside the appropriate provider module whenever possible.
+
+## License
+
+DBStudio's original source code is released under the [Apache License 2.0](LICENSE). Bundled and referenced third-party components remain subject to their respective licenses listed above.

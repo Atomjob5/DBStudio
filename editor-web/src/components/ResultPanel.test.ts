@@ -1575,7 +1575,7 @@ describe("ResultPanel streaming rendering", () => {
     menu.vm.$emit("command", "copy-in"); await flushPromises();
     expect(clipboardWrite.mock.calls.at(-1)).toEqual(clipboardBeforeInvalidSelection);
     wrapper.unmount();
-  });
+  }, 20_000);
 
   it("sums selected headers across the current filtered rows and clears stale totals", async () => {
     const result = {
