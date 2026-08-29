@@ -125,6 +125,42 @@ describe("ResultPanel streaming rendering", () => {
     wrapper.unmount();
   });
 
+  it("renders SQL Timeline stages and shows the result without a success overlay", async () => {
+    const settings = useSettingsStore();
+    const schemes = cloneColorSchemes(settings.colorSchemes);
+    schemes.light.result.loadingAnimation = "sql-timeline";
+    settings.setColorSchemes(schemes);
+    const wrapper = mount(ResultPanel, {
+      props: { activeResultIndex: 0, executing: true, executionTimelineStage: "thinking", executionStartedAt: 1_000 },
+      global: { plugins: [ElementPlus] },
+    });
+
+    expect(wrapper.findComponent({ name: "SqlExecutionTimelineLoader" }).exists()).toBe(true);
+    expect(wrapper.findAll(".sql-execution-timeline__step")).toHaveLength(1);
+    expect(wrapper.text()).toContain("Thinking");
+
+    await wrapper.setProps({ executionTimelineStage: "planning" });
+    expect(wrapper.findAll(".sql-execution-timeline__step")).toHaveLength(2);
+    await wrapper.setProps({ executionTimelineStage: "preparing-result" });
+    expect(wrapper.text()).toContain("Preparing Result");
+
+    await wrapper.setProps({
+      executionTimelineStage: "success",
+      execution: {
+        executionId: "execution-timeline", editorId: "editor-timeline", busy: true,
+        cancelled: false, failed: false, durationMs: 12,
+        results: [{ resultIndex: 0, sql: "select 1", type: "QUERY", columns: ["value"], rows: [["1"]],
+          updateCount: -1, truncated: false, durationMs: 11, complete: false }]
+      }
+    });
+    expect(wrapper.findComponent({ name: "ResultVirtualGrid" }).exists()).toBe(true);
+    expect(wrapper.find(".sql-timeline-success").exists()).toBe(false);
+    expect(wrapper.find(".sql-timeline-success-announcement").exists()).toBe(true);
+    expect(wrapper.find(".sql-timeline-success-announcement").text()).toContain("Success: result set received");
+    expect(wrapper.find(".result-loading").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("emits an explicit intent when a result tab is clicked", async () => {
     const execution = {
       executionId: "execution-tab-click", editorId: "editor-tab-click", busy: false,

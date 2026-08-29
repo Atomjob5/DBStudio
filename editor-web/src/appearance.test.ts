@@ -45,6 +45,14 @@ describe("color scheme settings", () => {
     expect(original.dark.editor.keyword.color).not.toBe("#123456");
   });
 
+  it("accepts and serializes the SQL Timeline loading animation", () => {
+    const settings = cloneColorSchemes(DEFAULT_COLOR_SCHEMES);
+    settings.light.result.loadingAnimation = "sql-timeline";
+    expect(isValidColorSchemeSettings(settings)).toBe(true);
+    expect(parseColorSchemeSettings(serializeColorSchemeSettings(settings)).light.result.loadingAnimation)
+      .toBe("sql-timeline");
+  });
+
   it("round-trips valid settings and falls back for invalid payloads", () => {
     const encoded = serializeColorSchemeSettings(DEFAULT_COLOR_SCHEMES);
     expect(parseColorSchemeSettings(encoded)).toEqual(DEFAULT_COLOR_SCHEMES);

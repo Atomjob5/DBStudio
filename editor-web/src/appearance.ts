@@ -2,7 +2,7 @@ import type { ResolvedTheme } from "./types";
 
 export type AppearanceMode = "light" | "dark";
 export type FontFamilyId = "system-ui" | "system-mono" | "sf-mono" | "menlo" | "monaco" | "consolas" | "jetbrains-mono";
-export type ResultLoadingAnimation = "dbstudio" | "wave-physics";
+export type ResultLoadingAnimation = "dbstudio" | "wave-physics" | "sql-timeline";
 
 export interface TextStyle {
   color: string;
@@ -192,7 +192,8 @@ const validEditor = (value: unknown): value is EditorColorScheme => {
 const validResult = (value: unknown): value is ResultColorScheme => {
   if (!exactKeys(value, ["loadingAnimation", "fontFamily", "fontSize", "background", "stripeBackground", "headerBackground", "cell", "header", "nullValue", "binaryValue", "rowNumber", "selectionBackground", "selectionBorder", "compareHighlightBackground"])) return false;
   const item = value as ResultColorScheme;
-  return (item.loadingAnimation === "dbstudio" || item.loadingAnimation === "wave-physics")
+  return (item.loadingAnimation === "dbstudio" || item.loadingAnimation === "wave-physics"
+    || item.loadingAnimation === "sql-timeline")
     && validFont(item.fontFamily) && Number.isInteger(item.fontSize) && item.fontSize >= 10 && item.fontSize <= 24
     && [item.background, item.stripeBackground, item.headerBackground, item.selectionBackground,
       item.selectionBorder, item.compareHighlightBackground].every(isHex)

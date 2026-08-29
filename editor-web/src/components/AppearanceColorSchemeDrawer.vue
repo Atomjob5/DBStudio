@@ -109,6 +109,16 @@
               </span>
               <span><strong>Wave Physics</strong><small>弹跳波浪</small></span><Check v-if="activeScheme.result.loadingAnimation === 'wave-physics'" />
             </button>
+            <button type="button" class="appearance-loading-option"
+                    :class="{ active: activeScheme.result.loadingAnimation === 'sql-timeline' }"
+                    role="radio" :aria-checked="activeScheme.result.loadingAnimation === 'sql-timeline'"
+                    aria-label="SQL Timeline 动画" @click="setLoadingAnimation('sql-timeline')">
+              <span class="appearance-loading-preview" :style="{ background: activeScheme.result.background }">
+                <SqlExecutionTimelineLoader stage="planning" :started-at="previewStartedAt"
+                                            :color="activeScheme.result.selectionBorder" compact />
+              </span>
+              <span><strong>SQL Timeline</strong><small>SQL 执行时间线</small></span><Check v-if="activeScheme.result.loadingAnimation === 'sql-timeline'" />
+            </button>
           </div>
         </div>
         <div class="appearance-fields appearance-fields-two">
@@ -151,6 +161,7 @@ import { computed, defineComponent, h, ref, watch } from "vue";
 import { Check, Moon, Sunny } from "@element-plus/icons-vue";
 import type { ColorSchemeSettings, AppearanceMode, ModeColorScheme, FontFamilyId, ResultLoadingAnimation, TextStyle } from "../appearance";
 import { applyPreset, cloneColorSchemes, COLOR_SCHEME_PRESETS, FONT_FAMILY_OPTIONS, fontFamilyCss } from "../appearance";
+import SqlExecutionTimelineLoader from "./SqlExecutionTimelineLoader.vue";
 import WavePhysicsLoader from "./WavePhysicsLoader.vue";
 
 const ColorField = defineComponent({
@@ -178,6 +189,7 @@ const props = defineProps<{
 const emit = defineEmits<{ "update:modelValue": [value: boolean]; save: [value: ColorSchemeSettings]; cancel: [] }>();
 const mode = ref<AppearanceMode>(props.activeMode);
 const draft = ref<ColorSchemeSettings>(cloneColorSchemes(props.schemes));
+const previewStartedAt = Date.now() - 1_284;
 const fonts = FONT_FAMILY_OPTIONS;
 const editorTokens: Array<{ key: keyof Pick<ModeColorScheme["editor"], "keyword" | "identifier" | "string" | "number" | "comment" | "quotedIdentifier">; label: string }> = [
   { key: "keyword", label: "关键字" }, { key: "identifier", label: "普通标识符" }, { key: "string", label: "字符串" },

@@ -1861,7 +1861,7 @@ public final class DbStudioApiController {
         if (version == 3) {
             Object loadingAnimation = result.get("loadingAnimation");
             if (!(loadingAnimation instanceof String)
-                    || !Arrays.asList("dbstudio", "wave-physics").contains(loadingAnimation)) {
+                    || !Arrays.asList("dbstudio", "wave-physics", "sql-timeline").contains(loadingAnimation)) {
                 throw new ApiException("INVALID_SETTING", label + "Loading动画无效");
             }
         }

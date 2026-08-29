@@ -215,6 +215,7 @@
                 <ResultPanel ref="resultPanel" v-model:active-result-index="activeResultIndex" :executions="activeExecutions"
                              :executing="editors.active?.busy === true"
                              :execution-started-at="editors.active?.executionStartedAt"
+                             :execution-timeline-stage="editors.active?.executionTimelineStage"
                              :show-result-edit-actions="showResultEditActions"
                              :result-edit-unlocked="resultEditUnlocked"
                              :can-toggle-result-edit="canToggleResultEdit"
@@ -396,7 +397,7 @@ import {
   type ShortcutBinding,
   type ShortcutBindings,
 } from "./shortcuts";
-import type { BootstrapResponse, CompletionCache, CompletionNamespaceDescriptor, CompletionNamespacesResponse, CompletionProgress, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, HistoryEntry, MetadataNode, QueryExecutionSource, QueryResult, RecoveredEditor, ResultExportRequest, SavedProfile, SelectedResultColumn, SqlCompletionSnippet, SqlEditorSelectionAction, SqlTransformApplyResult, SqlTransformTarget, StatusBarSystemItem, ThemePreference, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "./types";
+import type { BootstrapResponse, CompletionCache, CompletionNamespaceDescriptor, CompletionNamespacesResponse, CompletionProgress, ConnectionCatalog, EditorConnectionBinding, EditorConnectionState, EditorTab, ExecutionTimelineStage, HistoryEntry, MetadataNode, QueryExecutionSource, QueryResult, RecoveredEditor, ResultExportRequest, SavedProfile, SelectedResultColumn, SqlCompletionSnippet, SqlEditorSelectionAction, SqlTransformApplyResult, SqlTransformTarget, StatusBarSystemItem, ThemePreference, TransportState, WorkspaceOpenResponse, WorkspaceSummary } from "./types";
 
 const app = useAppStore(); const connections = useConnectionStore(); const metadata = useMetadataStore();
 const editors = useEditorStore(); const executionAttention = useExecutionAttentionStore();
@@ -462,6 +463,17 @@ const schemaSelectionQueue: SchemaSelectionRequest[] = [];
 let activeSchemaSelection: SchemaSelectionRequest | undefined;
 const completionLoads = new Map<string, Promise<void>>();
 const draftSaveTimers = new Map<string, number>();
+const EXECUTION_TIMELINE_STAGE_DURATION_MS = 400;
+const executionTimelineStageTimers = new Map<string, number>();
+interface ExecutionTimelineSession {
+  attemptId: number;
+  executionId?: string;
+  resultMetaReceived?: boolean;
+  stageEnteredAt: number;
+  pendingStages: Array<"planning" | "preparing-result">;
+}
+const executionTimelineSessions = new Map<string, ExecutionTimelineSession>();
+let nextExecutionTimelineAttemptId = 0;
 const activeExecutions = computed(() => editors.activeId ? queries.executionList(editors.activeId) : []);
 const activeResultIndex = ref<string | number>(0);
 const activeExecution = computed(() => {
@@ -477,6 +489,144 @@ const activeResult = computed(() => activeExecution.value?.results.find((result)
   ?? activeExecution.value?.results[0]);
 
 type EditorTabIndicator = "dirty" | "running" | ExecutionAttentionOutcome;
+
+const executionTimelineRank: Record<ExecutionTimelineStage, number> = {
+  thinking: 0, planning: 1, "preparing-result": 2, success: 3
+};
+
+function clearExecutionTimelineStageTimer(editorId: string): void {
+  const timer = executionTimelineStageTimers.get(editorId);
+  if (timer !== undefined) window.clearTimeout(timer);
+  executionTimelineStageTimers.delete(editorId);
+}
+
+function beginExecutionTimeline(editorId: string): ExecutionTimelineSession {
+  clearExecutionTimelineStageTimer(editorId);
+  const session = {
+    attemptId: ++nextExecutionTimelineAttemptId,
+    stageEnteredAt: Date.now(),
+    pendingStages: [] as Array<"planning" | "preparing-result">
+  };
+  executionTimelineSessions.set(editorId, session);
+  return session;
+}
+
+function clearExecutionTimelineSession(editorId: string, attemptId?: number): void {
+  const session = executionTimelineSessions.get(editorId);
+  if (session && attemptId !== undefined && session.attemptId !== attemptId) return;
+  executionTimelineSessions.delete(editorId);
+  clearExecutionTimelineStageTimer(editorId);
+}
+
+function bindExecutionTimelineExecution(editorId: string, attemptId: number, executionId: string): boolean {
+  const session = executionTimelineSessions.get(editorId);
+  if (!session || session.attemptId !== attemptId) return false;
+  if (session.executionId && session.executionId !== executionId) {
+    return false;
+  }
+  session.executionId = executionId;
+  return true;
+}
+
+function matchExecutionTimelineEvent(editorId: string, executionId?: string): boolean {
+  if (!executionId) return true;
+  const session = executionTimelineSessions.get(editorId);
+  return !session?.executionId || session.executionId === executionId;
+}
+
+function restoreExecutionTimelineSession(editorId: string, executionId?: string): void {
+  const previous = executionTimelineSessions.get(editorId);
+  if (previous?.executionId && executionId && previous.executionId !== executionId) {
+    clearExecutionTimelineStageTimer(editorId);
+    executionTimelineSessions.set(editorId, {
+      attemptId: ++nextExecutionTimelineAttemptId,
+      executionId,
+      stageEnteredAt: Date.now(),
+      pendingStages: []
+    });
+    editors.patch(editorId, { executionTimelineStage: "preparing-result" });
+    return;
+  }
+  const session = previous ?? {
+    attemptId: ++nextExecutionTimelineAttemptId,
+    stageEnteredAt: Date.now(),
+    pendingStages: []
+  };
+  if (executionId) session.executionId = executionId;
+  executionTimelineSessions.set(editorId, session);
+}
+
+function executionTimelineUsesPacing(): boolean {
+  return typeof window.matchMedia !== "function"
+    || !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function advanceExecutionTimeline(editorId: string, stage: ExecutionTimelineStage, executionId?: string): boolean {
+  const tab = editors.tabs.find((item) => item.id === editorId);
+  if (!tab || (executionId && tab.activeExecutionId && tab.activeExecutionId !== executionId)
+      || !matchExecutionTimelineEvent(editorId, executionId)) return false;
+  const current = tab.executionTimelineStage;
+  if (current && executionTimelineRank[stage] <= executionTimelineRank[current]) return false;
+  editors.patch(editorId, { executionTimelineStage: stage });
+  return true;
+}
+
+function advanceExecutionTimelineQueue(editorId: string, attemptId: number, executionId: string): void {
+  const session = executionTimelineSessions.get(editorId);
+  const tab = editors.tabs.find((item) => item.id === editorId);
+  if (!session || session.attemptId !== attemptId || session.resultMetaReceived
+      || !tab || (tab.activeExecutionId && tab.activeExecutionId !== executionId)) {
+    clearExecutionTimelineStageTimer(editorId);
+    return;
+  }
+  if (session.executionId && session.executionId !== executionId) return;
+  const nextStage = session.pendingStages[0];
+  if (!nextStage) {
+    clearExecutionTimelineStageTimer(editorId);
+    return;
+  }
+  const current = tab.executionTimelineStage;
+  if (current && executionTimelineRank[nextStage] <= executionTimelineRank[current]) {
+    session.pendingStages.shift();
+    advanceExecutionTimelineQueue(editorId, attemptId, executionId);
+    return;
+  }
+
+  const elapsed = Math.max(0, Date.now() - session.stageEnteredAt);
+  const requiredDuration = executionTimelineUsesPacing() ? EXECUTION_TIMELINE_STAGE_DURATION_MS : 0;
+  const remaining = Math.max(0, requiredDuration - elapsed);
+  if (remaining > 0) {
+    clearExecutionTimelineStageTimer(editorId);
+    let timer: number;
+    timer = window.setTimeout(() => {
+      if (executionTimelineStageTimers.get(editorId) === timer) executionTimelineStageTimers.delete(editorId);
+      advanceExecutionTimelineQueue(editorId, attemptId, executionId);
+    }, remaining);
+    executionTimelineStageTimers.set(editorId, timer);
+    return;
+  }
+
+  clearExecutionTimelineStageTimer(editorId);
+  session.pendingStages.shift();
+  editors.patch(editorId, { executionTimelineStage: nextStage });
+  session.stageEnteredAt = Date.now();
+  if (requiredDuration === 0) {
+    void nextTick().then(() => advanceExecutionTimelineQueue(editorId, attemptId, executionId));
+    return;
+  }
+  advanceExecutionTimelineQueue(editorId, attemptId, executionId);
+}
+
+function queueExecutionTimelineStages(editorId: string, executionId: string, attemptId: number): void {
+  const session = executionTimelineSessions.get(editorId);
+  if (!session || session.attemptId !== attemptId || session.resultMetaReceived
+      || (session.executionId && session.executionId !== executionId)) return;
+  session.executionId = executionId;
+  for (const stage of ["planning", "preparing-result"] as const) {
+    if (!session.pendingStages.includes(stage)) session.pendingStages.push(stage);
+  }
+  advanceExecutionTimelineQueue(editorId, attemptId, executionId);
+}
 
 function executionRequestFailureKey(editorId: string): string {
   return `request:${editorId}`;
@@ -804,6 +954,9 @@ onBeforeUnmount(() => {
   executionAttention.clear();
   completionNoticeTimers.forEach((timer) => window.clearTimeout(timer));
   draftSaveTimers.forEach((timer) => window.clearTimeout(timer));
+  executionTimelineStageTimers.forEach((timer) => window.clearTimeout(timer));
+  executionTimelineStageTimers.clear();
+  executionTimelineSessions.clear();
 });
 
 watch(() => app.theme, (theme) => applyDocumentTheme(theme), { immediate: true });
@@ -928,12 +1081,17 @@ function installEventHandlers(): void {
       const tab = editors.tabs.find((item) => item.id === state.editorId); if (!tab) continue;
       const previousExecutionId = tab.activeExecutionId;
       if (tab.busy && !state.busy) queries.markHistorical(tab.id);
+      if (state.busy) restoreExecutionTimelineSession(tab.id, state.activeExecutionId ?? undefined);
+      else clearExecutionTimelineSession(tab.id);
       editors.patch(tab.id, { busy: state.busy, transactionDirty: state.transactionDirty,
         resultChangesDirty: state.resultChangesDirty,
         transactionState: state.transactionState, connectionState: state.connectionState,
         activeExecutionId: state.activeExecutionId ?? undefined,
         executionPhase: state.busy && state.activeExecutionId ? "running" : state.busy ? "starting" : "idle",
         executionStartedAt: state.busy ? tab.executionStartedAt ?? Date.now() : undefined,
+        executionTimelineStage: state.busy
+          ? tab.executionTimelineStage ?? (state.activeExecutionId ? "preparing-result" : "thinking")
+          : undefined,
         transactionOperation: "idle" });
       if (state.busy && state.activeExecutionId) {
         executionNotifications.start({ editorId: tab.id, executionId: state.activeExecutionId,
@@ -946,6 +1104,15 @@ function installEventHandlers(): void {
   disposers.push(rpc.on("query.started", (raw) => {
     const data = raw as { editorId: string; executionId: string; resultPresentation?: "replace" | "append";
       statements?: QueryExecutionSource[] };
+    const tab = editors.tabs.find((item) => item.id === data.editorId);
+    if (tab?.activeExecutionId && tab.activeExecutionId !== data.executionId) return;
+    const timelineSession = executionTimelineSessions.get(data.editorId);
+    if (tab?.busy && tab.executionPhase !== "cancelling" && timelineSession) {
+      if (timelineSession.executionId && timelineSession.executionId !== data.executionId) return;
+      if (!timelineSession.executionId && !tab.activeExecutionId
+          && queries.execution(data.editorId, data.executionId)) return;
+      timelineSession.executionId = data.executionId;
+    }
     executionAttention.clearExecution(data.editorId, executionRequestFailureKey(data.editorId));
     executionAttention.clearExecution(data.editorId, data.executionId);
     const presentation = data.resultPresentation ?? "replace";
@@ -961,10 +1128,10 @@ function installEventHandlers(): void {
       }
     }
     queries.start(data.editorId, data.executionId, presentation);
+    if (editors.activeId === data.editorId) activeResultIndex.value = data.executionId;
     if (data.statements?.length) {
       monacoEditor.value?.registerExecutionSources?.(data.executionId, data.statements, data.editorId);
     }
-    const tab = editors.tabs.find((item) => item.id === data.editorId);
     if (tab) {
       executionNotifications.start({ editorId: data.editorId, executionId: data.executionId,
         startedAt: tab.executionStartedAt, editorTitle: tab.title });
@@ -986,6 +1153,24 @@ function installEventHandlers(): void {
   disposers.push(rpc.on("query.resultMeta", (raw) => {
     const data = raw as QueryResult & { editorId: string; executionId?: string };
     if (data.executionId && !queries.execution(data.editorId, data.executionId)) return;
+    const tab = editors.tabs.find((item) => item.id === data.editorId);
+    if (data.executionId && tab?.activeExecutionId && tab.activeExecutionId !== data.executionId) return;
+    const timelineSession = executionTimelineSessions.get(data.editorId);
+    if (tab?.busy && data.executionId && !matchExecutionTimelineEvent(data.editorId, data.executionId)) return;
+    if (tab?.busy && data.executionId && timelineSession && !timelineSession.executionId && !tab.activeExecutionId) return;
+    if (tab?.busy && timelineSession && data.executionId) {
+      timelineSession.executionId ??= data.executionId;
+    }
+    if (tab?.busy && tab.executionPhase !== "cancelling"
+        && (!data.executionId || tab.activeExecutionId === data.executionId)) {
+      const firstResultMeta = !timelineSession?.resultMetaReceived;
+      if (timelineSession) {
+        timelineSession.resultMetaReceived = true;
+        timelineSession.pendingStages = [];
+      }
+      clearExecutionTimelineStageTimer(data.editorId);
+      if (firstResultMeta) advanceExecutionTimeline(data.editorId, "success", data.executionId);
+    }
     queries.addResult(data.editorId, { ...data, rows: [], rowIds: [], complete: false }, data.executionId);
     void resolveResultColumnRemarks(data.editorId, data.executionId, data.resultIndex, data.sql, data.columnDetails);
   }));
@@ -993,11 +1178,19 @@ function installEventHandlers(): void {
     const data = raw as { editorId: string; executionId?: string; resultIndex: number;
       rows: Array<Array<string | null>>; rowIds?: string[] };
     if (data.executionId && !queries.execution(data.editorId, data.executionId)) return;
+    const tab = editors.tabs.find((item) => item.id === data.editorId);
+    if (data.executionId && tab?.busy && tab.activeExecutionId && tab.activeExecutionId !== data.executionId) return;
     queries.appendRows(data.editorId, data.resultIndex, data.rows, data.executionId, data.rowIds);
   }));
   disposers.push(rpc.on("query.resultComplete", (raw) => {
     const data = raw as { editorId: string; executionId?: string; resultIndex: number } & Partial<QueryResult>;
     if (data.executionId && !queries.execution(data.editorId, data.executionId)) return;
+    const tab = editors.tabs.find((item) => item.id === data.editorId);
+    if (data.executionId && tab?.busy && tab.activeExecutionId && tab.activeExecutionId !== data.executionId) return;
+    if (data.errorMessage) {
+      clearExecutionTimelineSession(data.editorId);
+      if (tab?.executionTimelineStage === "success") editors.patch(data.editorId, { executionTimelineStage: undefined });
+    }
     queries.completeResult(data.editorId, data.resultIndex, data, data.executionId);
   }));
   disposers.push(rpc.on("query.executionComplete", (raw) => {
@@ -1012,12 +1205,18 @@ function installEventHandlers(): void {
     else executionAttention.markUnread(data.editorId, data.executionId, outcome);
     const completedResults = queries.execution(data.editorId, data.executionId)?.results
       .filter((result) => result.complete && !result.errorMessage) ?? [];
+    clearExecutionTimelineStageTimer(data.editorId);
+    const timelineSession = executionTimelineSessions.get(data.editorId);
+    if (!timelineSession || !timelineSession.executionId || timelineSession.executionId === data.executionId) {
+      executionTimelineSessions.delete(data.editorId);
+    }
     queries.complete(data.editorId, data, data.executionId);
     if (data.terminationReason === "connection-aborted") queries.markHistorical(data.editorId, data.executionId);
     editors.patch(data.editorId, {
       busy: false, transactionDirty: data.transactionDirty, resultChangesDirty: data.resultChangesDirty,
       transactionState: data.transactionDirty ? "active" : "none",
-      activeExecutionId: undefined, executionStartedAt: undefined, executionPhase: "idle"
+      activeExecutionId: undefined, executionStartedAt: undefined, executionPhase: "idle",
+      executionTimelineStage: undefined
     });
     if (!data.cancelled && !data.failed) {
       for (const result of completedResults) void enrichCompletionStructure(data.editorId, data.executionId, result.resultIndex);
@@ -1054,8 +1253,10 @@ function installEventHandlers(): void {
     resultEdits.finishEditor(data.editorId);
     queries.markHistorical(data.editorId);
     if (resultLoading.value?.editorId === data.editorId) resultLoading.value = undefined;
+    clearExecutionTimelineSession(data.editorId);
     editors.patch(data.editorId, { busy: false, activeExecutionId: undefined, executionStartedAt: undefined,
       executionPhase: "idle",
+      executionTimelineStage: undefined,
       transactionOperation: "idle", transactionDirty: false, resultChangesDirty: false,
       transactionState: data.transactionLost ? "lost" : "none", connectionState: "ready" });
     scheduleDraft(data.editorId);
@@ -1193,6 +1394,9 @@ async function bootstrapWorkspace(recovered: RecoveredEditor[]): Promise<void> {
     }
     executionNotifications.clear();
     executionAttention.clear();
+    executionTimelineStageTimers.forEach((timer) => window.clearTimeout(timer));
+    executionTimelineStageTimers.clear();
+    executionTimelineSessions.clear();
     editors.clear(); queries.clear(); resultEdits.clear(); statusBar.clear(); resultLoading.value = undefined;
     monacoEditor.value?.clearResultHighlight?.();
     for (const value of [...recovered].sort((left, right) => left.sortOrder - right.sortOrder)) {
@@ -1534,8 +1738,9 @@ async function runAutoRefresh(epoch: number): Promise<void> {
   }
   state.refreshing = true;
   clearAutoRefreshTimer();
+  const timelineSession = beginExecutionTimeline(tab.id);
   editors.patch(tab.id, { busy: true, activeExecutionId: undefined,
-    executionStartedAt: Date.now(), executionPhase: "starting" });
+    executionStartedAt: Date.now(), executionPhase: "starting", executionTimelineStage: "thinking" });
   app.status = "正在定时刷新…";
   try {
     await rpc.ensureOperational();
@@ -1549,6 +1754,7 @@ async function runAutoRefresh(epoch: number): Promise<void> {
       stopOnError: true,
       resultPresentation: "replace"
     });
+    if (!bindExecutionTimelineExecution(tab.id, timelineSession.attemptId, response.executionId)) return;
     const currentState = autoRefreshState.value;
     if (currentState?.epoch === epoch) {
       currentState.executionId = response.executionId;
@@ -1565,12 +1771,15 @@ async function runAutoRefresh(epoch: number): Promise<void> {
     const currentTab = editors.tabs.find((item) => item.id === tab.id);
     if (currentTab?.busy && currentTab.executionPhase !== "cancelling") {
       editors.patch(tab.id, { activeExecutionId: response.executionId, executionPhase: "running" });
+      queueExecutionTimelineStages(tab.id, response.executionId, timelineSession.attemptId);
     }
   } catch (error) {
     const currentTab = editors.tabs.find((item) => item.id === tab.id);
-    if (!currentTab?.activeExecutionId) {
+    const ownsTimelineSession = executionTimelineSessions.get(tab.id)?.attemptId === timelineSession.attemptId;
+    if (!currentTab?.activeExecutionId && ownsTimelineSession) {
+      clearExecutionTimelineSession(tab.id, timelineSession.attemptId);
       editors.patch(tab.id, { busy: false, activeExecutionId: undefined,
-        executionStartedAt: undefined, executionPhase: "idle" });
+        executionStartedAt: undefined, executionPhase: "idle", executionTimelineStage: undefined });
     }
     if (autoRefreshState.value?.epoch === epoch) stopAutoRefresh("执行失败", true);
     reportError(error);
@@ -1627,6 +1836,7 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
   const requestFailureId = executionRequestFailureKey(tab.id);
   executionAttention.clearExecution(tab.id, requestFailureId);
   let executionAttempted = false;
+  let timelineSession: ExecutionTimelineSession | undefined;
   try {
     await rpc.ensureOperational();
     if (!await ensureEditorCredentials(tab)) return;
@@ -1642,13 +1852,15 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
         resultExecutionDecisionPending.value = false;
       }
     }
+    timelineSession = beginExecutionTimeline(tab.id);
     editors.patch(tab.id, { busy: true, activeExecutionId: undefined,
-      executionStartedAt: Date.now(), executionPhase: "starting" }); app.status = "正在执行…";
+      executionStartedAt: Date.now(), executionPhase: "starting", executionTimelineStage: "thinking" }); app.status = "正在执行…";
     executionAttempted = true;
     const response = await rpc.request<{ executionId: string }>("query.execute", {
       editorId: tab.id, text: monacoEditor.value?.getValue(tab.id) ?? tab.content,
       selectedText, cursorOffset, selectionStartOffset, scope, stopOnError: true, resultPresentation: presentation
     });
+    if (!bindExecutionTimelineExecution(tab.id, timelineSession.attemptId, response.executionId)) return;
     if (presentation === "replace") {
       resultEdits.finishEditor(tab.id);
       editors.patch(tab.id, { resultChangesDirty: false });
@@ -1662,12 +1874,16 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
     const current = editors.tabs.find((item) => item.id === tab.id);
     if (current?.busy && current.executionPhase !== "cancelling") {
       editors.patch(tab.id, { activeExecutionId: response.executionId, executionPhase: "running" });
+      queueExecutionTimelineStages(tab.id, response.executionId, timelineSession.attemptId);
     }
   } catch (error) {
     const current = editors.tabs.find((item) => item.id === tab.id);
-    if (!current?.activeExecutionId) {
+    const ownsTimelineSession = !timelineSession
+      || executionTimelineSessions.get(tab.id)?.attemptId === timelineSession.attemptId;
+    if (!current?.activeExecutionId && ownsTimelineSession) {
+      clearExecutionTimelineSession(tab.id, timelineSession?.attemptId);
       editors.patch(tab.id, { busy: false, activeExecutionId: undefined,
-        executionStartedAt: undefined, executionPhase: "idle" });
+        executionStartedAt: undefined, executionPhase: "idle", executionTimelineStage: undefined });
     }
     if ((error as { code?: string }).code === "WORKSPACE_RECOVERED_RETRY_REQUIRED" && !recoveryRetried) {
       if (editors.activeId !== tab.id) return;
@@ -1714,6 +1930,7 @@ async function cancelActive(): Promise<void> {
   const tab = editors.active;
   if (!tab?.busy || !tab.activeExecutionId || tab.executionPhase !== "running") return;
   const executionId = tab.activeExecutionId;
+  clearExecutionTimelineStageTimer(tab.id);
   editors.patch(tab.id, { executionPhase: "cancelling" });
   try {
     await rpc.ensureOperational();
@@ -1725,6 +1942,10 @@ async function cancelActive(): Promise<void> {
     const current = editors.tabs.find((item) => item.id === tab.id);
     if (current?.busy && current.activeExecutionId === executionId) {
       editors.patch(tab.id, { executionPhase: "running" });
+      const timelineSession = executionTimelineSessions.get(tab.id);
+      if (timelineSession?.executionId === executionId) {
+        advanceExecutionTimelineQueue(tab.id, timelineSession.attemptId, executionId);
+      }
     }
     ElMessage.error(message(error));
   }
@@ -2313,6 +2534,7 @@ async function closeTab(id: string): Promise<boolean> {
   }
   if (tab.activeExecutionId) executionNotifications.clearExecution(tab.activeExecutionId);
   executionAttention.clearEditor(id);
+  clearExecutionTimelineSession(id);
   resultEdits.finishEditor(id); queries.clearEditor(id); editors.remove(id);
   void nextTick().then(() => monacoEditor.value?.releaseModel?.(id));
   return true;

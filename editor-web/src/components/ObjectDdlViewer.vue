@@ -2,7 +2,7 @@
 
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
-import * as monaco from "monaco-editor";
+import * as monaco from "../monaco";
 
 const props = defineProps<{ value: string }>();
 const container = ref<HTMLElement>();

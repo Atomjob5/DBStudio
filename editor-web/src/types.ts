@@ -1,6 +1,7 @@
 export type FieldType = "TEXT" | "NUMBER" | "PASSWORD" | "BOOLEAN" | "SELECT";
 export type ThemePreference = "system" | "light" | "dark";
 export type ResolvedTheme = "light" | "dark";
+export type ExecutionTimelineStage = "thinking" | "planning" | "preparing-result" | "success";
 
 export interface SqlTransformRange {
   startLineNumber: number;
@@ -536,6 +537,7 @@ export interface EditorTab {
   activeExecutionId?: string;
   executionStartedAt?: number;
   executionPhase: "idle" | "starting" | "running" | "cancelling";
+  executionTimelineStage?: ExecutionTimelineStage;
   transactionOperation: "idle" | "committing" | "rolling-back";
   connection?: EditorConnectionBinding;
   connectionState: EditorConnectionState;

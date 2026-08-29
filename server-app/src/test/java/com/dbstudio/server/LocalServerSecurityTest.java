@@ -455,8 +455,10 @@ class LocalServerSecurityTest {
         setting.put("key", "appearance.colorSchemes");
         Map<String, Object> valid = colorSchemes();
         ((Map<String, Object>) ((Map<String, Object>) valid.get("light")).get("editor")).put("background", "#123456");
-        ((Map<String, Object>) ((Map<String, Object>) valid.get("dark")).get("result"))
+        ((Map<String, Object>) ((Map<String, Object>) valid.get("light")).get("result"))
                 .put("loadingAnimation", "wave-physics");
+        ((Map<String, Object>) ((Map<String, Object>) valid.get("dark")).get("result"))
+                .put("loadingAnimation", "sql-timeline");
         setting.put("value", mapper.writeValueAsString(valid));
         ResponseEntity<String> saved = http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
                 new HttpEntity<Map<String, String>>(setting, headers), String.class);
@@ -466,6 +468,7 @@ class LocalServerSecurityTest {
         assertEquals(HttpStatus.OK, reloaded.getStatusCode());
         assertTrue(reloaded.getBody().contains("#123456"));
         assertTrue(reloaded.getBody().contains("wave-physics"));
+        assertTrue(reloaded.getBody().contains("sql-timeline"));
 
         Map<String, Object> legacy = colorSchemes();
         legacy.put("version", 1);

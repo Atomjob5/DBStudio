@@ -36,16 +36,6 @@
                 <version>3.5.1</version>
                 <executions>
                     <execution>
-                        <id>npm-ci</id>
-                        <phase>generate-resources</phase>
-                        <goals><goal>exec</goal></goals>
-                        <configuration>
-                            <executable>npm</executable>
-                            <workingDirectory>${project.basedir}</workingDirectory>
-                            <arguments><argument>ci</argument></arguments>
-                        </configuration>
-                    </execution>
-                    <execution>
                         <id>npm-build</id>
                         <phase>generate-resources</phase>
                         <goals><goal>exec</goal></goals>
@@ -60,7 +50,7 @@
                     </execution>
                     <execution>
                         <id>npm-test</id>
-                        <phase>test</phase>
+                        <phase>verify</phase>
                         <goals><goal>exec</goal></goals>
                         <configuration>
                             <executable>npm</executable>
@@ -75,4 +65,35 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!-- A fresh checkout still bootstraps itself, while routine Maven packages reuse node_modules. -->
+        <profile>
+            <id>bootstrap-frontend-dependencies</id>
+            <activation>
+                <file><missing>${basedir}/node_modules</missing></file>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.5.1</version>
+                        <executions>
+                            <execution>
+                                <id>npm-ci</id>
+                                <phase>generate-resources</phase>
+                                <goals><goal>exec</goal></goals>
+                                <configuration>
+                                    <executable>npm</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                    <arguments><argument>ci</argument></arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

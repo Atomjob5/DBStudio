@@ -153,10 +153,13 @@
         </div>
       </div>
       <div v-if="showExecutionLoading" class="result-loading" role="status" aria-live="polite"
-           aria-label="正在执行 SQL">
-        <WavePhysicsLoader v-if="resultLoadingAnimation === 'wave-physics'" :theme="app.theme" />
+           :aria-label="resultLoadingAnimation === 'sql-timeline' ? undefined : '正在执行 SQL'">
+        <SqlExecutionTimelineLoader v-if="resultLoadingAnimation === 'sql-timeline'"
+                                    :stage="timelineStage" :started-at="executionStartedAt"
+                                    :color="resultSelectionBorder" />
+        <WavePhysicsLoader v-else-if="resultLoadingAnimation === 'wave-physics'" :theme="app.theme" />
         <img v-else class="result-loading__image" :src="executionLoadingImage" alt="" aria-hidden="true" />
-        <SqlExecutionTimer :started-at="executionStartedAt" />
+        <SqlExecutionTimer v-if="resultLoadingAnimation !== 'sql-timeline'" :started-at="executionStartedAt" />
       </div>
       <el-alert v-else-if="activeResult?.errorMessage" :title="activeResult.errorMessage" type="error" show-icon :closable="false" />
       <div v-else-if="activeResult?.columns.length" ref="tableHost" class="table-host" tabindex="0"
@@ -213,14 +216,20 @@
       <el-result v-else icon="success" title="语句执行完成" :sub-title="`影响行数：${activeResult?.updateCount ?? 0}`" />
     </template>
     <div v-else-if="showExecutionLoading" class="result-loading" role="status" aria-live="polite"
-         aria-label="正在执行 SQL">
-      <WavePhysicsLoader v-if="resultLoadingAnimation === 'wave-physics'" :theme="app.theme" />
+         :aria-label="resultLoadingAnimation === 'sql-timeline' ? undefined : '正在执行 SQL'">
+      <SqlExecutionTimelineLoader v-if="resultLoadingAnimation === 'sql-timeline'"
+                                  :stage="timelineStage" :started-at="executionStartedAt"
+                                  :color="resultSelectionBorder" />
+      <WavePhysicsLoader v-else-if="resultLoadingAnimation === 'wave-physics'" :theme="app.theme" />
       <img v-else class="result-loading__image" :src="executionLoadingImage" alt="" aria-hidden="true" />
-      <SqlExecutionTimer :started-at="executionStartedAt" />
+      <SqlExecutionTimer v-if="resultLoadingAnimation !== 'sql-timeline'" :started-at="executionStartedAt" />
     </div>
     <el-empty v-else class="result-empty" description="执行查询后在这里查看结果">
       <template #image><el-icon><DataAnalysis /></el-icon></template>
     </el-empty>
+    <span v-if="announceTimelineSuccess" class="sql-timeline-success-announcement" role="status" aria-live="polite">
+      Success: result set received
+    </span>
     <ResultHeaderContextMenu :visible="headerMenu.visible" :x="headerMenu.x" :y="headerMenu.y"
                              :can-copy-data="canCopyHeaderData" :can-in="canCopyHeaderIn"
                              :can-move-left="canMoveSelectionLeft"
@@ -278,7 +287,7 @@ import {
 } from "@element-plus/icons-vue";
 import type { TabsPaneContext } from "element-plus";
 import type { QueryColumn, QueryExecutionState, QueryResult, ResultExportFormat, ResultExportRequest,
-  SelectedResultColumn } from "../types";
+  ExecutionTimelineStage, SelectedResultColumn } from "../types";
 import { matchesColumnQuery, resultColumnOptions, type ColumnOption } from "../columnFilter";
 import { autoColumnWidth, clampColumnWidth, columnIdentityKeys, defaultColumnWidth, moveColumnsToEdge, sameColumnSet,
   type ColumnEdge, type DropSide } from "../columnLayout";
@@ -304,6 +313,7 @@ import ResultValueDialog from "./ResultValueDialog.vue";
 import ResultValueCompareDialog from "./ResultValueCompareDialog.vue";
 import ResultLargeValueDialog from "./ResultLargeValueDialog.vue";
 import SqlExecutionTimer from "./SqlExecutionTimer.vue";
+import SqlExecutionTimelineLoader from "./SqlExecutionTimelineLoader.vue";
 import WavePhysicsLoader from "./WavePhysicsLoader.vue";
 import { shortcutTooltip } from "../shortcuts";
 import { rpc } from "../bridge/rpc";
@@ -314,6 +324,7 @@ const props = withDefaults(defineProps<{
   activeResultIndex: string | number;
   executing?: boolean;
   executionStartedAt?: number;
+  executionTimelineStage?: ExecutionTimelineStage;
   showResultEditActions?: boolean;
   resultEditUnlocked?: boolean;
   canToggleResultEdit?: boolean;
@@ -460,6 +471,9 @@ const executionLoadingImage = computed(() => app.theme === "dark"
   ? "/assets/branding/dbstudio-sql-loading-v4-dark.webp"
   : "/assets/branding/dbstudio-sql-loading-v4.webp");
 const resultLoadingAnimation = computed(() => settings.colorSchemes[app.theme].result.loadingAnimation);
+const resultSelectionBorder = computed(() => settings.colorSchemes[app.theme].result.selectionBorder);
+const timelineStage = computed<ExecutionTimelineStage>(() => props.executionTimelineStage
+  ?? (props.executing ? "thinking" : "preparing-result"));
 const visibleExecutions = computed(() => props.executions?.length ? props.executions
   : props.execution ? [props.execution] : []);
 interface ResultTab { key: string; execution: QueryExecutionState; result?: QueryExecutionState["results"][number]; }
@@ -477,6 +491,8 @@ const showExecutionLoading = computed(() => props.executions?.length
     || (activeTab.value?.execution.busy && !activeTab.value?.result))
   : Boolean(props.executing && (!props.execution?.busy || props.execution.results.length === 0)));
 const activeResult = computed(() => activeTab.value?.result);
+const announceTimelineSuccess = computed(() => resultLoadingAnimation.value === "sql-timeline"
+  && props.executionTimelineStage === "success" && Boolean(activeResult.value));
 const activeEditSession = computed(() => {
   const currentExecution = execution.value;
   const result = activeResult.value;
@@ -2400,7 +2416,7 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.result-panel { display: flex; flex-direction: column; background: var(--db-content); }
+.result-panel { position: relative; display: flex; flex-direction: column; background: var(--db-content); }
 .result-export-control { position: relative; display: inline-flex; align-items: center; }
 .result-export-popconfirm-anchor { position: absolute; right: 0; top: 50%; width: 1px; height: 1px; }
 .result-loading {
@@ -2420,6 +2436,17 @@ onBeforeUnmount(() => {
   max-width: 45%;
   max-height: calc(100% - 32px);
   object-fit: contain;
+}
+.sql-timeline-success-announcement {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 .result-header {
   min-height: 38px;

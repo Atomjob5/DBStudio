@@ -5,7 +5,7 @@
 
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
-import * as monaco from "monaco-editor";
+import * as monaco from "../monaco";
 import ObjectInspectorHost, { type ObjectInspectorOpenRequest } from "./ObjectInspectorHost.vue";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import type {

@@ -1,6 +1,7 @@
 <template>
-  <span class="sql-execution-timer" :class="`is-${duration.level}`" aria-hidden="true">
-    <span>正在执行 SQL(</span>
+  <span class="sql-execution-timer" :class="[`is-${duration.level}`, { 'is-inline': props.inline }]" aria-hidden="true">
+    <span v-if="props.inline" class="sql-execution-timer__label">{{ props.label }} · </span>
+    <span v-else>{{ props.label }}(</span>
     <Transition name="clock-flip">
       <span v-if="duration.showMinutes" class="sql-execution-timer__segment">
         <span class="sql-execution-timer__flip sql-execution-timer__flip--minutes">
@@ -21,7 +22,7 @@
         </span><span>s&nbsp;</span>
       </span>
     </Transition>
-    <span class="sql-execution-timer__milliseconds">{{ duration.milliseconds }}</span><span>ms)</span>
+    <span class="sql-execution-timer__milliseconds">{{ duration.milliseconds }}</span><span>ms<span v-if="!props.inline">)</span></span>
   </span>
 </template>
 
@@ -29,7 +30,10 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { executionDurationParts } from "../executionDuration";
 
-const props = defineProps<{ startedAt?: number }>();
+const props = withDefaults(defineProps<{ startedAt?: number; label?: string; inline?: boolean }>(), {
+  label: "正在执行 SQL",
+  inline: false,
+});
 const elapsedMs = ref(0);
 let frame: number | undefined;
 let fallbackStartedAt = Date.now();
@@ -64,6 +68,7 @@ onBeforeUnmount(stopTimer);
   transition: color 180ms ease;
   white-space: nowrap;
 }
+.sql-execution-timer.is-inline { color: inherit; }
 .sql-execution-timer.is-warning { color: var(--db-warning); }
 .sql-execution-timer.is-danger { color: var(--db-danger); }
 .sql-execution-timer__segment { display: inline-flex; align-items: baseline; }

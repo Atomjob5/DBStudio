@@ -143,6 +143,7 @@ describe("App result loading status toolbar", () => {
     document.body.querySelectorAll(".el-overlay").forEach((element) => element.remove());
     wrapper.unmount();
     vi.useRealTimers();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -2034,6 +2035,221 @@ describe("App result loading status toolbar", () => {
     expect(wrapper.find(".result-loading").exists()).toBe(false);
     expect(wrapper.find('button[aria-label="取消执行"]').exists()).toBe(false);
     expect(wrapper.find(".execute-control.el-dropdown").exists()).toBe(true);
+  });
+
+  it("drives SQL Timeline from the request through metadata and ignores an old execution", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const editors = useEditorStore();
+    const settings = useSettingsStore();
+    const schemes = cloneColorSchemes(settings.colorSchemes);
+    schemes.light.result.loadingAnimation = "sql-timeline";
+    settings.setColorSchemes(schemes);
+    editors.patch("bootstrap-editor", { connection: completionProfile(), connectionState: "active" });
+    Object.assign(wrapper.findComponent({ name: "MonacoEditor" }).vm, { getValue: () => "select 1" });
+
+    let finishExecute: ((value: { executionId: string }) => void) | undefined;
+    rpcRequest.mockImplementation(async (type: string) => {
+      if (type === "query.execute") {
+        return await new Promise<{ executionId: string }>((resolve) => { finishExecute = resolve; });
+      }
+      return {};
+    });
+    const vm = wrapper.vm as unknown as { executeActive: (scope: "current") => Promise<void> };
+    const executing = vm.executeActive("current");
+    await flushPromises();
+    expect(editors.active?.executionTimelineStage).toBe("thinking");
+    expect(wrapper.findComponent({ name: "ResultPanel" }).props("executionTimelineStage")).toBe("thinking");
+
+    rpcMock.listeners.get("query.started")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-timeline"
+    }));
+    await nextTick();
+    expect(editors.active?.executionTimelineStage).toBe("thinking");
+
+    finishExecute?.({ executionId: "execution-timeline" });
+    await executing;
+    expect(editors.active?.executionTimelineStage).toBe("thinking");
+    await vi.advanceTimersByTimeAsync(399);
+    expect(editors.active?.executionTimelineStage).toBe("thinking");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(editors.active?.executionTimelineStage).toBe("planning");
+    await vi.advanceTimersByTimeAsync(399);
+    expect(editors.active?.executionTimelineStage).toBe("planning");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(editors.active?.executionTimelineStage).toBe("preparing-result");
+
+    rpcMock.listeners.get("query.resultMeta")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-timeline", resultIndex: 0,
+      sql: "select 1", type: "QUERY", columns: ["value"], rows: [], updateCount: -1,
+      truncated: false, durationMs: 0, complete: false
+    }));
+    await nextTick();
+    expect(editors.active?.executionTimelineStage).toBe("success");
+    expect(wrapper.find(".sql-timeline-success").exists()).toBe(false);
+    expect(wrapper.find(".sql-timeline-success-announcement").exists()).toBe(true);
+    expect(wrapper.findComponent({ name: "ResultVirtualGrid" }).exists()).toBe(true);
+
+    rpcMock.listeners.get("query.resultMeta")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "old-execution", resultIndex: 0,
+      sql: "select old", type: "QUERY", columns: ["value"], rows: [], updateCount: -1,
+      truncated: false, durationMs: 0, complete: false
+    }));
+    await nextTick();
+    expect(editors.active?.executionTimelineStage).toBe("success");
+
+    rpcMock.listeners.get("query.executionComplete")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-timeline", cancelled: false, failed: false,
+      durationMs: 12, transactionDirty: false
+    }));
+    await nextTick();
+    expect(editors.active).toMatchObject({ busy: false, executionTimelineStage: undefined });
+  });
+
+  it("starts Planning immediately after a long request and paces Preparing Result", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const editors = useEditorStore();
+    const settings = useSettingsStore();
+    const schemes = cloneColorSchemes(settings.colorSchemes);
+    schemes.light.result.loadingAnimation = "sql-timeline";
+    settings.setColorSchemes(schemes);
+    editors.patch("bootstrap-editor", { connection: completionProfile(), connectionState: "active" });
+    Object.assign(wrapper.findComponent({ name: "MonacoEditor" }).vm, { getValue: () => "select 1" });
+
+    let finishExecute: ((value: { executionId: string }) => void) | undefined;
+    rpcRequest.mockImplementation(async (type: string) => {
+      if (type === "query.execute") {
+        return await new Promise<{ executionId: string }>((resolve) => { finishExecute = resolve; });
+      }
+      return {};
+    });
+    const vm = wrapper.vm as unknown as { executeActive: (scope: "current") => Promise<void> };
+    const executing = vm.executeActive("current");
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(400);
+    finishExecute?.({ executionId: "execution-late" });
+    await executing;
+    expect(editors.active?.executionTimelineStage).toBe("planning");
+    await vi.advanceTimersByTimeAsync(399);
+    expect(editors.active?.executionTimelineStage).toBe("planning");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(editors.active?.executionTimelineStage).toBe("preparing-result");
+  });
+
+  it("does not pace timeline stages when reduced motion is preferred", async () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: true })));
+    const editors = useEditorStore();
+    const settings = useSettingsStore();
+    const schemes = cloneColorSchemes(settings.colorSchemes);
+    schemes.light.result.loadingAnimation = "sql-timeline";
+    settings.setColorSchemes(schemes);
+    editors.patch("bootstrap-editor", { connection: completionProfile(), connectionState: "active" });
+    Object.assign(wrapper.findComponent({ name: "MonacoEditor" }).vm, { getValue: () => "select 1" });
+    rpcRequest.mockImplementation(async (type: string) => type === "query.execute" ? { executionId: "execution-reduced" } : {});
+
+    const vm = wrapper.vm as unknown as { executeActive: (scope: "current") => Promise<void> };
+    await vm.executeActive("current");
+    await nextTick();
+    expect(editors.active?.executionTimelineStage).toBe("preparing-result");
+  });
+
+  it("interrupts a pending stage timer as soon as result metadata arrives", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const editors = useEditorStore();
+    const settings = useSettingsStore();
+    const schemes = cloneColorSchemes(settings.colorSchemes);
+    schemes.light.result.loadingAnimation = "sql-timeline";
+    settings.setColorSchemes(schemes);
+    editors.patch("bootstrap-editor", { connection: completionProfile(), connectionState: "active" });
+    Object.assign(wrapper.findComponent({ name: "MonacoEditor" }).vm, { getValue: () => "select 1" });
+    rpcRequest.mockImplementation(async (type: string) => type === "query.execute" ? { executionId: "execution-interrupt" } : {});
+
+    const vm = wrapper.vm as unknown as { executeActive: (scope: "current") => Promise<void> };
+    await vm.executeActive("current");
+    expect(editors.active?.executionTimelineStage).toBe("thinking");
+    await vi.advanceTimersByTimeAsync(100);
+    rpcMock.listeners.get("query.resultMeta")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-interrupt", resultIndex: 0,
+      sql: "select 1", type: "QUERY", columns: ["value"], rows: [], updateCount: -1,
+      truncated: false, durationMs: 0, complete: false
+    }));
+    await nextTick();
+    expect(editors.active?.executionTimelineStage).toBe("success");
+    expect(wrapper.findComponent({ name: "ResultVirtualGrid" }).exists()).toBe(true);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(editors.active?.executionTimelineStage).toBe("success");
+  });
+
+  it("shows a matching result immediately when metadata arrives before the HTTP response", async () => {
+    const editors = useEditorStore();
+    const settings = useSettingsStore();
+    const schemes = cloneColorSchemes(settings.colorSchemes);
+    schemes.light.result.loadingAnimation = "sql-timeline";
+    settings.setColorSchemes(schemes);
+    editors.patch("bootstrap-editor", { connection: completionProfile(), connectionState: "active" });
+
+    let finishExecute: ((value: { executionId: string }) => void) | undefined;
+    rpcRequest.mockImplementation(async (type: string) => {
+      if (type === "query.execute") {
+        return await new Promise<{ executionId: string }>((resolve) => { finishExecute = resolve; });
+      }
+      return {};
+    });
+    const vm = wrapper.vm as unknown as { executeActive: (scope: "current") => Promise<void> };
+    const executing = vm.executeActive("current");
+    await flushPromises();
+
+    rpcMock.listeners.get("query.started")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-early"
+    }));
+    rpcMock.listeners.get("query.resultMeta")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-early", resultIndex: 0,
+      sql: "select 1", type: "QUERY", columns: ["value"], rows: [], updateCount: -1,
+      truncated: false, durationMs: 0, complete: false
+    }));
+    await nextTick();
+    expect(editors.active?.executionTimelineStage).toBe("success");
+    expect(wrapper.findComponent({ name: "ResultVirtualGrid" }).exists()).toBe(true);
+
+    finishExecute?.({ executionId: "execution-early" });
+    await executing;
+    expect(editors.active?.executionTimelineStage).toBe("success");
+  });
+
+  it("does not enter Success when result metadata arrives after cancellation", async () => {
+    const editors = useEditorStore();
+    const settings = useSettingsStore();
+    const schemes = cloneColorSchemes(settings.colorSchemes);
+    schemes.light.result.loadingAnimation = "sql-timeline";
+    settings.setColorSchemes(schemes);
+    editors.patch("bootstrap-editor", { connection: completionProfile(), connectionState: "active" });
+
+    let finishExecute: ((value: { executionId: string }) => void) | undefined;
+    rpcRequest.mockImplementation(async (type: string) => {
+      if (type === "query.execute") {
+        return await new Promise<{ executionId: string }>((resolve) => { finishExecute = resolve; });
+      }
+      return {};
+    });
+    const vm = wrapper.vm as unknown as { executeActive: (scope: "current") => Promise<void> };
+    const executing = vm.executeActive("current");
+    await flushPromises();
+    rpcMock.listeners.get("query.started")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-cancelled-timeline"
+    }));
+    await nextTick();
+    editors.patch("bootstrap-editor", { executionPhase: "cancelling" });
+    rpcMock.listeners.get("query.resultMeta")?.forEach((listener) => listener({
+      editorId: "bootstrap-editor", executionId: "execution-cancelled-timeline", resultIndex: 0,
+      sql: "select 1", type: "QUERY", columns: ["value"], rows: [], updateCount: -1,
+      truncated: false, durationMs: 0, complete: false
+    }));
+    await nextTick();
+    expect(editors.active?.executionTimelineStage).not.toBe("success");
+    finishExecute?.({ executionId: "execution-cancelled-timeline" });
+    await executing;
   });
 
   it("shows a compact success-danger transaction group only for an active transaction", async () => {

@@ -9,7 +9,7 @@
 
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
-import * as monaco from "monaco-editor";
+import * as monaco from "../monaco";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import { comparableValue } from "../resultGrid";
 
