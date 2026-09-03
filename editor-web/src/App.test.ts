@@ -34,6 +34,9 @@ const rpcMock = vi.hoisted(() => ({
   listeners: new Map<string, Set<(payload: unknown) => void>>()
 }));
 const rpcRequest = rpcMock.request;
+const monacoValueOverride = vi.hoisted(() => ({
+  getValue: undefined as ((editorId?: string) => string | undefined) | undefined,
+}));
 const completionMock = vi.hoisted(() => ({
   inspect: vi.fn(), refresh: vi.fn(), stats: vi.fn(), clear: vi.fn(), complete: vi.fn(),
   resolveResultColumnRemarks: vi.fn(), enrichQuery: vi.fn(), invalidateStructure: vi.fn()
@@ -72,10 +75,11 @@ const clearResultHighlight = vi.fn();
 const MonacoEditorStub = defineComponent({
   name: "MonacoEditor",
   props: { initialValue: { type: String, default: "" } },
-  emits: ["execute", "selection-change"],
+  emits: ["dirty", "execute", "selection-change"],
   setup(props, { emit, expose }) {
     expose({
-      getValue: () => props.initialValue,
+      getValue: (editorId?: string) => monacoValueOverride.getValue
+        ? monacoValueOverride.getValue(editorId) : props.initialValue,
       setValue: () => undefined,
       triggerExecute: (scope: "current" | "script" | "current-new-tab") => emit("execute", scope, "", 0),
       triggerCompletion: () => undefined,
@@ -88,6 +92,10 @@ const MonacoEditorStub = defineComponent({
     return () => h("div", { class: "monaco-editor-stub" });
   },
 });
+
+function draftSaveCalls(): Array<[string, Record<string, unknown>, boolean]> {
+  return rpcMock.saveEditorDraft.mock.calls as unknown as Array<[string, Record<string, unknown>, boolean]>;
+}
 
 describe("App result loading status toolbar", () => {
   let wrapper: VueWrapper;
@@ -110,6 +118,7 @@ describe("App result loading status toolbar", () => {
     completionMock.invalidateStructure.mockReset().mockResolvedValue(undefined);
     rpcMock.ensureOperational.mockClear();
     rpcMock.saveEditorDraft.mockReset().mockResolvedValue(undefined);
+    monacoValueOverride.getValue = undefined;
     rpcMock.deleteResultLargeValueDraft.mockClear();
     rpcMock.listeners.clear();
     rpcRequest.mockImplementation(async (type: string, payload: Record<string, unknown>) => {
@@ -422,6 +431,100 @@ describe("App result loading status toolbar", () => {
 
     expect(editors.tabs[0]?.title).toBe("查询 1");
     expect(messageSpy).toHaveBeenCalled();
+  });
+
+  it("keeps recovered content for tabs whose Monaco model was never opened", async () => {
+    const editors = useEditorStore();
+    editors.patch("bootstrap-editor", { content: "select * from active_table" });
+    editors.tabs.push({ id: "background-editor", title: "后台", content: "select * from background_table", dirty: true,
+      transactionDirty: false, busy: false, executionPhase: "idle", transactionOperation: "idle", connectionState: "unbound" });
+    await flushPromises();
+
+    const activeContent = "select * from active_table";
+    monacoValueOverride.getValue = (editorId?: string) => editorId === "bootstrap-editor" ? activeContent : undefined;
+    rpcMock.saveEditorDraft.mockClear();
+    const vm = wrapper.vm as unknown as { persistEditorOrder: () => Promise<void> };
+    await vm.persistEditorOrder();
+
+    const calls = new Map(draftSaveCalls().map(([editorId, payload]) => [
+      editorId as string, payload as Record<string, unknown>
+    ]));
+    expect(calls.get("bootstrap-editor")?.sqlText).toBe(activeContent);
+    expect(calls.get("background-editor")?.sqlText).toBe("select * from background_table");
+    expect(editors.tabs.find((tab) => tab.id === "background-editor")?.content)
+      .toBe("select * from background_table");
+  });
+
+  it("updates the tab content immediately when Monaco reports a change", async () => {
+    const editors = useEditorStore();
+    const monaco = wrapper.findComponent({ name: "MonacoEditor" });
+    monaco.vm.$emit("dirty", { editorId: "bootstrap-editor", content: "select latest" });
+    await nextTick();
+
+    expect(editors.tabs[0]).toMatchObject({ content: "select latest", dirty: true });
+  });
+
+  it("serializes saves for one editor and preserves the newest snapshot", async () => {
+    let releaseFirst: (() => void) | undefined;
+    const firstSave = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let modelContent = "select old";
+    monacoValueOverride.getValue = () => modelContent;
+    rpcMock.saveEditorDraft.mockClear();
+    rpcMock.saveEditorDraft
+      .mockImplementationOnce(async () => { await firstSave; })
+      .mockImplementation(async () => undefined);
+
+    const vm = wrapper.vm as unknown as {
+      persistDraftById: (editorId: string, immediate: boolean) => Promise<boolean>
+    };
+    const first = vm.persistDraftById("bootstrap-editor", true);
+    await flushPromises();
+    modelContent = "select new";
+    const second = vm.persistDraftById("bootstrap-editor", true);
+    await flushPromises();
+
+    expect(rpcMock.saveEditorDraft).toHaveBeenCalledTimes(1);
+    releaseFirst?.();
+    await expect(first).resolves.toBe(true);
+    await expect(second).resolves.toBe(true);
+    expect(draftSaveCalls().map(([, payload]) => payload.sqlText))
+      .toEqual(["select old", "select new"]);
+  });
+
+  it("flushes only editors with pending changes on pagehide", async () => {
+    const vm = wrapper.vm as unknown as {
+      persistDraftById: (editorId: string, immediate: boolean) => Promise<boolean>
+    };
+    monacoValueOverride.getValue = () => undefined;
+    await vm.persistDraftById("bootstrap-editor", true);
+    rpcMock.saveEditorDraft.mockClear();
+    const editors = useEditorStore();
+    editors.tabs.push({ id: "unchanged-editor", title: "未修改", content: "select unchanged", dirty: false,
+      transactionDirty: false, busy: false, executionPhase: "idle", transactionOperation: "idle", connectionState: "unbound" });
+    await nextTick();
+
+    window.dispatchEvent(new Event("pagehide"));
+    await flushPromises();
+    expect(rpcMock.saveEditorDraft).not.toHaveBeenCalled();
+
+    const markEditorDirty = wrapper.vm as unknown as {
+      markEditorDirty: (change: { editorId: string; content: string }) => void
+    };
+    markEditorDirty.markEditorDirty({ editorId: "unchanged-editor", content: "select changed" });
+    window.dispatchEvent(new Event("pagehide"));
+    await flushPromises();
+    expect(draftSaveCalls().map(([, payload]) => payload.sqlText))
+      .toContain("select changed");
+  });
+
+  it("cancels normal exit when a final draft save fails", async () => {
+    rpcRequest.mockClear();
+    rpcMock.saveEditorDraft.mockRejectedValueOnce(new Error("final draft failed"));
+    const vm = wrapper.vm as unknown as { closeApplication: () => Promise<void> };
+    await vm.closeApplication();
+
+    expect(rpcRequest).toHaveBeenCalledWith("app.closeDecision", { allow: false });
+    expect(rpcRequest).not.toHaveBeenCalledWith("app.closeDecision", { allow: true });
   });
 
   it("closes other tabs in order and activates the context-menu target", async () => {

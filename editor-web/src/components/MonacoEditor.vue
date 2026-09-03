@@ -56,7 +56,7 @@ const props = withDefaults(defineProps<{ modelKey: string; initialValue: string;
   dangerousStatementWarningEnabled: true,
 });
 const emit = defineEmits<{
-  dirty: [];
+  dirty: [change: { editorId: string; content: string }];
   execute: [scope: "current" | "script" | "current-new-tab", selection: string, cursorOffset: number,
     selectionStartOffset: number];
   "selection-change": [selected: boolean];
@@ -475,7 +475,9 @@ function switchModel(key: string, value: string): void {
   const viewState = viewStates.get(key);
   if (viewState) instance.value.restoreViewState(viewState);
   contentListener?.dispose();
-  contentListener = model.onDidChangeContent(() => { if (!changingModel) emit("dirty"); });
+  contentListener = model.onDidChangeContent(() => {
+    if (!changingModel) emit("dirty", { editorId: key, content: model.getValue() });
+  });
   changingModel = false;
   if (isCompletionBound()) {
     synchronizeInBackground(key, model);
@@ -553,8 +555,8 @@ function runSelectionAction(action: SqlEditorSelectionAction): boolean {
   return true;
 }
 
-function getValue(key = props.modelKey): string {
-  return models.get(key)?.getValue() ?? "";
+function getValue(key = props.modelKey): string | undefined {
+  return models.get(key)?.getValue();
 }
 
 function setValue(value: string, key = props.modelKey): void {

@@ -201,7 +201,7 @@
                                 :default-catalog="editors.active.connection?.settings.database || editors.active.connection?.settings.catalog"
                                 :default-schema="editors.active.connection?.settings.schema"
                                 :object-inspector-opacity="settings.objectInspectorOpacity"
-                                @dirty="markActiveDirty" @execute="executeFromEditor"
+                                @dirty="markEditorDirty" @execute="executeFromEditor"
                                 @selection-change="editorHasSelection = $event"
                                 @update:object-inspector-opacity="settings.objectInspectorOpacity = $event"
                                 @save-object-inspector-opacity="updateObjectInspectorOpacity" />
@@ -417,7 +417,7 @@ const connectionCascader = ref();
 const connectionCascaderOpen = ref(false);
 const objectExplorer = ref<InstanceType<typeof ObjectExplorer>>();
 const monacoEditor = ref<{
-  getValue(key?: string): string;
+  getValue(key?: string): string | undefined;
   setValue(value: string, key?: string): void;
   triggerExecute(scope: "current" | "script" | "current-new-tab"): void;
   triggerCompletion(): void;
@@ -463,6 +463,10 @@ const schemaSelectionQueue: SchemaSelectionRequest[] = [];
 let activeSchemaSelection: SchemaSelectionRequest | undefined;
 const completionLoads = new Map<string, Promise<void>>();
 const draftSaveTimers = new Map<string, number>();
+const draftSaveQueues = new Map<string, Promise<boolean>>();
+const draftPendingEditors = new Set<string>();
+const draftGenerations = new Map<string, number>();
+let draftWorkspaceEpoch = 0;
 const EXECUTION_TIMELINE_STAGE_DURATION_MS = 400;
 const executionTimelineStageTimers = new Map<string, number>();
 interface ExecutionTimelineSession {
@@ -954,6 +958,11 @@ onBeforeUnmount(() => {
   executionAttention.clear();
   completionNoticeTimers.forEach((timer) => window.clearTimeout(timer));
   draftSaveTimers.forEach((timer) => window.clearTimeout(timer));
+  draftSaveTimers.clear();
+  draftWorkspaceEpoch += 1;
+  draftPendingEditors.clear();
+  draftGenerations.clear();
+  draftSaveQueues.clear();
   executionTimelineStageTimers.forEach((timer) => window.clearTimeout(timer));
   executionTimelineStageTimers.clear();
   executionTimelineSessions.clear();
@@ -1371,6 +1380,12 @@ async function askRecoveryDecision(opened: WorkspaceOpenResponse): Promise<"rest
 
 async function bootstrapWorkspace(recovered: RecoveredEditor[]): Promise<void> {
   app.loading = true;
+  draftWorkspaceEpoch += 1;
+  draftSaveTimers.forEach((timer) => window.clearTimeout(timer));
+  draftSaveTimers.clear();
+  draftPendingEditors.clear();
+  draftGenerations.clear();
+  draftSaveQueues.clear();
   try {
     const data = await rpc.request<BootstrapResponse>("app.bootstrap");
     connections.initialize(data.providers, data.profiles, data.systems ?? [], data.environments ?? []);
@@ -1461,6 +1476,8 @@ async function enrichCompletionStructure(editorId: string, executionId: string, 
 
 function scheduleDraft(editorId: string): void {
   if (!workspaceOpened.value) return;
+  draftPendingEditors.add(editorId);
+  draftGenerations.set(editorId, (draftGenerations.get(editorId) ?? 0) + 1);
   const previous = draftSaveTimers.get(editorId);
   if (previous !== undefined) window.clearTimeout(previous);
   draftSaveTimers.set(editorId, window.setTimeout(() => {
@@ -1468,28 +1485,48 @@ function scheduleDraft(editorId: string): void {
   }, 1_000));
 }
 
+function editorContent(tab: EditorTab): string {
+  return monacoEditor.value?.getValue(tab.id) ?? tab.content;
+}
+
 async function persistDraftById(editorId: string, immediate: boolean, keepalive = false): Promise<boolean> {
   if (!workspaceOpened.value) return false;
   const tab = editors.tabs.find((item) => item.id === editorId); if (!tab) return false;
   const timer = draftSaveTimers.get(editorId);
   if (timer !== undefined) { window.clearTimeout(timer); draftSaveTimers.delete(editorId); }
-  const sqlText = typeof monacoEditor.value?.getValue === "function"
-    ? monacoEditor.value.getValue(editorId) : tab.content;
+  const workspaceId = rpc.activeWorkspaceId;
+  const workspaceEpoch = draftWorkspaceEpoch;
+  const generation = draftGenerations.get(editorId) ?? 0;
+  const sqlText = editorContent(tab);
   if (immediate) editors.patch(editorId, { content: sqlText });
+  const payload = { title: tab.title, sqlText,
+    sortOrder: editors.tabs.findIndex((item) => item.id === editorId), fileName: tab.filePath,
+    filePath: tab.filePath, profileId: tab.connection?.id, dirty: tab.dirty, active: editors.activeId === editorId
+  };
+  const saveCurrent = async (): Promise<boolean> => {
+    if (!workspaceOpened.value || draftWorkspaceEpoch !== workspaceEpoch
+        || rpc.activeWorkspaceId !== workspaceId) return false;
+    try {
+      await rpc.saveEditorDraft(editorId, payload, keepalive);
+      if (draftGenerations.get(editorId) === generation) draftPendingEditors.delete(editorId);
+      return true;
+    } catch (error) {
+      if (immediate) reportError(error);
+      return false;
+    }
+  };
+  const previous = draftSaveQueues.get(editorId);
+  const save = previous ? previous.catch(() => false).then(saveCurrent) : saveCurrent();
+  draftSaveQueues.set(editorId, save);
   try {
-    await rpc.saveEditorDraft(editorId, { title: tab.title, sqlText,
-      sortOrder: editors.tabs.findIndex((item) => item.id === editorId), fileName: tab.filePath,
-      filePath: tab.filePath, profileId: tab.connection?.id, dirty: tab.dirty, active: editors.activeId === editorId
-    }, keepalive);
-    return true;
-  } catch (error) {
-    if (immediate) reportError(error);
-    return false;
+    return await save;
+  } finally {
+    if (draftSaveQueues.get(editorId) === save) draftSaveQueues.delete(editorId);
   }
 }
 
 function flushDrafts(): void {
-  for (const tab of editors.tabs) void persistDraftById(tab.id, false, true);
+  for (const editorId of [...draftPendingEditors]) void persistDraftById(editorId, false, true);
 }
 
 async function newEditor(content = "", filePath?: string, title?: string, fileHandle?: FileSystemFileHandle,
@@ -1508,9 +1545,13 @@ async function newEditor(content = "", filePath?: string, title?: string, fileHa
   return tab;
 }
 
-function markActiveDirty(): void {
-  if (!editors.active) return;
-  editors.patch(editors.active.id, { dirty: true }); scheduleDraft(editors.active.id);
+function markEditorDirty(change?: { editorId: string; content: string }): void {
+  const tab = change?.editorId
+    ? editors.tabs.find((item) => item.id === change.editorId)
+    : editors.active;
+  if (!tab) return;
+  const content = change?.content ?? editorContent(tab);
+  editors.patch(tab.id, { content, dirty: true }); scheduleDraft(tab.id);
   void nextTick().then(() => syncResultHighlight());
 }
 function runEditorSelectionAction(action: SqlEditorSelectionAction): void {
@@ -2648,7 +2689,13 @@ async function closeApplication(activeTasks = 0): Promise<void> {
       }
     }
     draftSaveTimers.forEach((timer) => window.clearTimeout(timer)); draftSaveTimers.clear();
-    for (const tab of editors.tabs) if (!discardDrafts.has(tab.id)) await persistDraftById(tab.id, true);
+    for (const tab of editors.tabs) {
+      if (discardDrafts.has(tab.id)) continue;
+      if (!await persistDraftById(tab.id, true)) {
+        await rpc.request("app.closeDecision", { allow: false });
+        return;
+      }
+    }
     executionNotifications.clear();
     await rpc.finalizeWorkspace();
     await rpc.request("app.closeDecision", { allow: true });
