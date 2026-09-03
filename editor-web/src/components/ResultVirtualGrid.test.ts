@@ -48,6 +48,9 @@ describe("ResultVirtualGrid", () => {
     expect(wrapper.findAll(".result-virtual-grid__header-cell").length).toBeLessThanOrEqual(13);
     expect(wrapper.findAll(".result-virtual-grid__cell").length).toBeLessThan(370);
 
+    await wrapper.get(".result-row-number-header").trigger("dblclick");
+    expect(wrapper.emitted("select-all")).toHaveLength(1);
+
     wrapper.vm.setScrollPosition({ left: 0, top: 0 });
     await nextTick();
     await wrapper.setProps({ selectionMode: "columns", selectedColumnSources: [0] });

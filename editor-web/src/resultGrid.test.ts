@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { QueryColumn, QueryMutationTarget } from "./types";
-import { comparableValue, copyCellSql, copyGrid, copyInPredicate, copyRowSql, formatJsonValue, selectRows,
+import { comparableValue, copyCellSql, copyEqualsSql, copyGrid, copyInPredicate, copyRowSql, copySelectSql, formatJsonValue, selectRows,
   sqlLiteral, sumDecimalValues, visibleRows } from "./resultGrid";
 
 const columns: QueryColumn[] = [
@@ -55,22 +55,77 @@ describe("result grid transformations", () => {
     ], uniqueKeys: [{ name: "PRIMARY", primary: true, resultColumnIndices: [0] }] };
     const rows = [{ sourceIndex: 0, cells: ["7", "O'Reilly"] }];
     expect(copyRowSql("update", target, [1], rows))
-      .toBe("UPDATE `db`.`orders` SET name = 'O''Reilly' WHERE id = 7;");
+      .toBe("UPDATE db.orders SET name = 'O''Reilly' WHERE id = 7;");
     expect(copyRowSql("delete", target, [1], rows))
-      .toBe("DELETE FROM `db`.`orders` WHERE id = 7;");
+      .toBe("DELETE FROM db.orders WHERE id = 7;");
     expect(copyRowSql("insert", target, [1], rows))
       .toBe("INSERT INTO `db`.`orders` (name) VALUES ('O''Reilly');");
 
     expect(copyCellSql("update", target, [{ row: { sourceIndex: 0, cells: ["7", "O'Reilly"] },
       columnIndices: [0, 1] }]))
-      .toBe("UPDATE `db`.`orders` SET id = 7, name = 'O''Reilly' WHERE id = 7;");
+      .toBe("UPDATE db.orders SET id = 7, name = 'O''Reilly' WHERE id = 7;");
     expect(copyCellSql("delete", target, [{ row: { sourceIndex: 0, cells: ["7", "O'Reilly"] },
       columnIndices: [1] }]))
-      .toBe("DELETE FROM `db`.`orders` WHERE id = 7;");
+      .toBe("DELETE FROM db.orders WHERE id = 7;");
     expect(copyCellSql("update", target, [
       { row: { sourceIndex: 0, cells: ["7", "O'Reilly"] }, columnIndices: [1] },
       { row: { sourceIndex: 1, cells: ["8", "Second"] }, columnIndices: [0] }
-    ])).toBe("UPDATE `db`.`orders` SET name = 'O''Reilly' WHERE id = 7;\nUPDATE `db`.`orders` SET id = 8 WHERE id = 8;");
+    ])).toBe("UPDATE db.orders SET name = 'O''Reilly' WHERE id = 7;\nUPDATE db.orders SET id = 8 WHERE id = 8;");
+  });
+
+  it("generates aggregated equality and SELECT SQL for sparse rows with NULL semantics", () => {
+    const target: QueryMutationTarget = { qualifiedName: "\"db\".\"orders\"", columns: [
+      { resultIndex: 0, name: "id", quotedName: "\"id\"", jdbcType: -5 },
+      { resultIndex: 1, name: "name", quotedName: "\"name\"", jdbcType: 12 },
+      { resultIndex: 2, name: "note", quotedName: "\"note\"", jdbcType: 12 }
+    ], uniqueKeys: [] };
+    const columns = target.columns.map((column) => ({ index: column.resultIndex,
+      name: column.name, jdbcType: column.jdbcType }));
+    const selectedRows = [
+      { row: { sourceIndex: 0, cells: ["7", "O'Reilly", null] }, columnIndices: [0, 1, 2] },
+      { row: { sourceIndex: 1, cells: ["8", "Second", "memo"] }, columnIndices: [0, 2] }
+    ];
+    expect(copyEqualsSql(columns, selectedRows)).toBe(
+      "id IN (7, 8) AND name = 'O''Reilly' AND (note = 'memo' OR note IS NULL)");
+    expect(copySelectSql(target, selectedRows)).toBe(
+      "SELECT * FROM db.orders WHERE id IN (7, 8) AND name = 'O''Reilly' "
+      + "AND (note = 'memo' OR note IS NULL);");
+    expect(copySelectSql(undefined, selectedRows)).toBeUndefined();
+    expect(copySelectSql({ ...target, reasonCode: "AMBIGUOUS_PROJECTION" }, selectedRows)).toBeUndefined();
+  });
+
+  it("aggregates duplicate values and keeps single-value columns as equality", () => {
+    const target: QueryMutationTarget = { qualifiedName: "`CBSAC`.`APP_CONFIG`", columns: [
+      { resultIndex: 0, name: "ID", quotedName: "`ID`", jdbcType: -5 },
+      { resultIndex: 1, name: "DISPLAY_NAME", quotedName: "`DISPLAY_NAME`", jdbcType: 12 },
+      { resultIndex: 2, name: "STATUS", quotedName: "`STATUS`", jdbcType: 12 }
+    ], uniqueKeys: [] };
+    const selectedRows = [
+      { row: { sourceIndex: 2, cells: ["2", "测试数据 2", "A"] }, columnIndices: [1, 2] },
+      { row: { sourceIndex: 3, cells: ["3", "测试数据 3", "A"] }, columnIndices: [1, 2] }
+    ];
+    expect(copyEqualsSql(target.columns.map((column) => ({ index: column.resultIndex,
+      name: column.name, jdbcType: column.jdbcType })), selectedRows)).toBe(
+      "DISPLAY_NAME IN ('测试数据 2', '测试数据 3') AND STATUS = 'A'");
+    expect(copySelectSql(target, selectedRows)).toBe(
+      "SELECT * FROM CBSAC.APP_CONFIG WHERE DISPLAY_NAME IN ('测试数据 2', '测试数据 3') AND STATUS = 'A';");
+    expect(copySelectSql(target, selectedRows, "mysql", [2, 1, 0])).toBe(
+      "SELECT * FROM CBSAC.APP_CONFIG WHERE STATUS = 'A' AND DISPLAY_NAME IN ('测试数据 2', '测试数据 3');");
+  });
+
+  it("handles all-NULL columns and rejects unmapped SELECT columns", () => {
+    const target: QueryMutationTarget = { qualifiedName: "db.orders", columns: [
+      { resultIndex: 0, name: "id", quotedName: "id", jdbcType: -5 },
+      { resultIndex: 1, name: "note", quotedName: "note", jdbcType: 12 }
+    ], uniqueKeys: [] };
+    const selectedRows = [
+      { row: { sourceIndex: 0, cells: ["1", null] }, columnIndices: [1] },
+      { row: { sourceIndex: 1, cells: ["2", null] }, columnIndices: [1] }
+    ];
+    expect(copyEqualsSql(target.columns.map((column) => ({ index: column.resultIndex,
+      name: column.name, jdbcType: column.jdbcType })), selectedRows)).toBe("note IS NULL");
+    expect(copySelectSql(target, [{ row: { sourceIndex: 0, cells: ["1", "x"] }, columnIndices: [2] }]))
+      .toBeUndefined();
   });
 
   it("uses Oracle-compatible binary, date and boolean literals", () => {

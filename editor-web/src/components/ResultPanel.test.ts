@@ -1450,12 +1450,20 @@ describe("ResultPanel streaming rendering", () => {
     expect(cellMenu.props("mode")).toBe("cells");
     expect(cellMenu.props("canUpdate")).toBe(true);
     expect(cellMenu.props("canDelete")).toBe(true);
+    expect(cellMenu.props("canEquals")).toBe(true);
+    expect(cellMenu.props("canSelect")).toBe(true);
+    cellMenu.vm.$emit("command", "copy-equals"); await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith(
+      "id IN (1, 2) AND name IN ('Apple', 'Banana')");
+    cellMenu.vm.$emit("command", "copy-select"); await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith(
+      "SELECT * FROM db.sample WHERE id IN (1, 2) AND name IN ('Apple', 'Banana');");
     cellMenu.vm.$emit("command", "copy-update"); await flushPromises();
     expect(clipboardWrite).toHaveBeenLastCalledWith(
-      "UPDATE `db`.`sample` SET id = 1, name = 'Apple' WHERE id = 1;\nUPDATE `db`.`sample` SET id = 2, name = 'Banana' WHERE id = 2;");
+      "UPDATE db.sample SET id = 1, name = 'Apple' WHERE id = 1;\nUPDATE db.sample SET id = 2, name = 'Banana' WHERE id = 2;");
     cellMenu.vm.$emit("command", "copy-delete"); await flushPromises();
     expect(clipboardWrite).toHaveBeenLastCalledWith(
-      "DELETE FROM `db`.`sample` WHERE id = 1;\nDELETE FROM `db`.`sample` WHERE id = 2;");
+      "DELETE FROM db.sample WHERE id = 1;\nDELETE FROM db.sample WHERE id = 2;");
 
     table.vm.$emit("row-pointerdown", { button: 0, preventDefault: vi.fn(), stopPropagation: vi.fn(),
       ctrlKey: false, metaKey: false, shiftKey: false }, rows[0].sourceIndex);
@@ -1473,7 +1481,15 @@ describe("ResultPanel streaming rendering", () => {
     expect(menu.props("canUpdate")).toBe(true);
     menu.vm.$emit("command", "copy-update"); await flushPromises();
     expect(clipboardWrite).toHaveBeenLastCalledWith(
-      "UPDATE `db`.`sample` SET name = 'Apple' WHERE id = 1;\nUPDATE `db`.`sample` SET name = 'Banana' WHERE id = 2;\nUPDATE `db`.`sample` SET name = 'Cherry' WHERE id = 3;");
+      "UPDATE db.sample SET name = 'Apple' WHERE id = 1;\nUPDATE db.sample SET name = 'Banana' WHERE id = 2;\nUPDATE db.sample SET name = 'Cherry' WHERE id = 3;");
+
+    await table.get(".result-row-number-header").trigger("dblclick");
+    await nextTick();
+    expect(table.props("selectedRowSources")).toEqual([0, 1, 2]);
+    expect(wrapper.emitted("selected-row-count")?.at(-1)).toEqual([3]);
+    await wrapper.get(".table-host").trigger("keydown", { metaKey: true, key: "c" });
+    await flushPromises();
+    expect(clipboardWrite).toHaveBeenLastCalledWith("1,Apple\n2,Banana\n3,Cherry");
   });
 
   it("supports sparse cell comparison, exact sums, value viewing and complete row highlighting", async () => {

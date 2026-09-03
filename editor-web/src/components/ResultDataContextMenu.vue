@@ -9,10 +9,12 @@
           <template #title>复制</template>
           <template v-if="mode === 'cells'">
             <el-menu-item index="copy-data">复制数据</el-menu-item>
-            <el-menu-item index="copy-in" :disabled="!canIn">复制为 IN 语句</el-menu-item>
+            <el-menu-item index="copy-all">复制列名和数据</el-menu-item>
+            <el-menu-item index="copy-in" :disabled="!canIn">复制为 IN 条件</el-menu-item>
+            <el-menu-item index="copy-equals" :disabled="!canEquals">复制为 = 语句</el-menu-item>
+            <el-menu-item index="copy-select" :disabled="!canSelect">复制为 SELECT 语句</el-menu-item>
             <el-menu-item index="copy-update" :disabled="!canUpdate">复制为 UPDATE 语句</el-menu-item>
             <el-menu-item index="copy-delete" :disabled="!canDelete">复制为 DELETE 语句</el-menu-item>
-            <el-menu-item index="copy-all">复制列名和数据</el-menu-item>
           </template>
           <template v-else>
             <el-menu-item index="copy-data">复制数据</el-menu-item>
@@ -46,9 +48,9 @@ import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { fitContextMenuPosition } from "../contextMenuPosition";
 
 export type DataMenuCommand = "copy-data" | "copy-in" | "copy-all" | "copy-insert" | "copy-update" | "copy-delete"
-  | "export-csv" | "export-excel" | "export-sql" | "clone" | "set-null" | "compare" | "sum";
+  | "copy-select" | "copy-equals" | "export-csv" | "export-excel" | "export-sql" | "clone" | "set-null" | "compare" | "sum";
 const props = defineProps<{ visible: boolean; x: number; y: number; mode: "cells" | "rows";
-  canIn: boolean; canInsert: boolean; canUpdate: boolean; canDelete: boolean;
+  canIn: boolean; canSelect?: boolean; canEquals?: boolean; canInsert: boolean; canUpdate: boolean; canDelete: boolean;
   canCompare: boolean; canSum: boolean; canSetNull?: boolean;
   canExportCsv?: boolean; canExportExcel?: boolean; canExportSql?: boolean;
   showClone?: boolean; canClone?: boolean; cloneBusy?: boolean }>();
@@ -83,7 +85,7 @@ watch([() => props.visible, () => props.x, () => props.y], async ([visible], pre
   }
 });
 function selectCommand(index: string): void {
-  if (["copy-data", "copy-in", "copy-all", "copy-insert", "copy-update", "copy-delete",
+  if (["copy-data", "copy-in", "copy-all", "copy-insert", "copy-select", "copy-equals", "copy-update", "copy-delete",
     "export-csv", "export-excel", "export-sql", "clone", "set-null", "compare", "sum"].includes(index)) {
     emit("command", index as DataMenuCommand); emit("close");
   }

@@ -20,6 +20,7 @@
       @cell-pointerenter="extendCellSelection"
       @cell-contextmenu="forwardCellContextmenu"
       @cell-dblclick="forwardCellDblclick"
+      @select-all="selectAllFields"
       @row-pointerdown="startRowSelection"
       @row-pointerenter="extendRowSelection"
       @row-contextmenu="forwardRowContextmenu"
@@ -402,6 +403,15 @@ function clearSelection(): void {
   window.removeEventListener("pointerup", finishCellSelection);
   window.removeEventListener("pointerup", finishRowSelection);
   window.removeEventListener("pointerup", finishColumnSelection);
+  emitSelection();
+}
+
+function selectAllFields(): void {
+  selectingCells.value = false; selectingRows.value = false; selectingColumns.value = false;
+  selectedCellKeys.value = []; selectedColumnSources.value = []; clearHeaderSelection();
+  selectedRowSources.value = displayFields.value.map((field) => field.sourceIndex);
+  selectionMode.value = "rows"; rowAnchor.value = selectedRowSources.value[0];
+  root.value?.focus({ preventScroll: true });
   emitSelection();
 }
 

@@ -79,6 +79,15 @@ describe("ResultSingleRecordView", () => {
     expect(metadataState.cellKeys).toEqual(["0:0"]);
     expect(metadataState.sqlAllowed).toBe(false);
 
+    grid.vm.$emit("select-all");
+    await nextTick();
+    const allFieldsState = (wrapper.emitted("selection-change")?.at(-1)?.[0] as {
+      mode: string; rowSources: number[]; hasSelection: boolean;
+    });
+    expect(allFieldsState.mode).toBe("rows");
+    expect(allFieldsState.rowSources).toEqual([0, 1]);
+    expect(allFieldsState.hasSelection).toBe(true);
+
     await wrapper.find(".result-single-record-view").trigger("keydown", { key: "Escape" });
     const cleared = (wrapper.emitted("selection-change")?.at(-1)?.[0] as { hasSelection: boolean });
     expect(cleared.hasSelection).toBe(false);

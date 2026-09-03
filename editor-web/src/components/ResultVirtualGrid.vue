@@ -5,7 +5,7 @@
        :aria-busy="seeking">
     <div class="result-virtual-grid__header" role="row" :style="headerStyle">
       <span class="result-row-number result-row-number-header result-virtual-grid__gutter"
-            role="columnheader" title="单击或拖动行号选择整行">#</span>
+            role="columnheader" title="双击全选当前结果" @dblclick="handleHeaderDoubleClick">#</span>
       <div class="result-virtual-grid__header-viewport" :style="headerViewportStyle">
         <div class="result-virtual-grid__header-canvas" :style="headerCanvasStyle">
           <div v-for="entry in visibleColumns" :key="entry.slot"
@@ -115,6 +115,7 @@ const emit = defineEmits<{
   "cell-pointerenter": [rowIndex: number, columnIndex: number];
   "cell-contextmenu": [event: MouseEvent, rowIndex: number, columnIndex: number, row: ViewRow];
   "cell-dblclick": [rowIndex: number, columnIndex: number, row: ViewRow];
+  "select-all": [];
   "update:editing-value": [value: string];
   "commit-edit": [reason: "enter" | "blur" | "viewport"];
   "cancel-edit": [];
@@ -516,6 +517,13 @@ function delegateDoubleClick(event: MouseEvent): void {
   emit("cell-dblclick", rowIndex, Number(target.dataset.gridColumn), props.rows[rowIndex]);
 }
 
+function handleHeaderDoubleClick(event: MouseEvent): void {
+  if (interactionsSuspended()) return;
+  if (!(event.target instanceof Element) || !event.target.closest(".result-row-number-header")) return;
+  event.preventDefault();
+  emit("select-all");
+}
+
 function getScrollPosition(): ResultGridScrollPosition {
   return { left: viewport.value?.scrollLeft ?? 0, top: viewport.value?.scrollTop ?? 0 };
 }
@@ -707,6 +715,7 @@ defineExpose({ getScrollPosition, setScrollPosition, scrollCellIntoView });
   left: 0;
   width: 34px;
   background: color-mix(in srgb, var(--db-result-header-bg) 94%, var(--db-result-header-color) 6%);
+  cursor: pointer;
 }
 .result-virtual-grid__row .result-virtual-grid__gutter {
   position: sticky;

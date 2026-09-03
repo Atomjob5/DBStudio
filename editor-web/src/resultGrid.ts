@@ -198,6 +198,7 @@ export function copyRowSql(mode: RowSqlMode, target: QueryMutationTarget | undef
                            visibleColumnIndices: number[], rows: ViewRow[], dialectId = "mysql"): string | undefined {
   if (!target || !rows.length) return undefined;
   const visible = target.columns.filter((column) => visibleColumnIndices.includes(column.resultIndex));
+  const tableName = mode === "insert" ? target.qualifiedName : unquoteIdentifier(target.qualifiedName);
   if (mode === "insert") {
     if (!visible.length) return undefined;
     return rows.map((row) => `INSERT INTO ${target.qualifiedName} (${visible.map((column) => unquoteIdentifier(column.name)).join(", ")}) VALUES (${visible.map((column) => sqlLiteral(row.cells[column.resultIndex] ?? null, column.jdbcType, dialectId)).join(", ")});`).join("\n");
@@ -213,14 +214,92 @@ export function copyRowSql(mode: RowSqlMode, target: QueryMutationTarget | undef
       const column = byIndex.get(index) as QueryMutationTarget["columns"][number];
       return `${unquoteIdentifier(column.name)} = ${sqlLiteral(row.cells[index] ?? null, column.jdbcType, dialectId)}`;
     }).join(" AND ");
-    if (mode === "delete") return `DELETE FROM ${target.qualifiedName} WHERE ${where};`;
-    return `UPDATE ${target.qualifiedName} SET ${setters.map((column) => `${unquoteIdentifier(column.name)} = ${sqlLiteral(row.cells[column.resultIndex] ?? null, column.jdbcType, dialectId)}`).join(", ")} WHERE ${where};`;
+    if (mode === "delete") return `DELETE FROM ${tableName} WHERE ${where};`;
+    return `UPDATE ${tableName} SET ${setters.map((column) => `${unquoteIdentifier(column.name)} = ${sqlLiteral(row.cells[column.resultIndex] ?? null, column.jdbcType, dialectId)}`).join(", ")} WHERE ${where};`;
   }).join("\n");
 }
 
 export interface SelectedRowColumns {
   row: ViewRow;
   columnIndices: number[];
+}
+
+export interface ResultSqlColumn {
+  index: number;
+  name?: string;
+  label?: string;
+  jdbcType: number;
+}
+
+/** Generate one equality predicate per selected column, retaining sparse selections. */
+export function copyEqualsSql(columns: ResultSqlColumn[], selectedRows: SelectedRowColumns[],
+                              dialectId = "mysql"): string | undefined {
+  return copySelectedConditions(columns, selectedRows, dialectId);
+}
+
+/**
+ * Generate one condition per selected column. Values are deduplicated after
+ * conversion to SQL literals, while preserving the first-seen row order.
+ */
+export function copySelectedConditions(columns: ResultSqlColumn[], selectedRows: SelectedRowColumns[],
+                                       dialectId = "mysql"): string | undefined {
+  if (!columns.length || !selectedRows.length) return undefined;
+  const byIndex = new Map(columns.map((column) => [column.index, column]));
+  const groups = new Map<number, { column: ResultSqlColumn; values: string[]; hasNull: boolean }>();
+  for (const { row, columnIndices } of selectedRows) {
+    const indices = [...new Set(columnIndices)];
+    if (!indices.length) return undefined;
+    for (const index of indices) {
+      const column = byIndex.get(index);
+      if (!column) return undefined;
+      const group = groups.get(index) ?? { column, values: [], hasNull: false };
+      const value = row.cells[index] ?? null;
+      if (value === null) group.hasNull = true;
+      else group.values.push(sqlLiteral(value, column.jdbcType, dialectId));
+      groups.set(index, group);
+    }
+  }
+  if (!groups.size) return undefined;
+  const predicates: string[] = [];
+  const emitted = new Set<number>();
+  for (const column of columns) {
+    if (!groups.has(column.index) || emitted.has(column.index)) continue;
+    emitted.add(column.index);
+    const group = groups.get(column.index) as { column: ResultSqlColumn; values: string[]; hasNull: boolean };
+    const name = unquoteIdentifier(group.column.name || group.column.label || "").trim();
+    if (!name) return undefined;
+    const unique = [...new Set(group.values)];
+    if (!unique.length) {
+      predicates.push(`${name} IS NULL`);
+      continue;
+    }
+    const condition = unique.length === 1 ? `${name} = ${unique[0]}`
+      : `${name} IN (${unique.join(", ")})`;
+    predicates.push(group.hasNull ? `(${condition} OR ${name} IS NULL)` : condition);
+  }
+  return predicates.length ? predicates.join(" AND ") : undefined;
+}
+
+/** Generate one SELECT statement using the resolved result target. */
+export function copySelectSql(target: QueryMutationTarget | undefined,
+                              selectedRows: SelectedRowColumns[], dialectId = "mysql",
+                              columnOrder?: number[]): string | undefined {
+  if (!target || !target.qualifiedName.trim() || !selectedRows.length
+      || ["AMBIGUOUS_PROJECTION", "TARGET_OWNER_UNRESOLVED"].includes(target.reasonCode?.trim() ?? "")) return undefined;
+  const targetColumns = target.columns.map((column) => ({
+    index: column.resultIndex, name: column.name, jdbcType: column.jdbcType
+  }));
+  const orderedColumns = columnOrder?.length ? [...targetColumns].sort((left, right) => {
+    const leftPosition = columnOrder.indexOf(left.index);
+    const rightPosition = columnOrder.indexOf(right.index);
+    return (leftPosition < 0 ? columnOrder.length : leftPosition)
+      - (rightPosition < 0 ? columnOrder.length : rightPosition);
+  }) : targetColumns;
+  const conditions = copySelectedConditions(orderedColumns, selectedRows, dialectId);
+  if (!conditions) return undefined;
+  const table = unquoteIdentifier(target.qualifiedName).trim();
+  if (!table) return undefined;
+  return `SELECT * FROM ${table} WHERE ${conditions};`;
 }
 
 /** Generate DML for cell selections, retaining the selected columns per row. */
@@ -241,7 +320,7 @@ export function copyCellSql(mode: "update" | "delete", target: QueryMutationTarg
     });
     if (where.some((part) => part === undefined)) return undefined;
     if (mode === "delete") {
-      statements.push(`DELETE FROM ${target.qualifiedName} WHERE ${where.join(" AND ")};`);
+      statements.push(`DELETE FROM ${unquoteIdentifier(target.qualifiedName)} WHERE ${where.join(" AND ")};`);
       continue;
     }
     const setters = [...new Set(columnIndices)].map((index) => {
@@ -250,7 +329,7 @@ export function copyCellSql(mode: "update" | "delete", target: QueryMutationTarg
       return `${unquoteIdentifier(column.name)} = ${sqlLiteral(row.cells[index] ?? null, column.jdbcType, dialectId)}`;
     });
     if (setters.some((part) => part === undefined) || !setters.length) return undefined;
-    statements.push(`UPDATE ${target.qualifiedName} SET ${setters.join(", ")} WHERE ${where.join(" AND ")};`);
+    statements.push(`UPDATE ${unquoteIdentifier(target.qualifiedName)} SET ${setters.join(", ")} WHERE ${where.join(" AND ")};`);
   }
   return statements.join("\n");
 }

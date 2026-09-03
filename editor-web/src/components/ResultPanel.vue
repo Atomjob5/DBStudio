@@ -203,6 +203,7 @@
                            :has-footer="!!sumSummary"
                            @cell-pointerdown="startCellSelection" @cell-pointerenter="extendCellSelection"
                            @cell-contextmenu="openCellMenu" @cell-dblclick="handleCellDoubleClick"
+                           @select-all="selectAllResult"
                            @update:editing-value="updateEditingValue"
                            @commit-edit="commitCellEdit" @cancel-edit="cancelCellEdit"
                            @row-pointerdown="selectResultRow" @row-pointerenter="extendRowSelection"
@@ -239,7 +240,8 @@
                              @close="closeHeaderMenu"
                              @command="headerMenuCommand" />
     <ResultDataContextMenu :visible="dataMenu.visible" :x="dataMenu.x" :y="dataMenu.y" :mode="dataMenu.mode"
-                           :can-in="canCopyIn" :can-insert="canCopyInsert" :can-update="canCopyUpdate"
+                           :can-in="canCopyIn" :can-select="canCopySelect" :can-equals="canCopyEquals"
+                           :can-insert="canCopyInsert" :can-update="canCopyUpdate"
                            :can-delete="canCopyDelete" :can-compare="canCompareCells" :can-sum="canSumCells"
                            :can-set-null="canSetSelectedCellNull"
                            :can-export-csv="canExportDataSelection" :can-export-excel="canExportDataSelection"
@@ -298,9 +300,9 @@ import { useQueryStore } from "../stores/query";
 import { useResultEditStore, type ResultMutationValue } from "../stores/resultEdits";
 import { resultColumnRemarksText, resultCopyText, type ResultCopyMode } from "../resultCopy";
 import { writeClipboardText } from "../clipboard";
-import { cellSelectionKey, copyCellSql, copyGrid, copyInPredicate, copyRowSql, normalizeRange, selectRows,
+import { cellSelectionKey, copyCellSql, copyEqualsSql, copyGrid, copyInPredicate, copyRowSql, copySelectSql, normalizeRange, selectRows,
   sumDecimalValues, visibleRows, type CellPoint, type CellRange, type DecimalSumResult,
-  type ResultFilter, type ResultSort, type SelectedCell, type SelectedRowColumns, type ViewRow } from "../resultGrid";
+  type ResultFilter, type ResultSort, type ResultSqlColumn, type SelectedCell, type SelectedRowColumns, type ViewRow } from "../resultGrid";
 import type { ResultGridScrollPosition, ResultVirtualColumn } from "../resultVirtualGrid";
 import { comparisonCellKeys, type ResultCompareHighlightMode, type ResultCompareScope } from "../resultCompare";
 import ResultHeaderContextMenu, { type HeaderMenuCommand } from "./ResultHeaderContextMenu.vue";
@@ -810,6 +812,16 @@ function clearCellAndRowSelection(): void {
   rowAnchor.value = undefined;
   selectedColumnIndex.value = undefined;
   emit("selected-column", undefined);
+}
+
+function selectAllResult(): void {
+  if (singleRecordMode.value) return;
+  clearColumnHeaderSelection();
+  clearCellAndRowSelection();
+  selectionMode.value = "rows";
+  selectedRowSources.value = displayRows.value.map((row) => row.sourceIndex);
+  rowAnchor.value = selectedRowSources.value[0];
+  tableHost.value?.focus({ preventScroll: true });
 }
 
 function activateColumnSelection(): void {
@@ -1777,6 +1789,20 @@ function cellSql(mode: "update" | "delete"): string | undefined {
     activeResult.value?.dialectId);
 }
 
+function equalityColumns(): ResultSqlColumn[] {
+  return visibleColumnOptions.value.map((column) => ({ index: column.index, name: column.name, label: column.label,
+    jdbcType: column.jdbcType ?? 12 }));
+}
+
+function equalsSql(): string | undefined {
+  return copyEqualsSql(equalityColumns(), selectedCellSqlRows.value, activeResult.value?.dialectId);
+}
+
+function selectSql(): string | undefined {
+  return copySelectSql(activeResult.value?.mutationTarget, selectedCellSqlRows.value,
+    activeResult.value?.dialectId, visibleColumnOptions.value.map((column) => column.index));
+}
+
 const selectedSingleRecordCells = computed<SelectedCell[]>(() => {
   const state = singleRecordSelection.value;
   const row = selectedRecordRow.value;
@@ -1809,6 +1835,12 @@ function singleRecordCellSql(mode: "update" | "delete"): string | undefined {
 const canCopyIn = computed(() => singleRecordMode.value
   ? Boolean(singleRecordSelection.value?.sqlAllowed && singleRecordInPredicate())
   : singleRecordSqlAllowed.value && selectionMode.value === "cells" && !!inPredicate());
+const canCopySelect = computed(() => singleRecordMode.value
+  ? Boolean(singleRecordSelection.value?.sqlAllowed && selectSql())
+  : singleRecordSqlAllowed.value && selectionMode.value === "cells" && !!selectSql());
+const canCopyEquals = computed(() => singleRecordMode.value
+  ? Boolean(singleRecordSelection.value?.sqlAllowed && equalsSql())
+  : singleRecordSqlAllowed.value && selectionMode.value === "cells" && !!equalsSql());
 const canCopyInsert = computed(() => !singleRecordMode.value && singleRecordSqlAllowed.value
   && selectionMode.value === "rows" && !!rowSql("insert"));
 const canCopyUpdate = computed(() => singleRecordMode.value
@@ -1880,6 +1912,16 @@ function dataMenuCommand(command: DataMenuCommand): void {
   }
   if (command === "copy-data") { void copyCurrentSelection(); return; }
   if (command === "copy-all") { void copyCurrentSelection(true); return; }
+  if (command === "copy-select") {
+    const text = selectSql();
+    if (text) void copyText(text, "已复制 SELECT 语句");
+    return;
+  }
+  if (command === "copy-equals") {
+    const text = equalsSql();
+    if (text) void copyText(text, "已复制 = 语句");
+    return;
+  }
   if (command === "copy-in") {
     const text = singleRecordMode.value ? singleRecordInPredicate() : inPredicate();
     if (text) void copyText(text, "已复制 IN 语句"); return;
@@ -2657,7 +2699,7 @@ onBeforeUnmount(() => {
   color: var(--db-result-row-number-color); font-family: var(--db-result-font-family); font-size: var(--db-result-font-size);
   font-weight: var(--db-result-row-number-font-weight); font-style: var(--db-result-row-number-font-style); line-height: 32px; text-align: center; user-select: none; cursor: default;
 }
-:deep(.result-row-number-header) { background: var(--db-result-header-bg); color: var(--db-result-header-color); font-weight: var(--db-result-header-font-weight); }
+:deep(.result-row-number-header) { background: var(--db-result-header-bg); color: var(--db-result-header-color); font-weight: var(--db-result-header-font-weight); cursor: pointer; }
 :deep(.result-row-number:not(.result-row-number-header)) { cursor: pointer; }
 :deep(.result-virtual-grid__row:hover .result-row-number) { color: var(--db-text-secondary); }
 :deep(.result-row-number.selected) { outline: 0; background: var(--db-row-gutter-bg); color: var(--db-accent); font-weight: 600; }
