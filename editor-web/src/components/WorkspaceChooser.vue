@@ -26,7 +26,9 @@
             </span>
           </button>
           <el-dropdown trigger="click" @command="(command: string) => manage(command, workspace)">
-            <el-button text circle :icon="MoreFilled" aria-label="管理工作空间" />
+            <IconTooltip content="管理工作空间" placement="bottom">
+              <el-button text circle :icon="MoreFilled" aria-label="管理工作空间" />
+            </IconTooltip>
             <template #dropdown><el-dropdown-menu>
               <el-dropdown-item command="rename" :icon="EditPen">重命名</el-dropdown-item>
               <el-dropdown-item command="delete" :icon="Delete" divided :disabled="workspace.state === 'in-use'">删除</el-dropdown-item>
@@ -52,6 +54,7 @@
 import { nextTick, ref } from "vue";
 import { Delete, EditPen, FolderOpened, MoreFilled, Plus, Refresh } from "@element-plus/icons-vue";
 import type { WorkspaceSummary } from "../types";
+import IconTooltip from "./IconTooltip.vue";
 import WorkspaceAurora from "./WorkspaceAurora.vue";
 
 defineProps<{ workspaces: WorkspaceSummary[]; loading: boolean }>();

@@ -1,14 +1,16 @@
 <template>
   <span class="result-header-tools" @pointerdown.stop @click.stop @dblclick.stop @dragstart.prevent>
-    <el-tooltip v-if="sortingEnabled" :content="sortTitle" placement="top">
+    <IconTooltip v-if="sortingEnabled" :content="sortTitle" placement="top">
       <el-button text circle size="small" :class="{ active: !!sort }" :icon="sortIcon"
                  :aria-label="sortTitle" @click="$emit('sort')" />
-    </el-tooltip>
+    </IconTooltip>
     <el-popover v-if="filteringEnabled" v-model:visible="visible" trigger="click" placement="bottom-end"
                 :width="250" popper-class="result-filter-popover">
       <template #reference>
-        <el-button text circle size="small" :class="{ active: !!filter }" :icon="Filter"
-                   :aria-label="`筛选 ${column.label}`" />
+        <IconTooltip :content="`筛选 ${column.label}`" placement="top" :disabled="visible">
+          <el-button text circle size="small" :class="{ active: !!filter }" :icon="Filter"
+                     :aria-label="`筛选 ${column.label}`" />
+        </IconTooltip>
       </template>
       <div class="result-filter-editor" @keydown.capture="filterEditorKeydown">
         <strong>筛选 {{ column.label }}</strong>
@@ -35,6 +37,7 @@ import { computed, ref, watch } from "vue";
 import { Filter, Sort, SortDown, SortUp } from "@element-plus/icons-vue";
 import type { QueryColumn } from "../types";
 import { filterCategory, type FilterOperator, type ResultFilter, type ResultSort } from "../resultGrid";
+import IconTooltip from "./IconTooltip.vue";
 
 const props = defineProps<{ column: QueryColumn; columnIndex: number; sort?: ResultSort; filter?: ResultFilter;
   sortingEnabled: boolean; filteringEnabled: boolean }>();

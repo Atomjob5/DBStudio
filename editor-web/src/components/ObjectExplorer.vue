@@ -5,10 +5,10 @@
         <strong>数据库对象</strong>
         <span>{{ connectionName ?? "当前连接" }}</span>
       </div>
-      <el-tooltip :content="shortcutTooltip('刷新对象树', 'workspace.refreshObjects', settings.shortcuts)">
+      <IconTooltip :content="shortcutTooltip('刷新对象树', 'workspace.refreshObjects', settings.shortcuts)">
         <el-button text circle :icon="Refresh" size="small" aria-label="刷新对象树"
                    :loading="completionLoading" @click="refresh" />
-      </el-tooltip>
+      </IconTooltip>
     </header>
     <div class="tree-search">
       <el-input v-model="filterText" :prefix-icon="Search" clearable size="small" placeholder="筛选已加载对象" aria-label="筛选数据库对象" />
@@ -43,6 +43,7 @@ import { rpc } from "../bridge/rpc";
 import { TREE_ROOT_KEY, useMetadataStore } from "../stores/metadata";
 import { useSettingsStore } from "../stores/settings";
 import { shortcutTooltip } from "../shortcuts";
+import IconTooltip from "./IconTooltip.vue";
 import type { MetadataNode } from "../types";
 
 const emit = defineEmits<{

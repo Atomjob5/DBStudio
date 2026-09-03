@@ -11,12 +11,12 @@
     <div class="status-result-zone">
       <div class="status-result-actions" role="toolbar" aria-label="结果操作工具栏">
         <span class="auto-refresh-trigger" @contextmenu.prevent.stop="autoRefreshMenuVisible = true">
-          <el-tooltip :content="autoRefreshTooltip" placement="top">
+          <IconTooltip :content="autoRefreshTooltip" placement="top">
             <el-button text :icon="RefreshRight" aria-label="切换定时刷新"
                        :aria-pressed="autoRefreshEnabled" :disabled="!canAutoRefresh"
                        :class="{ 'is-auto-refresh-enabled': autoRefreshEnabled }"
                        @click.stop="$emit('toggle-auto-refresh')" />
-          </el-tooltip>
+          </IconTooltip>
           <div v-if="autoRefreshMenuVisible" class="auto-refresh-menu" role="menu"
                aria-label="定时刷新周期" @click.stop @contextmenu.prevent>
             <button v-for="seconds in AUTO_REFRESH_PRESETS" :key="seconds" type="button" role="menuitem"
@@ -30,14 +30,14 @@
             </button>
           </div>
         </span>
-        <el-tooltip :content="nextPageTooltip" placement="top">
+        <IconTooltip :content="nextPageTooltip" placement="top">
           <el-button text :icon="ArrowDown" aria-label="下一页数据" :disabled="!canLoadMore"
                      :loading="loadingMode === 'next'" @click="$emit('load-next')" />
-        </el-tooltip>
-        <el-tooltip :content="allRowsTooltip" placement="top">
+        </IconTooltip>
+        <IconTooltip :content="allRowsTooltip" placement="top">
           <el-button text :icon="DArrowRight" style="rotate: 90deg;" aria-label="获取全部数据"
                      :disabled="!canLoadMore" :loading="loadingMode === 'all'" @click="$emit('load-all')" />
-        </el-tooltip>
+        </IconTooltip>
       </div>
       <button v-if="visibleColumnRemarks" class="selected-column-remarks" type="button"
               aria-label="查看完整字段备注" @dblclick="remarksDialog = true" @keydown="remarksKeydown">
@@ -102,6 +102,7 @@ import {
   WarningFilled
 } from "@element-plus/icons-vue";
 import { writeClipboardText } from "../clipboard";
+import IconTooltip from "./IconTooltip.vue";
 import type { SelectedResultColumn, StatusBarSystemItem } from "../types";
 
 const props = defineProps<{

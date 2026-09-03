@@ -3,8 +3,10 @@
     <header class="manager-header"><div><strong>数据库链接</strong><span>系统 · 环境 · 链接</span></div>
       <div class="manager-actions">
         <el-dropdown trigger="click" @command="managerCommand">
-          <el-button text circle :icon="Plus" size="small" aria-label="新增或批量管理数据库链接"
-                     title="新增或批量管理数据库链接" :loading="exporting" />
+          <IconTooltip content="新增或批量管理数据库链接" placement="bottom">
+            <el-button text circle :icon="Plus" size="small" aria-label="新增或批量管理数据库链接"
+                       :loading="exporting" />
+          </IconTooltip>
           <template #dropdown><el-dropdown-menu>
             <el-dropdown-item command="system">新增系统</el-dropdown-item>
             <el-dropdown-item command="environment" :disabled="!selectedSystemId">新增环境</el-dropdown-item>
@@ -61,6 +63,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { Coin, Connection, Download, Folder, Plus, Search } from "@element-plus/icons-vue";
 import type { AllowDragFunction, AllowDropFunction, ElTree } from "element-plus";
 import { rpc } from "../bridge/rpc";
+import IconTooltip from "./IconTooltip.vue";
 import ConnectionImportDialog from "./ConnectionImportDialog.vue";
 import type {
   ConnectionCloneResult, ConnectionEnvironment, ConnectionImportResult, ConnectionSystem,

@@ -107,13 +107,13 @@
           <el-table-column label="操作" width="108" fixed="right" align="center">
             <template #default="{ row }">
               <div class="row-actions">
-                <el-tooltip content="编辑导入信息"><el-button text :icon="EditPen" aria-label="编辑导入信息"
-                  :disabled="busy" @click="editRow(row)" /></el-tooltip>
-                <el-tooltip content="测试连通性"><el-button text :icon="Connection" aria-label="测试单个链接"
+                <IconTooltip content="编辑导入信息"><el-button text :icon="EditPen" aria-label="编辑导入信息"
+                  :disabled="busy" @click="editRow(row)" /></IconTooltip>
+                <IconTooltip content="测试连通性"><el-button text :icon="Connection" aria-label="测试单个链接"
                   :loading="row.testStatus === 'testing'" :disabled="busy || row.errors.length > 0"
-                  @click="testRow(row)" /></el-tooltip>
-                <el-tooltip content="从导入列表移除"><el-button text type="danger" :icon="Delete"
-                  aria-label="删除待导入链接" :disabled="busy" @click="removeRow(row)" /></el-tooltip>
+                  @click="testRow(row)" /></IconTooltip>
+                <IconTooltip content="从导入列表移除"><el-button text type="danger" :icon="Delete"
+                  aria-label="删除待导入链接" :disabled="busy" @click="removeRow(row)" /></IconTooltip>
               </div>
             </template>
           </el-table-column>
@@ -192,6 +192,7 @@ import {
   UploadFilled, WarningFilled
 } from "@element-plus/icons-vue";
 import { rpc } from "../bridge/rpc";
+import IconTooltip from "./IconTooltip.vue";
 import type {
   ConnectionField, ConnectionImportPreview, ConnectionImportResult, ConnectionImportRow,
   ConnectionSystem, ConnectionEnvironment, ProviderInfo, SavedProfile

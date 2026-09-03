@@ -19,14 +19,16 @@
       </el-tooltip>
 
       <div class="toolbar-cluster file-actions" aria-label="文件操作">
-        <el-tooltip :content="actionTooltip('新建查询', 'file.newQuery')" placement="bottom">
+        <IconTooltip :content="actionTooltip('新建查询', 'file.newQuery')" placement="bottom">
           <el-button text :icon="Plus" aria-label="新建查询" @click="newEditor()" />
-        </el-tooltip>
-        <el-tooltip :content="actionTooltip('打开 SQL', 'file.openSql')" placement="bottom">
+        </IconTooltip>
+        <IconTooltip :content="actionTooltip('打开 SQL', 'file.openSql')" placement="bottom">
           <el-button text :icon="FolderOpened" aria-label="打开 SQL 文件" @click="openFile" />
-        </el-tooltip>
+        </IconTooltip>
         <el-dropdown trigger="click" @command="openRecent">
-          <el-button text :icon="ArrowDown" aria-label="最近打开的 SQL 文件" />
+          <IconTooltip content="最近打开的 SQL 文件" placement="bottom">
+            <el-button text :icon="ArrowDown" aria-label="最近打开的 SQL 文件" />
+          </IconTooltip>
           <template #dropdown>
             <el-dropdown-menu>
               <el-dropdown-item v-if="!settings.recentFiles.length" disabled>没有最近文件</el-dropdown-item>
@@ -34,38 +36,38 @@
             </el-dropdown-menu>
           </template>
         </el-dropdown>
-        <el-tooltip :content="actionTooltip('保存', 'file.saveSql')" placement="bottom">
+        <IconTooltip :content="actionTooltip('保存', 'file.saveSql')" placement="bottom">
           <el-button text :icon="DocumentChecked" aria-label="保存 SQL" :disabled="!editors.active" @click="saveActive(false)" />
-        </el-tooltip>
+        </IconTooltip>
       </div>
 
       <div class="toolbar-cluster editor-actions" aria-label="SQL 编辑操作">
-        <el-tooltip :content="actionTooltip('格式化 SQL', 'editor.format')" placement="bottom">
+        <IconTooltip :content="actionTooltip('格式化 SQL', 'editor.format')" placement="bottom">
           <el-button text :icon="MagicStick" aria-label="格式化 SQL" :disabled="!canTransformSql"
                      @click="requestSqlTransform('format')" />
-        </el-tooltip>
-        <el-tooltip :content="actionTooltip('压缩 SQL', 'editor.compact')" placement="bottom">
+        </IconTooltip>
+        <IconTooltip :content="actionTooltip('压缩 SQL', 'editor.compact')" placement="bottom">
           <el-button text :icon="Fold" aria-label="压缩 SQL" :disabled="!canTransformSql"
                      @click="requestSqlTransform('compact')" />
-        </el-tooltip>
+        </IconTooltip>
         <el-divider direction="vertical" />
-        <el-tooltip :content="actionTooltip('转换大写', 'editor.uppercase')" placement="bottom">
+        <IconTooltip :content="actionTooltip('转换大写', 'editor.uppercase')" placement="bottom">
           <el-button text :icon="Top" aria-label="转换大写" :disabled="!canEditSelection"
                      @click="runEditorSelectionAction('uppercase')" />
-        </el-tooltip>
-        <el-tooltip :content="actionTooltip('转换小写', 'editor.lowercase')" placement="bottom">
+        </IconTooltip>
+        <IconTooltip :content="actionTooltip('转换小写', 'editor.lowercase')" placement="bottom">
           <el-button text :icon="Bottom" aria-label="转换小写" :disabled="!canEditSelection"
                      @click="runEditorSelectionAction('lowercase')" />
-        </el-tooltip>
+        </IconTooltip>
         <el-divider direction="vertical" />
-        <el-tooltip :content="actionTooltip('单行注释', 'editor.toggleLineComment')" placement="bottom">
+        <IconTooltip :content="actionTooltip('单行注释', 'editor.toggleLineComment')" placement="bottom">
           <el-button text :icon="ChatDotSquare" aria-label="单行注释" :disabled="!canEditSelection"
                      @click="runEditorSelectionAction('lineComment')" />
-        </el-tooltip>
-        <el-tooltip :content="actionTooltip('全部注释', 'editor.toggleBlockComment')" placement="bottom">
+        </IconTooltip>
+        <IconTooltip :content="actionTooltip('全部注释', 'editor.toggleBlockComment')" placement="bottom">
           <el-button text :icon="ChatLineSquare" aria-label="全部注释" :disabled="!canEditSelection"
                      @click="runEditorSelectionAction('blockComment')" />
-        </el-tooltip>
+        </IconTooltip>
       </div>
 
       <el-tooltip v-if="activeExecutionRunning" :content="cancelExecutionTooltip" placement="bottom">
@@ -91,22 +93,24 @@
 
       <Transition name="transaction-actions">
         <el-button-group v-if="hasActiveTransaction" class="query-actions" aria-label="事务操作">
-          <el-tooltip :content="actionTooltip('提交事务', 'transaction.commit')" placement="bottom">
+          <IconTooltip :content="actionTooltip('提交事务', 'transaction.commit')" placement="bottom">
             <el-button type="success" :icon="Select" aria-label="提交事务"
                        :loading="editors.active?.transactionOperation === 'committing'"
                        :disabled="!canOperateTransaction" @click="commitActive" />
-          </el-tooltip>
-          <el-tooltip :content="actionTooltip('回滚事务', 'transaction.rollback')" placement="bottom">
+          </IconTooltip>
+          <IconTooltip :content="actionTooltip('回滚事务', 'transaction.rollback')" placement="bottom">
             <el-button type="danger" :icon="RefreshLeft" aria-label="回滚事务"
                        :loading="editors.active?.transactionOperation === 'rolling-back'"
                        :disabled="!canOperateTransaction" @click="rollbackActive" />
-          </el-tooltip>
+          </IconTooltip>
         </el-button-group>
       </Transition>
 
       <span class="toolbar-spacer" />
       <el-dropdown @command="dataCommand">
-        <el-button text circle :icon="MoreFilled" aria-label="更多操作" />
+        <IconTooltip content="更多操作" placement="bottom">
+          <el-button text circle :icon="MoreFilled" aria-label="更多操作" />
+        </IconTooltip>
         <template #dropdown>
           <el-dropdown-menu>
             <el-dropdown-item command="import" :icon="Upload" :disabled="!activeConnected || app.transportState !== 'ready'"><span>导入 CSV / TSV</span><kbd v-if="settings.shortcuts['data.import']">{{ displayShortcut(settings.shortcuts["data.import"]) }}</kbd></el-dropdown-item>
@@ -117,18 +121,18 @@
           </el-dropdown-menu>
         </template>
       </el-dropdown>
-      <el-tooltip :content="actionTooltip(app.theme === 'dark' ? '切换亮色主题' : '切换深色主题', 'ui.toggleTheme')">
+      <IconTooltip :content="actionTooltip(app.theme === 'dark' ? '切换亮色主题' : '切换深色主题', 'ui.toggleTheme')" placement="bottom">
         <el-button text circle :icon="app.theme === 'dark' ? Sunny : Moon" aria-label="切换界面主题"
                    @click="updateTheme(app.theme === 'dark' ? 'light' : 'dark')" />
-      </el-tooltip>
+      </IconTooltip>
     </el-header>
 
     <el-main class="workspace">
       <nav class="activity-bar" aria-label="工作区工具导航">
-        <el-tooltip :content="actionTooltip('数据库对象', 'workspace.objects')" placement="right"><el-button text :icon="Coin" aria-label="数据库对象"
-          :class="{ active: activeTool === 'objects' && panelVisible }" :aria-pressed="activeTool === 'objects' && panelVisible" @click="selectTool('objects')" /></el-tooltip>
-        <el-tooltip :content="actionTooltip('连接管理', 'workspace.connections')" placement="right"><el-button text :icon="Connection" aria-label="连接管理"
-          :class="{ active: activeTool === 'connections' && panelVisible }" :aria-pressed="activeTool === 'connections' && panelVisible" @click="selectTool('connections')" /></el-tooltip>
+        <IconTooltip :content="actionTooltip('数据库对象', 'workspace.objects')" placement="right"><el-button text :icon="Coin" aria-label="数据库对象"
+          :class="{ active: activeTool === 'objects' && panelVisible }" :aria-pressed="activeTool === 'objects' && panelVisible" @click="selectTool('objects')" /></IconTooltip>
+        <IconTooltip :content="actionTooltip('连接管理', 'workspace.connections')" placement="right"><el-button text :icon="Connection" aria-label="连接管理"
+          :class="{ active: activeTool === 'connections' && panelVisible }" :aria-pressed="activeTool === 'connections' && panelVisible" @click="selectTool('connections')" /></IconTooltip>
       </nav>
       <el-splitter class="workbench" lazy>
         <el-splitter-panel v-if="panelOpen" v-model:size="leftWidth" :min="210" :max="420" collapsible>
@@ -356,6 +360,7 @@ import CompletionSchemaDialog from "./components/CompletionSchemaDialog.vue";
 import CsvImportDialog from "./components/CsvImportDialog.vue";
 import AppearanceColorSchemeDrawer from "./components/AppearanceColorSchemeDrawer.vue";
 import HistoryDrawer from "./components/HistoryDrawer.vue";
+import IconTooltip from "./components/IconTooltip.vue";
 import JdbcTaskManagerDrawer from "./components/JdbcTaskManagerDrawer.vue";
 import MonacoEditor from "./components/MonacoEditor.vue";
 import ObjectExplorer from "./components/ObjectExplorer.vue";

@@ -19,36 +19,36 @@
               <div v-if="resultEditUnlocked" class="result-edit-operations"
                    role="group" aria-label="结果编辑操作">
                 <span class="result-edit-operation">
-                  <el-tooltip :content="applyResultChangesTooltip">
+                  <IconTooltip :content="applyResultChangesTooltip">
                     <el-button text :icon="CircleCheck" aria-label="应用更改"
                                :type="canApplyResultChanges ? 'success' : 'default'"
                                :disabled="!canApplyResultChanges" @click="$emit('apply-result-changes')" />
-                  </el-tooltip>
+                  </IconTooltip>
                 </span>
                 <span class="result-edit-operation">
-                  <el-tooltip content="撤销最后一项本地草稿">
+                  <IconTooltip content="撤销最后一项本地草稿">
                     <el-button text :icon="RefreshLeft" aria-label="撤销结果草稿"
                                :disabled="editDraftCount === 0" @click="undoResultDraft" />
-                  </el-tooltip>
+                  </IconTooltip>
                 </span>
                 <span class="result-edit-operation">
-                  <el-tooltip content="新增一条本地草稿记录">
+                  <IconTooltip content="新增一条本地草稿记录">
                     <el-button text :icon="Plus" aria-label="新增行"
                                :disabled="!activeResult?.mutationTarget?.insertSupported"
                                @click="addResultRow" />
-                  </el-tooltip>
+                  </IconTooltip>
                 </span>
                 <span class="result-edit-operation">
-                  <el-tooltip content="将所选记录标记为待删除">
+                  <IconTooltip content="将所选记录标记为待删除">
                     <el-button text :icon="Minus" aria-label="删除行"
                                :disabled="!canDeleteSelectedRows" @click="deleteSelectedResultRows" />
-                  </el-tooltip>
+                  </IconTooltip>
                 </span>
                 <span class="result-edit-operation">
-                  <el-tooltip content="查看旧值、新值和参数化 SQL">
+                  <IconTooltip content="查看旧值、新值和参数化 SQL">
                     <el-button text :icon="Document" aria-label="变更清单"
                                :disabled="editDraftCount + editAppliedCount === 0" @click="openChangesDialog" />
-                  </el-tooltip>
+                  </IconTooltip>
                 </span>
               </div>
             </Transition>
@@ -62,9 +62,9 @@
             </el-tooltip>
             <span class="result-action-divider" aria-hidden="true" />
           </template>
-          <el-tooltip v-if="showRestoreLayout" :content="restoreLayoutTitle">
+          <IconTooltip v-if="showRestoreLayout" :content="restoreLayoutTitle">
             <el-button text :icon="RefreshLeft" aria-label="复原列布局" @click="restoreLayout" />
-          </el-tooltip>
+          </IconTooltip>
           <el-select v-model="selectedColumnIndices" multiple filterable clearable collapse-tags collapse-tags-tooltip
                      fit-input-width
                      :max-collapse-tags="1" :filter-method="filterColumns" placeholder="筛选字段" size="small"
@@ -78,35 +78,37 @@
           </el-select>
           <Transition name="single-record-navigation">
             <div v-if="singleRecordMode" class="single-record-navigation" role="group" aria-label="单记录导航">
-              <el-tooltip content="上一条记录">
+              <IconTooltip content="上一条记录">
                 <el-button text :icon="ArrowLeft" aria-label="上一条记录"
                            :disabled="!canNavigatePrevious" @click="navigateSingleRecord(-1)" />
-              </el-tooltip>
-              <el-tooltip content="下一条记录">
+              </IconTooltip>
+              <IconTooltip content="下一条记录">
                 <el-button text :icon="ArrowRight" aria-label="下一条记录"
                            :disabled="!canNavigateNext" @click="navigateSingleRecord(1)" />
-              </el-tooltip>
+              </IconTooltip>
             </div>
           </Transition>
-          <el-tooltip :content="singleRecordTitle">
+          <IconTooltip :content="singleRecordTitle" placement="top">
             <el-button text class="single-record-button" :icon="Postcard"
                        :type="singleRecordMode ? 'primary' : 'default'"
                        :disabled="!canViewSingleRecord"
                        :aria-label="singleRecordMode ? '返回结果表格' : '单个记录查看'"
                        :aria-pressed="singleRecordMode"
                        @click="toggleSingleRecordView" />
-          </el-tooltip>
+          </IconTooltip>
           <div class="record-compare-control" role="group" aria-label="比较记录">
-            <el-tooltip :content="recordComparisonTitle">
+            <IconTooltip :content="recordComparisonTitle" placement="top">
               <el-button text class="record-compare-button" :icon="ScaleToOriginal"
                          :type="recordComparisonEnabled ? 'primary' : 'default'"
                          :disabled="!canToggleRecordComparison"
                          :aria-pressed="recordComparisonEnabled" aria-label="比较记录"
                          @click="toggleRecordComparison" />
-            </el-tooltip>
+            </IconTooltip>
             <el-dropdown trigger="click" :disabled="singleRecordMode || !activeResult?.columns.length"
                          @command="recordComparisonCommand">
-              <el-button text class="record-compare-options" :icon="ArrowDown" aria-label="比较记录选项" />
+              <IconTooltip content="比较记录选项" placement="top">
+                <el-button text class="record-compare-options" :icon="ArrowDown" aria-label="比较记录选项" />
+              </IconTooltip>
               <template #dropdown>
                 <el-dropdown-menu class="record-compare-menu">
                   <el-dropdown-item command="highlight-identical">
@@ -128,12 +130,14 @@
               </template>
             </el-dropdown>
           </div>
-          <el-tooltip :content="copySelectionTitle">
+          <IconTooltip :content="copySelectionTitle" placement="top">
             <el-button text :icon="CopyDocument" :aria-label="copySelectionTitle" :disabled="!hasDataSelection" @click="copyCurrentSelection()" />
-          </el-tooltip>
+          </IconTooltip>
           <div class="result-export-control">
             <el-dropdown :disabled="!activeResult?.columns.length || serverExportBlocked" @command="exportCommand">
-              <el-button text :icon="Download" aria-label="导出结果" title="导出结果" />
+              <IconTooltip content="导出结果" placement="top">
+                <el-button text :icon="Download" aria-label="导出结果" />
+              </IconTooltip>
               <template #dropdown>
                 <el-dropdown-menu>
                   <el-dropdown-item command="csv">导出为 CSV</el-dropdown-item>
@@ -307,6 +311,7 @@ import type { ResultGridScrollPosition, ResultVirtualColumn } from "../resultVir
 import { comparisonCellKeys, type ResultCompareHighlightMode, type ResultCompareScope } from "../resultCompare";
 import ResultHeaderContextMenu, { type HeaderMenuCommand } from "./ResultHeaderContextMenu.vue";
 import ResultHeaderTools from "./ResultHeaderTools.vue";
+import IconTooltip from "./IconTooltip.vue";
 import ResultDataContextMenu, { type DataMenuCommand } from "./ResultDataContextMenu.vue";
 import ResultSingleRecordView, { type SingleRecordSelectionState } from "./ResultSingleRecordView.vue";
 import ResultVirtualGrid from "./ResultVirtualGrid.vue";
