@@ -104,6 +104,10 @@ describe("ObjectInspectorHost visual controls", () => {
     const inspector = document.body.querySelector<HTMLElement>(".object-inspector")!;
     expect(inspector.textContent).toContain("客户姓名备注");
     expect(inspector.querySelectorAll(".grid-column-resize-handle")).toHaveLength(9);
+    expect(inspector.querySelectorAll(".structure-grid col")).toHaveLength(10);
+    expect(inspector.querySelectorAll(".structure-grid .grid-trailing-gutter")).toHaveLength(3);
+    expect(inspector.querySelector<HTMLElement>(".structure-grid th.grid-trailing-gutter")?.getAttribute("aria-hidden")).toBe("true");
+    expect(Number.parseFloat(inspector.querySelector<HTMLTableElement>(".structure-grid")?.style.width || "0")).toBe(1173);
     const remarkCell = inspector.querySelector<HTMLElement>('td[title="客户姓名备注"]')!;
     expect(remarkCell.textContent).toBe("客户姓名备注");
 
@@ -157,9 +161,15 @@ describe("ObjectInspectorHost visual controls", () => {
     handle.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     await nextTick();
     const changedWidth = firstColumn.style.width;
-    inspector.querySelectorAll<HTMLButtonElement>(".inspector-tabs button")[1].click();
-    await flushPromises();
-    inspector.querySelectorAll<HTMLButtonElement>(".inspector-tabs button")[0].click();
+    const tabButtons = inspector.querySelectorAll<HTMLButtonElement>(".inspector-tabs button");
+    for (const tabIndex of [1, 2]) {
+      tabButtons[tabIndex].click();
+      await flushPromises();
+      expect(inspector.querySelectorAll(".structure-grid col")).toHaveLength(10);
+      expect(inspector.querySelectorAll(".grid-column-resize-handle")).toHaveLength(9);
+      expect(inspector.querySelector(".structure-grid th.grid-trailing-gutter")).not.toBeNull();
+    }
+    tabButtons[0].click();
     await nextTick();
     expect(inspector.querySelector<HTMLTableColElement>("col")!.style.width).toBe(changedWidth);
     await inspector.querySelector<HTMLButtonElement>('button[aria-label="关闭"]')?.click();

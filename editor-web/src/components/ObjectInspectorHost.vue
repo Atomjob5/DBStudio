@@ -52,7 +52,7 @@
         <div v-else-if="windowState.loading[windowState.activeTab]" class="section-message">正在读取对象结构…</div>
         <template v-else-if="windowState.activeTab === 'columns'">
           <div class="grid-scroll"><table class="structure-grid" :style="{ width: gridTableWidth(windowState, 'columns') }">
-            <colgroup><col v-for="(header, index) in gridColumns('columns')" :key="header.key" :style="{ width: `${columnWidth(windowState, 'columns', index)}px` }" /></colgroup>
+            <colgroup><col v-for="(header, index) in gridColumns('columns')" :key="header.key" :style="{ width: `${columnWidth(windowState, 'columns', index)}px` }" /><col class="grid-trailing-gutter" aria-hidden="true" /></colgroup>
             <thead><tr><th v-for="(header, index) in gridColumns('columns')" :key="header.key" :class="header.align"
                   :style="{ width: `${columnWidth(windowState, 'columns', index)}px` }">
               <span class="grid-header-label">{{ header.label }}</span>
@@ -61,15 +61,15 @@
                     @pointerdown.stop.prevent="startColumnResize($event, windowState, 'columns', index)"
                     @dblclick.stop="fitColumnWidth($event, windowState, 'columns', index)"
                     @keydown="keyboardResizeColumn($event, windowState, 'columns', index)" />
-            </th></tr></thead>
+            </th><th class="grid-trailing-gutter" aria-hidden="true"></th></tr></thead>
             <tbody><tr v-for="column in windowState.columns" :key="column.ordinal"><td class="text-left" :title="column.name">{{ column.name }}</td><td class="text-left" :title="column.typeName">{{ column.typeName }}</td>
               <td class="text-right" :title="cellTitle(column.length)">{{ column.length || '' }}</td><td class="text-right" :title="precision(column)">{{ precision(column) }}</td><td class="text-center">{{ column.nullable ? '是' : '否' }}</td>
               <td class="text-left" :title="cellTitle(column.defaultValue)">{{ column.defaultValue ?? '' }}</td><td class="text-center">{{ column.primaryKey ? '是' : '' }}</td>
-              <td class="text-center">{{ column.autoIncrement ? '自增' : column.generated ? '生成' : '' }}</td><td class="text-left" :title="cellTitle(column.remarks)">{{ column.remarks }}</td></tr></tbody></table></div>
+              <td class="text-center">{{ column.autoIncrement ? '自增' : column.generated ? '生成' : '' }}</td><td class="text-left" :title="cellTitle(column.remarks)">{{ column.remarks }}</td><td class="grid-trailing-gutter" aria-hidden="true"></td></tr></tbody></table></div>
         </template>
         <template v-else-if="windowState.activeTab === 'indexes'">
           <div class="grid-scroll"><table class="structure-grid" :style="{ width: gridTableWidth(windowState, 'indexes') }">
-            <colgroup><col v-for="(header, index) in gridColumns('indexes')" :key="header.key" :style="{ width: `${columnWidth(windowState, 'indexes', index)}px` }" /></colgroup>
+            <colgroup><col v-for="(header, index) in gridColumns('indexes')" :key="header.key" :style="{ width: `${columnWidth(windowState, 'indexes', index)}px` }" /><col class="grid-trailing-gutter" aria-hidden="true" /></colgroup>
             <thead><tr><th v-for="(header, index) in gridColumns('indexes')" :key="header.key" :class="header.align"
                   :style="{ width: `${columnWidth(windowState, 'indexes', index)}px` }">
               <span class="grid-header-label">{{ header.label }}</span>
@@ -78,14 +78,14 @@
                     @pointerdown.stop.prevent="startColumnResize($event, windowState, 'indexes', index)"
                     @dblclick.stop="fitColumnWidth($event, windowState, 'indexes', index)"
                     @keydown="keyboardResizeColumn($event, windowState, 'indexes', index)" />
-            </th></tr></thead>
+            </th><th class="grid-trailing-gutter" aria-hidden="true"></th></tr></thead>
             <tbody><tr v-for="index in windowState.indexes" :key="index.name"><td class="text-left" :title="cellTitle(index.name)">{{ index.name }}</td><td class="text-center">{{ index.primary ? '是' : '' }}</td>
               <td class="text-center">{{ index.unique ? '是' : '否' }}</td><td class="text-left" :title="cellTitle(index.type)">{{ index.type }}</td><td class="text-left" :title="cellTitle(index.status)">{{ index.status }}</td><td class="text-center">{{ index.visible ? '是' : '否' }}</td>
-              <td class="text-center">{{ index.partitioned ? '是' : '' }}</td><td class="text-left" :title="cellTitle(index.tablespace)">{{ index.tablespace }}</td><td class="text-left" :title="cellTitle(index.columns.map(indexColumnLabel).join(', '))">{{ index.columns.map(indexColumnLabel).join(', ') }}</td></tr></tbody></table></div>
+              <td class="text-center">{{ index.partitioned ? '是' : '' }}</td><td class="text-left" :title="cellTitle(index.tablespace)">{{ index.tablespace }}</td><td class="text-left" :title="cellTitle(index.columns.map(indexColumnLabel).join(', '))">{{ index.columns.map(indexColumnLabel).join(', ') }}</td><td class="grid-trailing-gutter" aria-hidden="true"></td></tr></tbody></table></div>
         </template>
         <template v-else-if="windowState.activeTab === 'partitions'">
           <div class="grid-scroll"><table class="structure-grid" :style="{ width: gridTableWidth(windowState, 'partitions') }">
-            <colgroup><col v-for="(header, index) in gridColumns('partitions')" :key="header.key" :style="{ width: `${columnWidth(windowState, 'partitions', index)}px` }" /></colgroup>
+            <colgroup><col v-for="(header, index) in gridColumns('partitions')" :key="header.key" :style="{ width: `${columnWidth(windowState, 'partitions', index)}px` }" /><col class="grid-trailing-gutter" aria-hidden="true" /></colgroup>
             <thead><tr><th v-for="(header, index) in gridColumns('partitions')" :key="header.key" :class="header.align"
                   :style="{ width: `${columnWidth(windowState, 'partitions', index)}px` }">
               <span class="grid-header-label">{{ header.label }}</span>
@@ -94,14 +94,14 @@
                     @pointerdown.stop.prevent="startColumnResize($event, windowState, 'partitions', index)"
                     @dblclick.stop="fitColumnWidth($event, windowState, 'partitions', index)"
                     @keydown="keyboardResizeColumn($event, windowState, 'partitions', index)" />
-            </th></tr></thead>
+            </th><th class="grid-trailing-gutter" aria-hidden="true"></th></tr></thead>
             <tbody><template v-for="partition in windowState.partitions" :key="partition.id">
               <tr><td class="text-center"><button v-if="partition.hasSubpartitions" class="expand" :aria-label="windowState.expanded.has(partition.id) ? '收起子分区' : '展开子分区'" @click="togglePartition(windowState, partition)">{{ windowState.expanded.has(partition.id) ? '−' : '+' }}</button></td>
                 <td class="text-left" :title="cellTitle(partition.name)">{{ partition.name }}</td><td class="text-right">{{ partition.position }}</td><td class="text-left" :title="cellTitle(partition.method)">{{ partition.method }}</td><td class="text-left" :title="cellTitle(partition.expression)">{{ partition.expression }}</td><td class="text-left" :title="cellTitle(partition.boundary)">{{ partition.boundary }}</td>
-                <td class="text-left" :title="cellTitle(partition.tablespace)">{{ partition.tablespace }}</td><td class="text-right">{{ partition.estimatedRows ?? '' }}</td><td class="text-right">{{ formatBytes(partition.dataBytes) }}</td></tr>
+                <td class="text-left" :title="cellTitle(partition.tablespace)">{{ partition.tablespace }}</td><td class="text-right">{{ partition.estimatedRows ?? '' }}</td><td class="text-right">{{ formatBytes(partition.dataBytes) }}</td><td class="grid-trailing-gutter" aria-hidden="true"></td></tr>
               <tr v-for="sub in windowState.subpartitions[partition.id] || []" v-show="windowState.expanded.has(partition.id)" :key="sub.id" class="subpartition">
                 <td class="text-center"></td><td class="text-left" :title="cellTitle(sub.name)">↳ {{ sub.name }}</td><td class="text-right">{{ sub.position }}</td><td class="text-left" :title="cellTitle(sub.method)">{{ sub.method }}</td><td class="text-left" :title="cellTitle(sub.expression)">{{ sub.expression }}</td><td class="text-left" :title="cellTitle(sub.boundary)">{{ sub.boundary }}</td>
-                <td class="text-left" :title="cellTitle(sub.tablespace)">{{ sub.tablespace }}</td><td class="text-right">{{ sub.estimatedRows ?? '' }}</td><td class="text-right">{{ formatBytes(sub.dataBytes) }}</td></tr>
+                <td class="text-left" :title="cellTitle(sub.tablespace)">{{ sub.tablespace }}</td><td class="text-right">{{ sub.estimatedRows ?? '' }}</td><td class="text-right">{{ formatBytes(sub.dataBytes) }}</td><td class="grid-trailing-gutter" aria-hidden="true"></td></tr>
             </template></tbody></table></div>
           <button v-if="windowState.partitionNext" class="load-more" @click="loadPartitions(windowState, true)">继续加载分区</button>
         </template>
@@ -169,6 +169,7 @@ const gridColumnDefinitions: Record<GridTab, GridColumnDefinition[]> = {
 };
 const GRID_MIN_WIDTH = 56;
 const GRID_MAX_WIDTH = 640;
+const GRID_TRAILING_GUTTER_WIDTH = 48;
 export interface ObjectInspectorOpenRequest {
   reference: SqlObjectReference; editorId: string; modelKey: string; connectionDisplay: string;
   x: number; y: number;
@@ -287,7 +288,9 @@ function columnWidth(state: InspectorState, tab: GridTab, index: number): number
 }
 function gridTableWidth(state: InspectorState, tab: GridTab): string {
   const total = state.columnWidths[tab].reduce((sum, width) => sum + width, 0);
-  return `${total}px`;
+  // The table's existing min-width: 100% supplies the viewport side of
+  // max(100%, total + trailing gutter) while the explicit width reserves the gutter.
+  return `${total + GRID_TRAILING_GUTTER_WIDTH}px`;
 }
 function cellTitle(value: unknown): string | undefined { return value == null ? undefined : String(value); }
 function startColumnResize(event: PointerEvent, state: InspectorState, tab: GridTab, index: number): void {
@@ -590,6 +593,15 @@ table {
 }
 .structure-grid th,
 .structure-grid td { max-width: none; }
+.grid-trailing-gutter {
+  min-width: 48px;
+  padding: 0;
+  border-right: 0;
+  cursor: default;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
 th,
 td {
   box-sizing: border-box;

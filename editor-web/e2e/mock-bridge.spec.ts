@@ -1081,6 +1081,51 @@ test("opens a resizable structure view with selectable remarks and horizontal sc
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("名称");
 });
 
+test("keeps the last structure column independently resizable with a trailing gutter", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:4173" });
+  await page.setViewportSize({ width: 1920, height: 900 });
+  await connectMock(page);
+  const editor = page.locator(".monaco-editor .view-lines");
+  await editor.click();
+  await page.keyboard.press("ControlOrMeta+A");
+  await page.keyboard.insertText("select * from product");
+  await editor.getByText("product", { exact: true }).click({ modifiers: ["ControlOrMeta"] });
+
+  const inspector = page.locator(".object-inspector");
+  await expect(inspector).toBeVisible();
+  const initialInspector = await inspector.boundingBox();
+  if (!initialInspector) throw new Error("Structure inspector is not measurable");
+
+  const windowResizeHandle = inspector.locator(".resize-e");
+  const windowResizeBounds = await windowResizeHandle.boundingBox();
+  if (!windowResizeBounds) throw new Error("Structure window resize handle is not measurable");
+  const targetRight = Math.min(1910, initialInspector.x + 1300);
+  await page.mouse.move(windowResizeBounds.x + windowResizeBounds.width / 2, windowResizeBounds.y + windowResizeBounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(targetRight, windowResizeBounds.y + windowResizeBounds.height / 2);
+  await page.mouse.up();
+
+  const remarksHeader = inspector.getByRole("columnheader", { name: /备注/ }).last();
+  const remarksHandle = inspector.getByRole("separator", { name: "调整 备注 列宽", exact: true });
+  const beforeHeader = await remarksHeader.boundingBox();
+  const remarksHandleBounds = await remarksHandle.boundingBox();
+  if (!beforeHeader || !remarksHandleBounds) throw new Error("Last structure column is not measurable");
+  const beforePanel = await inspector.boundingBox();
+  const trailingGutter = await inspector.locator("thead .grid-trailing-gutter").boundingBox();
+  if (!beforePanel || !trailingGutter) throw new Error("Structure trailing gutter is not measurable");
+  expect(trailingGutter.width).toBeGreaterThanOrEqual(48);
+
+  await page.mouse.move(remarksHandleBounds.x + 2, remarksHandleBounds.y + remarksHandleBounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(remarksHandleBounds.x - 78, remarksHandleBounds.y + remarksHandleBounds.height / 2);
+  await page.mouse.up();
+
+  const afterHeader = await remarksHeader.boundingBox();
+  const afterPanel = await inspector.boundingBox();
+  expect(afterHeader?.width ?? 0).toBeLessThan(beforeHeader.width - 60);
+  expect(afterPanel?.width ?? 0).toBeCloseTo(beforePanel.width, 0);
+});
+
 test("copies result headers and loaded rows from the header context menu", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:4173" });
   await connectMock(page);
