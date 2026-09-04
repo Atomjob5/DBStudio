@@ -65,6 +65,17 @@
         </el-form-item>
         <el-form-item class="compact-setting-row">
           <template #label>
+            <div class="setting-label"><span>报错继续执行</span>
+              <el-tooltip content="执行选中的多条 SQL 或整个脚本时，单条 SQL 报错不会阻止后续语句；取消执行仍会停止任务。" placement="top">
+                <el-icon class="setting-help" tabindex="0" aria-label="报错继续执行说明"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </div>
+          </template>
+          <el-switch size="small" aria-label="报错继续执行" :model-value="continueOnError"
+                     @update:model-value="$emit('update:continueOnError', $event === true)" />
+        </el-form-item>
+        <el-form-item class="compact-setting-row">
+          <template #label>
             <div class="setting-label"><span>SQL 执行超时预警</span>
               <el-tooltip content="仅当来源编辑器处于后台时提醒；预警不会自动停止 SQL。删除全部时间即可关闭。" placement="top">
                 <el-icon class="setting-help" tabindex="0" aria-label="SQL 执行超时预警说明"><QuestionFilled /></el-icon>
@@ -338,12 +349,13 @@ const props = defineProps<{ modelValue: boolean; theme: ThemePreference; resolve
   completionCandidateLimit: number; completionPreciseMatchingEnabled: boolean;
   canClearCompletionCaches: boolean;
   minimapEnabled: boolean; wordWrapEnabled: boolean; sqlDiagnosticsEnabled: boolean;
-  dangerousStatementWarningEnabled: boolean;
+  dangerousStatementWarningEnabled: boolean; continueOnError: boolean;
   executionWarningMinutes: number[] }>();
 const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme": [value: ThemePreference]; "openAppearance": [];
   "update:minimapEnabled": [value: boolean]; "update:wordWrapEnabled": [value: boolean];
   "update:sqlDiagnosticsEnabled": [value: boolean];
   "update:dangerousStatementWarningEnabled": [value: boolean];
+  "update:continueOnError": [value: boolean];
   "update:maxRows": [value: number]; "update:streamBatchRows": [value: number]; "update:clobMaxCharacters": [value: number];
   "update:maxLobBytes": [value: number];
   "update:columnLayoutScope": [value: ColumnLayoutScope]; "update:copyHeaderOnDoubleClick": [value: boolean];

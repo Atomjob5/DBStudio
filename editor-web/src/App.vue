@@ -281,6 +281,7 @@
                   :minimap-enabled="settings.minimapEnabled" :word-wrap-enabled="settings.wordWrapEnabled"
                   :sql-diagnostics-enabled="settings.sqlDiagnosticsEnabled"
                   :dangerous-statement-warning-enabled="settings.dangerousStatementWarningEnabled"
+                  :continue-on-error="settings.continueOnError"
                   :execution-warning-minutes="settings.executionWarningMinutes"
                   :completion-cache-size="completionCacheSize" :completion-cache-environment-count="metadata.completionStats.environmentCount"
                   :completion-cache-loading-count="metadata.completionStats.loadingCount" :can-clear-completion-caches="metadata.canClearCompletions"
@@ -304,6 +305,7 @@
                   @update:word-wrap-enabled="updateWordWrapEnabled"
                   @update:sql-diagnostics-enabled="updateSqlDiagnosticsEnabled"
                   @update:dangerous-statement-warning-enabled="updateDangerousStatementWarningEnabled"
+                  @update:continue-on-error="updateContinueOnError"
                   @update:execution-warning-minutes="updateExecutionWarningMinutes"
                   @clear-completion-caches="clearCompletionCaches" @open-shortcuts="openShortcutSettings"
                   @open-appearance="appearanceDrawer = true"
@@ -1904,7 +1906,8 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
     executionAttempted = true;
     const response = await rpc.request<{ executionId: string }>("query.execute", {
       editorId: tab.id, text: monacoEditor.value?.getValue(tab.id) ?? tab.content,
-      selectedText, cursorOffset, selectionStartOffset, scope, stopOnError: true, resultPresentation: presentation
+      selectedText, cursorOffset, selectionStartOffset, scope,
+      stopOnError: !settings.continueOnError, resultPresentation: presentation
     });
     if (!bindExecutionTimelineExecution(tab.id, timelineSession.attemptId, response.executionId)) return;
     if (presentation === "replace") {
@@ -2896,6 +2899,18 @@ async function updateDangerousStatementWarningEnabled(value: boolean): Promise<v
     });
   } catch (error) {
     settings.dangerousStatementWarningEnabled = previous;
+    reportError(error);
+  }
+}
+async function updateContinueOnError(value: boolean): Promise<void> {
+  const previous = settings.continueOnError;
+  settings.continueOnError = value;
+  try {
+    await rpc.request("settings.update", {
+      key: "editor.continueOnError", value: String(value)
+    });
+  } catch (error) {
+    settings.continueOnError = previous;
     reportError(error);
   }
 }

@@ -118,7 +118,7 @@ public final class DbStudioApiController {
             "connection.transactionDisconnectRollbackMinutes",
             "editor.completionCandidateLimit", "editor.completionPreciseMatchingEnabled",
             "editor.completionSnippets", "editor.minimapEnabled", "editor.wordWrapEnabled",
-            "editor.sqlDiagnosticsEnabled", "editor.dangerousStatementWarningEnabled", "editor.objectInspectorOpacity",
+            "editor.sqlDiagnosticsEnabled", "editor.dangerousStatementWarningEnabled", "editor.continueOnError", "editor.objectInspectorOpacity",
             "editor.executionWarningMinutes",
             "appearance.colorSchemes",
             "keyboard.shortcuts",
@@ -1692,7 +1692,8 @@ public final class DbStudioApiController {
         }
         if (("editor.minimapEnabled".equals(key) || "editor.wordWrapEnabled".equals(key)
                 || "editor.sqlDiagnosticsEnabled".equals(key)
-                || "editor.dangerousStatementWarningEnabled".equals(key))
+                || "editor.dangerousStatementWarningEnabled".equals(key)
+                || "editor.continueOnError".equals(key))
                 && !Arrays.asList("true", "false").contains(value)) {
             throw new ApiException("INVALID_SETTING", "编辑器开关设置无效");
         }
@@ -2683,6 +2684,7 @@ public final class DbStudioApiController {
         if (!result.containsKey("editor.dangerousStatementWarningEnabled")) {
             result.put("editor.dangerousStatementWarningEnabled", "true");
         }
+        if (!result.containsKey("editor.continueOnError")) result.put("editor.continueOnError", "false");
         if (!result.containsKey("editor.executionWarningMinutes")) {
             result.put("editor.executionWarningMinutes", DEFAULT_EXECUTION_WARNING_MINUTES);
         }

@@ -37,6 +37,7 @@ describe("SettingsDrawer compact result settings", () => {
         wordWrapEnabled: false,
         sqlDiagnosticsEnabled: true,
         dangerousStatementWarningEnabled: true,
+        continueOnError: false,
         executionWarningMinutes: [1, 5]
       },
       global: { plugins: [ElementPlus] }
@@ -46,7 +47,7 @@ describe("SettingsDrawer compact result settings", () => {
   it("renders compact connection and result settings without the old alert", async () => {
     const wrapper = mountDrawer();
     await flushPromises();
-    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(25);
+    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(26);
     expect(wrapper.findComponent({ name: "ElAlert" }).exists()).toBe(false);
     const separator = wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "comma");
@@ -84,7 +85,8 @@ describe("SettingsDrawer compact result settings", () => {
     const tooltips = wrapper.findAllComponents({ name: "ElTooltip" });
     const tooltipText = tooltips.map((tooltip) => String(tooltip.props("content"))).join("\n");
     for (const text of ["完整导出不受影响", "事件触发更频繁", "CLOB 最多读取的字符数", "控制可视区域四周", "字段集合完全一致",
-      "自动转义", "IndexedDB", "每条DML成功执行即提交", "未包含 WHERE", "400 毫秒"]) {
+      "自动转义", "IndexedDB", "每条DML成功执行即提交", "未包含 WHERE", "400 毫秒",
+      "执行选中的多条 SQL 或整个脚本时"]) {
       expect(tooltipText).toContain(text);
     }
 
@@ -106,12 +108,13 @@ describe("SettingsDrawer compact result settings", () => {
     switches[3].vm.$emit("update:modelValue", false);
     switches[4].vm.$emit("update:modelValue", true);
     switches[5].vm.$emit("update:modelValue", true);
-    switches[6].vm.$emit("update:modelValue", false);
+    switches[6].vm.$emit("update:modelValue", true);
     switches[7].vm.$emit("update:modelValue", false);
     switches[8].vm.$emit("update:modelValue", false);
-    switches[9].vm.$emit("update:modelValue", true);
+    switches[9].vm.$emit("update:modelValue", false);
     switches[10].vm.$emit("update:modelValue", true);
-    switches[11].vm.$emit("update:modelValue", false);
+    switches[11].vm.$emit("update:modelValue", true);
+    switches[12].vm.$emit("update:modelValue", false);
     wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "result")!.vm.$emit("update:modelValue", "editor");
     wrapper.findAllComponents({ name: "ElRadioGroup" })
@@ -130,6 +133,7 @@ describe("SettingsDrawer compact result settings", () => {
     expect(wrapper.emitted("update:wordWrapEnabled")?.[0]).toEqual([true]);
     expect(wrapper.emitted("update:sqlDiagnosticsEnabled")?.[0]).toEqual([false]);
     expect(wrapper.emitted("update:dangerousStatementWarningEnabled")?.[0]).toEqual([false]);
+    expect(wrapper.emitted("update:continueOnError")?.[0]).toEqual([true]);
     expect(wrapper.emitted("update:copyHeaderOnDoubleClick")?.[0]).toEqual([false]);
     expect(wrapper.emitted("update:headerSortingEnabled")?.[0]).toEqual([false]);
     expect(wrapper.emitted("update:headerFilteringEnabled")?.[0]).toEqual([false]);

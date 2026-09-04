@@ -565,6 +565,54 @@ class QueryRunnerTest {
     }
 
     @Test
+    void continuesAfterStatementFailureWhenStopOnErrorIsDisabled() throws Exception {
+        final Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
+        connection.setAutoCommit(false);
+        try (final QueryRunner runner = new QueryRunner(session(connection), 10, 10)) {
+            QueryExecution continued = runner.execute(Arrays.asList(
+                    sql("SELECT 1", StatementType.QUERY),
+                    sql("SELECT * FROM missing_table", StatementType.QUERY),
+                    sql("SELECT 2", StatementType.QUERY)), false).join();
+
+            assertEquals(3, continued.results().size());
+            assertFalse(continued.results().get(0).failed());
+            assertTrue(continued.results().get(1).failed());
+            assertFalse(continued.results().get(2).failed());
+            assertEquals("2", continued.results().get(2).rows().get(0).get(0));
+
+            QueryExecution stopped = runner.execute(Arrays.asList(
+                    sql("SELECT 1", StatementType.QUERY),
+                    sql("SELECT * FROM missing_table", StatementType.QUERY),
+                    sql("SELECT 2", StatementType.QUERY)), true).join();
+            assertEquals(2, stopped.results().size());
+            assertTrue(stopped.results().get(1).failed());
+        }
+    }
+
+    @Test
+    void cancellationStillStopsAContinuedBatchAfterAStatementFailure() throws Exception {
+        final Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
+        connection.setAutoCommit(false);
+        try (final QueryRunner runner = new QueryRunner(session(connection), 10, 10)) {
+            AtomicInteger completed = new AtomicInteger();
+            QueryExecution execution = runner.execute(Arrays.asList(
+                    sql("SELECT * FROM missing_table", StatementType.QUERY),
+                    sql("SELECT 2", StatementType.QUERY)), false, new QueryResultListener() {
+                        @Override public void resultStarted(int index, String sql, StatementType type,
+                                                            List<String> columns) { }
+                        @Override public void rows(int index, List<List<String>> rows) { }
+                        @Override public void resultCompleted(int index, StatementResult result) {
+                            if (completed.incrementAndGet() == 1) assertTrue(runner.cancel());
+                        }
+                    }).join();
+
+            assertTrue(execution.cancelled());
+            assertEquals(1, execution.results().size());
+            assertTrue(execution.results().get(0).failed());
+        }
+    }
+
+    @Test
     void acceptsPaginationCancellationBeforeStatementCreationAndResetsForTheNextPage() throws Exception {
         final Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
         connection.setAutoCommit(false);

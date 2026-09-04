@@ -240,6 +240,7 @@ class LocalServerSecurityTest {
         assertTrue(defaults.getBody().contains("\"editor.minimapEnabled\":\"true\""));
         assertTrue(defaults.getBody().contains("\"editor.wordWrapEnabled\":\"false\""));
         assertTrue(defaults.getBody().contains("\"editor.sqlDiagnosticsEnabled\":\"true\""));
+        assertTrue(defaults.getBody().contains("\"editor.continueOnError\":\"false\""));
         assertTrue(defaults.getBody().contains("\"editor.executionWarningMinutes\":\"[1,5]\""));
 
         Map<String, String> setting = new HashMap<String, String>();
@@ -285,7 +286,7 @@ class LocalServerSecurityTest {
         for (String key : Arrays.asList("result.headerSortingEnabled", "result.headerFilteringEnabled",
                 "result.showColumnRemarksInHeader", "result.zebraStripesEnabled", "result.compareCaseSensitive",
                 "statusBar.showSelectedColumnRemarks", "editor.minimapEnabled", "editor.wordWrapEnabled",
-                "editor.sqlDiagnosticsEnabled", "editor.dangerousStatementWarningEnabled")) {
+                "editor.sqlDiagnosticsEnabled", "editor.dangerousStatementWarningEnabled", "editor.continueOnError")) {
             setting.put("key", key);
             setting.put("value", "false");
             assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
@@ -296,6 +297,15 @@ class LocalServerSecurityTest {
             assertEquals(HttpStatus.BAD_REQUEST, invalidToggle.getStatusCode());
             assertTrue(invalidToggle.getBody().contains("INVALID_SETTING"));
         }
+        setting.put("key", "editor.continueOnError");
+        setting.put("value", "true");
+        ResponseEntity<String> enabledContinue = http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class);
+        assertEquals(HttpStatus.OK, enabledContinue.getStatusCode());
+        assertTrue(enabledContinue.getBody().contains("\"value\":\"true\""));
+        ResponseEntity<String> reloadedContinue = http.exchange(url("/api/v1/settings"), HttpMethod.GET,
+                new HttpEntity<String>(headers), String.class);
+        assertTrue(reloadedContinue.getBody().contains("\"editor.continueOnError\":\"true\""));
         setting.put("key", "result.compareHighlightMode");
         setting.put("value", "different");
         assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,

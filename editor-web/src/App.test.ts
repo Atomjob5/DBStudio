@@ -221,7 +221,7 @@ describe("App result loading status toolbar", () => {
     await flushPromises();
     expect(rpcRequest).toHaveBeenCalledWith("query.execute", expect.objectContaining({
       editorId: "bootstrap-editor", selectedText: "select * from metrics", selectionStartOffset: 12,
-      scope: "current", resultPresentation: "replace"
+      scope: "current", stopOnError: true, resultPresentation: "replace"
     }));
 
     await vi.advanceTimersByTimeAsync(15_000);
@@ -1236,6 +1236,45 @@ describe("App result loading status toolbar", () => {
     expect(settings.completionSnippets[0].remarks).toBe("修改后");
     await flushPromises();
     expect(settings.completionSnippets).toEqual([snippet]);
+  });
+
+  it("uses the continue-on-error setting for manual batches and rolls back a failed save", async () => {
+    const settings = useSettingsStore();
+    const editors = useEditorStore();
+    const vm = wrapper.vm as unknown as {
+      executeActive: (scope: "current" | "script") => Promise<void>;
+      executeCurrentInNewTab: (selectedText: string, cursorOffset: number) => Promise<void>;
+      updateContinueOnError: (value: boolean) => Promise<void>;
+    };
+    editors.patch("bootstrap-editor", { content: "SELECT 1;\nSELECT 2;", connection: completionProfile(),
+      connectionState: "active", busy: false, executionPhase: "idle" });
+    rpcRequest.mockImplementation(async (type: string) => type === "query.execute"
+      ? { executionId: `execution-${rpcRequest.mock.calls.length}` } : {});
+
+    await vm.executeActive("script");
+    await flushPromises();
+    expect(rpcRequest).toHaveBeenCalledWith("query.execute", expect.objectContaining({
+      scope: "script", stopOnError: true
+    }));
+
+    editors.patch("bootstrap-editor", { busy: false, activeExecutionId: undefined, executionPhase: "idle" });
+    settings.continueOnError = true;
+    await vm.executeActive("script");
+    await flushPromises();
+    expect(rpcRequest).toHaveBeenCalledWith("query.execute", expect.objectContaining({
+      scope: "script", stopOnError: false
+    }));
+
+    editors.patch("bootstrap-editor", { busy: false, activeExecutionId: undefined, executionPhase: "idle" });
+    await vm.executeCurrentInNewTab("SELECT 1; SELECT 2;", 0);
+    await flushPromises();
+    expect(rpcRequest).toHaveBeenCalledWith("query.execute", expect.objectContaining({
+      scope: "current", selectedText: "SELECT 1; SELECT 2;", stopOnError: false, resultPresentation: "append"
+    }));
+
+    rpcRequest.mockRejectedValueOnce(new Error("save failed"));
+    await vm.updateContinueOnError(false);
+    expect(settings.continueOnError).toBe(true);
   });
 
   it("uses F8 and F7 for execution, preserves editing shortcuts, and suppresses dangerous legacy keys", async () => {

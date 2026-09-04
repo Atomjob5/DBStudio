@@ -72,6 +72,7 @@ const mockSettings: Record<string, string> = {
   "editor.wordWrapEnabled": "false",
   "editor.sqlDiagnosticsEnabled": "true",
   "editor.dangerousStatementWarningEnabled": "true",
+  "editor.continueOnError": "false",
   "editor.objectInspectorOpacity": "100",
   "editor.executionWarningMinutes": "[1,5]",
   "appearance.colorSchemes": serializeColorSchemeSettings(DEFAULT_COLOR_SCHEMES),
