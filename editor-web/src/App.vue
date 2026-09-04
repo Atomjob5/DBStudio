@@ -322,6 +322,7 @@
                           :initial-selected-keys="completionSchemaInitialKeys" :refresh="completionSchemaRefresh"
                           @confirm="completeSchemaSelection" @cancel="cancelSchemaSelection" />
   <CsvImportDialog v-model="csvDialog" :editor-id="editors.active?.id" />
+  <ReleaseNotesDialog v-model="releaseNotesVisible" :releases="pendingReleaseNotes" @dismiss="dismissReleaseNotes" />
 </template>
 
 <script setup lang="ts">
@@ -367,6 +368,7 @@ import JdbcTaskManagerDrawer from "./components/JdbcTaskManagerDrawer.vue";
 import MonacoEditor from "./components/MonacoEditor.vue";
 import ObjectExplorer from "./components/ObjectExplorer.vue";
 import ResultPanel from "./components/ResultPanel.vue";
+import ReleaseNotesDialog from "./components/ReleaseNotesDialog.vue";
 import SettingsDrawer from "./components/SettingsDrawer.vue";
 import ShortcutSettingsDrawer from "./components/ShortcutSettingsDrawer.vue";
 import SqlSnippetSettingsDrawer from "./components/SqlSnippetSettingsDrawer.vue";
@@ -392,6 +394,7 @@ import { initialCompletionNamespaceKeys } from "./completion/schemaSelection";
 import { serializeSqlCompletionSnippets } from "./completion/snippets";
 import { createExecutionNotificationScheduler } from "./executionNotifications";
 import { normalizeExecutionWarningMinutes, serializeExecutionWarningMinutes } from "./executionWarningSettings";
+import { getPendingReleaseNotes, markReleaseNotesBatchSeen, RELEASE_NOTES_RELEASES, type ReleaseNotesRelease } from "./releaseNotes";
 import {
   DEFAULT_SHORTCUT_BINDINGS,
   actionForShortcut,
@@ -455,6 +458,9 @@ const workspaceOpened = ref(false);
 const workspaceCatalog = ref<WorkspaceSummary[]>([]);
 const workspaceLoading = ref(false);
 const currentWorkspace = ref<WorkspaceSummary>();
+const releaseNotesVisible = ref(false);
+const pendingReleaseNotes = ref<ReleaseNotesRelease[]>([]);
+const releaseNotesDismissedInSession = new Set<string>();
 const completionSchemaDialog = ref(false);
 const completionSchemaNamespaces = ref<CompletionNamespaceDescriptor[]>([]);
 const completionSchemaInitialKeys = ref<string[]>([]);
@@ -1325,6 +1331,27 @@ async function refreshWorkspaces(): Promise<void> {
   finally { workspaceLoading.value = false; }
 }
 
+function showReleaseNotesIfNeeded(): void {
+  const pending = getPendingReleaseNotes(RELEASE_NOTES_RELEASES)
+    .filter((release) => !releaseNotesDismissedInSession.has(release.version));
+  pendingReleaseNotes.value = pending;
+  if (!pending.length) {
+    releaseNotesVisible.value = false;
+    return;
+  }
+  void nextTick().then(() => {
+    if (workspaceOpened.value && pendingReleaseNotes.value.length > 0) releaseNotesVisible.value = true;
+  });
+}
+
+function dismissReleaseNotes(): void {
+  const pending = pendingReleaseNotes.value;
+  pending.forEach((release) => releaseNotesDismissedInSession.add(release.version));
+  markReleaseNotesBatchSeen(pending);
+  pendingReleaseNotes.value = [];
+  releaseNotesVisible.value = false;
+}
+
 async function createWorkspace(name: string): Promise<void> {
   try {
     const created = await rpc.createWorkspace(name);
@@ -1364,6 +1391,7 @@ async function openWorkspace(workspace: WorkspaceSummary): Promise<void> {
     if (opened.transactionRolledBack || opened.processRestarted && (opened.recovery?.transactionCount ?? 0) > 0) {
       ElNotification.warning({ title: "事务未恢复", message: "上次未提交事务已随数据库连接断开而回滚；SQL内容已恢复。", duration: 0 });
     }
+    showReleaseNotesIfNeeded();
   } catch (error) {
     await rpc.closeWorkspace().catch(() => undefined);
     if ((error as { code?: string }).code === "WORKSPACE_IN_USE") await refreshWorkspaces();

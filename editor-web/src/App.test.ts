@@ -12,6 +12,7 @@ import { useMetadataStore } from "./stores/metadata";
 import { useQueryStore } from "./stores/query";
 import { useResultEditStore } from "./stores/resultEdits";
 import { useSettingsStore } from "./stores/settings";
+import { CURRENT_RELEASE, RELEASE_NOTES_LAST_SEEN_VERSION_KEY, RELEASE_NOTES_RELEASES, releaseNotesStorageKey, type ReleaseNotesRelease } from "./releaseNotes";
 import { cloneColorSchemes, DEFAULT_COLOR_SCHEMES, serializeColorSchemeSettings } from "./appearance";
 import type {
   CompletionCacheSummary,
@@ -20,6 +21,16 @@ import type {
   SqlEditorSelectionAction,
   SqlTransformTarget,
 } from "./types";
+
+const originalLocalStorageDescriptor = Object.getOwnPropertyDescriptor(window, "localStorage");
+const originalGlobalLocalStorageDescriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+
+function restoreLocalStorage(): void {
+  if (originalLocalStorageDescriptor) Object.defineProperty(window, "localStorage", originalLocalStorageDescriptor);
+  else delete (window as unknown as { localStorage?: Storage }).localStorage;
+  if (originalGlobalLocalStorageDescriptor) Object.defineProperty(globalThis, "localStorage", originalGlobalLocalStorageDescriptor);
+  else delete (globalThis as unknown as { localStorage?: Storage }).localStorage;
+}
 
 const rpcMock = vi.hoisted(() => ({
   request: vi.fn(),
@@ -102,6 +113,9 @@ describe("App result loading status toolbar", () => {
 
   beforeEach(async () => {
     setActivePinia(createPinia());
+    Object.defineProperty(window, "localStorage", { configurable: true, value: window.sessionStorage });
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: window.sessionStorage });
+    window.localStorage.setItem(releaseNotesStorageKey(CURRENT_RELEASE.version), "1");
     rpcRequest.mockReset();
     captureSqlTransformTarget.mockReset();
     applySqlTransform.mockReset().mockReturnValue("applied");
@@ -154,6 +168,9 @@ describe("App result loading status toolbar", () => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    RELEASE_NOTES_RELEASES.forEach((release) => window.localStorage.removeItem(releaseNotesStorageKey(release.version)));
+    window.localStorage.removeItem(RELEASE_NOTES_LAST_SEEN_VERSION_KEY);
+    restoreLocalStorage();
   });
 
   it("keeps SVG actions in the footer and loads the selected result", async () => {
@@ -190,6 +207,75 @@ describe("App result loading status toolbar", () => {
       executionId: expect.any(String)
     }), 120_000);
     expect(wrapper.find(".result-data-toolbar").exists()).toBe(false);
+  });
+
+  it("shows the release notes once after entering a workspace and remembers dismissal", async () => {
+    window.localStorage.removeItem(releaseNotesStorageKey(CURRENT_RELEASE.version));
+    const vm = wrapper.vm as unknown as {
+      openWorkspace: (workspace: unknown) => Promise<void>;
+      releaseNotesVisible: boolean;
+      dismissReleaseNotes: () => void;
+    };
+    await vm.openWorkspace({ id: "workspace-1", name: "测试空间", createdAt: "2026-01-01", updatedAt: "2026-01-01",
+      state: "available", recoveryState: "none", unsavedEditorCount: 0, transactionCount: 0 });
+    await flushPromises();
+    await nextTick();
+
+    expect(vm.releaseNotesVisible).toBe(true);
+    vm.dismissReleaseNotes();
+    expect(window.localStorage.getItem(releaseNotesStorageKey(CURRENT_RELEASE.version))).toBe("1");
+    expect(vm.releaseNotesVisible).toBe(false);
+
+    await vm.openWorkspace({ id: "workspace-1", name: "测试空间", createdAt: "2026-01-01", updatedAt: "2026-01-01",
+      state: "available", recoveryState: "none", unsavedEditorCount: 0, transactionCount: 0 });
+    await flushPromises();
+    await nextTick();
+    expect(vm.releaseNotesVisible).toBe(false);
+  });
+
+  it("merges every unread release into one batch and marks the batch together", async () => {
+    const additionalReleases: ReleaseNotesRelease[] = [
+      {
+        ...CURRENT_RELEASE,
+        version: "1.2.0",
+        publishedAt: "2026 年 10 月",
+        summary: "补充执行和对象浏览体验。",
+        items: CURRENT_RELEASE.items.slice(0, 2).map((item) => ({ ...item, id: `1.2.0-${item.id}` }))
+      },
+      {
+        ...CURRENT_RELEASE,
+        version: "1.3.0",
+        publishedAt: "2026 年 11 月",
+        summary: "让编辑和结果反馈更可靠。",
+        items: CURRENT_RELEASE.items.slice(2, 4).map((item) => ({ ...item, id: `1.3.0-${item.id}` }))
+      }
+    ];
+    const originalLength = RELEASE_NOTES_RELEASES.length;
+    RELEASE_NOTES_RELEASES.push(...additionalReleases);
+    try {
+      const vm = wrapper.vm as unknown as {
+        openWorkspace: (workspace: unknown) => Promise<void>;
+        releaseNotesVisible: boolean;
+        pendingReleaseNotes: ReleaseNotesRelease[];
+        dismissReleaseNotes: () => void;
+      };
+      await vm.openWorkspace({ id: "workspace-1", name: "测试空间", createdAt: "2026-01-01", updatedAt: "2026-01-01",
+        state: "available", recoveryState: "none", unsavedEditorCount: 0, transactionCount: 0 });
+      await flushPromises();
+      await nextTick();
+
+      expect(vm.releaseNotesVisible).toBe(true);
+      expect(vm.pendingReleaseNotes.map((release) => release.version)).toEqual(["1.2.0", "1.3.0"]);
+      vm.dismissReleaseNotes();
+      expect(window.localStorage.getItem(releaseNotesStorageKey("1.2.0"))).toBe("1");
+      expect(window.localStorage.getItem(releaseNotesStorageKey("1.3.0"))).toBe("1");
+      expect(window.localStorage.getItem(RELEASE_NOTES_LAST_SEEN_VERSION_KEY)).toBe("1.3.0");
+      expect(vm.releaseNotesVisible).toBe(false);
+    } finally {
+      additionalReleases.forEach((release) => window.localStorage.removeItem(releaseNotesStorageKey(release.version)));
+      window.localStorage.removeItem(RELEASE_NOTES_LAST_SEEN_VERSION_KEY);
+      RELEASE_NOTES_RELEASES.length = originalLength;
+    }
   });
 
   it("refreshes the bound result SQL after each completed interval without overlapping", async () => {

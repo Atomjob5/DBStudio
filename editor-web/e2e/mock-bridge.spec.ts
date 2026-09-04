@@ -1,6 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
+import { CURRENT_RELEASE, releaseNotesStorageKey } from "../src/releaseNotes";
 
 const completionRequestCounts = new WeakMap<Page, number>();
+const CURRENT_RELEASE_SEEN_KEY = releaseNotesStorageKey(CURRENT_RELEASE.version);
 
 async function installCompletionSnapshotRoute(page: Page): Promise<void> {
   completionRequestCounts.set(page, 0);
@@ -46,7 +48,7 @@ async function ensureMockWorkspace(page: Page): Promise<void> {
   const selector = page.locator(".connection-pill input");
   await expect(picker.or(selector)).toBeVisible();
   if (!(await picker.isVisible())) return;
-  await page.getByRole("button", { name: "创建第一个工作空间" }).click();
+  await page.getByRole("button", { name: "创建第一个工作空间" }).click({ force: true });
   await page.getByPlaceholder("例如：订单系统开发").fill("Playwright 工作空间");
   await page.getByRole("button", { name: "创建", exact: true }).click();
   await expect(selector).toBeVisible();
@@ -131,10 +133,91 @@ async function resultTypography(page: Page) {
   });
 }
 
-test.beforeEach(async ({ page }) => {
+test.beforeEach(async ({ page }, testInfo) => {
   await installCompletionSnapshotRoute(page);
+  const releaseNotesTest = testInfo.title.includes("shows current release notes once");
+  if (!releaseNotesTest) {
+    await page.addInitScript((storageKey) => localStorage.setItem(storageKey, "1"), CURRENT_RELEASE_SEEN_KEY);
+  }
   await page.goto("/?mock=1");
+  if (!releaseNotesTest) await ensureMockWorkspace(page);
+});
+
+test("shows current release notes once after a workspace is opened", async ({ page }) => {
+  test.setTimeout(45_000);
+  await expect(page.locator(".release-notes-dialog:visible")).toHaveCount(0);
   await ensureMockWorkspace(page);
+
+  const dialog = page.locator(".release-notes-dialog:visible");
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("更新日志");
+  await expect(dialog).toContainText(CURRENT_RELEASE.items[0]!.title);
+  await expect(dialog).toContainText(`v${CURRENT_RELEASE.version}`);
+  await expect(dialog).toContainText("继续下滑开始使用");
+  await expect(dialog.locator(".release-notes-card")).toHaveCount(CURRENT_RELEASE.items.length + 2);
+  await expect(dialog.getByRole("button", { name: "开始使用", exact: true })).toHaveCount(0);
+  const surfaceStyle = await dialog.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const overlay = element.closest(".release-notes-overlay");
+    const overlayStyle = overlay ? getComputedStyle(overlay) : undefined;
+    return {
+      background: style.backgroundColor,
+      border: style.borderWidth,
+      cardShadow: getComputedStyle(element.querySelector<HTMLElement>(".release-notes-card")!).boxShadow,
+      overlayBackground: overlayStyle?.backgroundColor ?? "",
+      overlayImage: overlayStyle?.backgroundImage ?? "",
+      overlayBlur: overlayStyle?.backdropFilter ?? ""
+    };
+  });
+  expect(surfaceStyle.background).toBe("rgba(0, 0, 0, 0)");
+  expect(surfaceStyle.border).toBe("0px");
+  expect(surfaceStyle.overlayBackground).toBe("rgba(235, 240, 247, 0.1)");
+  expect(surfaceStyle.overlayImage).toContain("linear-gradient");
+  expect(surfaceStyle.overlayBlur).toContain("blur(12px)");
+  expect(surfaceStyle.overlayBlur).not.toContain("brightness");
+  expect(surfaceStyle.cardShadow).toContain("8px 18px");
+  expect(surfaceStyle.cardShadow).not.toContain("48px");
+  const darkSurfaceStyle = await dialog.evaluate((element) => {
+    document.documentElement.dataset.theme = "dark";
+    const overlay = element.closest(".release-notes-overlay");
+    const overlayStyle = overlay ? getComputedStyle(overlay) : undefined;
+    const card = element.querySelector<HTMLElement>(".release-notes-card");
+    const result = {
+      overlayBackground: overlayStyle?.backgroundColor ?? "",
+      overlayBlur: overlayStyle?.backdropFilter ?? "",
+      cardShadow: card ? getComputedStyle(card).boxShadow : ""
+    };
+    document.documentElement.dataset.theme = "light";
+    return result;
+  });
+  expect(darkSurfaceStyle.overlayBackground).toBe("rgba(4, 7, 12, 0.2)");
+  expect(darkSurfaceStyle.overlayBlur).toContain("blur(12px)");
+  expect(darkSurfaceStyle.overlayBlur).not.toContain("brightness");
+  expect(darkSurfaceStyle.cardShadow).toContain("8px 18px");
+  expect(darkSurfaceStyle.cardShadow).toContain("0.18");
+  const viewport = dialog.locator(".release-notes-scroll");
+  await viewport.evaluate((element) => {
+    element.scrollTop = element.scrollHeight / 2;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await expect.poll(async () => dialog.locator(".release-notes-card").nth(1).getAttribute("style")).toMatch(/translate3d/);
+
+  await viewport.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await page.waitForTimeout(150);
+  await viewport.evaluate((element) => {
+    for (const deltaY of [64, 32]) {
+      element.dispatchEvent(new WheelEvent("wheel", { deltaY, bubbles: true, cancelable: true }));
+    }
+  });
+  await expect(dialog).toBeHidden();
+  await expect.poll(() => page.evaluate((storageKey) => localStorage.getItem(storageKey), CURRENT_RELEASE_SEEN_KEY)).toBe("1");
+
+  await page.reload();
+  await ensureMockWorkspace(page);
+  await expect(page.locator(".release-notes-dialog:visible")).toHaveCount(0);
 });
 
 test("keeps the activity bar flush, restores a collapsed panel and renders a compact connection selector", async ({ page }) => {
