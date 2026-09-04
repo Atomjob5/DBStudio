@@ -238,6 +238,10 @@ describe("ResultPanel streaming rendering", () => {
         canToggleResultEdit: true, canApplyResultChanges: true },
       global: { plugins: [ElementPlus] }
     });
+    const editTooltip = wrapper.findAllComponents({ name: "IconTooltip" })
+      .find((tooltip) => tooltip.props("content") === "当前结果不可编辑");
+    expect(editTooltip).toBeDefined();
+    expect(editTooltip!.props()).toMatchObject({ showAfter: 1000, hideAfter: 0, enterable: false });
     expect(wrapper.get('[aria-label="切换结果编辑模式"]').attributes("aria-pressed")).toBe("false");
     expect(wrapper.find('[aria-label="结果编辑操作"]').exists()).toBe(false);
     expect(wrapper.find('[aria-label="应用更改"]').exists()).toBe(false);

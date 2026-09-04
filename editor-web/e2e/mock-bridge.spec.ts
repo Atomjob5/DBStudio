@@ -898,6 +898,27 @@ test("edits a FOR UPDATE result in two stages before committing", async ({ page 
   await expect(unlock).toBeDisabled();
 });
 
+test("delays the result edit mode tooltip before showing it", async ({ page }) => {
+  test.setTimeout(45_000);
+  await connectMock(page);
+  await dismissCompletionSchemaDialog(page);
+  await replaceSql(page, "select id, name from sample for update");
+  await page.getByRole("button", { name: "执行", exact: true }).click();
+  await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
+
+  const unlock = page.getByRole("button", { name: "切换结果编辑模式", exact: true });
+  const tooltip = page.getByRole("tooltip").filter({ hasText: "进入结果编辑模式" });
+  await expect(unlock).toBeEnabled();
+  await unlock.hover();
+  await page.waitForTimeout(700);
+  await expect(tooltip).toHaveCount(0);
+  await page.waitForTimeout(450);
+  await expect(tooltip).toBeVisible();
+
+  await page.mouse.move(10, 10);
+  await expect(tooltip).toBeHidden({ timeout: 300 });
+});
+
 test("clones all selected result rows as local insert drafts", async ({ page }) => {
   await connectMock(page);
   await dismissCompletionSchemaDialog(page);

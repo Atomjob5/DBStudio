@@ -52,14 +52,14 @@
                 </span>
               </div>
             </Transition>
-            <el-tooltip :content="resultEditTooltip">
+            <IconTooltip :content="resultEditTooltip">
               <el-button text class="result-edit-mode" :type="resultEditUnlocked ? 'primary' : 'default'"
                          :icon="EditPen" :disabled="!canToggleResultEdit"
                          :aria-pressed="resultEditUnlocked" aria-label="切换结果编辑模式"
                          @click="$emit('toggle-result-edit')">
                 {{ resultEditUnlocked ? "编辑中" : "编辑模式" }}
               </el-button>
-            </el-tooltip>
+            </IconTooltip>
             <span class="result-action-divider" aria-hidden="true" />
           </template>
           <IconTooltip v-if="showRestoreLayout" :content="restoreLayoutTitle">
