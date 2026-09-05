@@ -65,4 +65,6 @@ public final class MySqlDatabaseProvider implements DatabaseProvider {
     public SqlDialect dialect() {
         return dialect;
     }
+
+    @Override public com.dbstudio.spi.ExecutionPlanAdapter executionPlans() { return new MySqlExecutionPlanAdapter(); }
 }

@@ -126,7 +126,7 @@ public final class DbStudioApiController {
     private static final Set<String> COMPLETION_SNIPPET_FIELDS = new LinkedHashSet<String>(Arrays.asList(
             "id", "trigger", "remarks", "sql"));
     private static final Set<String> SHORTCUT_ACTION_IDS = new LinkedHashSet<String>(Arrays.asList(
-            "file.newQuery", "file.openSql", "file.saveSql",
+            "file.newQuery", "file.openSql", "file.saveSql", "query.explain",
             "query.executeCurrent", "query.executeCurrentNewTab", "query.executeAll", "query.cancel",
             "transaction.commit", "transaction.rollback", "data.import", "history.open",
             "settings.open", "ui.toggleTheme", "app.exit",
@@ -148,7 +148,7 @@ public final class DbStudioApiController {
             "Quote", "Comma", "Period", "Slash", "Backquote"));
     private static final String DEFAULT_SHORTCUTS =
             "{\"file.newQuery\":null,\"file.openSql\":null,\"file.saveSql\":null,"
-            + "\"query.executeCurrent\":\"F8\",\"query.executeCurrentNewTab\":null,\"query.executeAll\":\"F7\",\"query.cancel\":\"Shift+Escape\","
+            + "\"query.executeCurrent\":\"F8\",\"query.executeCurrentNewTab\":null,\"query.executeAll\":\"F7\",\"query.explain\":null,\"query.cancel\":\"Shift+Escape\","
             + "\"transaction.commit\":null,\"transaction.rollback\":null,\"data.import\":null,"
             + "\"history.open\":null,\"settings.open\":null,\"ui.toggleTheme\":null,\"app.exit\":null,"
             + "\"workspace.objects\":null,\"workspace.connections\":null,\"workspace.refreshObjects\":null,"
@@ -857,6 +857,51 @@ public final class DbStudioApiController {
         workspace.closeEditor(editorId);
         workspaceRepository.removeEditor(workspaceId, editorId);
         return ApiPayloads.map("closed", true, "requiresTransactionDecision", false);
+    }
+
+    @PostMapping("/workspaces/{workspaceId}/editors/{editorId}/explain")
+    public Map<String, Object> explain(@PathVariable String workspaceId, @PathVariable String editorId,
+                                      @RequestBody Map<String, Object> body) throws Exception {
+        final Workspace workspace = workspaces.require(workspaceId);
+        final EditorSession editor = workspace.editors().require(editorId);
+        if (!workspace.events().connected()) throw new ApiException("EVENT_CHANNEL_REQUIRED", "事件通道尚未连接");
+        ensureEditorContext(workspace, editor);
+        final DatabaseContext context = workspace.requireEditorDatabase(editor);
+        final com.dbstudio.spi.ExecutionPlanAdapter adapter = context.provider().executionPlans();
+        if (!context.provider().capabilities().supports(com.dbstudio.spi.DatabaseCapability.EXPLAIN_PLAN)
+                || adapter == null) throw new ApiException("EXPLAIN_UNSUPPORTED", "此数据库不支持执行计划");
+        Map<String, Object> selection = new LinkedHashMap<String, Object>(body);
+        selection.put("scope", "current");
+        final List<SqlStatement> statements = selectStatements(context.provider(), selection);
+        if (statements.size() != 1) throw new ApiException("EXPLAIN_SINGLE_STATEMENT", "请只选择一条 SQL 查看执行计划");
+        final SqlStatement source = statements.get(0);
+        final AtomicReference<UUID> reference = new AtomicReference<UUID>();
+        QueryResultListener listener = new QueryResultListener() {
+            @Override public void resultStarted(int index, String sql, StatementType type, List<String> columns) {
+                workspace.events().emit("query.resultMeta", ApiPayloads.map("editorId", editorId,
+                        "executionId", executionId(reference), "resultIndex", 0, "sql", sql,
+                        "type", type.name(), "displayType", "execution-plan", "columns", Collections.emptyList(),
+                        "rows", Collections.emptyList(), "updateCount", -1, "durationMs", 0,
+                        "truncated", false, "complete", false,
+                        "sourceStartOffset", source.startOffset(), "sourceEndOffset", source.endOffset()));
+            }
+            @Override public void rows(int index, List<List<String>> rows) { }
+            @Override public void resultCompleted(int index, StatementResult result) {
+                workspace.events().emit("query.resultComplete", ApiPayloads.map("editorId", editorId,
+                        "executionId", executionId(reference), "resultIndex", 0, "displayType", "execution-plan",
+                        "plan", result.executionPlan(), "durationMs", result.duration().toMillis(),
+                        "errorMessage", result.errorMessage(), "complete", true));
+            }
+        };
+        UUID id = workspace.execute(editor, statements, true, true, executionId -> {
+            reference.set(executionId);
+            workspace.events().emit("query.started", ApiPayloads.map("editorId", editorId,
+                    "executionId", executionId.toString(), "displayType", "execution-plan", "resultPresentation", "append",
+                    "statements", Collections.singletonList(ApiPayloads.map("sql", source.text(),
+                            "startOffset", source.startOffset(), "endOffset", source.endOffset()))));
+        }, listener, (executionId, execution, failure) ->
+                finishExecution(workspace, context, editorId, executionId, execution, failure, false), adapter);
+        return ApiPayloads.map("executionId", id.toString());
     }
 
     @PostMapping("/workspaces/{workspaceId}/editors/{editorId}/executions")
@@ -2166,6 +2211,11 @@ public final class DbStudioApiController {
 
     private void finishExecution(Workspace workspace, DatabaseContext context, String editorId, UUID executionId,
                                  QueryExecution execution, Throwable failure) {
+        finishExecution(workspace, context, editorId, executionId, execution, failure, true);
+    }
+
+    private void finishExecution(Workspace workspace, DatabaseContext context, String editorId, UUID executionId,
+                                 QueryExecution execution, Throwable failure, boolean recordHistory) {
         boolean failed = failure != null || (execution != null && execution.failed());
         boolean cancelled = execution != null && execution.cancelled();
         long duration = execution == null ? 0 : execution.duration().toMillis();
@@ -2179,6 +2229,7 @@ public final class DbStudioApiController {
                 execution == null ? 0 : execution.results().size());
         try { workspaceRepository.updateTransactionState(workspace.id(), editorId,
                 editor.transactionDirty() ? "active" : "none"); } catch (SQLException ignored) { }
+        if (!recordHistory) return;
         try {
             String sql = editor.lastSql() == null ? "" : editor.lastSql();
             String error = failure == null ? firstError(execution) : safeMessage(failure);
@@ -3027,7 +3078,9 @@ public final class DbStudioApiController {
         if (execution == null || index < 0 || index >= execution.results().size()) {
             throw new ApiException("RESULT_NOT_FOUND", "查询结果不存在或已经过期");
         }
-        return execution.results().get(index);
+        StatementResult result = execution.results().get(index);
+        if (result.isExecutionPlan()) throw new ApiException("PLAN_NOT_DATA", "执行计划不支持数据分页、编辑或导出");
+        return result;
     }
 
     private static List<Integer> exportIndices(Map<String, Object> body, String key, int size, String label,

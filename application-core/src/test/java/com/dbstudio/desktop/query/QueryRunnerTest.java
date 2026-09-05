@@ -29,6 +29,38 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Assumptions;
 
 class QueryRunnerTest {
+    @Test void explainsDmlWithoutExecutingItAndPreservesPendingTransaction() throws Exception {
+        Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
+        connection.createStatement().execute("CREATE TABLE plan_test(id INTEGER)");
+        connection.setAutoCommit(false);
+        try (QueryRunner runner = new QueryRunner(session(connection), 1, 1)) {
+            runner.execute(Collections.singletonList(sql("INSERT INTO plan_test VALUES(7)", StatementType.INSERT)), true).join();
+            assertTrue(runner.isTransactionDirty());
+            com.dbstudio.spi.ExecutionPlanAdapter adapter = new com.dbstudio.spi.ExecutionPlanAdapter() {
+                public void validate(String text) { }
+                public com.dbstudio.spi.ExecutionPlan explain(DatabaseSession session, String text, Control control) throws SQLException {
+                    control.checkCancelled();
+                    return new com.dbstudio.spi.ExecutionPlan(text, "test", "complete plan", Collections.emptyList(), "");
+                }
+            };
+            SqlStatement target = sql("DELETE FROM plan_test", StatementType.DELETE);
+            QueryExecution plan = runner.execute(Collections.singletonList(target), true, QueryResultListener.NONE, () -> {}, adapter).join();
+            assertTrue(plan.results().get(0).isExecutionPlan());
+            assertEquals("complete plan", plan.results().get(0).executionPlan().getRawText());
+            assertTrue(runner.isTransactionDirty());
+            try (java.sql.ResultSet rows = connection.createStatement().executeQuery("SELECT count(*) FROM plan_test")) {
+                assertTrue(rows.next()); assertEquals(1, rows.getInt(1));
+            }
+            QueryExecution cancelled = runner.execute(Collections.singletonList(target), true, QueryResultListener.NONE,
+                    () -> runner.cancel(), adapter).join();
+            assertTrue(cancelled.cancelled()); assertTrue(cancelled.results().get(0).isExecutionPlan());
+            assertFalse(runner.isRunning()); assertTrue(runner.isTransactionDirty());
+            runner.rollback().join();
+            try (java.sql.ResultSet rows = connection.createStatement().executeQuery("SELECT count(*) FROM plan_test")) {
+                assertTrue(rows.next()); assertEquals(0, rows.getInt(1));
+            }
+        }
+    }
     @Test
     void appliesConfiguredClobPreviewLengthToLargeJson() throws Exception {
         ObjectMapper mapper = new ObjectMapper();

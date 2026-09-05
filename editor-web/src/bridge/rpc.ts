@@ -448,6 +448,7 @@ export class RpcClient {
       case "editor.close": return { path: `${ws}/editors/${editorId}/close`, method: "POST", body };
       case "editor.draft": return { path: `${ws}/editors/${editorId}/draft`, method: "PUT", body };
       case "query.execute": return { path: `${ws}/editors/${editorId}/executions`, method: "POST", body };
+      case "query.explain": return { path: `${ws}/editors/${editorId}/explain`, method: "POST", body };
       case "query.closeResult": return {
         path: `${ws}/editors/${editorId}/executions/${encodeURIComponent(String(body.executionId ?? ""))}`,
         method: "DELETE", body: undefined

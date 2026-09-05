@@ -64,6 +64,25 @@ class MySqlIntegrationTest {
                 // MySQL DDL commits implicitly, so create all fixtures before exercising rollback.
                 statement.executeUpdate("INSERT INTO contract_test VALUES (1, 'first')");
             }
+            com.dbstudio.spi.ExecutionPlanAdapter.Control control = new com.dbstudio.spi.ExecutionPlanAdapter.Control() {
+                public void active(java.sql.Statement statement) { }
+                public void checkCancelled() { }
+                public void cleanup() { }
+            };
+            for (String sql : new String[] { "SELECT * FROM contract_test", "SELECT count(*) FROM contract_test GROUP BY name",
+                    "WITH c AS (SELECT * FROM contract_test) SELECT * FROM c",
+                    "SELECT a.id FROM contract_test a JOIN contract_test b ON a.id=b.id",
+                    "SELECT * FROM contract_test WHERE id IN (SELECT id FROM contract_test)",
+                    "UPDATE contract_test SET name='changed' WHERE id=1", "DELETE FROM contract_test WHERE id=1",
+                    "INSERT INTO contract_test VALUES(2, 'not inserted')" }) {
+                com.dbstudio.spi.ExecutionPlan plan = provider.executionPlans().explain(session, sql, control);
+                assertFalse(plan.getRawText().isEmpty()); assertFalse(plan.getNodes().isEmpty(), plan.getWarning());
+            }
+            try (java.sql.Statement statement = session.jdbcConnection().createStatement();
+                 java.sql.ResultSet rows = statement.executeQuery("SELECT id,name FROM contract_test")) {
+                assertTrue(rows.next()); assertEquals(1, rows.getInt(1)); assertEquals("first", rows.getString(2));
+                assertFalse(rows.next());
+            }
             assertTrue(provider.metadata().listObjects(
                     session, mysql.getDatabaseName(), DatabaseObjectType.TABLE).stream()
                     .anyMatch(object -> object.name().equals("contract_test")));

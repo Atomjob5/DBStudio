@@ -43,4 +43,7 @@ public final class OracleDatabaseProvider implements DatabaseProvider {
     @Override public ConnectionAdapter connections() { return connections; }
     @Override public MetadataAdapter metadata() { return metadata; }
     @Override public SqlDialect dialect() { return dialect; }
+    @Override public com.dbstudio.spi.ExecutionPlanAdapter executionPlans() {
+        return new com.dbstudio.oracle.common.OracleExecutionPlanAdapter();
+    }
 }

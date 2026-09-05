@@ -220,6 +220,13 @@ final class Workspace implements AutoCloseable {
                  boolean retainPreviousResults,
                  Consumer<UUID> started, QueryResultListener listener,
                  final EditorSessionRegistry.ExecutionCallback callback) {
+        return execute(editor, statements, stopOnError, retainPreviousResults, started, listener, callback, null);
+    }
+
+    UUID execute(final EditorSession editor, List<SqlStatement> statements, boolean stopOnError,
+                 boolean retainPreviousResults, Consumer<UUID> started, QueryResultListener listener,
+                 final EditorSessionRegistry.ExecutionCallback callback,
+                 com.dbstudio.spi.ExecutionPlanAdapter planAdapter) {
         ensureBound(editor);
         if (editor.activeExecutionId() != null) throw new ApiException("QUERY_BUSY", "当前标签已有查询正在执行");
         if (editor.transactionOperationActive()) throw new ApiException("TRANSACTION_BUSY", "当前标签正在提交或回滚事务");
@@ -274,7 +281,7 @@ final class Workspace implements AutoCloseable {
                                 }
                             }
                         }
-                    });
+                    }, planAdapter);
         } catch (RuntimeException exception) {
             finishExecutionLease(editor, active); throw exception;
         }

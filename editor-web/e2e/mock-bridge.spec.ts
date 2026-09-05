@@ -143,6 +143,30 @@ test.beforeEach(async ({ page }, testInfo) => {
   if (!releaseNotesTest) await ensureMockWorkspace(page);
 });
 
+test("shows execution plans as independent result tabs", async ({ page }, testInfo) => {
+  test.setTimeout(120_000);
+  await connectMock(page);
+  await page.locator(".monaco-editor .view-lines").click();
+  await page.keyboard.insertText("select * from sample");
+  await page.getByRole("button", { name: "执行", exact: true }).click();
+  await expect(page.locator(".result-tabs").getByRole("tab", { name: "结果 1", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "执行", exact: true })).toBeEnabled();
+  await page.locator(".execute-control .el-dropdown__caret-button").click();
+  await page.getByRole("menuitem", { name: "查看执行计划" }).click();
+  await expect(page.locator(".result-tabs").getByRole("tab", { name: "执行计划 2", exact: true })).toBeVisible();
+  await expect(page.getByRole("table", { name: "计划算子" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "下一页数据", exact: true })).toBeHidden();
+  await page.getByText("原始文本", { exact: true }).click();
+  await expect(page.locator(".plan-text")).toContainText("query_block");
+  await page.getByText("树形表格", { exact: true }).click();
+  await page.screenshot({ path: testInfo.outputPath("execution-plan.png") });
+  await page.locator(".result-tabs").getByRole("tab", { name: "结果 1", exact: true }).click();
+  await expect(page.getByRole("table", { name: "计划算子" })).toBeHidden();
+  await expect(page.getByRole("button", { name: "下一页数据", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "执行", exact: true }).click();
+  await expect(page.locator(".result-tabs").getByRole("tab")).toHaveCount(1);
+});
+
 test("shows current release notes once after a workspace is opened", async ({ page }) => {
   test.setTimeout(45_000);
   await expect(page.locator(".release-notes-dialog:visible")).toHaveCount(0);

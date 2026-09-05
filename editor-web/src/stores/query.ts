@@ -18,13 +18,14 @@ export const useQueryStore = defineStore("query", () => {
     return (retained.value[editorId] ?? []).find((item) => item.executionId === executionId);
   }
 
-  function start(editorId: string, executionId: string, presentation: "replace" | "append" = "replace"): void {
+  function start(editorId: string, executionId: string, presentation: "replace" | "append" = "replace",
+                 displayType: "data" | "execution-plan" = "data"): void {
     if (executions.value[editorId]?.executionId === executionId) return;
     const previous = executionList(editorId);
     retained.value = { ...retained.value, [editorId]: presentation === "append" ? previous : [] };
     executions.value = { ...executions.value, [editorId]: {
       executionId, editorId, results: [], busy: true, cancelled: false, failed: false, durationMs: 0,
-      temporary: presentation === "append"
+      temporary: presentation === "append", displayType
     } };
   }
 

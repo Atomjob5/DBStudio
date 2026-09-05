@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { computed, defineComponent, nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
-import { flushPromises, mount } from "@vue/test-utils";
+import { enableAutoUnmount, flushPromises, mount } from "@vue/test-utils";
 import ElementPlus from "element-plus";
 import ResultPanel from "./ResultPanel.vue";
 import { useAppStore } from "../stores/app";
@@ -14,10 +14,47 @@ import type { Column } from "element-plus";
 import type { VNode } from "vue";
 
 const clipboardWrite = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+enableAutoUnmount(afterEach);
 vi.mock("../clipboard", () => ({ writeClipboardText: clipboardWrite }));
 
 describe("ResultPanel streaming rendering", () => {
   beforeEach(() => { setActivePinia(createPinia()); clipboardWrite.mockClear(); });
+
+  it("appends a distinct plan tab, hides data actions, and switches back to retained data", async () => {
+    const queries = useQueryStore();
+    queries.start("e", "data");
+    queries.addResult("e", { resultIndex: 0, sql: "select 1", type: "QUERY", columns: ["id"], rows: [["1"]],
+      updateCount: -1, truncated: false, durationMs: 1, complete: true });
+    queries.complete("e", { busy: false });
+    queries.start("e", "plan", "append", "execution-plan");
+    const wrapper = mount(ResultPanel, { props: { executions: queries.executionList("e"), activeResultIndex: "plan" },
+      global: { plugins: [ElementPlus] } });
+    expect(wrapper.text()).toContain("执行计划 2");
+    expect(wrapper.find('[aria-label="结果操作"]').exists()).toBe(false);
+    queries.addResult("e", { resultIndex: 0, sql: "select 1", type: "QUERY", displayType: "execution-plan",
+      columns: [], rows: [], updateCount: -1, truncated: false, durationMs: 1, complete: true,
+      plan: { sql: "select 1", providerId: "mysql", rawText: "original", warning: "", nodes: [] } }, "plan");
+    queries.complete("e", { busy: false });
+    await wrapper.setProps({ executions: queries.executionList("e") });
+    expect(wrapper.get("pre").text()).toBe("original");
+    await wrapper.setProps({ activeResultIndex: "data" });
+    expect(wrapper.find('[aria-label="结果操作"]').exists()).toBe(true);
+    expect(wrapper.get(".plan-view").attributes("style")).toContain("display: none");
+    queries.start("e", "replacement");
+    expect(queries.executionList("e")).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it.each(["cancelled", "failed"] as const)("keeps an empty %s plan tab visible and closable", (status) => {
+    const queries = useQueryStore();
+    queries.start("e", "plan", "append", "execution-plan");
+    queries.complete("e", { [status]: true }, "plan");
+    const wrapper = mount(ResultPanel, { props: { executions: queries.executionList("e"), activeResultIndex: "plan" },
+      global: { plugins: [ElementPlus] } });
+    expect(wrapper.text()).toContain(`执行计划 1 · ${status === "cancelled" ? "已取消" : "失败"}`);
+    expect(wrapper.findComponent({ name: "ElTabPane" }).props("closable")).toBe(true);
+    expect(wrapper.find('[aria-label="结果操作"]').exists()).toBe(false);
+  });
 
   it("renders metadata, batches and completion after immutable store updates", async () => {
     const queries = useQueryStore();

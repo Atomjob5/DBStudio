@@ -15,6 +15,7 @@ export const SHORTCUT_ACTIONS = [
   { id: "query.executeCurrent", group: "mainToolbar", label: "执行当前语句", defaultBinding: "F8" },
   { id: "query.executeCurrentNewTab", group: "mainToolbar", label: "在新结果集执行当前语句", defaultBinding: null },
   { id: "query.executeAll", group: "mainToolbar", label: "执行全部语句", defaultBinding: "F7" },
+  { id: "query.explain", group: "mainToolbar", label: "查看执行计划", defaultBinding: null },
   { id: "query.cancel", group: "mainToolbar", label: "取消执行", defaultBinding: "Shift+Escape" },
   { id: "transaction.commit", group: "mainToolbar", label: "提交", defaultBinding: null },
   { id: "transaction.rollback", group: "mainToolbar", label: "回滚", defaultBinding: null },

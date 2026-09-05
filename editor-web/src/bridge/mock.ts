@@ -88,7 +88,9 @@ function metadata(payload: Record<string, unknown>): unknown[] {
 }
 
 export const developmentMockRequest: MockRequestHandler = async (type, payload, emit) => {
-  if (type === "app.bootstrap") return { providers, systems, environments, profiles, recentFiles: [], settings: { ...mockSettings } };
+  if (type === "app.bootstrap") return { providers: providers.map(provider => ({ ...provider,
+    capabilities: [...provider.capabilities, "EXPLAIN_PLAN"] })), systems, environments, profiles, recentFiles: [], settings: { ...mockSettings } };
+  if (type === "query.closeResult") return { closed: true };
   if (type === "settings.update") {
     const key = String(payload.key ?? "");
     const value = String(payload.value ?? "");
@@ -285,6 +287,24 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
   }
   if (type === "metadata.generateQuery") return { sql: `SELECT * FROM \`${payload.name}\` LIMIT 1000;` };
   if (type === "history.list") return [];
+  if (type === "query.explain") {
+    const editorId = String(payload.editorId), executionId = crypto.randomUUID();
+    const sql = String(payload.selectedText || payload.text || "SELECT * FROM sample");
+    window.setTimeout(() => {
+      emit("query.started", { editorId, executionId, displayType: "execution-plan", resultPresentation: "append" });
+      emit("query.resultMeta", { editorId, executionId, resultIndex: 0, sql, type: "QUERY",
+        displayType: "execution-plan", columns: [], rows: [], updateCount: -1, truncated: false, durationMs: 0 });
+      emit("query.resultComplete", { editorId, executionId, resultIndex: 0, complete: true, durationMs: 12,
+        plan: { sql, providerId: "mysql", rawText: '{"query_block":{"table":{"table_name":"sample","access_type":"ALL","rows_examined_per_scan":200}}}', warning: "",
+          nodes: [{ id: "0", parentId: null, operation: "query_block", object: null, access: null, index: null,
+            estimatedRows: null, cost: "20", condition: null, details: {} },
+          { id: "1", parentId: "0", operation: "table", object: "sample", access: "ALL", index: null,
+            estimatedRows: "200", cost: "20", condition: null, details: { access_type: "ALL" } }] } });
+      emit("query.executionComplete", { editorId, executionId, cancelled: false, failed: false,
+        durationMs: 12, transactionDirty: transactionDirtyEditors.has(editorId) });
+    }, 50);
+    return { executionId };
+  }
   if (type === "query.execute") {
     const editorId = String(payload.editorId); const executionId = crypto.randomUUID();
     let jdbc = mockJdbcSlots.find((item) => item.editorId === editorId && item.physicalConnected);
@@ -332,7 +352,7 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
     ];
     window.setTimeout(() => {
       emit("editor.connectionState", { editorId, state: "active" });
-      emit("query.started", { editorId, executionId });
+      emit("query.started", { editorId, executionId, resultPresentation: payload.resultPresentation });
       const editableForUpdate = /\bfor\s+update\b/i.test(String(payload.text ?? ""));
       if (editableForUpdate) transactionDirtyEditors.add(editorId);
       emit("query.resultMeta", { editorId, executionId, resultIndex: 0, sql: payload.text, type: "QUERY", columns: resultColumns,

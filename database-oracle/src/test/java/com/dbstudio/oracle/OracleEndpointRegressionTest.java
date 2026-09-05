@@ -43,6 +43,14 @@ final class OracleEndpointRegressionTest {
                 assertFalse(namespaces.isEmpty());
                 assertTrue(namespaces.stream().anyMatch(DatabaseNamespace::current));
                 provider.connections().resetSession(session, profile);
+                com.dbstudio.spi.ExecutionPlan plan = provider.executionPlans().explain(session, "SELECT 1 FROM DUAL",
+                        new com.dbstudio.spi.ExecutionPlanAdapter.Control() {
+                            public void active(Statement active) { }
+                            public void checkCancelled() { }
+                            public void cleanup() { }
+                        });
+                assertFalse(plan.getRawText().isEmpty());
+                assertFalse(plan.getNodes().isEmpty(), plan.getWarning());
                 assertFalse(session.jdbcConnection().getAutoCommit());
             }
         } finally {

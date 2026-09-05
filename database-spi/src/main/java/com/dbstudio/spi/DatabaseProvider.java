@@ -22,4 +22,6 @@ public interface DatabaseProvider {
     MetadataAdapter metadata();
 
     SqlDialect dialect();
+
+    default ExecutionPlanAdapter executionPlans() { return null; }
 }

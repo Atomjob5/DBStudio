@@ -19,6 +19,19 @@ public final class StatementResult {
     private final boolean truncated;
     private final Duration duration;
     private final String errorMessage;
+    private boolean executionPlanResult;
+    private com.dbstudio.spi.ExecutionPlan executionPlan;
+
+    public static StatementResult plan(String sql, StatementType type, com.dbstudio.spi.ExecutionPlan plan,
+                                       Duration duration, String error) {
+        StatementResult result = new StatementResult(sql, type, Collections.<String>emptyList(),
+                Collections.<List<String>>emptyList(), -1, false, duration, error);
+        result.executionPlanResult = true;
+        result.executionPlan = plan;
+        return result;
+    }
+    public boolean isExecutionPlan() { return executionPlanResult; }
+    public com.dbstudio.spi.ExecutionPlan executionPlan() { return executionPlan; }
 
     public StatementResult(String sql, StatementType type, List<String> columns, List<List<String>> rows,
                            long updateCount, boolean truncated, Duration duration, String errorMessage) {

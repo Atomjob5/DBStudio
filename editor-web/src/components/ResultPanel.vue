@@ -6,14 +6,15 @@
                  @tab-click="emitResultTabClick" @wheel="emitTabsWheel">
           <el-tab-pane v-for="(tab, index) in resultTabs" :key="tab.key" :name="tab.key"
                        :closable="tab.execution.temporary === true && !tab.execution.busy" :label="tab.result?.errorMessage
-                         ? `错误 ${index + 1}` : `结果 ${index + 1}`" />
+                         && tab.execution.displayType !== 'execution-plan' ? `错误 ${index + 1}` : tab.execution.displayType === 'execution-plan'
+                         ? `执行计划 ${index + 1}${tab.execution.cancelled ? ' · 已取消' : tab.execution.failed || tab.result?.errorMessage ? ' · 失败' : ''}` : `结果 ${index + 1}`" />
         </el-tabs>
         <div class="result-meta" aria-live="polite">
           <span>{{ summary }}</span>
           <el-tag v-if="execution?.historical" size="small" type="info" effect="plain">断线前快照</el-tag>
           <el-tag v-if="activeResult?.truncated" size="small" type="warning" effect="plain">已截断</el-tag>
         </div>
-        <div class="result-actions" aria-label="结果操作">
+        <div v-if="!isPlan" class="result-actions" aria-label="结果操作">
           <template v-if="showResultEditActions">
             <Transition name="result-edit-actions">
               <div v-if="resultEditUnlocked" class="result-edit-operations"
@@ -166,6 +167,8 @@
         <SqlExecutionTimer v-if="resultLoadingAnimation !== 'sql-timeline'" :started-at="executionStartedAt" />
       </div>
       <el-alert v-else-if="activeResult?.errorMessage" :title="activeResult.errorMessage" type="error" show-icon :closable="false" />
+      <div v-else-if="isPlan && !activeResult?.plan" class="plan-message">{{ execution?.cancelled ? '执行计划已取消' : '未获取到执行计划' }}</div>
+      <template v-else-if="isPlan" />
       <div v-else-if="activeResult?.columns.length" ref="tableHost" class="table-host" tabindex="0"
            @keydown="tableKeydown" @pointermove="autoScrollSelection">
         <ResultSingleRecordView v-if="singleRecordMode && selectedRecordRow" ref="singleRecordView"
@@ -219,6 +222,8 @@
         </ResultVirtualGrid>
       </div>
       <el-result v-else icon="success" title="语句执行完成" :sub-title="`影响行数：${activeResult?.updateCount ?? 0}`" />
+      <ExecutionPlanView v-for="tab in planTabs" :key="tab.key" :plan="tab.result!.plan!"
+                         v-show="tab.key === activeTab?.key && !showExecutionLoading && !tab.result?.errorMessage" />
     </template>
     <div v-else-if="showExecutionLoading" class="result-loading" role="status" aria-live="polite"
          :aria-label="resultLoadingAnimation === 'sql-timeline' ? undefined : '正在执行 SQL'">
@@ -286,6 +291,7 @@
 
 <script setup lang="ts">
 import { computed, h, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import ExecutionPlanView from "./ExecutionPlanView.vue";
 import { ElMessage } from "element-plus";
 import {
   ArrowDown, ArrowLeft, ArrowRight, Check, CircleCheck, CopyDocument, DataAnalysis, Document, Download, EditPen,
@@ -487,14 +493,17 @@ interface ResultTab { key: string; execution: QueryExecutionState; result?: Quer
 const resultTabs = computed<ResultTab[]>(() => visibleExecutions.value.flatMap((item) => item.results.length
   ? item.results.map((result) => ({ key: result.resultIndex === 0 ? item.executionId : `${item.executionId}:${result.resultIndex}`,
     execution: item, result }))
-  : item.busy ? [{ key: item.executionId, execution: item }] : []));
+  : item.busy || item.displayType === "execution-plan" ? [{ key: item.executionId, execution: item }] : []));
 const activeTab = computed(() => resultTabs.value.find((item) => item.key === String(activeIndex.value))
   ?? (visibleExecutions.value.length === 1
     ? resultTabs.value.find((item) => item.result?.resultIndex === Number(activeIndex.value)) : undefined)
   ?? resultTabs.value[0]);
 const execution = computed(() => activeTab.value?.execution);
+const isPlan = computed(() => execution.value?.displayType === "execution-plan" || activeResult.value?.displayType === "execution-plan");
+const planTabs = computed(() => resultTabs.value.filter(tab => tab.result?.plan));
 const showExecutionLoading = computed(() => props.executions?.length
-  ? Boolean((props.executing && !activeTab.value?.execution.busy)
+  ? Boolean((isPlan.value && activeTab.value?.execution.busy) || (props.executing && !activeTab.value?.execution.busy
+      && !visibleExecutions.value.some(item => item.busy && item.displayType === "execution-plan"))
     || (activeTab.value?.execution.busy && !activeTab.value?.result))
   : Boolean(props.executing && (!props.execution?.busy || props.execution.results.length === 0)));
 const activeResult = computed(() => activeTab.value?.result);
@@ -646,6 +655,7 @@ const selectedColumnSources = computed(() => {
     .map((column) => column.index);
 });
 const summary = computed(() => {
+  if (isPlan.value) return execution.value?.busy ? "正在获取估算计划…" : `估算计划 · ${activeResult.value?.durationMs ?? 0} ms`;
   const result = activeResult.value;
   if (!result) return "";
   if (execution.value?.busy) return "正在执行…";

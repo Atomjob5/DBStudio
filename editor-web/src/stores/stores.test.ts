@@ -106,6 +106,24 @@ describe("application stores", () => {
     expect(queries.executions["editor-1"].results[0].rows).toEqual([["1"]]);
   });
 
+  it("retains plan types through cancellation and isolates late events and editors", () => {
+    const queries = useQueryStore();
+    queries.start("editor-1", "data");
+    queries.complete("editor-1", {}, "data");
+    queries.start("editor-1", "plan", "append", "execution-plan");
+    queries.start("editor-1", "plan");
+    queries.complete("editor-1", { cancelled: true }, "plan");
+    expect(queries.execution("editor-1", "plan")).toMatchObject({ displayType: "execution-plan", cancelled: true });
+    expect(queries.executionList("editor-1")).toHaveLength(2);
+    queries.start("editor-2", "other-plan", "append", "execution-plan");
+    queries.removeExecution("editor-1", "plan");
+    queries.complete("editor-1", { failed: true }, "plan");
+    expect(queries.execution("editor-1", "data")?.failed).toBe(false);
+    expect(queries.execution("editor-2", "other-plan")?.busy).toBe(true);
+    queries.start("editor-2", "replacement");
+    expect(queries.executionList("editor-2").map(item => item.executionId)).toEqual(["replacement"]);
+  });
+
   it("replaces execution, results and result references for every streamed update", () => {
     const queries = useQueryStore();
     queries.start("editor-1", "execution-1");

@@ -543,7 +543,17 @@ export interface EditorTab {
   connectionState: EditorConnectionState;
 }
 
+export interface ExecutionPlanNode {
+  id: string; parentId: string | null; operation: string; object: string | null;
+  access: string | null; index: string | null; estimatedRows: string | null;
+  cost: string | null; condition: string | null; details: Record<string, string | null>;
+}
+export interface ExecutionPlan {
+  sql: string; providerId: string; rawText: string; warning: string; nodes: ExecutionPlanNode[];
+}
 export interface QueryResult {
+  displayType?: "data" | "execution-plan";
+  plan?: ExecutionPlan;
   resultIndex: number;
   sql: string;
   sourceStartOffset?: number;
@@ -661,6 +671,7 @@ export interface QueryMutationTarget {
 }
 
 export interface QueryExecutionState {
+  displayType?: "data" | "execution-plan";
   executionId: string;
   editorId: string;
   results: QueryResult[];

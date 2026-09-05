@@ -48,6 +48,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 })
 class QueryWebSocketIntegrationTest {
     @Container static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.0.46")
+            .withStartupTimeoutSeconds(600)
             .withDatabaseName("dbstudio").withUsername("dbstudio").withPassword("dbstudio-test-password");
 
     @LocalServerPort int port;
@@ -88,6 +89,7 @@ class QueryWebSocketIntegrationTest {
                 statement.execute("INSERT INTO result_column_comment VALUES (1, 12.30)");
             }
             assertCompletionSnapshot(editorId, workspaceId, cookie, events);
+            assertExecutionPlanFlow(editorId, workspaceId, cookie, events);
             String sourceSql = "SELECT id AS order_id, amount, amount + 1 AS calculated FROM result_column_comment";
             List<Map<String, Object>> metadataEvents = executeSql(editorId, workspaceId, cookie, events, sourceSql);
             assertStatementSources(metadataEvents, sourceSql);
@@ -664,6 +666,41 @@ class QueryWebSocketIntegrationTest {
         return executeSql(editorId, workspaceId, cookie, events,
                 "WITH RECURSIVE numbers(id) AS (SELECT 1 UNION ALL SELECT id + 1 FROM numbers WHERE id < "
                         + rows + ") SELECT id, IF(id > 120, SLEEP(0.02), 0) AS page_delay FROM numbers");
+    }
+
+    @SuppressWarnings("unchecked")
+    private void assertExecutionPlanFlow(String editorId, String workspaceId, String cookie,
+                                         BlockingQueue<Map<String, Object>> events) throws Exception {
+        List<Map<String, Object>> original = executeSql(editorId, workspaceId, cookie, events,
+                "SELECT * FROM result_column_comment");
+        String originalId = String.valueOf(executionComplete(original).get("executionId"));
+        events.clear();
+        Map<String, Object> request = new HashMap<String, Object>();
+        request.put("text", "UPDATE result_column_comment SET amount=99 WHERE id=1");
+        String planId = String.valueOf(exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId
+                + "/editors/" + editorId + "/explain", request, cookie).get("executionId"));
+        Map<String, Object> started = (Map<String, Object>) awaitType(events, "query.started", 10).get("payload");
+        assertEquals("append", started.get("resultPresentation"));
+        assertEquals("execution-plan", started.get("displayType"));
+        Map<String, Object> meta = (Map<String, Object>) awaitType(events, "query.resultMeta", 10).get("payload");
+        assertEquals("execution-plan", meta.get("displayType"));
+        Map<String, Object> result = (Map<String, Object>) awaitType(events, "query.resultComplete", 10).get("payload");
+        assertEquals(planId, result.get("executionId"));
+        assertTrue(result.get("errorMessage") == null, String.valueOf(result));
+        assertTrue(((Map<String, Object>)result.get("plan")).get("rawText").toString().contains("query_block"));
+        awaitType(events, "query.executionComplete", 10);
+        EditorSession editor = workspaces.require(workspaceId).editors().require(editorId);
+        assertTrue(editor.execution(UUID.fromString(originalId)) != null);
+        assertTrue(editor.execution(UUID.fromString(planId)).results().get(0).isExecutionPlan());
+        try (Connection connection = MYSQL.createConnection(""); Statement statement = connection.createStatement();
+             java.sql.ResultSet rows = statement.executeQuery("SELECT amount FROM result_column_comment WHERE id=1")) {
+            assertTrue(rows.next()); assertEquals("12.30", rows.getString(1));
+        }
+        Map<String, Object> page = new HashMap<String, Object>(); page.put("resultExecutionId", planId);
+        ResponseEntity<String> rejected = http.exchange(url("/api/v1/workspaces/" + workspaceId + "/editors/"
+                + editorId + "/results/0/page"), HttpMethod.POST,
+                new HttpEntity<Map<String, Object>>(page, authenticatedJsonHeaders(cookie)), String.class);
+        assertTrue(rejected.getBody().contains("PLAN_NOT_DATA"), rejected.getBody());
     }
 
     private List<Map<String, Object>> executeSql(String editorId, String workspaceId, String cookie,

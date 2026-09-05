@@ -97,6 +97,13 @@ public final class EditorSessionRegistry implements AutoCloseable {
     public UUID execute(final EditorSession session, final List<SqlStatement> statements,
                         boolean stopOnError, boolean retainPreviousResults, Consumer<UUID> startedCallback,
                         QueryResultListener resultListener, final ExecutionCallback callback) {
+        return execute(session, statements, stopOnError, retainPreviousResults, startedCallback, resultListener, callback, null);
+    }
+
+    public UUID execute(final EditorSession session, final List<SqlStatement> statements,
+                        boolean stopOnError, boolean retainPreviousResults, Consumer<UUID> startedCallback,
+                        QueryResultListener resultListener, final ExecutionCallback callback,
+                        com.dbstudio.spi.ExecutionPlanAdapter planAdapter) {
         QueryRunner runner = session.runner();
         if (runner.isRunning() || session.activeExecutionId() != null) {
             throw new RpcException("QUERY_BUSY", "当前标签已有查询正在执行");
@@ -117,7 +124,7 @@ public final class EditorSessionRegistry implements AutoCloseable {
                     session.endExecution(executionId);
                     throw exception;
                 }
-            }).whenComplete((execution, failure) -> {
+            }, planAdapter).whenComplete((execution, failure) -> {
                 session.completeExecution(executionId, execution);
                 callback.completed(executionId, execution, failure);
             });

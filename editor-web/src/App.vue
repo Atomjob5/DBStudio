@@ -86,6 +86,7 @@
               <el-dropdown-item command="current"><span>执行当前语句</span><kbd v-if="settings.shortcuts['query.executeCurrent']">{{ displayShortcut(settings.shortcuts["query.executeCurrent"]) }}</kbd></el-dropdown-item>
               <el-dropdown-item command="current-new-tab"><span>在新结果集执行当前语句</span><kbd v-if="settings.shortcuts['query.executeCurrentNewTab']">{{ displayShortcut(settings.shortcuts["query.executeCurrentNewTab"]) }}</kbd></el-dropdown-item>
               <el-dropdown-item command="script"><span>执行整个脚本</span><kbd v-if="settings.shortcuts['query.executeAll']">{{ displayShortcut(settings.shortcuts["query.executeAll"]) }}</kbd></el-dropdown-item>
+              <el-dropdown-item command="explain" divided :disabled="!canExplain"><span>查看执行计划</span><kbd v-if="settings.shortcuts['query.explain']">{{ displayShortcut(settings.shortcuts['query.explain']) }}</kbd></el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
@@ -244,6 +245,7 @@
     </el-main>
 
     <AppStatusBar :execution-text="activeExecutionText" :busy="activeDatabaseBusy"
+                  :plan-active="activeExecution?.displayType === 'execution-plan'"
                   :selected-row-count="selectedResultRowCount" :result-content-offset="resultContentOffset"
                   :selected-status-text="selectedResultStatusText"
                   :selected-column="selectedResultColumn"
@@ -429,7 +431,7 @@ const objectExplorer = ref<InstanceType<typeof ObjectExplorer>>();
 const monacoEditor = ref<{
   getValue(key?: string): string | undefined;
   setValue(value: string, key?: string): void;
-  triggerExecute(scope: "current" | "script" | "current-new-tab"): void;
+  triggerExecute(scope: "current" | "script" | "current-new-tab" | "explain"): void;
   triggerCompletion(): void;
   runSelectionAction(action: SqlEditorSelectionAction): boolean;
   captureSqlTransformTarget(key?: string): SqlTransformTarget | undefined;
@@ -493,6 +495,8 @@ const executionTimelineSessions = new Map<string, ExecutionTimelineSession>();
 let nextExecutionTimelineAttemptId = 0;
 const activeExecutions = computed(() => editors.activeId ? queries.executionList(editors.activeId) : []);
 const activeResultIndex = ref<string | number>(0);
+const canExplain = computed(() => canExecute.value && Boolean(connections.providers.find(
+  provider => provider.id === editors.active?.connection?.providerId)?.capabilities.includes("EXPLAIN_PLAN")));
 const activeExecution = computed(() => {
   const key = String(activeResultIndex.value);
   return activeExecutions.value.find((execution) => execution.executionId === key
@@ -1125,7 +1129,7 @@ function installEventHandlers(): void {
   }));
   disposers.push(rpc.on("query.started", (raw) => {
     const data = raw as { editorId: string; executionId: string; resultPresentation?: "replace" | "append";
-      statements?: QueryExecutionSource[] };
+      statements?: QueryExecutionSource[]; displayType?: "data" | "execution-plan" };
     const tab = editors.tabs.find((item) => item.id === data.editorId);
     if (tab?.activeExecutionId && tab.activeExecutionId !== data.executionId) return;
     const timelineSession = executionTimelineSessions.get(data.editorId);
@@ -1149,7 +1153,7 @@ function installEventHandlers(): void {
         monacoEditor.value?.releaseExecutionSources?.(execution.executionId);
       }
     }
-    queries.start(data.editorId, data.executionId, presentation);
+    queries.start(data.editorId, data.executionId, presentation, data.displayType);
     if (editors.activeId === data.editorId) activeResultIndex.value = data.executionId;
     if (data.statements?.length) {
       monacoEditor.value?.registerExecutionSources?.(data.executionId, data.statements, data.editorId);
@@ -1843,7 +1847,7 @@ async function runAutoRefresh(epoch: number): Promise<void> {
       executionNotifications.start({ editorId: tab.id, executionId: response.executionId,
         startedAt: tab.executionStartedAt, editorTitle: tab.title });
     }
-    activeResultIndex.value = response.executionId;
+    if (editors.activeId === tab.id) activeResultIndex.value = response.executionId;
     const currentTab = editors.tabs.find((item) => item.id === tab.id);
     if (currentTab?.busy && currentTab.executionPhase !== "cancelling") {
       editors.patch(tab.id, { activeExecutionId: response.executionId, executionPhase: "running" });
@@ -1862,10 +1866,14 @@ async function runAutoRefresh(epoch: number): Promise<void> {
   }
 }
 
-type EditorExecutionScope = "current" | "script" | "current-new-tab";
+type EditorExecutionScope = "current" | "script" | "current-new-tab" | "explain";
 
 function executeFromEditor(scope: EditorExecutionScope, selectedText: string, cursorOffset: number,
                            selectionStartOffset = 0): void {
+  if (scope === "explain") {
+    if (canExplain.value) void executeActive("current", selectedText, cursorOffset, false, "append", selectionStartOffset, true);
+    return;
+  }
   if (scope === "current-new-tab") {
     void executeCurrentInNewTab(selectedText, cursorOffset, selectionStartOffset);
     return;
@@ -1874,14 +1882,17 @@ function executeFromEditor(scope: EditorExecutionScope, selectedText: string, cu
 }
 function triggerEditorExecution(scope: EditorExecutionScope): void {
   if (!canExecute.value) return;
+  if (scope === "explain" && !canExplain.value) return;
   if (typeof monacoEditor.value?.triggerExecute === "function") {
     monacoEditor.value.triggerExecute(scope);
     return;
   }
-  if (scope === "current-new-tab") void executeCurrentInNewTab();
+  if (scope === "explain") void executeActive("current", "", 0, false, "append", 0, true);
+  else if (scope === "current-new-tab") void executeCurrentInNewTab();
   else void executeActive(scope);
 }
 function executeCommand(command: string): void {
+  if (command === "explain") triggerEditorExecution("explain");
   if (command === "current" || command === "script") triggerEditorExecution(command);
   if (command === "current-new-tab") triggerEditorExecution(command);
 }
@@ -1902,7 +1913,7 @@ async function executeCurrentInNewTab(selectedText = "", cursorOffset = 0, selec
 }
 async function executeActive(scope: "current" | "script", selectedText = "", cursorOffset = 0,
                              recoveryRetried = false, presentation: "replace" | "append" = "replace",
-                             selectionStartOffset = 0): Promise<void> {
+                             selectionStartOffset = 0, explain = false): Promise<void> {
   const tab = editors.active;
   if (!tab || tab.busy || resultLoading.value?.editorId === tab.id) return;
   if (!tab.connection || tab.connectionState === "unbound") {
@@ -1932,7 +1943,7 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
     editors.patch(tab.id, { busy: true, activeExecutionId: undefined,
       executionStartedAt: Date.now(), executionPhase: "starting", executionTimelineStage: "thinking" }); app.status = "正在执行…";
     executionAttempted = true;
-    const response = await rpc.request<{ executionId: string }>("query.execute", {
+    const response = await rpc.request<{ executionId: string }>(explain ? "query.explain" : "query.execute", {
       editorId: tab.id, text: monacoEditor.value?.getValue(tab.id) ?? tab.content,
       selectedText, cursorOffset, selectionStartOffset, scope,
       stopOnError: !settings.continueOnError, resultPresentation: presentation
@@ -1942,12 +1953,12 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
       resultEdits.finishEditor(tab.id);
       editors.patch(tab.id, { resultChangesDirty: false });
     }
-    queries.start(tab.id, response.executionId, presentation);
+    queries.start(tab.id, response.executionId, presentation, explain ? "execution-plan" : "data");
     if (queries.execution(tab.id, response.executionId)?.busy) {
       executionNotifications.start({ editorId: tab.id, executionId: response.executionId,
         startedAt: tab.executionStartedAt, editorTitle: tab.title });
     }
-    activeResultIndex.value = response.executionId;
+    if (editors.activeId === tab.id) activeResultIndex.value = response.executionId;
     const current = editors.tabs.find((item) => item.id === tab.id);
     if (current?.busy && current.executionPhase !== "cancelling") {
       editors.patch(tab.id, { activeExecutionId: response.executionId, executionPhase: "running" });
@@ -1964,7 +1975,7 @@ async function executeActive(scope: "current" | "script", selectedText = "", cur
     }
     if ((error as { code?: string }).code === "WORKSPACE_RECOVERED_RETRY_REQUIRED" && !recoveryRetried) {
       if (editors.activeId !== tab.id) return;
-      await executeActive(scope, selectedText, cursorOffset, true, presentation, selectionStartOffset);
+      await executeActive(scope, selectedText, cursorOffset, true, presentation, selectionStartOffset, explain);
       return;
     }
     if ((error as { code?: string }).code === "RISK_REEXECUTION_REQUIRED") {
@@ -2410,6 +2421,7 @@ function handleShortcut(event: KeyboardEvent): void {
 
 function runShortcutAction(actionId: ShortcutActionId): void {
   if (!workspaceOpened.value) return;
+  if (activeExecution.value?.displayType === "execution-plan" && actionId.startsWith("result.")) return;
   if (actionId === "file.newQuery") { void newEditor().catch(reportError); return; }
   if (actionId === "file.openSql") { void openFile().catch(reportError); return; }
   if (actionId === "file.saveSql") {
@@ -2419,6 +2431,7 @@ function runShortcutAction(actionId: ShortcutActionId): void {
   if (actionId === "query.executeCurrent") { triggerEditorExecution("current"); return; }
   if (actionId === "query.executeCurrentNewTab") { triggerEditorExecution("current-new-tab"); return; }
   if (actionId === "query.executeAll") { triggerEditorExecution("script"); return; }
+  if (actionId === "query.explain") { triggerEditorExecution("explain"); return; }
   if (actionId === "query.cancel") {
     if (canCancelExecution.value) void cancelActive();
     return;
@@ -3097,12 +3110,18 @@ async function closeTemporaryResult(executionId: string): Promise<void> {
   try {
     await rpc.ensureOperational();
     await rpc.request("query.closeResult", { editorId: tab.id, executionId });
+    const previous = queries.executionList(tab.id);
+    const closedIndex = previous.findIndex(item => item.executionId === executionId);
+    const wasActive = editors.activeId === tab.id && activeExecution.value?.executionId === executionId;
     monacoEditor.value?.releaseExecutionSources?.(executionId);
     resultEdits.finishExecution(tab.id, executionId);
     queries.removeExecution(tab.id, executionId);
     const remaining = queries.executionList(tab.id);
-    const last = remaining[remaining.length - 1];
-    activeResultIndex.value = last?.executionId ?? 0;
+    if (wasActive) {
+      const neighbor = remaining[Math.min(closedIndex, remaining.length - 1)];
+      const index = closedIndex < remaining.length ? 0 : neighbor?.results.at(-1)?.resultIndex ?? 0;
+      activeResultIndex.value = neighbor ? index === 0 ? neighbor.executionId : `${neighbor.executionId}:${index}` : 0;
+    }
   } catch (error) {
     ElMessage.error(message(error));
   }

@@ -141,7 +141,18 @@ public final class QueryRunner implements AutoCloseable {
                                                      final boolean stopOnError,
                                                      final QueryResultListener listener,
                                                      final Runnable preparedCallback) {
+        return execute(statements, stopOnError, listener, preparedCallback, null);
+    }
+
+    public CompletableFuture<QueryExecution> execute(final List<SqlStatement> statements,
+                                                     final boolean stopOnError,
+                                                     final QueryResultListener listener,
+                                                     final Runnable preparedCallback,
+                                                     final com.dbstudio.spi.ExecutionPlanAdapter planAdapter) {
         final List<SqlStatement> copied = Collections.unmodifiableList(new ArrayList<SqlStatement>(statements));
+        if (planAdapter != null && copied.size() != 1) {
+            throw new QueryExecutionException("请只选择一条 SQL 查看执行计划", null);
+        }
         final Map<String, String> loggingContext = MDC.getCopyOfContextMap();
         if (!executionActive.compareAndSet(false, true)) {
             throw new QueryExecutionException("当前已有 SQL 正在执行", null);
@@ -154,12 +165,43 @@ public final class QueryRunner implements AutoCloseable {
             throw exception;
         }
         return CompletableFuture.supplyAsync(() -> withLoggingContext(loggingContext,
-                () -> executeBlocking(copied, stopOnError, listener)), executor)
+                () -> planAdapter == null ? executeBlocking(copied, stopOnError, listener)
+                        : explainBlocking(copied.get(0), planAdapter, listener)), executor)
                 .whenComplete((ignored, failure) -> {
                     activeStatement.set(null);
                     executionActive.set(false);
                     cancelRequested.set(false);
                 });
+    }
+
+    private QueryExecution explainBlocking(SqlStatement source, com.dbstudio.spi.ExecutionPlanAdapter adapter,
+                                            QueryResultListener listener) {
+        long started = System.nanoTime();
+        com.dbstudio.spi.ExecutionPlan plan = null;
+        String error = null;
+        try {
+            listener.resultStarted(0, source.text(), source.type(), Collections.<String>emptyList());
+            plan = adapter.explain(session, source.text(), new com.dbstudio.spi.ExecutionPlanAdapter.Control() {
+                @Override public void checkCancelled() throws SQLException {
+                    if (cancelRequested.get()) throw new SQLException("执行计划已取消");
+                }
+                @Override public void active(Statement statement) throws SQLException {
+                    checkCancelled();
+                    activeStatement.set(statement);
+                    checkCancelled();
+                }
+                @Override public void cleanup() { activeStatement.set(null); }
+            });
+        } catch (Exception failure) {
+            error = cancelRequested.get() ? "执行计划已取消" : failure.getMessage();
+            if (error == null || error.isEmpty()) error = "获取执行计划失败";
+        } finally { activeStatement.set(null); }
+        boolean cancelled = cancelRequested.get();
+        if (cancelled && error == null) error = "执行计划已取消";
+        Duration duration = Duration.ofNanos(System.nanoTime() - started);
+        StatementResult result = StatementResult.plan(source.text(), source.type(), plan, duration, error);
+        listener.resultCompleted(0, result);
+        return new QueryExecution(Collections.singletonList(result), duration, cancelled);
     }
 
     public CompletableFuture<Void> commit() {

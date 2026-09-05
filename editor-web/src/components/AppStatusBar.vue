@@ -9,7 +9,7 @@
     </div>
 
     <div class="status-result-zone">
-      <div class="status-result-actions" role="toolbar" aria-label="结果操作工具栏">
+      <div v-if="!planActive" class="status-result-actions" role="toolbar" aria-label="结果操作工具栏">
         <span class="auto-refresh-trigger" @contextmenu.prevent.stop="autoRefreshMenuVisible = true">
           <IconTooltip :content="autoRefreshTooltip" placement="top">
             <el-button text :icon="RefreshRight" aria-label="切换定时刷新"
@@ -106,6 +106,7 @@ import IconTooltip from "./IconTooltip.vue";
 import type { SelectedResultColumn, StatusBarSystemItem } from "../types";
 
 const props = defineProps<{
+  planActive?: boolean;
   executionText: string;
   busy: boolean;
   selectedRowCount: number;

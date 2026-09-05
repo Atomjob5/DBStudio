@@ -57,7 +57,7 @@ const props = withDefaults(defineProps<{ modelKey: string; initialValue: string;
 });
 const emit = defineEmits<{
   dirty: [change: { editorId: string; content: string }];
-  execute: [scope: "current" | "script" | "current-new-tab", selection: string, cursorOffset: number,
+  execute: [scope: "current" | "script" | "current-new-tab" | "explain", selection: string, cursorOffset: number,
     selectionStartOffset: number];
   "selection-change": [selected: boolean];
   "update:objectInspectorOpacity": [value: number];
@@ -508,7 +508,7 @@ function synchronizeInBackground(key: string, model: monaco.editor.ITextModel): 
   modelSynchronizer.synchronizeInBackground(key, model);
 }
 
-function trigger(scope: "current" | "script" | "current-new-tab"): void {
+function trigger(scope: "current" | "script" | "current-new-tab" | "explain"): void {
   const editor = instance.value;
   const model = editor?.getModel();
   if (!editor || !model) return;
