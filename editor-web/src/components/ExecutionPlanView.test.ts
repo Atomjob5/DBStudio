@@ -1,10 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 import ElementPlus from "element-plus";
 import ExecutionPlanView from "./ExecutionPlanView.vue";
 import type { ExecutionPlan } from "../types";
-const copy = vi.hoisted(() => vi.fn(async () => {}));
-vi.mock("../clipboard", () => ({ writeClipboardText: copy }));
 
 function plan(): ExecutionPlan {
   return { sql: "SELECT * FROM t", providerId: "mysql", rawText: "full original plan", warning: "", nodes: [
@@ -32,13 +30,13 @@ describe("execution plan view", () => {
     expect(reopened.get('[aria-label="算子详情"]').text()).toContain("t.id > 1");
     reopened.unmount();
   });
-  it("falls back to original text and copies it without truncation", async () => {
+  it("falls back to original text without rendering header actions", () => {
     const value = { ...plan(), nodes: [], warning: "无法解析计划格式" };
     const wrapper = mount(ExecutionPlanView, { props: { plan: value }, global: { plugins: [ElementPlus] } });
     expect(wrapper.get("pre").text()).toBe(value.rawText);
     expect(wrapper.text()).toContain(value.warning);
-    await wrapper.findAll("button").find(button => button.text() === "复制完整计划")!.trigger("click");
-    expect(copy).toHaveBeenCalledWith(value.rawText);
+    expect(wrapper.find(".plan-toolbar").exists()).toBe(false);
+    expect(wrapper.get(".plan-text").attributes("tabindex")).toBe("0");
     wrapper.unmount();
   });
 });

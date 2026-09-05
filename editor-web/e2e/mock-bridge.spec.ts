@@ -143,8 +143,9 @@ test.beforeEach(async ({ page }, testInfo) => {
   if (!releaseNotesTest) await ensureMockWorkspace(page);
 });
 
-test("shows execution plans as independent result tabs", async ({ page }, testInfo) => {
+test("shows execution plans as independent result tabs", async ({ page, context }, testInfo) => {
   test.setTimeout(120_000);
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:4173" });
   await connectMock(page);
   await page.locator(".monaco-editor .view-lines").click();
   await page.keyboard.insertText("select * from sample");
@@ -156,9 +157,21 @@ test("shows execution plans as independent result tabs", async ({ page }, testIn
   await expect(page.locator(".result-tabs").getByRole("tab", { name: "执行计划 2", exact: true })).toBeVisible();
   await expect(page.getByRole("table", { name: "计划算子" })).toBeVisible();
   await expect(page.getByRole("button", { name: "下一页数据", exact: true })).toBeHidden();
-  await page.getByText("原始文本", { exact: true }).click();
+  await expect(page.getByText("估算计划 · mysql", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "切换到原始文本", exact: true }).click();
   await expect(page.locator(".plan-text")).toContainText("query_block");
-  await page.getByText("树形表格", { exact: true }).click();
+  await expect(page.locator(".plan-text")).toHaveCSS("user-select", "text");
+  await page.locator(".plan-text").selectText();
+  await page.keyboard.press("ControlOrMeta+C");
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("query_block");
+  await page.getByRole("button", { name: "切换到树形表格", exact: true }).click();
+  await expect(page.getByRole("button", { name: "展开全部", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "折叠全部", exact: true })).toBeVisible();
+  const planActions = page.getByRole("group", { name: "计划展开操作", exact: true });
+  await expect.poll(() => planActions.evaluate((element) => ({
+    animation: getComputedStyle(element).animationName,
+    width: Math.round(element.getBoundingClientRect().width)
+  }))).toEqual({ animation: "none", width: 58 });
   await page.screenshot({ path: testInfo.outputPath("execution-plan.png") });
   await page.locator(".result-tabs").getByRole("tab", { name: "结果 1", exact: true }).click();
   await expect(page.getByRole("table", { name: "计划算子" })).toBeHidden();

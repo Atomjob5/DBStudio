@@ -1,15 +1,5 @@
 <template>
   <section class="plan-view" aria-label="执行计划">
-    <div class="plan-toolbar">
-      <el-radio-group v-model="mode" size="small" aria-label="计划视图">
-        <el-radio-button value="tree" :disabled="!plan.nodes.length">树形表格</el-radio-button>
-        <el-radio-button value="text">原始文本</el-radio-button>
-      </el-radio-group>
-      <el-button v-if="mode === 'tree'" size="small" @click="collapsed = new Set()">展开全部</el-button>
-      <el-button v-if="mode === 'tree'" size="small" @click="collapsed = new Set(plan.nodes.map(n => n.id))">折叠全部</el-button>
-      <el-button size="small" @click="copy">复制完整计划</el-button>
-      <span>估算计划 · {{ plan.providerId }}</span>
-    </div>
     <el-alert v-if="plan.warning" :title="plan.warning" type="info" :closable="false" />
     <pre v-if="mode === 'text'" class="plan-text" tabindex="0">{{ plan.rawText }}</pre>
     <div v-else class="plan-tree">
@@ -40,8 +30,6 @@
 <script setup lang="ts">
 import { computed, toRefs } from "vue";
 import { planViewState } from "../planViewState";
-import { ElMessage } from "element-plus";
-import { writeClipboardText } from "../clipboard";
 import type { ExecutionPlan, ExecutionPlanNode } from "../types";
 const props = defineProps<{ plan: ExecutionPlan }>();
 const { mode, collapsed, selected } = toRefs(planViewState(props.plan));
@@ -72,16 +60,10 @@ function marker(node: ExecutionPlanNode): string {
   if (/NESTED[ _]LOOP/.test(operation)) return "嵌套循环";
   return "";
 }
-async function copy(): Promise<void> {
-  try { await writeClipboardText(props.plan.rawText); ElMessage.success("已复制完整计划"); }
-  catch { ElMessage.error("复制失败"); }
-}
 </script>
 <style scoped>
 .plan-view { display:flex; flex-direction:column; flex:1; min-height:0; overflow:hidden; color:var(--db-text); }
-.plan-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--db-border-soft); }
-.plan-toolbar>span { margin-left:auto; color:var(--db-muted); font-size:12px; }
-.plan-text { flex:1; overflow:auto; margin:0; padding:12px; font:12px/1.6 monospace; white-space:pre; }
+.plan-text { flex:1; overflow:auto; margin:0; padding:12px; font:12px/1.6 monospace; white-space:pre; user-select:text; -webkit-user-select:text; cursor:text; }
 .plan-tree { display:flex; flex-direction:column; flex:1; min-height:0; }
 .plan-table-scroll { flex:1; min-height:80px; overflow:auto; }
 table { border-collapse:collapse; min-width:100%; font-size:12px; white-space:nowrap; }

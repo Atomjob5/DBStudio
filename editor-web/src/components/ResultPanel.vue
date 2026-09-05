@@ -16,36 +16,36 @@
         </div>
         <div v-if="!isPlan" class="result-actions" aria-label="结果操作">
           <template v-if="showResultEditActions">
-            <Transition name="result-edit-actions">
-              <div v-if="resultEditUnlocked" class="result-edit-operations"
+            <Transition name="result-action-burst">
+              <div v-if="resultEditUnlocked" class="result-action-burst result-edit-operations"
                    role="group" aria-label="结果编辑操作">
-                <span class="result-edit-operation">
+                <span class="result-action-burst-item result-edit-operation">
                   <IconTooltip :content="applyResultChangesTooltip">
                     <el-button text :icon="CircleCheck" aria-label="应用更改"
                                :type="canApplyResultChanges ? 'success' : 'default'"
                                :disabled="!canApplyResultChanges" @click="$emit('apply-result-changes')" />
                   </IconTooltip>
                 </span>
-                <span class="result-edit-operation">
+                <span class="result-action-burst-item result-edit-operation">
                   <IconTooltip content="撤销最后一项本地草稿">
                     <el-button text :icon="RefreshLeft" aria-label="撤销结果草稿"
                                :disabled="editDraftCount === 0" @click="undoResultDraft" />
                   </IconTooltip>
                 </span>
-                <span class="result-edit-operation">
+                <span class="result-action-burst-item result-edit-operation">
                   <IconTooltip content="新增一条本地草稿记录">
                     <el-button text :icon="Plus" aria-label="新增行"
                                :disabled="!activeResult?.mutationTarget?.insertSupported"
                                @click="addResultRow" />
                   </IconTooltip>
                 </span>
-                <span class="result-edit-operation">
+                <span class="result-action-burst-item result-edit-operation">
                   <IconTooltip content="将所选记录标记为待删除">
                     <el-button text :icon="Minus" aria-label="删除行"
                                :disabled="!canDeleteSelectedRows" @click="deleteSelectedResultRows" />
                   </IconTooltip>
                 </span>
-                <span class="result-edit-operation">
+                <span class="result-action-burst-item result-edit-operation">
                   <IconTooltip content="查看旧值、新值和参数化 SQL">
                     <el-button text :icon="Document" aria-label="变更清单"
                                :disabled="editDraftCount + editAppliedCount === 0" @click="openChangesDialog" />
@@ -156,6 +156,8 @@
             </el-popconfirm>
           </div>
         </div>
+        <ExecutionPlanToolbar v-if="isPlan && !execution?.busy && !showExecutionLoading && activeResult?.plan"
+                              :key="activeTab?.key" :plan="activeResult.plan" />
       </div>
       <div v-if="showExecutionLoading" class="result-loading" role="status" aria-live="polite"
            :aria-label="resultLoadingAnimation === 'sql-timeline' ? undefined : '正在执行 SQL'">
@@ -292,6 +294,7 @@
 <script setup lang="ts">
 import { computed, h, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import ExecutionPlanView from "./ExecutionPlanView.vue";
+import ExecutionPlanToolbar from "./ExecutionPlanToolbar.vue";
 import { ElMessage } from "element-plus";
 import {
   ArrowDown, ArrowLeft, ArrowRight, Check, CircleCheck, CopyDocument, DataAnalysis, Document, Download, EditPen,
@@ -655,7 +658,7 @@ const selectedColumnSources = computed(() => {
     .map((column) => column.index);
 });
 const summary = computed(() => {
-  if (isPlan.value) return execution.value?.busy ? "正在获取估算计划…" : `估算计划 · ${activeResult.value?.durationMs ?? 0} ms`;
+  if (isPlan.value) return execution.value?.busy ? "正在获取执行计划…" : `估算计划 · ${activeResult.value?.durationMs ?? 0} ms`;
   const result = activeResult.value;
   if (!result) return "";
   if (execution.value?.busy) return "正在执行…";
@@ -2536,57 +2539,6 @@ onBeforeUnmount(() => {
   84% { transform: translateX(1px) scale(.98); }
   100% { opacity: 1; transform: translateX(0) scale(1); }
 }
-.result-edit-operations {
-  width: 148px;
-  max-width: 148px;
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: 2px;
-  overflow: hidden;
-  transform-origin: right center;
-}
-.result-edit-operation { width: 28px; display: inline-flex; flex: none; }
-.result-edit-actions-enter-active {
-  animation: result-edit-actions-expand 504ms cubic-bezier(.22, 1.35, .36, 1) both;
-}
-.result-edit-actions-enter-active .result-edit-operation {
-  animation: result-edit-operation-in 360ms cubic-bezier(.22, 1.35, .36, 1) both;
-}
-.result-edit-actions-enter-active .result-edit-operation:nth-child(5) { animation-delay: 0ms; }
-.result-edit-actions-enter-active .result-edit-operation:nth-child(4) { animation-delay: var(--duration-stagger); }
-.result-edit-actions-enter-active .result-edit-operation:nth-child(3) {
-  animation-delay: calc(var(--duration-stagger) + var(--duration-stagger));
-}
-.result-edit-actions-enter-active .result-edit-operation:nth-child(2) {
-  animation-delay: calc(var(--duration-stagger) + var(--duration-stagger) + var(--duration-stagger));
-}
-.result-edit-actions-enter-active .result-edit-operation:nth-child(1) {
-  animation-delay: calc(var(--duration-stagger) + var(--duration-stagger) + var(--duration-stagger) + var(--duration-stagger));
-}
-.result-edit-actions-leave-active {
-  transition: max-width var(--duration-quick) var(--ease-smooth-out);
-}
-.result-edit-actions-leave-active .result-edit-operation {
-  animation: result-edit-operation-out var(--duration-quick) var(--ease-smooth-out) both;
-}
-.result-edit-actions-leave-to { max-width: 0; }
-@keyframes result-edit-actions-expand {
-  0% { max-width: 0; }
-  68% { max-width: 148px; }
-  84% { transform: scaleX(1.025); }
-  100% { max-width: 148px; transform: scaleX(1); }
-}
-@keyframes result-edit-operation-in {
-  0% { opacity: 0; transform: translateX(12px) scale(.82); }
-  68% { opacity: 1; transform: translateX(-2px) scale(1.08); }
-  84% { transform: translateX(1px) scale(.98); }
-  100% { opacity: 1; transform: translateX(0) scale(1); }
-}
-@keyframes result-edit-operation-out {
-  from { opacity: 1; transform: translateX(0) scale(1); }
-  to { opacity: 0; transform: translateX(8px) scale(.88); }
-}
 .result-action-divider { width: 1px; height: 18px; margin: 0 4px; background: var(--db-border-soft); }
 .result-change-summary { display: flex; gap: 18px; margin-bottom: 12px; color: var(--db-muted); font-size: 12px; }
 .result-change-preview-error { margin-top: 12px; }
@@ -2729,15 +2681,6 @@ onBeforeUnmount(() => {
 }
 @media (prefers-reduced-motion: reduce) {
   .single-record-navigation-enter-active { animation: none !important; }
-  .result-edit-actions-enter-active,
-  .result-edit-actions-leave-active {
-    animation: none !important;
-    transition: max-width 100ms linear, opacity 100ms linear !important;
-  }
-  .result-edit-actions-enter-active .result-edit-operation,
-  .result-edit-actions-leave-active .result-edit-operation { animation: none !important; }
-  .result-edit-actions-enter-from,
-  .result-edit-actions-leave-to { max-width: 0; opacity: 0; }
 }
 </style>
 

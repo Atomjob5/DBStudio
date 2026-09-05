@@ -45,6 +45,24 @@ describe("ResultPanel streaming rendering", () => {
     wrapper.unmount();
   });
 
+  it("keeps plan controls hidden while the plan result is still loading", async () => {
+    const queries = useQueryStore();
+    queries.start("e", "plan", "append", "execution-plan");
+    queries.addResult("e", {
+      resultIndex: 0, sql: "select 1", type: "QUERY", displayType: "execution-plan",
+      columns: [], rows: [], updateCount: -1, truncated: false, durationMs: 0, complete: false,
+      plan: { sql: "select 1", providerId: "mysql", rawText: "original", warning: "", nodes: [] }
+    }, "plan");
+    const wrapper = mount(ResultPanel, { props: { executions: queries.executionList("e"), activeResultIndex: "plan" },
+      global: { plugins: [ElementPlus] } });
+    expect(wrapper.find('[aria-label="执行计划操作"]').exists()).toBe(false);
+
+    queries.complete("e", { busy: false }, "plan");
+    await wrapper.setProps({ executions: queries.executionList("e") });
+    expect(wrapper.find('[aria-label="执行计划操作"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
   it.each(["cancelled", "failed"] as const)("keeps an empty %s plan tab visible and closable", (status) => {
     const queries = useQueryStore();
     queries.start("e", "plan", "append", "execution-plan");
