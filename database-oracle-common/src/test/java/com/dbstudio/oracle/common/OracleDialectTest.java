@@ -104,6 +104,19 @@ class OracleDialectTest {
                 new SqlStatement("SELECT * FROM x", 0, 15, StatementType.QUERY), true));
     }
 
+    @Test void plansOffsetFetchPagesAndFallsBackForOracleRestrictions() {
+        com.dbstudio.spi.SqlDialect.PagePlan page = dialect.pageQuery(
+                "/* keep */ SELECT id, name FROM sales.orders ORDER BY id FETCH FIRST 10 ROWS ONLY", 3, 2);
+        assertTrue(page.nativePaging());
+        String rewritten = page.sql().toUpperCase();
+        assertTrue(rewritten.contains("OFFSET 3 ROWS"));
+        assertTrue(rewritten.contains("FETCH"));
+        assertTrue(dialect.pageQuery("SELECT id, id FROM sales.orders", 0, 2).nativePaging() == false);
+        assertFalse(dialect.pageQuery("SELECT id FROM sales.orders FOR UPDATE", 0, 2).nativePaging());
+        assertFalse(dialect.pageQuery("SELECT seq.NEXTVAL FROM dual", 0, 2).nativePaging());
+        assertTrue(dialect.pageQuery("SELECT id FROM sales.orders FETCH FIRST 2 ROWS ONLY", 2, 2).empty());
+    }
+
     @Test void identifiesUpdateAndDeleteWithoutTopLevelWhereAsRisky() {
         assertTrue(dialect.requiresWhereClauseConfirmation(statement("UPDATE orders SET status = 'CLOSED'")));
         assertTrue(dialect.requiresWhereClauseConfirmation(statement("DELETE FROM orders")));

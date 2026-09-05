@@ -454,6 +454,7 @@ export class RpcClient {
         method: "DELETE", body: undefined
       };
       case "query.fetchRows": return { path: `${ws}/editors/${editorId}/results/${encodeURIComponent(String(body.resultIndex ?? 0))}/page`, method: "POST", body };
+      case "query.loadAll": return { path: `${ws}/editors/${editorId}/results/${encodeURIComponent(String(body.resultIndex ?? 0))}/load-all`, method: "POST", body };
       case "query.applyChanges": return {
         path: `${ws}/editors/${editorId}/results/${encodeURIComponent(String(body.resultIndex ?? 0))}/changes`,
         method: "POST", body

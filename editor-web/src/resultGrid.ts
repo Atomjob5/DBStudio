@@ -1,5 +1,6 @@
 import type { QueryColumn, QueryMutationKey, QueryMutationTarget } from "./types";
 import { separatorCharacter, type CopySeparator } from "./resultCopy";
+import { ResultRowsSnapshot, snapshotFor, viewFor } from "./resultRows";
 
 export type SortDirection = "asc" | "desc";
 export type FilterOperator = "contains" | "not-contains" | "eq" | "neq" | "starts" | "ends"
@@ -8,7 +9,7 @@ export type FilterCategory = "text" | "number" | "date" | "boolean";
 
 export interface ResultSort { columnIndex: number; direction: SortDirection }
 export interface ResultFilter { columnIndex: number; operator: FilterOperator; value: string }
-export interface ViewRow { sourceIndex: number; cells: Array<string | null> }
+export interface ViewRow { sourceIndex: number; cells: Array<string | null>; sortKey?: PreparedValue | null }
 export interface CellPoint { row: number; column: number }
 export interface CellRange { start: CellPoint; end: CellPoint }
 export interface SelectedCell {
@@ -29,6 +30,18 @@ const NUMBER_TYPES = new Set([-6, 5, 4, -5, 6, 7, 8, 2, 3]);
 const BOOLEAN_TYPES = new Set([-7, 16]);
 const DATE_TYPES = new Set([91, 92, 93, 2013, 2014]);
 const BINARY_TYPES = new Set([-2, -3, -4, 2004]);
+// Constructing an Intl.Collator is relatively expensive. These are kept at
+// module scope because all grid comparisons use the same locale/options.
+const TEXT_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+const FALLBACK_COLLATOR = new Intl.Collator(undefined, { numeric: true });
+
+interface PreparedValue {
+  raw: string;
+  lower?: string;
+  decimal?: { negative: boolean; integer: string; fraction: string };
+  date?: number;
+  boolean?: number;
+}
 
 export function filterCategory(column?: QueryColumn): FilterCategory {
   const type = column?.jdbcType ?? 12;
@@ -41,11 +54,15 @@ export function filterCategory(column?: QueryColumn): FilterCategory {
 export function visibleRows(rows: Array<Array<string | null>>, columns: QueryColumn[],
                             sort: ResultSort | undefined, filters: ResultFilter[]): ViewRow[] {
   const indexed = rows.map((cells, sourceIndex) => ({ sourceIndex, cells }));
-  const filtered = filters.length ? indexed.filter((row) => filters.every((filter) => matchesFilter(
-    row.cells[filter.columnIndex] ?? null, filter, columns[filter.columnIndex]))) : indexed;
-  if (!sort) return filtered;
+  const filterKeys = filters.map((filter) => prepareValue(filter.value, columns[filter.columnIndex]));
+  const filtered = filters.length ? indexed.filter((row) => filters.every((filter, filterIndex) =>
+    matchesPrepared(row.cells[filter.columnIndex] ?? null, filter, columns[filter.columnIndex],
+      filterKeys[filterIndex]))) : indexed;
+  if (!sort) return viewFor(ResultRowsSnapshot.from(filtered));
   const column = columns[sort.columnIndex];
-  return [...filtered].sort((left, right) => {
+  const prepared = filtered.map((row) => ({ ...row,
+    sortKey: prepareValue(row.cells[sort.columnIndex] ?? null, column) }));
+  prepared.sort((left, right) => {
     const leftValue = left.cells[sort.columnIndex] ?? null;
     const rightValue = right.cells[sort.columnIndex] ?? null;
     // NULL is always placed last, independently of the selected direction.
@@ -53,46 +70,113 @@ export function visibleRows(rows: Array<Array<string | null>>, columns: QueryCol
       if (leftValue === rightValue) return left.sourceIndex - right.sourceIndex;
       return leftValue === null ? 1 : -1;
     }
-    const compared = compareValues(leftValue, rightValue, column);
+    const compared = comparePrepared(left.sortKey as PreparedValue,
+      right.sortKey as PreparedValue, column);
     return compared === 0 ? left.sourceIndex - right.sourceIndex
       : sort.direction === "asc" ? compared : -compared;
   });
+  return viewFor(ResultRowsSnapshot.from(prepared));
+}
+
+/** Incrementally extends an existing display index with one result batch. */
+export function appendVisibleRows(previous: ViewRow[], appendedRows: Array<Array<string | null>>,
+                                  sourceOffset: number, columns: QueryColumn[],
+                                  sort: ResultSort | undefined, filters: ResultFilter[]): ViewRow[] {
+  if (!appendedRows.length) return previous;
+  if (!sort && !filters.length) {
+    return viewFor(snapshotFor(previous).append(
+      appendedRows.map((cells, index) => ({ sourceIndex: sourceOffset + index, cells }))));
+  }
+  const batch = visibleRows(appendedRows, columns, sort, filters)
+    .map((row) => ({ ...row, sourceIndex: row.sourceIndex + sourceOffset }));
+  if (!sort) return viewFor(snapshotFor(previous).append(batch));
+  const merged: ViewRow[] = [];
+  let left = 0; let right = 0;
+  while (left < previous.length && right < batch.length) {
+    if (compareViewRows(previous[left], batch[right], sort, columns[sort.columnIndex]) <= 0) {
+      merged.push(previous[left++]);
+    } else {
+      merged.push(batch[right++]);
+    }
+  }
+  merged.push(...previous.slice(left), ...batch.slice(right));
+  return viewFor(ResultRowsSnapshot.from(merged));
+}
+
+function compareViewRows(left: ViewRow, right: ViewRow, sort: ResultSort, column?: QueryColumn): number {
+  const leftValue = left.cells[sort.columnIndex] ?? null;
+  const rightValue = right.cells[sort.columnIndex] ?? null;
+  if (leftValue === null || rightValue === null) {
+    if (leftValue === rightValue) return left.sourceIndex - right.sourceIndex;
+    return leftValue === null ? 1 : -1;
+  }
+  const compared = comparePrepared(
+    (left.sortKey ?? prepareValue(leftValue, column)) as PreparedValue,
+    (right.sortKey ?? prepareValue(rightValue, column)) as PreparedValue, column);
+  return compared === 0 ? left.sourceIndex - right.sourceIndex
+    : sort.direction === "asc" ? compared : -compared;
 }
 
 export function compareValues(left: string | null, right: string | null, column?: QueryColumn): number {
   if (left === null) return right === null ? 0 : 1;
   if (right === null) return -1;
-  const category = filterCategory(column);
-  if (category === "number") return compareDecimal(left, right);
-  if (category === "date") {
-    const leftTime = Date.parse(left); const rightTime = Date.parse(right);
-    if (Number.isFinite(leftTime) && Number.isFinite(rightTime)) return leftTime - rightTime;
-  }
-  if (category === "boolean") return booleanValue(left) - booleanValue(right);
-  return left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
+  return comparePrepared(prepareValue(left, column) as PreparedValue,
+    prepareValue(right, column) as PreparedValue, column);
 }
 
 export function matchesFilter(value: string | null, filter: ResultFilter, column?: QueryColumn): boolean {
   if (filter.operator === "null") return value === null;
   if (filter.operator === "not-null") return value !== null;
   if (value === null) return false;
+  return matchesPrepared(value, filter, column, prepareValue(filter.value, column));
+}
+
+function matchesPrepared(value: string | null, filter: ResultFilter, column: QueryColumn | undefined,
+                         expectedKey: PreparedValue | null | undefined): boolean {
+  if (filter.operator === "null") return value === null;
+  if (filter.operator === "not-null") return value !== null;
+  if (value === null) return false;
   const expected = filter.value;
-  const category = filterCategory(column);
-  if (filter.operator === "contains") return value.toLocaleLowerCase().includes(expected.toLocaleLowerCase());
-  if (filter.operator === "not-contains") return !value.toLocaleLowerCase().includes(expected.toLocaleLowerCase());
-  if (filter.operator === "starts") return value.toLocaleLowerCase().startsWith(expected.toLocaleLowerCase());
-  if (filter.operator === "ends") return value.toLocaleLowerCase().endsWith(expected.toLocaleLowerCase());
-  const compared = category === "number" ? compareDecimal(value, expected)
-    : category === "date" && Number.isFinite(Date.parse(value)) && Number.isFinite(Date.parse(expected))
-      ? Date.parse(value) - Date.parse(expected)
-      : category === "boolean" ? booleanValue(value) - booleanValue(expected)
-        : value.localeCompare(expected, undefined, { numeric: true, sensitivity: "base" });
+  const lowerValue = value.toLocaleLowerCase();
+  const lowerExpected = expectedKey?.lower ?? expected.toLocaleLowerCase();
+  if (filter.operator === "contains") return lowerValue.includes(lowerExpected);
+  if (filter.operator === "not-contains") return !lowerValue.includes(lowerExpected);
+  if (filter.operator === "starts") return lowerValue.startsWith(lowerExpected);
+  if (filter.operator === "ends") return lowerValue.endsWith(lowerExpected);
+  const compared = comparePrepared(prepareValue(value, column) as PreparedValue,
+    (expectedKey ?? prepareValue(expected, column)) as PreparedValue, column);
   if (filter.operator === "eq") return compared === 0;
   if (filter.operator === "neq") return compared !== 0;
   if (filter.operator === "gt") return compared > 0;
   if (filter.operator === "gte") return compared >= 0;
   if (filter.operator === "lt") return compared < 0;
   return compared <= 0;
+}
+
+function prepareValue(value: string | null, column?: QueryColumn): PreparedValue | null {
+  if (value === null) return null;
+  const category = filterCategory(column);
+  if (category === "number") return { raw: value, decimal: decimalParts(value) };
+  if (category === "date") {
+    const date = Date.parse(value);
+    return { raw: value, date: Number.isFinite(date) ? date : undefined };
+  }
+  if (category === "boolean") return { raw: value, boolean: booleanValue(value) };
+  return { raw: value, lower: value.toLocaleLowerCase() };
+}
+
+function comparePrepared(left: PreparedValue, right: PreparedValue, column?: QueryColumn): number {
+  const category = filterCategory(column);
+  if (category === "number") {
+    return left.decimal && right.decimal
+      ? compareDecimalParts(left.decimal, right.decimal) : FALLBACK_COLLATOR.compare(left.raw, right.raw);
+  }
+  if (category === "date") {
+    return left.date !== undefined && right.date !== undefined
+      ? left.date - right.date : TEXT_COLLATOR.compare(left.raw, right.raw);
+  }
+  if (category === "boolean") return (left.boolean ?? 0) - (right.boolean ?? 0);
+  return TEXT_COLLATOR.compare(left.raw, right.raw);
 }
 
 export function normalizeRange(range: CellRange): CellRange {
@@ -364,15 +448,14 @@ function unquoteIdentifier(value: string): string {
 
 function booleanValue(value: string): number { return /^(?:true|1|yes|y)$/i.test(value.trim()) ? 1 : 0; }
 
-function compareDecimal(left: string, right: string): number {
-  const parsedLeft = decimalParts(left); const parsedRight = decimalParts(right);
-  if (!parsedLeft || !parsedRight) return left.localeCompare(right, undefined, { numeric: true });
-  if (parsedLeft.negative !== parsedRight.negative) return parsedLeft.negative ? -1 : 1;
-  let compared = parsedLeft.integer.length - parsedRight.integer.length;
-  if (!compared) compared = parsedLeft.integer.localeCompare(parsedRight.integer);
-  if (!compared) compared = parsedLeft.fraction.padEnd(Math.max(parsedLeft.fraction.length, parsedRight.fraction.length), "0")
-    .localeCompare(parsedRight.fraction.padEnd(Math.max(parsedLeft.fraction.length, parsedRight.fraction.length), "0"));
-  return parsedLeft.negative ? -compared : compared;
+function compareDecimalParts(left: { negative: boolean; integer: string; fraction: string },
+                             right: { negative: boolean; integer: string; fraction: string }): number {
+  if (left.negative !== right.negative) return left.negative ? -1 : 1;
+  let compared = left.integer.length - right.integer.length;
+  if (!compared) compared = left.integer.localeCompare(right.integer);
+  if (!compared) compared = left.fraction.padEnd(Math.max(left.fraction.length, right.fraction.length), "0")
+    .localeCompare(right.fraction.padEnd(Math.max(left.fraction.length, right.fraction.length), "0"));
+  return left.negative ? -compared : compared;
 }
 
 function decimalParts(value: string): { negative: boolean; integer: string; fraction: string } | undefined {

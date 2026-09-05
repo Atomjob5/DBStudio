@@ -1378,6 +1378,33 @@ public final class QueryRunner implements AutoCloseable {
                 });
     }
 
+    /** Streams all rows after {@code offset} from one execution of the source SQL. */
+    public CompletableFuture<StreamResult> streamRows(final String sql, final int offset,
+                                                      final int batchRows, final PageRowsListener listener,
+                                                      final Runnable preparedCallback) {
+        if (offset < 0) throw new IllegalArgumentException("offset must not be negative");
+        if (batchRows < 1) throw new IllegalArgumentException("batchRows must be positive");
+        if (listener == null) throw new IllegalArgumentException("listener is required");
+        if (!executionActive.compareAndSet(false, true)) {
+            throw new QueryExecutionException("当前已有 SQL 正在执行", null);
+        }
+        cancelRequested.set(false);
+        try {
+            preparedCallback.run();
+        } catch (RuntimeException exception) {
+            executionActive.set(false);
+            throw exception;
+        }
+        final Map<String, String> loggingContext = MDC.getCopyOfContextMap();
+        return CompletableFuture.supplyAsync(() -> withLoggingContext(loggingContext,
+                () -> streamRowsBlocking(sql, offset, batchRows, listener)), executor)
+                .whenComplete((ignored, failure) -> {
+                    activeStatement.set(null);
+                    executionActive.set(false);
+                    cancelRequested.set(false);
+                });
+    }
+
     public boolean cancel() {
         if (!executionActive.get() && activeStatement.get() == null) return false;
         cancelRequested.set(true);
@@ -1418,7 +1445,10 @@ public final class QueryRunner implements AutoCloseable {
         Instant started = Instant.now();
         LOG.info("分页查询开始 offset={} limit={}", offset, limit);
         if (cancelRequested.get()) return PageResult.cancelledResult();
-        PreparedResultQuery prepared = columnResolver.prepare(sql);
+        SqlDialect.PagePlan plan = dialect == null ? SqlDialect.PagePlan.fallback(sql, offset, limit)
+                : dialect.pageQuery(sql, offset, limit);
+        if (plan.empty()) return new PageResult(Collections.<List<String>>emptyList(), false);
+        PreparedResultQuery prepared = columnResolver.prepare(plan.sql());
         try (Statement statement = session.jdbcConnection().createStatement()) {
             statement.setFetchSize(JDBC_FETCH_SIZE);
             activeStatement.set(statement);
@@ -1428,31 +1458,36 @@ public final class QueryRunner implements AutoCloseable {
             }
             try (ResultSet resultSet = statement.getResultSet()) {
                 int skipped = 0;
-                while (skipped < offset && !cancelRequested.get() && resultSet.next()) skipped++;
+                while (skipped < plan.skipOffset() && !cancelRequested.get() && resultSet.next()) skipped++;
                 if (cancelRequested.get()) return PageResult.cancelledResult();
-                if (skipped < offset) return new PageResult(Collections.<List<String>>emptyList(), false);
+                if (skipped < plan.skipOffset()) return new PageResult(Collections.<List<String>>emptyList(), false);
 
                 ResultSetMetaData metadata = resultSet.getMetaData();
                 int columnCount = metadata.getColumnCount();
                 int visibleColumnCount = Math.max(0, columnCount - prepared.hiddenColumnCount());
                 final int pageClobMaxCharacters = clobMaxCharacters;
-                List<List<String>> rows = new ArrayList<List<String>>(limit);
-                List<List<String>> locators = new ArrayList<List<String>>(limit);
-                while (rows.size() < limit && !cancelRequested.get() && resultSet.next()) {
+                List<List<String>> fetchedRows = new ArrayList<List<String>>(plan.readLimit());
+                List<List<String>> fetchedLocators = new ArrayList<List<String>>(plan.readLimit());
+                while (fetchedRows.size() < plan.readLimit() && !cancelRequested.get() && resultSet.next()) {
                     List<String> row = new ArrayList<String>(visibleColumnCount);
                     for (int index = 1; index <= visibleColumnCount; index++) {
                         row.add(displayValue(resultSet.getObject(index), pageClobMaxCharacters));
                     }
-                    rows.add(Collections.unmodifiableList(row));
+                    fetchedRows.add(Collections.unmodifiableList(row));
                     List<String> locator = new ArrayList<String>(prepared.hiddenColumnCount());
                     for (int index = visibleColumnCount + 1; index <= columnCount; index++) {
                         locator.add(displayValue(resultSet.getObject(index), pageClobMaxCharacters));
                     }
-                    locators.add(Collections.unmodifiableList(locator));
+                    fetchedLocators.add(Collections.unmodifiableList(locator));
                 }
                 if (cancelRequested.get()) return PageResult.cancelledResult();
-                boolean hasMore = resultSet.next();
-                if (cancelRequested.get()) return PageResult.cancelledResult();
+                boolean hasMore = fetchedRows.size() > plan.requestedLimit();
+                List<List<String>> rows = hasMore
+                        ? new ArrayList<List<String>>(fetchedRows.subList(0, plan.requestedLimit()))
+                        : fetchedRows;
+                List<List<String>> locators = hasMore
+                        ? new ArrayList<List<String>>(fetchedLocators.subList(0, plan.requestedLimit()))
+                        : fetchedLocators;
                 PageResult result = new PageResult(rows, newRowIds(rows.size()), locators, hasMore, false);
                 LOG.info("分页查询完成 rows={} hasMore={} durationMs={}", rows.size(), hasMore,
                         Duration.between(started, Instant.now()).toMillis());
@@ -1466,6 +1501,68 @@ public final class QueryRunner implements AutoCloseable {
             LOG.warn("分页查询失败 sqlState={} errorCode={} durationMs={}", exception.getSQLState(),
                     exception.getErrorCode(), Duration.between(started, Instant.now()).toMillis(), exception);
             throw new QueryExecutionException("加载更多结果失败：" + sanitize(exception), exception);
+        } finally {
+            activeStatement.set(null);
+        }
+    }
+
+    private StreamResult streamRowsBlocking(String sql, int offset, int batchRows,
+                                            PageRowsListener listener) {
+        Instant started = Instant.now();
+        LOG.info("全量结果流式读取开始 offset={} batchRows={}", offset, batchRows);
+        if (cancelRequested.get()) return new StreamResult(0, true);
+        PreparedResultQuery prepared = columnResolver.prepare(sql);
+        try (Statement statement = session.jdbcConnection().createStatement()) {
+            statement.setFetchSize(JDBC_FETCH_SIZE);
+            activeStatement.set(statement);
+            if (!statement.execute(prepared.executionSql())) {
+                throw new QueryExecutionException("该结果不是可读取的查询结果", null);
+            }
+            try (ResultSet resultSet = statement.getResultSet()) {
+                int skipped = 0;
+                while (skipped < offset && !cancelRequested.get() && resultSet.next()) skipped++;
+                if (cancelRequested.get()) return new StreamResult(0, true);
+                if (skipped < offset) return new StreamResult(0, false);
+                ResultSetMetaData metadata = resultSet.getMetaData();
+                int columnCount = metadata.getColumnCount();
+                int visibleColumnCount = Math.max(0, columnCount - prepared.hiddenColumnCount());
+                List<List<String>> rows = new ArrayList<List<String>>(batchRows);
+                List<String> rowIds = new ArrayList<String>(batchRows);
+                List<List<String>> locators = new ArrayList<List<String>>(batchRows);
+                int rowCount = 0;
+                while (!cancelRequested.get() && resultSet.next()) {
+                    List<String> row = new ArrayList<String>(visibleColumnCount);
+                    for (int index = 1; index <= visibleColumnCount; index++) {
+                        row.add(displayValue(resultSet.getObject(index), clobMaxCharacters));
+                    }
+                    List<String> locator = new ArrayList<String>(prepared.hiddenColumnCount());
+                    for (int index = visibleColumnCount + 1; index <= columnCount; index++) {
+                        locator.add(displayValue(resultSet.getObject(index), clobMaxCharacters));
+                    }
+                    rows.add(Collections.unmodifiableList(row));
+                    rowIds.add(java.util.UUID.randomUUID().toString());
+                    locators.add(Collections.unmodifiableList(locator));
+                    rowCount++;
+                    if (rows.size() == batchRows) {
+                        listener.rows(Collections.unmodifiableList(new ArrayList<List<String>>(rows)),
+                                Collections.unmodifiableList(new ArrayList<String>(rowIds)),
+                                immutableRows(locators));
+                        rows.clear(); rowIds.clear(); locators.clear();
+                    }
+                }
+                if (!rows.isEmpty()) {
+                    listener.rows(Collections.unmodifiableList(new ArrayList<List<String>>(rows)),
+                            Collections.unmodifiableList(new ArrayList<String>(rowIds)),
+                            immutableRows(locators));
+                }
+                boolean cancelled = cancelRequested.get();
+                LOG.info("全量结果流式读取完成 rows={} cancelled={} durationMs={}", rowCount, cancelled,
+                        Duration.between(started, Instant.now()).toMillis());
+                return new StreamResult(rowCount, cancelled);
+            }
+        } catch (SQLException exception) {
+            if (cancelRequested.get()) return new StreamResult(0, true);
+            throw new QueryExecutionException("获取全部结果失败：" + sanitize(exception), exception);
         } finally {
             activeStatement.set(null);
         }
@@ -1595,14 +1692,15 @@ public final class QueryRunner implements AutoCloseable {
         listener.resultMetadata(resultIndex, sqlStatement, columnDetails,
                 resolved.mutationTarget());
 
-        List<List<String>> rows = new ArrayList<List<String>>(Math.min(resultMaxRows, JDBC_FETCH_SIZE));
-        List<String> rowIds = new ArrayList<String>(Math.min(resultMaxRows, JDBC_FETCH_SIZE));
-        List<List<String>> rowLocators = new ArrayList<List<String>>(Math.min(resultMaxRows, JDBC_FETCH_SIZE));
+        ChunkedList.Builder<List<String>> rows = new ChunkedList.Builder<List<String>>();
+        ChunkedList.Builder<String> rowIds = new ChunkedList.Builder<String>();
+        ChunkedList.Builder<List<String>> rowLocators = new ChunkedList.Builder<List<String>>();
         List<List<String>> batch = new ArrayList<List<String>>(Math.min(resultBatchRows, resultMaxRows));
         List<String> batchIds = new ArrayList<String>(Math.min(resultBatchRows, resultMaxRows));
         boolean truncated = false;
+        int rowCount = 0;
         while (!cancelRequested.get() && resultSet.next()) {
-            if (rows.size() >= resultMaxRows) { truncated = true; break; }
+            if (rowCount >= resultMaxRows) { truncated = true; break; }
             List<String> row = new ArrayList<String>(visibleColumnCount);
             for (int index = 1; index <= visibleColumnCount; index++) {
                 row.add(displayValue(resultSet.getObject(index), resultClobMaxCharacters));
@@ -1611,11 +1709,13 @@ public final class QueryRunner implements AutoCloseable {
             for (int index = visibleColumnCount + 1; index <= columnCount; index++) {
                 locator.add(displayValue(resultSet.getObject(index), resultClobMaxCharacters));
             }
-            rows.add(row);
+            List<String> immutableRow = Collections.unmodifiableList(row);
+            rows.add(immutableRow);
             rowLocators.add(Collections.unmodifiableList(locator));
             String rowId = java.util.UUID.randomUUID().toString();
             rowIds.add(rowId);
-            batch.add(Collections.unmodifiableList(new ArrayList<String>(row)));
+            rowCount++;
+            batch.add(immutableRow);
             batchIds.add(rowId);
             if (batch.size() == resultBatchRows) {
                 listener.rows(resultIndex, Collections.unmodifiableList(new ArrayList<String>(batchIds)),
@@ -1627,7 +1727,7 @@ public final class QueryRunner implements AutoCloseable {
         if (!batch.isEmpty()) listener.rows(resultIndex,
                 Collections.unmodifiableList(new ArrayList<String>(batchIds)), immutableRows(batch));
         return new StatementResult(sqlStatement.text(), sqlStatement.type(), columns, columnDetails,
-                resolved.mutationTarget(), rows, rowIds, rowLocators, -1, truncated,
+                resolved.mutationTarget(), rows.build(), rowIds.build(), rowLocators.build(), -1, truncated,
                 Duration.between(started, Instant.now()), null);
     }
 
@@ -1666,6 +1766,24 @@ public final class QueryRunner implements AutoCloseable {
         public List<String> rowIds() { return rowIds; }
         public List<List<String>> rowLocators() { return rowLocators; }
         public boolean hasMore() { return hasMore; }
+        public boolean cancelled() { return cancelled; }
+    }
+
+    @FunctionalInterface
+    public interface PageRowsListener {
+        void rows(List<List<String>> rows, List<String> rowIds, List<List<String>> rowLocators);
+    }
+
+    public static final class StreamResult {
+        private final int rowsRead;
+        private final boolean cancelled;
+
+        private StreamResult(int rowsRead, boolean cancelled) {
+            this.rowsRead = rowsRead;
+            this.cancelled = cancelled;
+        }
+
+        public int rowsRead() { return rowsRead; }
         public boolean cancelled() { return cancelled; }
     }
 

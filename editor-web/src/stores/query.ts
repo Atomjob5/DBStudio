@@ -1,9 +1,11 @@
 import { defineStore } from "pinia";
 import { shallowRef } from "vue";
 import type { QueryExecutionState, QueryResult } from "../types";
+import { ResultRowsSnapshot, rowsView, snapshotFor, viewFor } from "../resultRows";
 
 export const useQueryStore = defineStore("query", () => {
-  // Result cells remain plain arrays. Vue observes only batch-level mutations.
+  // Result rows are immutable array-compatible views. Vue observes only the
+  // batch-level result replacement while each append shares complete chunks.
   const executions = shallowRef<Record<string, QueryExecutionState>>({});
   const retained = shallowRef<Record<string, QueryExecutionState[]>>({});
 
@@ -35,7 +37,7 @@ export const useQueryStore = defineStore("query", () => {
       if (import.meta.env.DEV) console.warn(`Ignoring late query result for ${editorId}`);
       return;
     }
-    replaceExecution(editorId, { ...execution, results: [...execution.results, result] });
+    replaceExecution(editorId, { ...execution, results: [...execution.results, normalizeResult(result)] });
   }
 
   function appendRows(editorId: string, resultIndex: number, rows: Array<Array<string | null>>,
@@ -47,7 +49,10 @@ export const useQueryStore = defineStore("query", () => {
     if (!execution || !result) { warnLate(editorId, resultIndex); return; }
     const ids = resolvedRowIds.length === rows.length ? resolvedRowIds
       : rows.map(() => crypto.randomUUID());
-    const updated = { ...result, rows: [...result.rows, ...rows], rowIds: [...(result.rowIds ?? []), ...ids] };
+    const currentRows = snapshotFor(result.rows);
+    const currentIds = result.rowIds ? snapshotFor(result.rowIds) : ResultRowsSnapshot.from(
+      Array.from({ length: result.rows.length }, () => crypto.randomUUID()));
+    const updated = { ...result, rows: viewFor(currentRows.append(rows)), rowIds: viewFor(currentIds.append(ids)) };
     replaceExecution(editorId, { ...execution, results: execution.results.map((item) => item === result ? updated : item) });
   }
 
@@ -55,7 +60,7 @@ export const useQueryStore = defineStore("query", () => {
     const execution = executionFor(editorId, executionId);
     const result = execution?.results.find((item) => item.resultIndex === resultIndex);
     if (!execution || !result) { warnLate(editorId, resultIndex); return; }
-    const updated = { ...result, ...values, complete: true };
+    const updated = normalizeResult({ ...result, ...values, complete: true });
     replaceExecution(editorId, { ...execution, results: execution.results.map((item) => item === result ? updated : item) });
   }
 
@@ -65,20 +70,16 @@ export const useQueryStore = defineStore("query", () => {
     const execution = executionFor(editorId, executionId);
     const result = execution?.results.find((item) => item.resultIndex === resultIndex);
     if (!execution || !result || !cells.length) return;
-    const rows = [...result.rows];
-    const copied = new Map<number, Array<string | null>>();
+    const updates = new Map<number, Array<string | null>>();
     for (const cell of cells) {
-      if (cell.rowIndex < 0 || cell.rowIndex >= rows.length
-          || cell.columnIndex < 0 || cell.columnIndex >= rows[cell.rowIndex].length) continue;
-      let row = copied.get(cell.rowIndex);
-      if (!row) {
-        row = [...rows[cell.rowIndex]];
-        copied.set(cell.rowIndex, row);
-        rows[cell.rowIndex] = row;
-      }
+      const source = result.rows[cell.rowIndex];
+      if (cell.rowIndex < 0 || cell.rowIndex >= result.rows.length
+          || cell.columnIndex < 0 || cell.columnIndex >= (source?.length ?? 0)) continue;
+      const row = updates.get(cell.rowIndex) ?? [...source];
       row[cell.columnIndex] = cell.value;
+      updates.set(cell.rowIndex, row);
     }
-    const updated = { ...result, rows };
+    const updated = { ...result, rows: viewFor(snapshotFor(result.rows).update(updates)) };
     replaceExecution(editorId, { ...execution,
       results: execution.results.map((item) => item === result ? updated : item) });
   }
@@ -88,7 +89,10 @@ export const useQueryStore = defineStore("query", () => {
     const execution = executionFor(editorId, executionId);
     const result = execution?.results.find((item) => item.resultIndex === resultIndex);
     if (!execution || !result) return;
-    const updated = { ...result, rows: [...result.rows, row], rowIds: [...(result.rowIds ?? []), rowId] };
+    const currentIds = result.rowIds ? snapshotFor(result.rowIds) : ResultRowsSnapshot.from(
+      Array.from({ length: result.rows.length }, () => crypto.randomUUID()));
+    const updated = { ...result, rows: viewFor(snapshotFor(result.rows).append([row])),
+      rowIds: viewFor(currentIds.append([rowId])) };
     replaceExecution(editorId, { ...execution,
       results: execution.results.map((item) => item === result ? updated : item) });
   }
@@ -99,8 +103,8 @@ export const useQueryStore = defineStore("query", () => {
     if (!execution || !result) return;
     const index = (result.rowIds ?? []).indexOf(rowId);
     if (index < 0) return;
-    const updated = { ...result, rows: result.rows.filter((_, rowIndex) => rowIndex !== index),
-      rowIds: (result.rowIds ?? []).filter((_, rowIndex) => rowIndex !== index) };
+    const updated = { ...result, rows: viewFor(snapshotFor(result.rows).remove(index)),
+      rowIds: viewFor(snapshotFor(result.rowIds ?? []).remove(index)) };
     replaceExecution(editorId, { ...execution,
       results: execution.results.map((item) => item === result ? updated : item) });
   }
@@ -128,7 +132,7 @@ export const useQueryStore = defineStore("query", () => {
         else { rows.push([...patch.row]); rowIds.push(patch.rowId); }
       }
     }
-    const updated = { ...result, rows, rowIds };
+    const updated = { ...result, rows: rowsView(rows), rowIds: rowsView(rowIds) };
     replaceExecution(editorId, { ...execution,
       results: execution.results.map((item) => item === result ? updated : item) });
   }
@@ -138,7 +142,7 @@ export const useQueryStore = defineStore("query", () => {
     const execution = executionFor(editorId, executionId);
     const result = execution?.results.find((item) => item.resultIndex === resultIndex);
     if (!execution || !result) return;
-    const updated = { ...result, rows: rows.map((row) => [...row]), rowIds: [...rowIds] };
+    const updated = { ...result, rows: rowsView(rows), rowIds: rowsView(rowIds) };
     replaceExecution(editorId, { ...execution,
       results: execution.results.map((item) => item === result ? updated : item) });
   }
@@ -192,6 +196,14 @@ export const useQueryStore = defineStore("query", () => {
 
   function warnLate(editorId: string, resultIndex: number): void {
     if (import.meta.env.DEV) console.warn(`Ignoring late query rows for ${editorId}/${resultIndex}`);
+  }
+
+  function normalizeResult(result: QueryResult): QueryResult {
+    const rows = Array.isArray(result.rows) ? viewFor(snapshotFor(result.rows)) : rowsView<Array<string | null>>([]);
+    const rowIds = result.rowIds && result.rowIds.length === rows.length
+      ? viewFor(snapshotFor(result.rowIds))
+      : rowsView(Array.from({ length: rows.length }, () => crypto.randomUUID()));
+    return { ...result, rows, rowIds };
   }
 
   function removeExecution(editorId: string, executionId: string): void {

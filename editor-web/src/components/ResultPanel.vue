@@ -313,7 +313,7 @@ import { useQueryStore } from "../stores/query";
 import { useResultEditStore, type ResultMutationValue } from "../stores/resultEdits";
 import { resultColumnRemarksText, resultCopyText, type ResultCopyMode } from "../resultCopy";
 import { writeClipboardText } from "../clipboard";
-import { cellSelectionKey, copyCellSql, copyEqualsSql, copyGrid, copyInPredicate, copyRowSql, copySelectSql, normalizeRange, selectRows,
+import { appendVisibleRows, cellSelectionKey, copyCellSql, copyEqualsSql, copyGrid, copyInPredicate, copyRowSql, copySelectSql, normalizeRange, selectRows,
   sumDecimalValues, visibleRows, type CellPoint, type CellRange, type DecimalSumResult,
   type ResultFilter, type ResultSort, type ResultSqlColumn, type SelectedCell, type SelectedRowColumns, type ViewRow } from "../resultGrid";
 import type { ResultGridScrollPosition, ResultVirtualColumn } from "../resultVirtualGrid";
@@ -707,9 +707,27 @@ watch(() => settings.headerSortingEnabled, (enabled) => { if (!enabled) { sorts.
 watch(() => settings.headerFilteringEnabled, (enabled) => {
   if (!enabled) { filters.value = {}; detachCellRange(); sumSummary.value = undefined; }
 });
-const displayRows = computed(() => visibleRows(activeResult.value?.rows ?? [], columnOptions.value,
-  settings.headerSortingEnabled ? activeSort.value : undefined,
-  settings.headerFilteringEnabled ? activeFilters.value : []));
+let displayRowsCache: { rows: Array<Array<string | null>>; count: number; config: string; value: ViewRow[] } | undefined;
+const displayRows = computed(() => {
+  const result = activeResult.value;
+  if (!result) { displayRowsCache = undefined; return []; }
+  const rows = result.rows;
+  const sort = settings.headerSortingEnabled ? activeSort.value : undefined;
+  const filters = settings.headerFilteringEnabled ? activeFilters.value : [];
+  const config = JSON.stringify({ result: resultKey.value, sort, filters,
+    columns: columnOptions.value.map((column) => [column.index, column.label, column.jdbcType]) });
+  const cached = displayRowsCache;
+  if (cached?.config === config && cached.rows === rows) return cached.value;
+  if (cached?.config === config && rows.length > cached.count) {
+    const appended = Array.from({ length: rows.length - cached.count }, (_, index) => rows[cached.count + index]);
+    const value = appendVisibleRows(cached.value, appended, cached.count, columnOptions.value, sort, filters);
+    displayRowsCache = { rows, count: rows.length, config, value };
+    return value;
+  }
+  const value = visibleRows(rows, columnOptions.value, sort, filters);
+  displayRowsCache = { rows, count: rows.length, config, value };
+  return value;
+});
 const selectedCellKeySet = computed(() => new Set(selectedCells.value.map((cell) =>
   cellSelectionKey(cell.sourceRow, cell.sourceColumn))));
 const selectedCellKeys = computed(() => [...selectedCellKeySet.value]);

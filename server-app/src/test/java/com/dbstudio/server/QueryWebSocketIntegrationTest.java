@@ -177,6 +177,28 @@ class QueryWebSocketIntegrationTest {
             assertEquals(Boolean.FALSE, page.get("cancelled"));
             assertEquals(220, ((Number) page.get("nextOffset")).intValue());
 
+            events.clear();
+            Map<String, Object> loadAllBody = new HashMap<String, Object>();
+            String loadAllExecutionId = UUID.randomUUID().toString();
+            loadAllBody.put("offset", 220); loadAllBody.put("batchRows", 50);
+            loadAllBody.put("executionId", loadAllExecutionId);
+            Map<String, Object> loadAllAccepted = exchange(HttpMethod.POST, "/api/v1/workspaces/" + workspaceId
+                    + "/editors/" + editorId + "/results/0/load-all", loadAllBody, cookie);
+            assertEquals(loadAllExecutionId, loadAllAccepted.get("executionId"));
+            Map<String, Object> loadAllStarted = awaitType(events, "query.pageStarted", 10);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> loadAllStartedPayload = (Map<String, Object>) loadAllStarted.get("payload");
+            assertEquals(loadAllExecutionId, loadAllStartedPayload.get("executionId"));
+            Map<String, Object> loadAllRows = awaitType(events, "query.pageRows", 10);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> loadAllRowsPayload = (Map<String, Object>) loadAllRows.get("payload");
+            assertEquals(30, ((List<?>) loadAllRowsPayload.get("rows")).size());
+            Map<String, Object> loadAllComplete = awaitType(events, "query.pageComplete", 10);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> loadAllCompletePayload = (Map<String, Object>) loadAllComplete.get("payload");
+            assertEquals(Boolean.TRUE, loadAllCompletePayload.get("complete"));
+            assertEquals(250, ((Number) loadAllCompletePayload.get("nextOffset")).intValue());
+
             updateSetting(cookie, "result.maxRows", "250");
             updateSetting(cookie, "result.streamBatchRows", "100");
             List<Map<String, Object>> second = execute(editorId, workspaceId, cookie, events, 250);

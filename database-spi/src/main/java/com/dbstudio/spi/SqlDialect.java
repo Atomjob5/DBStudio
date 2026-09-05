@@ -53,6 +53,15 @@ public interface SqlDialect {
         return "SELECT *\nFROM " + qualifiedName(object.catalog(), object.schema(), object.name());
     }
 
+    /**
+     * Plans a safe page rewrite. Dialects may return a native LIMIT/OFFSET or
+     * OFFSET/FETCH query; the default deliberately keeps the compatibility
+     * path, where the caller skips rows after executing the original SQL.
+     */
+    default PagePlan pageQuery(String sql, int offset, int limit) {
+        return PagePlan.fallback(sql, offset, limit);
+    }
+
     default TransactionEffect transactionEffect(SqlStatement statement, boolean producedResultSet) {
         StatementType type = statement.type();
         if (type.modifiesData() || type == StatementType.OTHER) return TransactionEffect.DIRTY;
@@ -121,5 +130,48 @@ public interface SqlDialect {
         if (source == null) return "";
         String qualifier = source.alias().isEmpty() ? source.table() : source.alias();
         return qualifier.isEmpty() ? "" : quoteIdentifier(qualifier);
+    }
+
+    final class PagePlan {
+        private final String sql;
+        private final int skipOffset;
+        private final int requestedLimit;
+        private final int readLimit;
+        private final boolean nativePaging;
+        private final boolean empty;
+
+        private PagePlan(String sql, int skipOffset, int requestedLimit, int readLimit,
+                         boolean nativePaging, boolean empty) {
+            this.sql = sql;
+            this.skipOffset = skipOffset;
+            this.requestedLimit = requestedLimit;
+            this.readLimit = readLimit;
+            this.nativePaging = nativePaging;
+            this.empty = empty;
+        }
+
+        public static PagePlan fallback(String sql, int offset, int limit) {
+            return new PagePlan(sql, Math.max(0, offset), Math.max(1, limit),
+                    probeLimit(limit), false, false);
+        }
+
+        public static PagePlan nativePage(String sql, int limit) {
+            return new PagePlan(sql, 0, Math.max(1, limit), probeLimit(limit), true, false);
+        }
+
+        public static PagePlan empty(String sql, int limit) {
+            return new PagePlan(sql, 0, Math.max(1, limit), 0, true, true);
+        }
+
+        private static int probeLimit(int limit) {
+            return limit >= Integer.MAX_VALUE ? Integer.MAX_VALUE : Math.max(2, limit + 1);
+        }
+
+        public String sql() { return sql; }
+        public int skipOffset() { return skipOffset; }
+        public int requestedLimit() { return requestedLimit; }
+        public int readLimit() { return readLimit; }
+        public boolean nativePaging() { return nativePaging; }
+        public boolean empty() { return empty; }
     }
 }

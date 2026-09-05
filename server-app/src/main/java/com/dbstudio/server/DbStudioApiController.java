@@ -74,6 +74,7 @@ import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.http.HttpHeaders;
@@ -1210,7 +1211,8 @@ public final class DbStudioApiController {
         PageResult page = workspace.fetchPage(editor, pageExecutionId, source.sql(), offset, limit,
                 () -> workspace.events().emit("query.pageStarted", ApiPayloads.map(
                         "editorId", editorId, "executionId", pageExecutionId.toString(),
-                        "resultIndex", resultIndex))).get(120, TimeUnit.SECONDS);
+                        "resultExecutionId", resultExecutionId.toString(), "resultIndex", resultIndex,
+                        "offset", offset))).get(120, TimeUnit.SECONDS);
         if (!page.cancelled()) editor.appendResultRows(resultExecutionId, resultIndex, page.rows(), page.rowIds(),
                 page.rowLocators(), page.hasMore());
         LOG.info("结果分页完成 workspace={} editor={} execution={} resultIndex={} offset={} rows={} hasMore={} cancelled={}",
@@ -1219,6 +1221,76 @@ public final class DbStudioApiController {
         return ApiPayloads.map("executionId", pageExecutionId.toString(), "resultExecutionId", resultExecutionId.toString(), "resultIndex", resultIndex,
                 "offset", offset, "rows", page.rows(), "rowIds", page.rowIds(), "hasMore", page.hasMore(),
                 "nextOffset", offset + page.rows().size(), "cancelled", page.cancelled());
+    }
+
+    @PostMapping("/workspaces/{workspaceId}/editors/{editorId}/results/{resultIndex}/load-all")
+    public ResponseEntity<Map<String, Object>> loadAllResultRows(@PathVariable final String workspaceId,
+                                                                   @PathVariable final String editorId,
+                                                                   @PathVariable final int resultIndex,
+                                                                   @RequestBody Map<String, Object> body) {
+        final Workspace workspace = workspaces.require(workspaceId);
+        final EditorSession editor = workspace.editors().require(editorId);
+        if (!workspace.events().connected()) throw new ApiException(
+                "EVENT_CHANNEL_REQUIRED", "事件通道尚未连接，请等待重连后再加载结果");
+        ensureEditorContext(workspace, editor);
+        if (editor.resultChangesDirty()) {
+            throw new ApiException("RESULT_CHANGES_PENDING", "请先提交或回滚结果修改后再继续加载数据");
+        }
+        int offset = integer(body, "offset", 0);
+        int batchRows = integer(body, "batchRows", workspace.editors().streamBatchRows());
+        if (offset < 0) throw new ApiException("INVALID_RESULT_OFFSET", "结果偏移量不能小于 0");
+        if (batchRows < 1 || batchRows > 100_000) {
+            throw new ApiException("INVALID_RESULT_LIMIT", "流式批次行数必须在 1 到 100000 之间");
+        }
+        UUID resultExecutionId = resultExecution(editor, ApiPayloads.text(body, "resultExecutionId"));
+        StatementResult source = result(editor, resultExecutionId, resultIndex);
+        if (!source.hasRows() || source.type() != StatementType.QUERY) {
+            throw new ApiException("RESULT_NOT_PAGEABLE", "只有只读查询结果支持继续加载数据");
+        }
+        if (offset != source.rows().size()) {
+            throw new ApiException("STALE_RESULT_OFFSET", "结果数据已变化，请使用当前已加载行数继续获取");
+        }
+        final UUID loadExecutionId;
+        try {
+            String rawExecutionId = ApiPayloads.text(body, "executionId").trim();
+            loadExecutionId = rawExecutionId.isEmpty() ? UUID.randomUUID() : UUID.fromString(rawExecutionId);
+        } catch (IllegalArgumentException exception) {
+            throw new ApiException("INVALID_EXECUTION_ID", "全量加载编号无效");
+        }
+        final AtomicInteger nextOffset = new AtomicInteger(offset);
+        try {
+            workspace.streamResultRows(editor, loadExecutionId, source.sql(), offset, batchRows,
+                    () -> workspace.events().emit("query.pageStarted", ApiPayloads.map(
+                            "editorId", editorId, "executionId", loadExecutionId.toString(),
+                            "resultExecutionId", resultExecutionId.toString(), "resultIndex", resultIndex,
+                            "offset", offset)),
+                    (rows, rowIds, rowLocators) -> {
+                        int batchOffset = nextOffset.getAndAdd(rows.size());
+                        editor.appendResultRows(resultExecutionId, resultIndex, rows, rowIds, rowLocators, true);
+                        workspace.events().emit("query.pageRows", ApiPayloads.map(
+                                "editorId", editorId, "executionId", loadExecutionId.toString(),
+                                "resultExecutionId", resultExecutionId.toString(), "resultIndex", resultIndex,
+                                "offset", batchOffset, "rows", rows, "rowIds", rowIds));
+                    }, (stream, failure) -> {
+                        boolean cancelled = stream != null && stream.cancelled();
+                        boolean failed = failure != null;
+                        boolean hasMore = cancelled || failed;
+                        editor.completeResultRows(resultExecutionId, resultIndex, hasMore);
+                        Map<String, Object> terminal = ApiPayloads.map(
+                                "editorId", editorId, "executionId", loadExecutionId.toString(),
+                                "resultExecutionId", resultExecutionId.toString(), "resultIndex", resultIndex,
+                                "offset", offset, "nextOffset", nextOffset.get(),
+                                "rowsRead", stream == null ? 0 : stream.rowsRead(),
+                                "complete", !hasMore, "cancelled", cancelled,
+                                "errorMessage", failure == null ? null : safeMessage(failure));
+                        workspace.events().emit("query.pageComplete", terminal);
+                    });
+        } catch (RuntimeException exception) {
+            throw exception;
+        }
+        return ResponseEntity.accepted().body(ApiPayloads.map(
+                "executionId", loadExecutionId.toString(), "resultExecutionId", resultExecutionId.toString(),
+                "resultIndex", resultIndex, "offset", offset));
     }
 
     @PostMapping("/workspaces/{workspaceId}/editors/{editorId}/results/{resultIndex}/changes")

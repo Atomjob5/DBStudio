@@ -2,6 +2,7 @@ package com.dbstudio.desktop.web;
 
 import com.dbstudio.desktop.DatabaseContext;
 import com.dbstudio.desktop.query.QueryExecution;
+import com.dbstudio.desktop.query.ChunkedList;
 import com.dbstudio.desktop.query.QueryResultListener;
 import com.dbstudio.desktop.query.QueryRunner;
 import com.dbstudio.desktop.query.ResultColumnResolver;
@@ -383,15 +384,26 @@ public final class EditorSessionRegistry implements AutoCloseable {
             if (execution == null || resultIndex < 0 || resultIndex >= execution.results().size()) return;
             List<StatementResult> results = new ArrayList<StatementResult>(execution.results());
             StatementResult source = results.get(resultIndex);
-            List<List<String>> combined = new ArrayList<List<String>>(source.rows());
-            combined.addAll(rows);
-            List<String> combinedIds = new ArrayList<String>(source.rowIds());
-            combinedIds.addAll(rowIds);
-            List<List<String>> combinedLocators = new ArrayList<List<String>>(source.rowLocators());
-            combinedLocators.addAll(rowLocators);
+            List<List<String>> combined = ChunkedList.append(source.rows(), rows);
+            List<String> combinedIds = ChunkedList.append(source.rowIds(), rowIds);
+            List<List<String>> combinedLocators = ChunkedList.append(source.rowLocators(), rowLocators);
             results.set(resultIndex, new StatementResult(source.sql(), source.type(), source.columns(), source.columnDetails(),
                     source.mutationTarget(), combined, combinedIds, combinedLocators, source.updateCount(), hasMore,
                     source.duration(), source.errorMessage()));
+            replaceExecution(executionId, new QueryExecution(results, execution.duration(), execution.cancelled()));
+            touch();
+        }
+
+        /** Updates the terminal truncation flag without appending another batch. */
+        public synchronized void completeResultRows(UUID executionId, int resultIndex, boolean hasMore) {
+            QueryExecution execution = retainedExecutions.get(executionId);
+            if (execution == null || resultIndex < 0 || resultIndex >= execution.results().size()) return;
+            List<StatementResult> results = new ArrayList<StatementResult>(execution.results());
+            StatementResult source = results.get(resultIndex);
+            if (source.truncated() == hasMore) return;
+            results.set(resultIndex, new StatementResult(source.sql(), source.type(), source.columns(), source.columnDetails(),
+                    source.mutationTarget(), source.rows(), source.rowIds(), source.rowLocators(), source.updateCount(),
+                    hasMore, source.duration(), source.errorMessage()));
             replaceExecution(executionId, new QueryExecution(results, execution.duration(), execution.cancelled()));
             touch();
         }

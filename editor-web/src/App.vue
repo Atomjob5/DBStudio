@@ -705,11 +705,27 @@ function openExecutionResult(editorId: string, executionId: string): void {
 interface ResultLoadingState {
   editorId: string;
   resultIndex: number;
+  resultExecutionId: string;
   mode: "next" | "all";
   executionId: string;
   phase: "starting" | "running" | "cancelling";
   cancelRequested: boolean;
 }
+interface PendingResultBatch {
+  editorId: string;
+  resultIndex: number;
+  operationId: string;
+  resultExecutionId: string;
+  rows: Array<Array<string | null>>;
+  rowIds: string[];
+  nextOffset?: number;
+}
+const pendingResultBatches = new Map<string, PendingResultBatch>();
+const seenPageBatches = new Map<string, Set<number>>();
+const pendingLoadAll = new Map<string, { resolve: () => void; reject: (error: unknown) => void }>();
+const resultReloadRequired = new Set<string>();
+let pendingRowsFrame: number | undefined;
+let pendingRowsTimer: number | undefined;
 interface AutoRefreshState {
   editorId: string;
   executionId: string;
@@ -726,13 +742,130 @@ let autoRefreshEpoch = 0;
 const selectedResultColumn = ref<SelectedResultColumn>();
 const selectedResultRowCount = ref(0);
 const selectedResultStatusText = ref("");
+
+function pendingResultKey(editorId: string, operationId: string, resultIndex?: number): string {
+  return `${editorId}:${operationId}:${resultIndex === undefined ? "*" : resultIndex}`;
+}
+
+function resultReloadKey(editorId: string, resultExecutionId: string, resultIndex: number): string {
+  return `${editorId}:${resultExecutionId}:${resultIndex}`;
+}
+
+function activeResultReloadKey(): string | undefined {
+  const tab = editors.active;
+  const execution = activeExecution.value;
+  const result = activeResult.value;
+  return tab && execution && result ? resultReloadKey(tab.id, execution.executionId, result.resultIndex) : undefined;
+}
+
+function enqueueResultRows(editorId: string, resultIndex: number, rows: Array<Array<string | null>>,
+                           rowIds: string[] | undefined, operationId: string,
+                           resultExecutionId: string, offset?: number, publishImmediately = false): void {
+  if (!rows.length) return;
+  const result = queries.execution(editorId, resultExecutionId)?.results
+    .find((item) => item.resultIndex === resultIndex);
+  const key = pendingResultKey(editorId, operationId, resultIndex);
+  const pending = pendingResultBatches.get(key);
+  // Publish the first visible batch immediately so the result panel can render
+  // while later batches are coalesced into one frame.
+  if (!pending && result && (publishImmediately || (offset === undefined && result.rows.length === 0))) {
+    queries.appendRows(editorId, resultIndex, rows, resultExecutionId, rowIds);
+    return;
+  }
+  const ids = rowIds && rowIds.length === rows.length ? rowIds : rows.map(() => crypto.randomUUID());
+  if (pending) {
+    pending.rows.push(...rows); pending.rowIds.push(...ids);
+    if (offset !== undefined) pending.nextOffset = offset + rows.length;
+  } else {
+    pendingResultBatches.set(key, { editorId, resultIndex, operationId, resultExecutionId,
+      rows: [...rows], rowIds: [...ids], nextOffset: offset === undefined ? undefined : offset + rows.length });
+  }
+  schedulePendingRowsFlush();
+}
+
+function schedulePendingRowsFlush(): void {
+  if (pendingRowsFrame === undefined) {
+    const requestFrame = window.requestAnimationFrame;
+    pendingRowsFrame = requestFrame ? requestFrame(() => {
+      pendingRowsFrame = undefined;
+      flushPendingResultBatches();
+    }) : window.setTimeout(() => {
+      pendingRowsFrame = undefined;
+      flushPendingResultBatches();
+    }, 0);
+  }
+  if (pendingRowsTimer === undefined) {
+    pendingRowsTimer = window.setTimeout(() => {
+      pendingRowsTimer = undefined;
+      if (pendingRowsFrame !== undefined) {
+        window.cancelAnimationFrame?.(pendingRowsFrame);
+        window.clearTimeout(pendingRowsFrame);
+        pendingRowsFrame = undefined;
+      }
+      flushPendingResultBatches();
+    }, 50);
+  }
+}
+
+function flushPendingResultBatches(editorId?: string, operationId?: string, resultIndex?: number): void {
+  for (const [key, pending] of [...pendingResultBatches]) {
+    if (editorId !== undefined && pending.editorId !== editorId) continue;
+    if (operationId !== undefined && pending.operationId !== operationId) continue;
+    if (resultIndex !== undefined && pending.resultIndex !== resultIndex) continue;
+    pendingResultBatches.delete(key);
+    if (pending.rows.length) queries.appendRows(pending.editorId, pending.resultIndex, pending.rows,
+      pending.resultExecutionId, pending.rowIds);
+  }
+  if (!pendingResultBatches.size && pendingRowsTimer !== undefined) {
+    window.clearTimeout(pendingRowsTimer);
+    pendingRowsTimer = undefined;
+  }
+}
+
+function clearPendingResultBatches(editorId?: string, operationId?: string, resultIndex?: number): void {
+  for (const [key, pending] of [...pendingResultBatches]) {
+    if (editorId !== undefined && pending.editorId !== editorId) continue;
+    if (operationId !== undefined && pending.operationId !== operationId) continue;
+    if (resultIndex !== undefined && pending.resultIndex !== resultIndex) continue;
+    pendingResultBatches.delete(key);
+    seenPageBatches.delete(key);
+  }
+  for (const key of [...seenPageBatches.keys()]) {
+    const matchesEditor = editorId === undefined || key.startsWith(`${editorId}:`);
+    const matchesOperation = operationId === undefined || key.includes(`:${operationId}:`);
+    const matchesResult = resultIndex === undefined || key.endsWith(`:${resultIndex}`);
+    if (matchesEditor && matchesOperation && matchesResult) seenPageBatches.delete(key);
+  }
+  if (!pendingResultBatches.size) {
+    if (pendingRowsFrame !== undefined) {
+      window.cancelAnimationFrame?.(pendingRowsFrame);
+      window.clearTimeout(pendingRowsFrame);
+      pendingRowsFrame = undefined;
+    }
+    if (pendingRowsTimer !== undefined) {
+      window.clearTimeout(pendingRowsTimer);
+      pendingRowsTimer = undefined;
+    }
+  }
+}
+
+function rejectPendingLoadAll(editorId: string, executionId?: string, error?: Error): void {
+  for (const [id, pending] of [...pendingLoadAll]) {
+    if (!executionId || id === executionId) {
+      pendingLoadAll.delete(id);
+      pending.reject(error ?? new Error("结果加载已结束"));
+    }
+  }
+  clearPendingResultBatches(editorId, executionId);
+}
 const activeResultLoading = computed(() => {
   const loading = resultLoading.value;
   return loading && loading.editorId === editors.activeId ? loading : undefined;
 });
 const canLoadMore = computed(() => Boolean(activeResult.value?.columns.length && activeResult.value.complete
   && activeResult.value.truncated && !activeExecution.value?.busy && !activeExecution.value?.historical
-  && !resultLoading.value && app.transportState === "ready"
+  && !resultLoading.value && !resultReloadRequired.has(activeResultReloadKey() ?? "")
+  && app.transportState === "ready"
   && !(editors.active && (resultEdits.hasChanges(editors.active.id)
     || editors.active.resultChangesDirty))));
 const nextPageTooltip = computed(() => actionTooltip(resultLoadTooltip("next"), "result.loadNext"));
@@ -971,6 +1104,10 @@ onBeforeUnmount(() => {
   window.removeEventListener("resize", measureResultContentOffset);
   if (layoutSaveTimer !== undefined) window.clearTimeout(layoutSaveTimer);
   clearAutoRefreshTimer();
+  clearPendingResultBatches();
+  resultReloadRequired.clear();
+  for (const pending of pendingLoadAll.values()) pending.reject(new Error("结果加载已结束"));
+  pendingLoadAll.clear();
   executionNotifications.clear();
   executionAttention.clear();
   completionNoticeTimers.forEach((timer) => window.clearTimeout(timer));
@@ -1093,7 +1230,17 @@ function installEventHandlers(): void {
     const state = (raw as { state: TransportState }).state;
     const previous = app.transportState;
     app.setTransportState(state);
-    if (state === "reconnecting") app.status = "事件通道重连中…";
+    let interruptedResultLoad = false;
+    if (state !== "ready" && resultLoading.value?.mode === "all") {
+      const loading = resultLoading.value;
+      resultLoading.value = { ...loading, phase: "cancelling", cancelRequested: true };
+      resultReloadRequired.add(resultReloadKey(loading.editorId, loading.resultExecutionId, loading.resultIndex));
+      rejectPendingLoadAll(loading.editorId, loading.executionId,
+        new Error("事件通道已断开，请重新执行查询"));
+      interruptedResultLoad = true;
+    }
+    if (interruptedResultLoad) app.status = "事件通道已断开，本次获取已停止，请重新执行查询";
+    else if (state === "reconnecting") app.status = "事件通道重连中…";
     else if (state === "recovering") app.status = "正在恢复浏览器工作区…";
     else if (state === "offline") app.status = "事件通道暂时不可用";
     else if (state === "ready" && previous === "reconnecting") app.status = "事件通道已恢复";
@@ -1142,6 +1289,14 @@ function installEventHandlers(): void {
     executionAttention.clearExecution(data.editorId, executionRequestFailureKey(data.editorId));
     executionAttention.clearExecution(data.editorId, data.executionId);
     const presentation = data.resultPresentation ?? "replace";
+    const pendingLoading = resultLoading.value;
+    if (pendingLoading?.editorId === data.editorId) {
+      rejectPendingLoadAll(data.editorId, pendingLoading.executionId,
+        new Error("结果执行已被替换"));
+      resultLoading.value = undefined;
+    }
+    for (const key of [...resultReloadRequired]) if (key.startsWith(`${data.editorId}:`)) resultReloadRequired.delete(key);
+    clearPendingResultBatches(data.editorId);
     const autoRefresh = autoRefreshState.value;
     if (autoRefresh?.refreshing && autoRefresh.editorId === data.editorId && presentation === "replace") {
       autoRefresh.executionId = data.executionId;
@@ -1170,11 +1325,79 @@ function installEventHandlers(): void {
     }
   }));
   disposers.push(rpc.on("query.pageStarted", (raw) => {
-    const data = raw as { editorId: string; executionId: string; resultIndex: number };
+    const data = raw as { editorId: string; executionId: string; resultExecutionId?: string; resultIndex: number };
     const loading = resultLoading.value;
     if (!loading || loading.editorId !== data.editorId || loading.executionId !== data.executionId
-      || loading.resultIndex !== data.resultIndex || loading.phase === "cancelling") return;
+      || loading.resultIndex !== data.resultIndex
+      || (data.resultExecutionId && loading.resultExecutionId !== data.resultExecutionId)) return;
+    if (loading.phase === "cancelling") {
+      void rpc.request("query.cancel", { editorId: loading.editorId, executionId: loading.executionId }).catch(() => { });
+      return;
+    }
     resultLoading.value = { ...loading, phase: "running" };
+  }));
+  disposers.push(rpc.on("query.pageRows", (raw) => {
+    const data = raw as { editorId: string; executionId: string; resultExecutionId: string;
+      resultIndex: number; offset: number; rows: Array<Array<string | null>>; rowIds?: string[] };
+    const loading = resultLoading.value;
+    if (!loading || loading.editorId !== data.editorId || loading.executionId !== data.executionId
+      || loading.resultIndex !== data.resultIndex || loading.resultExecutionId !== data.resultExecutionId) return;
+    if (loading.phase === "cancelling"
+        && resultReloadRequired.has(resultReloadKey(loading.editorId, loading.resultExecutionId, loading.resultIndex))) return;
+    if (!queries.execution(data.editorId, data.resultExecutionId)) return;
+    const key = pendingResultKey(data.editorId, data.executionId, data.resultIndex);
+    const seen = seenPageBatches.get(key) ?? new Set<number>();
+    if (seen.has(data.offset)) return;
+    const pending = pendingResultBatches.get(key);
+    const currentRows = queries.execution(data.editorId, data.resultExecutionId)?.results
+      .find((result) => result.resultIndex === data.resultIndex)?.rows.length ?? 0;
+    const expected = currentRows + (pending?.rows.length ?? 0);
+    if (data.offset !== expected) {
+      resultReloadRequired.add(resultReloadKey(loading.editorId, loading.resultExecutionId, loading.resultIndex));
+      resultLoading.value = { ...loading, phase: "cancelling", cancelRequested: true };
+      rejectPendingLoadAll(data.editorId, data.executionId,
+        new Error("结果加载位置已变化，请重新执行查询"));
+      void rpc.request("query.cancel", { editorId: data.editorId, executionId: data.executionId }).catch(() => { });
+      ElMessage.warning("结果加载位置已变化，请重新执行查询");
+      return;
+    }
+    const publishImmediately = seen.size === 0;
+    seen.add(data.offset); seenPageBatches.set(key, seen);
+    enqueueResultRows(data.editorId, data.resultIndex, data.rows, data.rowIds,
+      data.executionId, data.resultExecutionId, data.offset, publishImmediately);
+  }));
+  disposers.push(rpc.on("query.pageComplete", (raw) => {
+    const data = raw as { editorId: string; executionId: string; resultExecutionId: string;
+      resultIndex: number; nextOffset: number; complete?: boolean; cancelled?: boolean; errorMessage?: string };
+    const loading = resultLoading.value;
+    if (!loading || loading.editorId !== data.editorId || loading.executionId !== data.executionId
+      || loading.resultIndex !== data.resultIndex || loading.resultExecutionId !== data.resultExecutionId) return;
+    const reloadKey = resultReloadKey(loading.editorId, loading.resultExecutionId, loading.resultIndex);
+    if (loading.phase === "cancelling" && resultReloadRequired.has(reloadKey)) {
+      clearPendingResultBatches(data.editorId, data.executionId, data.resultIndex);
+      resultLoading.value = undefined;
+      return;
+    }
+    if (!queries.execution(data.editorId, data.resultExecutionId)) {
+      rejectPendingLoadAll(data.editorId, data.executionId,
+        new Error("查询结果已关闭，请重新执行查询"));
+      resultLoading.value = undefined;
+      return;
+    }
+    flushPendingResultBatches(data.editorId, data.executionId, data.resultIndex);
+    seenPageBatches.delete(pendingResultKey(data.editorId, data.executionId, data.resultIndex));
+    const hasMore = Boolean(data.cancelled || data.errorMessage || data.complete === false);
+    if (!hasMore) resultReloadRequired.delete(reloadKey);
+    queries.completeResult(data.editorId, data.resultIndex, { truncated: hasMore }, data.resultExecutionId);
+    resultLoading.value = undefined;
+    const pending = pendingLoadAll.get(data.executionId);
+    if (pending) {
+      pendingLoadAll.delete(data.executionId);
+      if (data.errorMessage) pending.reject(new Error(data.errorMessage)); else pending.resolve();
+    }
+    app.status = data.errorMessage ? `获取全部结果失败：${data.errorMessage}`
+      : data.cancelled ? `数据加载已取消 · 已保留 ${data.nextOffset} 行`
+        : `已获取全部 ${data.nextOffset} 行`;
   }));
   disposers.push(rpc.on("query.resultMeta", (raw) => {
     const data = raw as QueryResult & { editorId: string; executionId?: string };
@@ -1206,13 +1429,15 @@ function installEventHandlers(): void {
     if (data.executionId && !queries.execution(data.editorId, data.executionId)) return;
     const tab = editors.tabs.find((item) => item.id === data.editorId);
     if (data.executionId && tab?.busy && tab.activeExecutionId && tab.activeExecutionId !== data.executionId) return;
-    queries.appendRows(data.editorId, data.resultIndex, data.rows, data.executionId, data.rowIds);
+    enqueueResultRows(data.editorId, data.resultIndex, data.rows, data.rowIds,
+      data.executionId ?? "", data.executionId ?? "");
   }));
   disposers.push(rpc.on("query.resultComplete", (raw) => {
     const data = raw as { editorId: string; executionId?: string; resultIndex: number } & Partial<QueryResult>;
     if (data.executionId && !queries.execution(data.editorId, data.executionId)) return;
     const tab = editors.tabs.find((item) => item.id === data.editorId);
     if (data.executionId && tab?.busy && tab.activeExecutionId && tab.activeExecutionId !== data.executionId) return;
+    flushPendingResultBatches(data.editorId, data.executionId ?? "", data.resultIndex);
     if (data.errorMessage) {
       clearExecutionTimelineSession(data.editorId);
       if (tab?.executionTimelineStage === "success") editors.patch(data.editorId, { executionTimelineStage: undefined });
@@ -1222,6 +1447,7 @@ function installEventHandlers(): void {
   disposers.push(rpc.on("query.executionComplete", (raw) => {
     const data = raw as { editorId: string; executionId: string; cancelled: boolean; failed: boolean;
       durationMs: number; transactionDirty: boolean; resultChangesDirty?: boolean; terminationReason?: string };
+    flushPendingResultBatches(data.editorId, data.executionId);
     const tab = editors.tabs.find((item) => item.id === data.editorId);
     executionNotifications.complete(data);
     if (!tab || tab.activeExecutionId !== data.executionId) return;
@@ -1278,7 +1504,10 @@ function installEventHandlers(): void {
     if (autoRefreshState.value?.editorId === data.editorId) stopAutoRefresh("数据库连接已断开", true);
     resultEdits.finishEditor(data.editorId);
     queries.markHistorical(data.editorId);
-    if (resultLoading.value?.editorId === data.editorId) resultLoading.value = undefined;
+    const loading = resultLoading.value?.editorId === data.editorId ? resultLoading.value : undefined;
+    if (loading) resultReloadRequired.add(resultReloadKey(loading.editorId, loading.resultExecutionId, loading.resultIndex));
+    if (loading) resultLoading.value = undefined;
+    rejectPendingLoadAll(data.editorId, undefined, new Error(data.message ?? "数据库连接已断开"));
     clearExecutionTimelineSession(data.editorId);
     editors.patch(data.editorId, { busy: false, activeExecutionId: undefined, executionStartedAt: undefined,
       executionPhase: "idle",
@@ -1452,6 +1681,10 @@ async function bootstrapWorkspace(recovered: RecoveredEditor[]): Promise<void> {
     executionTimelineStageTimers.clear();
     executionTimelineSessions.clear();
     editors.clear(); queries.clear(); resultEdits.clear(); statusBar.clear(); resultLoading.value = undefined;
+    clearPendingResultBatches();
+    resultReloadRequired.clear();
+    for (const pending of pendingLoadAll.values()) pending.reject(new Error("工作区已切换"));
+    pendingLoadAll.clear();
     monacoEditor.value?.clearResultHighlight?.();
     for (const value of [...recovered].sort((left, right) => left.sortOrder - right.sortOrder)) {
       editors.add({ id: value.id, title: value.title, content: value.content, filePath: value.filePath,
@@ -2003,7 +2236,7 @@ async function ensureEditorCredentials(tab: EditorTab): Promise<boolean> {
 async function cancelActive(): Promise<void> {
   const loading = activeResultLoading.value;
   if (loading) {
-    if (loading.phase !== "running") return;
+    if (loading.phase === "cancelling") return;
     resultLoading.value = { ...loading, phase: "cancelling", cancelRequested: true };
     try {
       await rpc.ensureOperational();
@@ -2107,29 +2340,44 @@ function resultLoadTooltip(mode: "next" | "all"): string {
   if (!activeResult.value?.columns.length) return "暂无可加载的查询结果";
   if (activeExecution.value?.historical) return "断线前快照不能继续加载数据";
   if (app.transportState !== "ready") return "事件通道恢复后才能加载数据";
+  if (resultReloadRequired.has(activeResultReloadKey() ?? "")) return "事件通道已断开，请重新执行查询";
   if (activeExecution.value?.busy || !activeResult.value.complete) return "查询尚未完成";
   if (resultLoading.value) return resultLoading.value.mode === "next" ? "正在加载下一页数据…" : "正在获取全部数据…";
   if (!activeResult.value.truncated) return "已获取全部数据";
   return mode === "next"
     ? `下一页数据 · 最多 ${settings.maxResultRows} 行；建议查询包含稳定的 ORDER BY`
-    : "获取全部数据；查询将重新执行，建议包含稳定的 ORDER BY";
+    : "获取全部数据；保持一次查询持续读取，建议包含稳定的 ORDER BY";
 }
 
 async function loadResultRows(resultIndex: number, initialOffset: number, all: boolean): Promise<void> {
   const tab = editors.active;
   const resultExecutionId = activeExecution.value?.executionId;
-  if (!tab || !resultExecutionId || resultLoading.value || activeExecution.value?.historical) return;
+  if (!tab || !resultExecutionId || resultLoading.value || activeExecution.value?.historical
+      || resultReloadRequired.has(resultReloadKey(tab.id, resultExecutionId, resultIndex))) return;
   const mode = all ? "all" : "next";
   const executionId = crypto.randomUUID();
   const loading: ResultLoadingState = {
-    editorId: tab.id, resultIndex, mode, executionId, phase: "starting", cancelRequested: false
+    editorId: tab.id, resultIndex, resultExecutionId, mode, executionId, phase: "starting", cancelRequested: false
   };
   resultLoading.value = loading;
   let offset = initialOffset;
-  const limit = all ? 5_000 : settings.maxResultRows;
+  const limit = settings.maxResultRows;
   try {
     await rpc.ensureOperational();
+    if (resultLoading.value?.executionId !== executionId || resultLoading.value.cancelRequested) return;
+    if (all) {
+      const completion = new Promise<void>((resolve, reject) => {
+        pendingLoadAll.set(executionId, { resolve, reject });
+      });
+      await rpc.request("query.loadAll", {
+        editorId: tab.id, resultIndex, offset, executionId, resultExecutionId,
+        batchRows: settings.streamBatchRows
+      }, 120_000);
+      await completion;
+      return;
+    }
     do {
+      if (resultLoading.value?.executionId !== executionId || resultLoading.value.cancelRequested) break;
       const page = await rpc.request<ResultPageResponse>("query.fetchRows", {
         editorId: tab.id, resultIndex, offset, limit, executionId, resultExecutionId
       }, 120_000);
@@ -2152,8 +2400,14 @@ async function loadResultRows(resultIndex: number, initialOffset: number, all: b
       await nextTick();
     } while (!resultLoading.value?.cancelRequested);
   } catch (error) {
-    if (!resultLoading.value?.cancelRequested) reportError(error);
+    const current = resultLoading.value;
+    if (all && current?.executionId === executionId && !current.cancelRequested) {
+      resultLoading.value = { ...current, phase: "cancelling", cancelRequested: true };
+      void rpc.request("query.cancel", { editorId: tab.id, executionId }).catch(() => { });
+    }
+    if (!current?.cancelRequested) reportError(error);
   } finally {
+    pendingLoadAll.delete(executionId);
     if (resultLoading.value?.executionId === executionId) resultLoading.value = undefined;
   }
 }
@@ -2607,6 +2861,17 @@ async function closeTab(id: string): Promise<boolean> {
       if (!await saveActive(false)) return false;
     } catch (action) { if (action !== "cancel") return false; }
   }
+  const loading = resultLoading.value?.editorId === id ? resultLoading.value : undefined;
+  if (loading) {
+    clearPendingResultBatches(id, loading.executionId, loading.resultIndex);
+    resultReloadRequired.delete(resultReloadKey(loading.editorId, loading.resultExecutionId, loading.resultIndex));
+    rejectPendingLoadAll(id, loading.executionId, new Error("编辑器已关闭"));
+    resultLoading.value = undefined;
+    try {
+      await rpc.ensureOperational();
+      await rpc.request("query.cancel", { editorId: id, executionId: loading.executionId });
+    } catch { /* editor close still releases the active JDBC session */ }
+  }
   const state = await rpc.request<{ requiresTransactionDecision: boolean }>("editor.close", { editorId: id, action: "check" });
   if (state.requiresTransactionDecision) {
     let action: "commit" | "rollback";
@@ -2624,6 +2889,7 @@ async function closeTab(id: string): Promise<boolean> {
   }
   if (tab.activeExecutionId) executionNotifications.clearExecution(tab.activeExecutionId);
   executionAttention.clearEditor(id);
+  for (const key of [...resultReloadRequired]) if (key.startsWith(`${id}:`)) resultReloadRequired.delete(key);
   clearExecutionTimelineSession(id);
   resultEdits.finishEditor(id); queries.clearEditor(id); editors.remove(id);
   void nextTick().then(() => monacoEditor.value?.releaseModel?.(id));
@@ -3107,6 +3373,17 @@ async function closeTemporaryResult(executionId: string): Promise<void> {
     ElMessage.warning("该结果还有未应用的本地草稿，请先应用或撤销后再关闭");
     return;
   }
+  const loading = resultLoading.value;
+  if (loading?.editorId === tab.id && activeExecution.value?.executionId === executionId) {
+    clearPendingResultBatches(tab.id, loading.executionId, loading.resultIndex);
+    resultReloadRequired.delete(resultReloadKey(loading.editorId, loading.resultExecutionId, loading.resultIndex));
+    rejectPendingLoadAll(tab.id, loading.executionId, new Error("结果已关闭"));
+    resultLoading.value = undefined;
+    try {
+      await rpc.ensureOperational();
+      await rpc.request("query.cancel", { editorId: tab.id, executionId: loading.executionId });
+    } catch { /* closing the result remains authoritative */ }
+  }
   try {
     await rpc.ensureOperational();
     await rpc.request("query.closeResult", { editorId: tab.id, executionId });
@@ -3117,6 +3394,7 @@ async function closeTemporaryResult(executionId: string): Promise<void> {
     resultEdits.finishExecution(tab.id, executionId);
     queries.removeExecution(tab.id, executionId);
     const remaining = queries.executionList(tab.id);
+    for (const key of [...resultReloadRequired]) if (key.startsWith(`${tab.id}:${executionId}:`)) resultReloadRequired.delete(key);
     if (wasActive) {
       const neighbor = remaining[Math.min(closedIndex, remaining.length - 1)];
       const index = closedIndex < remaining.length ? 0 : neighbor?.results.at(-1)?.resultIndex ?? 0;

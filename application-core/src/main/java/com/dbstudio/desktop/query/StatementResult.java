@@ -69,28 +69,23 @@ public final class StatementResult {
         this.columnDetails = columnDetails == null ? Collections.<ResultColumn>emptyList()
                 : Collections.unmodifiableList(new ArrayList<ResultColumn>(columnDetails));
         this.mutationTarget = mutationTarget;
-        if (rows == null) {
-            this.rows = Collections.emptyList();
-        } else {
-            List<List<String>> copied = new ArrayList<List<String>>(rows.size());
-            for (List<String> row : rows) {
-                copied.add(Collections.unmodifiableList(new ArrayList<String>(row)));
+        this.rows = immutableRows(rows);
+        List<String> identifiers;
+        if (rowIds instanceof ChunkedList && rowIds.size() == this.rows.size()) {
+            @SuppressWarnings("unchecked") List<String> shared = (List<String>) rowIds;
+            identifiers = shared;
+        } else if (rowIds != null && rowIds.size() == this.rows.size()) {
+            identifiers = new ArrayList<String>(rowIds);
+        }
+        else {
+            identifiers = new ArrayList<String>(this.rows.size());
+            for (int index = 0; index < this.rows.size(); index++) {
+                identifiers.add(java.util.UUID.randomUUID().toString());
             }
-            this.rows = Collections.unmodifiableList(copied);
         }
-        List<String> identifiers = new ArrayList<String>(this.rows.size());
-        if (rowIds != null && rowIds.size() == this.rows.size()) identifiers.addAll(rowIds);
-        else for (int index = 0; index < this.rows.size(); index++) {
-            identifiers.add(java.util.UUID.randomUUID().toString());
-        }
-        this.rowIds = Collections.unmodifiableList(identifiers);
-        List<List<String>> locators = new ArrayList<List<String>>(this.rows.size());
-        for (int index = 0; index < this.rows.size(); index++) {
-            List<String> values = rowLocators != null && index < rowLocators.size()
-                    ? rowLocators.get(index) : Collections.<String>emptyList();
-            locators.add(Collections.unmodifiableList(new ArrayList<String>(values)));
-        }
-        this.rowLocators = Collections.unmodifiableList(locators);
+        this.rowIds = identifiers instanceof ChunkedList ? identifiers
+                : Collections.unmodifiableList(new ArrayList<String>(identifiers));
+        this.rowLocators = immutableLocators(rowLocators, this.rows.size());
         this.updateCount = updateCount;
         this.truncated = truncated;
         this.duration = duration == null ? Duration.ZERO : duration;
@@ -113,6 +108,27 @@ public final class StatementResult {
     public String errorMessage() { return errorMessage; }
     public boolean hasRows() { return !columns.isEmpty(); }
     public boolean failed() { return errorMessage != null && !errorMessage.trim().isEmpty(); }
+
+    private static List<List<String>> immutableRows(List<List<String>> source) {
+        if (source == null) return ChunkedList.empty();
+        if (source instanceof ChunkedList) return source;
+        ChunkedList.Builder<List<String>> builder = new ChunkedList.Builder<List<String>>();
+        for (List<String> row : source) {
+            builder.add(Collections.unmodifiableList(new ArrayList<String>(row)));
+        }
+        return builder.build();
+    }
+
+    private static List<List<String>> immutableLocators(List<List<String>> source, int size) {
+        if (source instanceof ChunkedList && source.size() == size) return source;
+        ChunkedList.Builder<List<String>> builder = new ChunkedList.Builder<List<String>>();
+        for (int index = 0; index < size; index++) {
+            List<String> values = source != null && index < source.size()
+                    ? source.get(index) : Collections.<String>emptyList();
+            builder.add(Collections.unmodifiableList(new ArrayList<String>(values)));
+        }
+        return builder.build();
+    }
 
     private static List<ResultColumn> defaultDetails(List<String> columns) {
         if (columns == null) return Collections.emptyList();

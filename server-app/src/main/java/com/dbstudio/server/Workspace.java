@@ -7,6 +7,8 @@ import com.dbstudio.desktop.query.QueryResultListener;
 import com.dbstudio.desktop.query.QueryRunner;
 import com.dbstudio.desktop.logging.SqlLogSupport;
 import com.dbstudio.desktop.query.QueryRunner.PageResult;
+import com.dbstudio.desktop.query.QueryRunner.PageRowsListener;
+import com.dbstudio.desktop.query.QueryRunner.StreamResult;
 import com.dbstudio.desktop.query.ResultMutationTarget;
 import com.dbstudio.desktop.web.EditorSessionRegistry;
 import com.dbstudio.desktop.web.EditorSessionRegistry.EditorSession;
@@ -33,6 +35,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.function.BiConsumer;
 import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -317,6 +320,69 @@ final class Workspace implements AutoCloseable {
                 editor.endExecution(executionId);
                 if (!active.runner.isTransactionDirty()) finishExecutionLease(editor, active);
             }));
+        } catch (RuntimeException exception) {
+            editor.endExecution(executionId);
+            finishExecutionLease(editor, active);
+            throw exception;
+        }
+    }
+
+    CompletableFuture<StreamResult> streamResultRows(final EditorSession editor, final UUID executionId,
+                                                     String sql, int offset, int batchRows,
+                                                     final Runnable started, final PageRowsListener listener) {
+        return streamResultRows(editor, executionId, sql, offset, batchRows, started, listener, null);
+    }
+
+    CompletableFuture<StreamResult> streamResultRows(final EditorSession editor, final UUID executionId,
+                                                     String sql, int offset, int batchRows,
+                                                     final Runnable started, final PageRowsListener listener,
+                                                     final BiConsumer<StreamResult, Throwable> completed) {
+        ensureBound(editor);
+        if (editor.activeExecutionId() != null) throw new ApiException("QUERY_BUSY", "当前标签已有查询正在执行");
+        if (editor.transactionOperationActive()) throw new ApiException("TRANSACTION_BUSY", "当前标签正在提交或回滚事务");
+        LOG.info("Workspace开始全量结果流式读取 workspaceId={} editorId={} executionId={} offset={} batchRows={}",
+                id, editor.id(), executionId, offset, batchRows);
+        final ActiveLease active = acquireRunner(editor);
+        try {
+            return withExecutionId(executionId, () -> active.runner.streamRows(sql, offset, batchRows,
+                    (rows, rowIds, rowLocators) -> {
+                        synchronized (Workspace.this) {
+                            if (!ownsLease(editor, active)) {
+                                throw new ApiException("JDBC_CONNECTION_ABORTED", "JDBC 连接已被任务管理器强制断开");
+                            }
+                        }
+                        listener.rows(rows, rowIds, rowLocators);
+                    }, () -> {
+                        synchronized (Workspace.this) {
+                            if (!ownsLease(editor, active)) {
+                                throw new ApiException("JDBC_CONNECTION_ABORTED", "JDBC 连接已被任务管理器强制断开");
+                            }
+                            if (!editor.beginExecution(executionId)) {
+                                throw new ApiException(editor.transactionOperationActive() ? "TRANSACTION_BUSY" : "QUERY_BUSY",
+                                        editor.transactionOperationActive()
+                                                ? "当前标签正在提交或回滚事务" : "当前标签已有查询正在执行");
+                            }
+                            try {
+                                started.run();
+                            } catch (RuntimeException exception) {
+                                editor.endExecution(executionId);
+                                throw exception;
+                            }
+                    }
+                })).whenComplete((result, failure) -> {
+                        try {
+                            if (completed != null) completed.accept(result, failure);
+                        } finally {
+                            try {
+                                if (!active.runner.isTransactionDirty()) finishExecutionLease(editor, active);
+                            } finally {
+                                // Keep the editor busy until the lease has been
+                                // released so a new query cannot race the
+                                // stream's JDBC cleanup.
+                                editor.endExecution(executionId);
+                            }
+                        }
+                    });
         } catch (RuntimeException exception) {
             editor.endExecution(executionId);
             finishExecutionLease(editor, active);

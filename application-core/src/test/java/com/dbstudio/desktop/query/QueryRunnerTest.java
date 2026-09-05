@@ -264,6 +264,18 @@ class QueryRunnerTest {
             QueryRunner.PageResult last = runner.fetchPage(initial.sql(), 4, 2).join();
             assertEquals(Collections.singletonList(Arrays.asList("5")), last.rows());
             assertFalse(last.hasMore());
+
+            List<Integer> streamedBatches = new ArrayList<Integer>();
+            List<List<String>> streamedRows = new ArrayList<List<String>>();
+            QueryRunner.StreamResult streamed = runner.streamRows(initial.sql(), 2, 2,
+                    (rows, rowIds, rowLocators) -> {
+                        streamedBatches.add(rows.size());
+                        streamedRows.addAll(rows);
+                    }, () -> { }).join();
+            assertEquals(Arrays.asList(2, 1), streamedBatches);
+            assertEquals(Arrays.asList(Arrays.asList("3"), Arrays.asList("4"), Arrays.asList("5")), streamedRows);
+            assertEquals(3, streamed.rowsRead());
+            assertFalse(streamed.cancelled());
         }
     }
 

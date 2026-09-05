@@ -1606,18 +1606,12 @@ describe("App result loading status toolbar", () => {
     await flushPromises();
   });
 
-  it("stops fetching all after cancellation and retains every completed batch", async () => {
-    let pageRequestCount = 0;
-    let finishSecondPage: ((value: unknown) => void) | undefined;
+  it("streams all rows through one load request and retains batches after cancellation", async () => {
+    let loadRequestCount = 0;
     rpcRequest.mockImplementation(async (type: string, payload: Record<string, unknown>) => {
-      if (type === "query.cancel") return { cancelled: false };
-      if (type !== "query.fetchRows") return {};
-      pageRequestCount++;
-      if (pageRequestCount === 1) {
-        return { executionId: payload.executionId, resultIndex: 0, offset: 1, rows: [["2"]],
-          hasMore: true, nextOffset: 2, cancelled: false };
-      }
-      return await new Promise((resolve) => { finishSecondPage = resolve; });
+      if (type === "query.cancel") return { cancelled: true };
+      if (type === "query.loadAll") { loadRequestCount++; return { executionId: payload.executionId }; }
+      return {};
     });
     const editors = useEditorStore();
     const queries = useQueryStore();
@@ -1631,7 +1625,7 @@ describe("App result loading status toolbar", () => {
 
     await wrapper.get('button[aria-label="获取全部数据"]').trigger("click");
     await flushPromises();
-    const pageCall = rpcRequest.mock.calls.find(([type]) => type === "query.fetchRows");
+    const pageCall = rpcRequest.mock.calls.find(([type]) => type === "query.loadAll");
     const executionId = String(pageCall?.[1]?.executionId);
     rpcMock.listeners.get("query.pageStarted")?.forEach((listener) => listener({
       editorId: "editor-1", executionId, resultIndex: 0
@@ -1639,12 +1633,18 @@ describe("App result loading status toolbar", () => {
     await nextTick();
     await wrapper.get('button[aria-label="取消执行"]').trigger("click");
     await flushPromises();
-    finishSecondPage?.({ executionId, resultIndex: 0, offset: 2, rows: [["3"]],
-      hasMore: true, nextOffset: 3, cancelled: false });
+    rpcMock.listeners.get("query.pageRows")?.forEach((listener) => listener({
+      editorId: "editor-1", executionId, resultExecutionId: "execution-1", resultIndex: 0,
+      offset: 1, rows: [["2"]], rowIds: ["row-2"]
+    }));
+    rpcMock.listeners.get("query.pageComplete")?.forEach((listener) => listener({
+      editorId: "editor-1", executionId, resultExecutionId: "execution-1", resultIndex: 0,
+      offset: 1, nextOffset: 2, rowsRead: 1, cancelled: true, complete: false
+    }));
     await flushPromises();
 
-    expect(pageRequestCount).toBe(2);
-    expect(queries.executions["editor-1"].results[0].rows).toEqual([["1"], ["2"], ["3"]]);
+    expect(loadRequestCount).toBe(1);
+    expect(queries.executions["editor-1"].results[0].rows).toEqual([["1"], ["2"]]);
     expect(wrapper.find('button[aria-label="取消执行"]').exists()).toBe(false);
   });
 

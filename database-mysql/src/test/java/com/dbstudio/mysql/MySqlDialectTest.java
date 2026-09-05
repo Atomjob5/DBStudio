@@ -162,6 +162,22 @@ class MySqlDialectTest {
     }
 
     @Test
+    void plansNativePagesAndKeepsExistingLimitBounds() {
+        com.dbstudio.spi.SqlDialect.PagePlan page = dialect.pageQuery(
+                "/* keep */ SELECT id FROM orders ORDER BY id LIMIT 5, 10", 2, 2);
+        assertTrue(page.nativePaging());
+        assertTrue(page.sql().toUpperCase().contains("LIMIT 7, 3"));
+        assertEquals(0, page.skipOffset());
+
+        com.dbstudio.spi.SqlDialect.PagePlan empty = dialect.pageQuery(
+                "SELECT id FROM orders LIMIT 5", 5, 2);
+        assertTrue(empty.empty());
+        assertFalse(dialect.pageQuery("WITH x AS (SELECT 1) SELECT * FROM x", 0, 2).nativePaging());
+        assertFalse(dialect.pageQuery("SELECT id FROM orders UNION SELECT id FROM archive_orders", 0, 2).nativePaging());
+        assertFalse(dialect.pageQuery("SELECT id FROM orders FOR UPDATE", 0, 2).nativePaging());
+    }
+
+    @Test
     void recognizesOnlySafeSingleTableMutationSources() {
         com.dbstudio.spi.ResultMutationSource source = dialect.resultMutationSource(
                 "SELECT o.id AS order_id, o.amount FROM `eastwealthcrawler`.`orders` o WHERE o.id > 0").get();

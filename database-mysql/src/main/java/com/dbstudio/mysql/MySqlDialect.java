@@ -3,9 +3,11 @@ package com.dbstudio.mysql;
 import com.alibaba.druid.DbType;
 import com.alibaba.druid.sql.SQLUtils;
 import com.alibaba.druid.sql.ast.SQLExpr;
+import com.alibaba.druid.sql.ast.SQLLimit;
 import com.alibaba.druid.sql.ast.SQLStatement;
 import com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr;
 import com.alibaba.druid.sql.ast.expr.SQLAggregateExpr;
+import com.alibaba.druid.sql.ast.expr.SQLIntegerExpr;
 import com.alibaba.druid.sql.ast.expr.SQLPropertyExpr;
 import com.alibaba.druid.sql.ast.statement.SQLDeleteStatement;
 import com.alibaba.druid.sql.ast.statement.SQLSelectItem;
@@ -243,6 +245,64 @@ public final class MySqlDialect implements SqlDialect {
     public String previewQuery(DatabaseObject object, int maxRows) {
         return "SELECT *\nFROM " + qualifiedName(object.catalog(), object.schema(), object.name())
                 + "\nLIMIT " + Math.max(1, maxRows) + ";";
+    }
+
+    @Override public PagePlan pageQuery(String sql, int offset, int limit) {
+        if (sql == null || offset < 0 || limit < 1) return PagePlan.fallback(sql, offset, limit);
+        String upper = sql.toUpperCase(Locale.ROOT);
+        if (upper.matches("(?s).*\\b(?:FOR\\s+(?:UPDATE|SHARE)|LOCK\\s+IN\\s+SHARE\\s+MODE)\\b.*")
+                || upper.matches("(?s).*\\b(?:WITH\\s+TIES|PERCENT)\\b.*")) {
+            return PagePlan.fallback(sql, offset, limit);
+        }
+        try {
+            SQLStatement parsed = SQLUtils.parseSingleMysqlStatement(sql);
+            if (!(parsed instanceof SQLSelectStatement)) return PagePlan.fallback(sql, offset, limit);
+            SQLSelectStatement select = (SQLSelectStatement) parsed;
+            if (select.getSelect().getWithSubQuery() != null) return PagePlan.fallback(sql, offset, limit);
+            SQLSelectQueryBlock block = select.getSelect().getQueryBlock();
+            if (block == null || block.isForUpdate() || block.isForShare()) return PagePlan.fallback(sql, offset, limit);
+            // Keep a rendered copy before changing the AST. If the formatter
+            // drops a trailing or otherwise unsupported comment, the comment
+            // preserving fallback must not be mistaken for the paged query.
+            String originalRendered = SQLUtils.toSQLString(select, DbType.mysql);
+            String originalSql = SqlTextCompactor.preserveComments(sql, originalRendered);
+            SQLLimit existing = block.getLimit();
+            long baseOffset = 0;
+            long baseCount = Long.MAX_VALUE;
+            if (existing != null) {
+                Long parsedOffset = integerValue(existing.getOffset());
+                Long parsedCount = integerValue(existing.getRowCount());
+                if (parsedCount == null || (existing.getOffset() != null && parsedOffset == null)) {
+                    return PagePlan.fallback(sql, offset, limit);
+                }
+                baseOffset = parsedOffset == null ? 0 : parsedOffset;
+                baseCount = parsedCount;
+            }
+            if (baseOffset < 0 || baseCount < 0 || offset >= baseCount) return PagePlan.empty(sql, limit);
+            long effectiveOffset = baseOffset + offset;
+            if (effectiveOffset < 0 || effectiveOffset > Integer.MAX_VALUE) return PagePlan.fallback(sql, offset, limit);
+            long remaining = baseCount == Long.MAX_VALUE ? Long.MAX_VALUE : baseCount - offset;
+            int fetch = (int) Math.min((long) probeLimit(limit), remaining);
+            block.setLimit(new SQLLimit(new SQLIntegerExpr((int) effectiveOffset), new SQLIntegerExpr(fetch)));
+            String rewritten = SqlTextCompactor.preserveComments(sql, SQLUtils.toSQLString(select, DbType.mysql));
+            if (rewritten.equals(originalSql)) return PagePlan.fallback(sql, offset, limit);
+            return PagePlan.nativePage(rewritten, limit);
+        } catch (RuntimeException ignored) {
+            return PagePlan.fallback(sql, offset, limit);
+        }
+    }
+
+    private static int probeLimit(int limit) {
+        return limit >= Integer.MAX_VALUE ? Integer.MAX_VALUE : Math.max(2, limit + 1);
+    }
+
+    private static Long integerValue(SQLExpr expression) {
+        if (expression == null) return null;
+        if (!(expression instanceof SQLIntegerExpr)) return null;
+        Number value = ((SQLIntegerExpr) expression).getNumber();
+        if (value == null) return null;
+        long result = value.longValue();
+        return result >= 0 && result <= Integer.MAX_VALUE ? result : null;
     }
 
     @Override
