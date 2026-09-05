@@ -465,7 +465,7 @@ test("manages global JDBC slots, execution history, probing, abort and cleanup",
   await page.getByRole("button", { name: "执行", exact: true }).click();
   await expect(page.getByText("200 行 · 38 ms", { exact: true })).toBeVisible();
 
-  await page.getByRole("button", { name: "更多操作", exact: true }).click();
+  await page.locator('button[aria-label="更多操作"]').click();
   const menuItems = page.getByRole("menuitem");
   await expect(menuItems.filter({ hasText: "任务管理器" })).toBeVisible();
   const labels = await menuItems.allTextContents();
@@ -480,14 +480,14 @@ test("manages global JDBC slots, execution history, probing, abort and cleanup",
   await expect(drawer).toBeVisible();
   expect((await drawer.boundingBox())?.width).toBeCloseTo(760, 0);
   await expect(drawer.locator(".jdbc-slot-row")).toHaveCount(10);
-  await expect(drawer).toContainText("10 个槽位");
+  await expect(drawer).toContainText("10 个线程");
   const idleRow = drawer.locator(".jdbc-slot-row.state-idle").filter({ hasText: "本地开发库" }).first();
   await idleRow.getByRole("button", { name: /探活/ }).click();
   await expect(idleRow).toContainText("探活 8 ms");
 
   const transactionRow = drawer.locator(".jdbc-slot-row.state-transaction");
   await expect(transactionRow).toContainText("未提交事务");
-  await transactionRow.getByRole("button", { name: /展开槽位/ }).click();
+  await transactionRow.getByRole("button", { name: /展开线程/ }).click();
   await expect(transactionRow).toContainText("当前查询");
   await transactionRow.getByRole("button", { name: /查看SQL/ }).click();
   const sqlDialog = page.getByRole("dialog", { name: "完整 SQL", exact: true });
@@ -1749,3 +1749,77 @@ test("follows the system color scheme and reduces nonessential motion", async ({
   expect(editMotion.animationName).toBe("none");
   expect(editMotion.transitionDuration.split(", ").every((value) => Number.parseFloat(value) <= 0.1)).toBe(true);
 });
+
+for (const height of [900, 540]) {
+  test(`expanded task records remain reachable at height ${height}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height });
+    await page.evaluate(async () => {
+      const path = '/src/bridge/rpc.ts';
+      const { rpc } = await import(/* @vite-ignore */ path);
+      const original = rpc.request.bind(rpc);
+      rpc.request = async (type: string, ...args: unknown[]) => type === 'jdbc.connections.executions'
+        ? { executions: Array.from({ length: 30 }, (_, i) => ({
+          executionId: `layout-${i}`, editorId: 'editor-layout', editorTitle: `记录 ${i + 1}`,
+          workspaceName: '布局测试', profileName: '测试连接', providerId: 'mysql',
+          startedAt: Date.now(), durationMs: 20, status: 'success', rowCount: 1
+        })) } : original(type, ...args);
+    });
+    await page.locator('button[aria-label="更多操作"]').click();
+    await page.getByRole('menuitem', { name: '任务管理器', exact: true }).click();
+    const drawer = page.getByRole('dialog', { name: '任务管理器', exact: true });
+    const rows = drawer.locator('.jdbc-slot-row');
+    await expect(rows).toHaveCount(10);
+    const initialHeight = (await rows.last().boundingBox())!.height;
+    for (const index of [0, 1]) {
+      await rows.nth(index).getByRole('button', { name: /展开线程/ }).click();
+      await expect(rows.nth(index).locator('.jdbc-execution-row')).toHaveCount(30);
+      const last = rows.nth(index).locator('.jdbc-execution-row').last();
+      await last.scrollIntoViewIfNeeded();
+      await expect(last).toBeInViewport();
+      expect(await last.evaluate(e => e.getBoundingClientRect().bottom <= e.closest('.jdbc-slot-row')!.getBoundingClientRect().bottom)).toBe(true);
+    }
+    await rows.last().scrollIntoViewIfNeeded();
+    await expect(rows.last()).toBeInViewport();
+    expect((await rows.last().boundingBox())!.height).toBeCloseTo(initialHeight, 0);
+    await expect(drawer.getByPlaceholder('筛选线程、连接或编辑器')).toBeInViewport();
+    await drawer.getByPlaceholder('筛选线程、连接或编辑器').fill('10');
+    await expect(rows).toHaveCount(1);
+    await expect(rows).toContainText('线程 10');
+  });
+}
+
+for (const timezoneId of ['America/Los_Angeles', 'Asia/Shanghai']) {
+  test.describe(`history timezone ${timezoneId}`, () => {
+    test.use({ timezoneId });
+    test('Beijing time, history filtering, pagination and opening', async ({ page }) => {
+      await page.evaluate(async () => {
+        const path = '/src/bridge/rpc.ts';
+        const { rpc } = await import(/* @vite-ignore */ path);
+        const original = rpc.request.bind(rpc);
+        rpc.request = async (type: string, ...args: unknown[]) => type === 'history.list'
+          ? Array.from({ length: 51 }, (_, i) => ({
+            executedAt: '2026-09-05T09:59:19.145408Z', sql: `select ${i + 1} as history_marker`,
+            durationMs: 9, rowCount: 1, status: 'SUCCESS'
+          })) : original(type, ...args);
+      });
+      await page.locator('button[aria-label="更多操作"]').click();
+      await page.getByRole('menuitem', { name: '查询历史', exact: true }).click();
+      const drawer = page.getByRole('dialog', { name: '查询历史', exact: true });
+      await expect(drawer).toContainText('执行时间（北京时间）');
+      await expect(drawer.locator('.history-time')).toHaveCount(50);
+      await expect(drawer.locator('.history-time').first()).toHaveText('2026-09-05 17:59:19');
+      expect(await drawer.locator('.history-time').first().evaluate(e => {
+        const cell = e.closest('.cell')!;
+        return getComputedStyle(e).whiteSpace === 'nowrap' && cell.scrollWidth <= cell.clientWidth;
+      })).toBe(true);
+      await drawer.locator('.el-pager li').filter({ hasText: /^2$/ }).click();
+      await expect(drawer.locator('.history-time')).toHaveCount(1);
+      await expect(drawer).toContainText('select 51 as history_marker');
+      await drawer.getByPlaceholder('筛选 SQL 或状态').fill('select 3 as');
+      await expect(drawer.locator('.history-time')).toHaveCount(1);
+      await drawer.getByRole('button', { name: '打开', exact: true }).click();
+      await expect(drawer).toBeHidden();
+      await expect(page.locator('.monaco-editor .view-lines')).toContainText('history_marker');
+    });
+  });
+}

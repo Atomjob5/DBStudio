@@ -265,7 +265,7 @@ public final class WorkspaceRegistry implements AutoCloseable {
         for (EditorConnectionLimiter.SlotSnapshot slot : limiter.snapshots()) {
             if (slot.slotId.equals(slotId)) return jdbcSlotPayload(slot);
         }
-        throw new ApiException("JDBC_SLOT_NOT_FOUND", "JDBC 连接槽位不存在");
+        throw new ApiException("JDBC_SLOT_NOT_FOUND", "JDBC 连接线程不存在");
     }
 
     private Map<String, Object> jdbcSlotPayload(EditorConnectionLimiter.SlotSnapshot slot) {

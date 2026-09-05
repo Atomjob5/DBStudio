@@ -57,13 +57,13 @@ describe("JdbcTaskManagerDrawer", () => {
     expect(wrapper.findComponent({ name: "ElDrawer" }).props("size")).toBe("760px");
     expect(wrapper.findAll(".jdbc-slot-row")).toHaveLength(10);
     expect(wrapper.findAll(".jdbc-slot-number").map((item) => item.text()).slice(0, 3))
-      .toEqual(["槽位 01", "槽位 02", "槽位 03"]);
-    expect(wrapper.text()).toContain("10 个槽位");
+      .toEqual(["线程 01", "线程 02", "线程 03"]);
+    expect(wrapper.text()).toContain("10 个线程");
     expect(wrapper.text()).toContain("2 个已连接");
     expect(wrapper.text()).toContain("订单工作区");
     expect(wrapper.text()).toContain("最近执行");
-    expect(wrapper.get('[aria-label="探活槽位 3"]').attributes("disabled")).toBeDefined();
-    expect(wrapper.get('[aria-label="强制断开槽位 3"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.get('[aria-label="探活线程 3"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.get('[aria-label="强制断开线程 3"]').attributes("disabled")).toBeDefined();
   });
 
   it("probes only a connected idle slot with the slot state version", async () => {
@@ -72,8 +72,8 @@ describe("JdbcTaskManagerDrawer", () => {
     const request = vi.mocked(rpc.request);
     request.mockResolvedValueOnce({ slot: { ...connected, stateVersion: 5, lastProbeLatencyMs: 9 } } as never);
 
-    expect(wrapper.get('[aria-label="探活槽位 2"]').attributes("disabled")).toBeDefined();
-    await wrapper.get('[aria-label="探活槽位 1"]').trigger("click"); await flushPromises();
+    expect(wrapper.get('[aria-label="探活线程 2"]').attributes("disabled")).toBeDefined();
+    await wrapper.get('[aria-label="探活线程 1"]').trigger("click"); await flushPromises();
     expect(request).toHaveBeenCalledWith("jdbc.connections.probe", {
       slotId: connected.slotId, stateVersion: 4
     }, 5_000);
@@ -87,7 +87,7 @@ describe("JdbcTaskManagerDrawer", () => {
     const request = vi.mocked(rpc.request);
     request.mockResolvedValueOnce({ accepted: true, slot: { ...busy, state: "aborting", stateVersion: 8 } } as never);
 
-    await wrapper.get('[aria-label="强制断开槽位 2"]').trigger("click"); await flushPromises();
+    await wrapper.get('[aria-label="强制断开线程 2"]').trigger("click"); await flushPromises();
     expect(confirm.mock.calls[0][0]).toContain("全部未提交修改");
     expect(request).toHaveBeenCalledWith("jdbc.connections.abort", {
       slotId: busy.slotId, stateVersion: 7
@@ -98,7 +98,7 @@ describe("JdbcTaskManagerDrawer", () => {
   it("loads recent executions on expansion, opens full SQL and clears expired data", async () => {
     const wrapper = mountDrawer();
     wrapper.findComponent({ name: "ElDrawer" }).vm.$emit("open"); await flushPromises();
-    await wrapper.get('[aria-label="展开槽位 1"]').trigger("click"); await flushPromises();
+    await wrapper.get('[aria-label="展开线程 1"]').trigger("click"); await flushPromises();
     expect(vi.mocked(rpc.request)).toHaveBeenCalledWith("jdbc.connections.executions", { slotId: "slot-1" });
     expect(wrapper.text()).toContain("查询 1");
     expect(wrapper.text()).toContain("50 ms");

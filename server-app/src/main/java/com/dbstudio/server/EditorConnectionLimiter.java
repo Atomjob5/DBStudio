@@ -141,7 +141,7 @@ public final class EditorConnectionLimiter {
             throw new ApiException("JDBC_CONNECTION_STATE_CHANGED", "连接状态已经变化，请刷新后重新确认");
         }
         if (!slot.assigned() || slot.connectionId == null) {
-            throw new ApiException("JDBC_CONNECTION_NOT_FOUND", "该槽位当前没有物理 JDBC 连接");
+            throw new ApiException("JDBC_CONNECTION_NOT_FOUND", "该线程当前没有物理 JDBC 连接");
         }
         return new Target(slot.slotId, slot.assignedKey, slot.connectionId);
     }
@@ -265,7 +265,7 @@ public final class EditorConnectionLimiter {
 
     private Slot requireSlot(String slotId) {
         Slot slot = findSlot(slotId);
-        if (slot == null) throw new ApiException("JDBC_SLOT_NOT_FOUND", "JDBC 连接槽位不存在");
+        if (slot == null) throw new ApiException("JDBC_SLOT_NOT_FOUND", "JDBC 连接线程不存在");
         return slot;
     }
 

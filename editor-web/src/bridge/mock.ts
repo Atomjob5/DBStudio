@@ -174,7 +174,7 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
   }
   if (type === "jdbc.connections.probe") {
     const connection = mockJdbcSlots.find((item) => item.slotId === payload.slotId && item.physicalConnected);
-    if (!connection) throw new Error("该槽位当前没有物理 JDBC 连接");
+    if (!connection) throw new Error("该线程当前没有物理 JDBC 连接");
     connection.state = "idle"; connection.stateVersion = Number(connection.stateVersion) + 1;
     connection.lastProbeLatencyMs = 8; connection.lastActiveAt = Date.now(); connection.message = "探活成功";
     emit("jdbc.connections.changed", { updatedAt: Date.now() });
@@ -182,7 +182,7 @@ export const developmentMockRequest: MockRequestHandler = async (type, payload, 
   }
   if (type === "jdbc.connections.abort") {
     const connection = mockJdbcSlots.find((item) => item.slotId === payload.slotId && item.physicalConnected);
-    if (!connection) throw new Error("该槽位当前没有物理 JDBC 连接");
+    if (!connection) throw new Error("该线程当前没有物理 JDBC 连接");
     connection.state = "disconnected"; connection.stateVersion = Number(connection.stateVersion) + 1;
     connection.physicalConnected = false; connection.disconnectedAt = Date.now(); connection.message = "连接已强制断开";
     if (connection.editorId) emit("jdbc.connectionAborted", { editorId: connection.editorId,

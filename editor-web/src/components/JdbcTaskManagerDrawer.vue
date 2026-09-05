@@ -3,30 +3,30 @@
              @open="load" @update:model-value="$emit('update:modelValue', $event)">
     <div class="jdbc-manager-content">
       <div class="jdbc-manager-toolbar">
-        <div class="jdbc-summary" aria-label="JDBC槽位汇总">
-          <strong>{{ slots.length }} 个槽位</strong>
+        <div class="jdbc-summary" aria-label="JDBC线程汇总">
+          <strong>{{ slots.length }} 个线程</strong>
           <span>{{ activeCount }} 个已连接</span>
           <span v-if="overLimitCount" class="is-warning">{{ overLimitCount }} 个超额占用</span>
         </div>
         <div class="jdbc-manager-actions">
-          <el-input v-model="filterText" clearable :prefix-icon="Search" placeholder="筛选槽位、连接或编辑器"
-                    aria-label="筛选JDBC槽位" />
+          <el-input v-model="filterText" clearable :prefix-icon="Search" placeholder="筛选线程、连接或编辑器"
+                    aria-label="筛选JDBC线程" />
           <el-button text :icon="Delete" aria-label="清理过期数据" :disabled="actionId !== ''"
                      @click="cleanup">清理过期数据</el-button>
-          <el-button text :icon="Refresh" aria-label="刷新JDBC槽位" :loading="loading" @click="load()">刷新</el-button>
+          <el-button text :icon="Refresh" aria-label="刷新JDBC线程" :loading="loading" @click="load()">刷新</el-button>
         </div>
       </div>
 
-      <div v-loading="loading && !slots.length" class="jdbc-slot-list" aria-label="JDBC连接槽位列表">
-        <el-empty v-if="!loading && !filteredSlots.length" :image-size="72" description="没有符合条件的连接槽位" />
+      <div v-loading="loading && !slots.length" class="jdbc-slot-list" aria-label="JDBC连接线程列表">
+        <el-empty v-if="!loading && !filteredSlots.length" :image-size="72" description="没有符合条件的连接线程" />
         <article v-for="slot in filteredSlots" :key="slot.slotId" class="jdbc-slot-row"
                  :class="[`state-${slot.state}`, { 'is-expanded': expandedIds.has(slot.slotId) }]">
           <div class="jdbc-slot-header">
             <button class="jdbc-slot-toggle" type="button" :aria-expanded="expandedIds.has(slot.slotId)"
-                    :aria-label="`${expandedIds.has(slot.slotId) ? '收起' : '展开'}槽位 ${slot.slotNumber}`"
+                    :aria-label="`${expandedIds.has(slot.slotId) ? '收起' : '展开'}线程 ${slot.slotNumber}`"
                     @click="toggle(slot)">
               <el-icon class="jdbc-slot-arrow"><ArrowRight /></el-icon>
-              <span class="jdbc-slot-number">槽位 {{ String(slot.slotNumber).padStart(2, "0") }}</span>
+              <span class="jdbc-slot-number">线程 {{ String(slot.slotNumber).padStart(2, "0") }}</span>
             </button>
             <div class="jdbc-slot-main">
               <div class="jdbc-slot-title">
@@ -57,13 +57,13 @@
                 <span>
                   <el-button size="small" :icon="Connection" :loading="actionId === `probe:${slot.slotId}`"
                              :disabled="!canProbe(slot) || actionId !== ''"
-                             :aria-label="`探活槽位 ${slot.slotNumber}`" @click="probe(slot)">探活</el-button>
+                             :aria-label="`探活线程 ${slot.slotNumber}`" @click="probe(slot)">探活</el-button>
                 </span>
               </el-tooltip>
               <el-button size="small" type="danger" plain :icon="SwitchButton"
                          :loading="actionId === `abort:${slot.slotId}`"
                          :disabled="!canAbort(slot) || actionId !== ''"
-                         :aria-label="`强制断开槽位 ${slot.slotNumber}`" @click="abortSlot(slot)">
+                         :aria-label="`强制断开线程 ${slot.slotNumber}`" @click="abortSlot(slot)">
                 强制断开
               </el-button>
             </div>
@@ -72,7 +72,7 @@
           <div v-if="expandedIds.has(slot.slotId)" class="jdbc-execution-panel">
             <div v-if="historyLoadingIds.has(slot.slotId)" class="jdbc-history-loading">正在加载执行记录…</div>
             <el-empty v-else-if="!(histories[slot.slotId]?.length)" :image-size="48" description="暂无 SQL 执行记录" />
-            <div v-else class="jdbc-execution-list" :aria-label="`槽位 ${slot.slotNumber} SQL执行记录`">
+            <div v-else class="jdbc-execution-list" :aria-label="`线程 ${slot.slotNumber} SQL执行记录`">
               <div v-for="execution in histories[slot.slotId]" :key="execution.executionId"
                    class="jdbc-execution-row">
                 <div class="jdbc-execution-time">{{ formatTime(execution.startedAt) }}</div>
@@ -232,7 +232,7 @@ async function abortSlot(slot: JdbcConnectionSlotSnapshot): Promise<void> {
 async function cleanup(): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      "将清除所有槽位中已完成的 SQL 记录，并重置已断开或异常的空槽位。活动连接和运行中的 SQL 不受影响。",
+      "将清除所有线程中已完成的 SQL 记录，并重置已断开或异常的空线程。活动连接和运行中的 SQL 不受影响。",
       "清理过期数据", { type: "warning", confirmButtonText: "清理", cancelButtonText: "取消" });
   } catch { return; }
   actionId.value = "cleanup";
@@ -268,14 +268,14 @@ function canAbort(slot: JdbcConnectionSlotSnapshot): boolean {
   return slot.physicalConnected && slot.state !== "disconnected" && slot.state !== "aborting";
 }
 function probeTooltip(slot: JdbcConnectionSlotSnapshot): string {
-  if (!slot.physicalConnected) return "该槽位尚未建立物理连接";
+  if (!slot.physicalConnected) return "该线程尚未建立物理连接";
   if (slot.state === "idle") return "调用 JDBC isValid(2) 检查连接";
   if (slot.state === "transaction") return "事务固定连接不能并发探活";
   if (slot.state === "busy") return "执行中的连接不能并发探活";
   return "当前连接状态不能探活";
 }
 function abortMessage(slot: JdbcConnectionSlotSnapshot): string {
-  const name = `槽位 ${slot.slotNumber}${slot.profileName ? ` · ${slot.profileName}` : ""}`;
+  const name = `线程 ${slot.slotNumber}${slot.profileName ? ` · ${slot.profileName}` : ""}`;
   if (slot.transactionOperationActive) return `${name} 正在提交或回滚。强制断开后数据库端最终结果可能无法确认，请重新查询核实。是否继续？`;
   if (slot.state === "busy" || slot.state === "transaction" || slot.transactionDirty) {
     return `${name} 正在执行 SQL 或持有事务。强制断开会终止当前 SQL，并可能丢失该连接上的全部未提交修改。是否继续？`;
@@ -330,15 +330,16 @@ function errorMessage(error: unknown): string { return error instanceof Error ? 
 </script>
 
 <style scoped>
+:global(.jdbc-task-manager-drawer .el-drawer__body) { min-height: 0; overflow: hidden; }
 .jdbc-manager-content { display: flex; flex-direction: column; gap: 12px; min-height: 0; height: 100%; }
-.jdbc-manager-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.jdbc-manager-toolbar { flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .jdbc-summary { display: flex; align-items: baseline; gap: 10px; color: var(--db-muted); font-size: 11px; white-space: nowrap; }
 .jdbc-summary strong { color: var(--db-text); font-size: 13px; }
 .jdbc-summary .is-warning { color: var(--el-color-warning); }
 .jdbc-manager-actions { min-width: 0; display: flex; align-items: center; gap: 4px; }
 .jdbc-manager-actions .el-input { width: 218px; }
-.jdbc-slot-list { flex: 1; min-height: 180px; overflow: auto; display: flex; flex-direction: column; gap: 7px; }
-.jdbc-slot-row { border: 1px solid var(--db-border-soft); border-radius: 12px;
+.jdbc-slot-list { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 7px; }
+.jdbc-slot-row { flex: 0 0 auto; border: 1px solid var(--db-border-soft); border-radius: 12px;
   background: color-mix(in srgb, var(--db-surface) 88%, transparent); overflow: hidden; }
 .jdbc-slot-row.state-unresponsive, .jdbc-slot-row.state-error { border-color: color-mix(in srgb, var(--el-color-warning) 48%, var(--db-border-soft)); }
 .jdbc-slot-row.state-disconnected { opacity: .78; }

@@ -7,7 +7,9 @@
         <el-input v-model="filterText" :prefix-icon="Search" clearable placeholder="筛选 SQL 或状态" aria-label="筛选查询历史" />
       </div>
       <el-table v-loading="loading" :data="pagedEntries" class="history-table" @row-dblclick="open">
-        <el-table-column prop="executedAt" label="执行时间" width="180" />
+        <el-table-column prop="executedAt" label="执行时间（北京时间）" width="210">
+          <template #default="{ row }"><span class="history-time">{{ formatHistoryTime(row.executedAt) }}</span></template>
+        </el-table-column>
         <el-table-column prop="status" label="状态" width="105">
           <template #default="{ row }"><el-tag :type="row.status === 'SUCCESS' ? 'success' : 'danger'" size="small" effect="plain">{{ row.status }}</el-tag></template>
         </el-table-column>
@@ -29,6 +31,7 @@
 import { computed, ref, watch } from "vue";
 import { Search } from "@element-plus/icons-vue";
 import { rpc } from "../bridge/rpc";
+import { formatHistoryTime } from "../historyTime";
 import type { HistoryEntry } from "../types";
 
 defineProps<{ modelValue: boolean }>();
@@ -56,5 +59,6 @@ function open(entry: unknown): void { emit("open", entry as HistoryEntry); emit(
 .history-toolbar span { color: var(--db-muted); font-size: 11px; }
 .history-toolbar .el-input { width: 260px; }
 .history-table { flex: 1; min-height: 0; border: 1px solid var(--db-border-soft); border-radius: 12px; overflow: hidden; }
+.history-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .history-footer { min-height: 30px; display: flex; align-items: center; justify-content: space-between; color: var(--db-muted); font-size: 11px; }
 </style>
