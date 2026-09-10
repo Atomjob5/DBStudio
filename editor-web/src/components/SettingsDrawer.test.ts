@@ -35,6 +35,7 @@ describe("SettingsDrawer compact result settings", () => {
         canClearCompletionCaches: true,
         minimapEnabled: true,
         wordWrapEnabled: false,
+        rainbowBracketsEnabled: false,
         sqlDiagnosticsEnabled: true,
         dangerousStatementWarningEnabled: true,
         continueOnError: false,
@@ -47,7 +48,7 @@ describe("SettingsDrawer compact result settings", () => {
   it("renders compact connection and result settings without the old alert", async () => {
     const wrapper = mountDrawer();
     await flushPromises();
-    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(26);
+    expect(wrapper.findAll(".compact-setting-row")).toHaveLength(27);
     expect(wrapper.findComponent({ name: "ElAlert" }).exists()).toBe(false);
     const separator = wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "comma");
@@ -102,19 +103,23 @@ describe("SettingsDrawer compact result settings", () => {
     numbers[5].vm.$emit("update:modelValue", 50);
     numbers[6].vm.$emit("update:modelValue", 22000);
     const switches = wrapper.findAllComponents({ name: "ElSwitch" });
+    expect(switches[2].props("modelValue")).toBe(false);
+    switches[2].vm.$emit("update:modelValue", true);
+    switches[2].vm.$emit("update:modelValue", false);
+    expect(wrapper.emitted("update:rainbowBracketsEnabled")).toEqual([[true], [false]]);
     switches[0].vm.$emit("update:modelValue", false);
     switches[1].vm.$emit("update:modelValue", true);
-    switches[2].vm.$emit("update:modelValue", false);
     switches[3].vm.$emit("update:modelValue", false);
-    switches[4].vm.$emit("update:modelValue", true);
+    switches[4].vm.$emit("update:modelValue", false);
     switches[5].vm.$emit("update:modelValue", true);
     switches[6].vm.$emit("update:modelValue", true);
-    switches[7].vm.$emit("update:modelValue", false);
+    switches[7].vm.$emit("update:modelValue", true);
     switches[8].vm.$emit("update:modelValue", false);
     switches[9].vm.$emit("update:modelValue", false);
-    switches[10].vm.$emit("update:modelValue", true);
+    switches[10].vm.$emit("update:modelValue", false);
     switches[11].vm.$emit("update:modelValue", true);
-    switches[12].vm.$emit("update:modelValue", false);
+    switches[12].vm.$emit("update:modelValue", true);
+    switches[13].vm.$emit("update:modelValue", false);
     wrapper.findAllComponents({ name: "ElRadioGroup" })
       .find((group) => group.props("modelValue") === "result")!.vm.$emit("update:modelValue", "editor");
     wrapper.findAllComponents({ name: "ElRadioGroup" })

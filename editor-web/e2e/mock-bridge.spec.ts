@@ -1823,3 +1823,41 @@ for (const timezoneId of ['America/Los_Angeles', 'Asia/Shanghai']) {
     });
   });
 }
+
+
+test("toggles rainbow brackets in the SQL editor", async ({ page }) => {
+  const colored = page.locator(".monaco-editor .view-lines [class*='bracket-highlighting-']");
+  const sql = "SELECT (1 + [2 * {3}]),\n  '([{}])', /* ([{}]) */ (4); -- ([{}])";
+  await replaceSql(page, sql);
+  await expect(colored).toHaveCount(0);
+  await page.locator('button[aria-label="更多操作"]').click();
+  await page.getByRole("menuitem", { name: "设置", exact: true }).click();
+  const settings = page.getByRole("dialog", { name: "设置", exact: true });
+  const toggle = settings.getByRole("switch", { name: "彩虹括号", exact: true });
+  await expect(toggle).not.toBeChecked();
+  await settings.locator('.el-switch:has(input[aria-label="彩虹括号"])').click();
+  await expect(toggle).toBeChecked();
+  await settings.getByRole("button", { name: "Close this dialog", exact: true }).click();
+  await expect(colored).toHaveCount(8);
+  const colors = await colored.evaluateAll(nodes => nodes.map(node => getComputedStyle(node).color));
+  expect(new Set(colors).size).toBe(3);
+  expect(colors[0]).toBe(colors[5]);
+  expect(colors[1]).toBe(colors[4]);
+  expect(colors[2]).toBe(colors[3]);
+  await page.locator('button[aria-label="切换界面主题"]').click();
+  await expect(colored).toHaveCount(8);
+  await replaceSql(page, "SELECT (\n (1 + (2))\n);");
+  await expect(colored).toHaveCount(6);
+  await expect(page.locator(".monaco-editor [class*='bracket-indent-guide']")).toHaveCount(0);
+  await page.locator('button[aria-label="新建查询"]').click();
+  await replaceSql(page, "SELECT ((5));");
+  await expect(colored).toHaveCount(4);
+  await page.locator(".editor-tabs .el-tabs__item").filter({ hasText: "查询 1" }).click();
+  await expect(colored).toHaveCount(6);
+  await page.locator('button[aria-label="更多操作"]').click();
+  await page.getByRole("menuitem", { name: "设置", exact: true }).click();
+  await expect(toggle).toBeChecked();
+  await settings.locator('.el-switch:has(input[aria-label="彩虹括号"])').click();
+  await settings.getByRole("button", { name: "Close this dialog", exact: true }).click();
+  await expect(colored).toHaveCount(0);
+});

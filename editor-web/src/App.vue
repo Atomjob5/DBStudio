@@ -200,6 +200,7 @@
                                 :completion-snippets="settings.completionSnippets"
                                 :minimap-enabled="settings.minimapEnabled"
                                 :word-wrap-enabled="settings.wordWrapEnabled"
+                                :rainbow-brackets-enabled="settings.rainbowBracketsEnabled"
                                 :diagnostics-enabled="settings.sqlDiagnosticsEnabled"
                                 :dangerous-statement-warning-enabled="settings.dangerousStatementWarningEnabled"
                                 :editor-id="editors.active.id" :connection-display="activeConnectionDisplay"
@@ -281,6 +282,7 @@
                   :completion-candidate-limit="settings.completionCandidateLimit"
                   :completion-precise-matching-enabled="settings.completionPreciseMatchingEnabled"
                   :minimap-enabled="settings.minimapEnabled" :word-wrap-enabled="settings.wordWrapEnabled"
+                  :rainbow-brackets-enabled="settings.rainbowBracketsEnabled"
                   :sql-diagnostics-enabled="settings.sqlDiagnosticsEnabled"
                   :dangerous-statement-warning-enabled="settings.dangerousStatementWarningEnabled"
                   :continue-on-error="settings.continueOnError"
@@ -305,6 +307,7 @@
                   @update:completion-precise-matching-enabled="updateCompletionPreciseMatchingEnabled"
                   @update:minimap-enabled="updateMinimapEnabled"
                   @update:word-wrap-enabled="updateWordWrapEnabled"
+                  @update:rainbow-brackets-enabled="updateRainbowBracketsEnabled"
                   @update:sql-diagnostics-enabled="updateSqlDiagnosticsEnabled"
                   @update:dangerous-statement-warning-enabled="updateDangerousStatementWarningEnabled"
                   @update:continue-on-error="updateContinueOnError"
@@ -3185,6 +3188,11 @@ async function updateWordWrapEnabled(value: boolean): Promise<void> {
   const previous = settings.wordWrapEnabled; settings.wordWrapEnabled = value;
   try { await rpc.request("settings.update", { key: "editor.wordWrapEnabled", value: String(value) }); }
   catch (error) { settings.wordWrapEnabled = previous; reportError(error); }
+}
+async function updateRainbowBracketsEnabled(value: boolean): Promise<void> {
+  const previous = settings.rainbowBracketsEnabled; settings.rainbowBracketsEnabled = value;
+  try { await rpc.request("settings.update", { key: "editor.rainbowBracketsEnabled", value: String(value) }); }
+  catch (error) { settings.rainbowBracketsEnabled = previous; reportError(error); }
 }
 async function updateSqlDiagnosticsEnabled(value: boolean): Promise<void> {
   const previous = settings.sqlDiagnosticsEnabled; settings.sqlDiagnosticsEnabled = value;

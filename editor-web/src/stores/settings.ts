@@ -42,6 +42,7 @@ export const useSettingsStore = defineStore("settings", () => {
   const completionSnippets = ref<SqlCompletionSnippet[]>([]);
   const minimapEnabled = ref(true);
   const wordWrapEnabled = ref(false);
+  const rainbowBracketsEnabled = ref(false);
   const sqlDiagnosticsEnabled = ref(true);
   const dangerousStatementWarningEnabled = ref(true);
   const continueOnError = ref(false);
@@ -94,6 +95,7 @@ export const useSettingsStore = defineStore("settings", () => {
     completionSnippets.value = parseSqlCompletionSnippets(settings["editor.completionSnippets"]);
     minimapEnabled.value = settings["editor.minimapEnabled"] !== "false";
     wordWrapEnabled.value = settings["editor.wordWrapEnabled"] === "true";
+    rainbowBracketsEnabled.value = settings["editor.rainbowBracketsEnabled"] === "true";
     sqlDiagnosticsEnabled.value = settings["editor.sqlDiagnosticsEnabled"] !== "false";
     dangerousStatementWarningEnabled.value = settings["editor.dangerousStatementWarningEnabled"] !== "false";
     continueOnError.value = settings["editor.continueOnError"] === "true";
@@ -132,7 +134,7 @@ export const useSettingsStore = defineStore("settings", () => {
     scrollOptimizationBufferScreens,
     maxActiveSessions, autoCommit, idleTimeoutMinutes, transactionDisconnectRollbackMinutes,
     completionCandidateLimit, completionPreciseMatchingEnabled, completionSnippets,
-    minimapEnabled, wordWrapEnabled, sqlDiagnosticsEnabled, dangerousStatementWarningEnabled, continueOnError, objectInspectorOpacity,
+    minimapEnabled, wordWrapEnabled, rainbowBracketsEnabled, sqlDiagnosticsEnabled, dangerousStatementWarningEnabled, continueOnError, objectInspectorOpacity,
     executionWarningMinutes,
     shortcuts, shortcutRecordingActive,
     recentFiles, colorSchemes, initialize, setColorSchemes, setCompletionSnippets, setShortcuts, setShortcut, resetShortcuts };

@@ -70,6 +70,7 @@ const mockSettings: Record<string, string> = {
   "editor.completionSnippets": "[]",
   "editor.minimapEnabled": "true",
   "editor.wordWrapEnabled": "false",
+  "editor.rainbowBracketsEnabled": "false",
   "editor.sqlDiagnosticsEnabled": "true",
   "editor.dangerousStatementWarningEnabled": "true",
   "editor.continueOnError": "false",

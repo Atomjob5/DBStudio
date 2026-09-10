@@ -42,6 +42,11 @@
                      @update:model-value="$emit('update:wordWrapEnabled', $event === true)" />
         </el-form-item>
         <el-form-item class="compact-setting-row">
+          <template #label><div class="setting-label"><span>彩虹括号</span></div></template>
+          <el-switch size="small" aria-label="彩虹括号" :model-value="rainbowBracketsEnabled"
+                     @update:model-value="$emit('update:rainbowBracketsEnabled', $event === true)" />
+        </el-form-item>
+        <el-form-item class="compact-setting-row">
           <template #label>
             <div class="setting-label"><span>SQL 实时诊断</span>
               <el-tooltip content="停止输入 400 毫秒后检查语法、对象、字段及安全风险；诊断提示不会阻止执行。" placement="top">
@@ -348,11 +353,11 @@ const props = defineProps<{ modelValue: boolean; theme: ThemePreference; resolve
   completionCacheSize: string; completionCacheEnvironmentCount: number; completionCacheLoadingCount: number;
   completionCandidateLimit: number; completionPreciseMatchingEnabled: boolean;
   canClearCompletionCaches: boolean;
-  minimapEnabled: boolean; wordWrapEnabled: boolean; sqlDiagnosticsEnabled: boolean;
+  minimapEnabled: boolean; wordWrapEnabled: boolean; rainbowBracketsEnabled: boolean; sqlDiagnosticsEnabled: boolean;
   dangerousStatementWarningEnabled: boolean; continueOnError: boolean;
   executionWarningMinutes: number[] }>();
 const emit = defineEmits<{ "update:modelValue": [value: boolean]; "update:theme": [value: ThemePreference]; "openAppearance": [];
-  "update:minimapEnabled": [value: boolean]; "update:wordWrapEnabled": [value: boolean];
+  "update:minimapEnabled": [value: boolean]; "update:wordWrapEnabled": [value: boolean]; "update:rainbowBracketsEnabled": [value: boolean];
   "update:sqlDiagnosticsEnabled": [value: boolean];
   "update:dangerousStatementWarningEnabled": [value: boolean];
   "update:continueOnError": [value: boolean];

@@ -118,7 +118,7 @@ public final class DbStudioApiController {
             "connection.maxActiveSessions", "connection.autoCommit", "connection.idleTimeoutMinutes",
             "connection.transactionDisconnectRollbackMinutes",
             "editor.completionCandidateLimit", "editor.completionPreciseMatchingEnabled",
-            "editor.completionSnippets", "editor.minimapEnabled", "editor.wordWrapEnabled",
+            "editor.completionSnippets", "editor.minimapEnabled", "editor.wordWrapEnabled", "editor.rainbowBracketsEnabled",
             "editor.sqlDiagnosticsEnabled", "editor.dangerousStatementWarningEnabled", "editor.continueOnError", "editor.objectInspectorOpacity",
             "editor.executionWarningMinutes",
             "appearance.colorSchemes",
@@ -1808,6 +1808,7 @@ public final class DbStudioApiController {
             throw new ApiException("INVALID_SETTING", "精准匹配设置无效");
         }
         if (("editor.minimapEnabled".equals(key) || "editor.wordWrapEnabled".equals(key)
+                || "editor.rainbowBracketsEnabled".equals(key)
                 || "editor.sqlDiagnosticsEnabled".equals(key)
                 || "editor.dangerousStatementWarningEnabled".equals(key)
                 || "editor.continueOnError".equals(key))
@@ -2802,6 +2803,7 @@ public final class DbStudioApiController {
         if (!result.containsKey("editor.completionSnippets")) result.put("editor.completionSnippets", "[]");
         if (!result.containsKey("editor.minimapEnabled")) result.put("editor.minimapEnabled", "true");
         if (!result.containsKey("editor.wordWrapEnabled")) result.put("editor.wordWrapEnabled", "false");
+        if (!result.containsKey("editor.rainbowBracketsEnabled")) result.put("editor.rainbowBracketsEnabled", "false");
         if (!result.containsKey("editor.sqlDiagnosticsEnabled")) result.put("editor.sqlDiagnosticsEnabled", "true");
         if (!result.containsKey("editor.objectInspectorOpacity")) result.put("editor.objectInspectorOpacity", "100");
         if (!result.containsKey("editor.dangerousStatementWarningEnabled")) {

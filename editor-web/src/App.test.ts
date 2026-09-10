@@ -982,6 +982,7 @@ describe("App result loading status toolbar", () => {
     const vm = wrapper.vm as unknown as {
       updateMinimapEnabled: (value: boolean) => Promise<void>;
       updateWordWrapEnabled: (value: boolean) => Promise<void>;
+      updateRainbowBracketsEnabled: (value: boolean) => Promise<void>;
       updateSqlDiagnosticsEnabled: (value: boolean) => Promise<void>;
     };
 
@@ -998,6 +999,20 @@ describe("App result loading status toolbar", () => {
     expect(rpcRequest).toHaveBeenLastCalledWith("settings.update", {
       key: "editor.wordWrapEnabled", value: "true"
     });
+
+    expect(settings.rainbowBracketsEnabled).toBe(false);
+    rpcRequest.mockResolvedValueOnce({});
+    await vm.updateRainbowBracketsEnabled(true);
+    expect(settings.rainbowBracketsEnabled).toBe(true);
+    expect(rpcRequest).toHaveBeenLastCalledWith("settings.update", {
+      key: "editor.rainbowBracketsEnabled", value: "true"
+    });
+    rpcRequest.mockRejectedValueOnce(new Error("save failed"));
+    await vm.updateRainbowBracketsEnabled(false);
+    expect(settings.rainbowBracketsEnabled).toBe(true);
+    rpcRequest.mockResolvedValueOnce({});
+    await vm.updateRainbowBracketsEnabled(false);
+    expect(settings.rainbowBracketsEnabled).toBe(false);
 
     rpcRequest.mockResolvedValueOnce({});
     await vm.updateSqlDiagnosticsEnabled(false);

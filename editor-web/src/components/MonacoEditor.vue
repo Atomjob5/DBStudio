@@ -46,7 +46,7 @@ const props = withDefaults(defineProps<{ modelKey: string; initialValue: string;
   completionKey: string; providerId: string; completionCandidateLimit: number;
   completionRevision: string; completionMetadataReady: boolean;
   completionPreciseMatchingEnabled: boolean; completionSnippets: SqlCompletionSnippet[];
-  minimapEnabled: boolean; wordWrapEnabled: boolean; diagnosticsEnabled: boolean;
+  minimapEnabled: boolean; wordWrapEnabled: boolean; rainbowBracketsEnabled: boolean; diagnosticsEnabled: boolean;
   dangerousStatementWarningEnabled: boolean; editorId: string; connectionDisplay: string;
   defaultCatalog?: string; defaultSchema?: string; objectInspectorOpacity: number }>(), {
   appearance: () => DEFAULT_COLOR_SCHEMES.light,
@@ -178,6 +178,10 @@ if (!monaco.languages.getLanguages().some((item) => item.id === "dbstudio-mysql"
     tokenizer: { root: [[/[a-zA-Z_$][\w$]*/, { cases: { "@keywords": "keyword", "@default": "identifier" } }], [/`([^`]|``)*`/, "identifier.quote"], [/--.*$/, "comment"], [/#.*$/, "comment"], [/\/\*/, "comment", "@comment"], [/'([^'\\]|\\.)*'/, "string"], [/"([^"\\]|\\.)*"/, "string"], [/\d+(\.\d+)?/, "number"]], comment: [[/[^/*]+/, "comment"], [/\*\//, "comment", "@pop"], [/[/*]/, "comment"]] }
   });
   monaco.languages.setLanguageConfiguration("dbstudio-mysql", {
+    // Preserve the existing SQL auto-closing behavior when declaring bracket pairs.
+    autoClosingPairs: [],
+    brackets: [["(", ")"], ["[", "]"], ["{", "}"]],
+    colorizedBracketPairs: [["(", ")"], ["[", "]"], ["{", "}"]],
     comments: {
       lineComment: "--",
       blockComment: ["/*", "*/"],
@@ -196,6 +200,8 @@ onMounted(() => {
     fontLigatures: true,
     minimap: { enabled: props.minimapEnabled },
     wordWrap: props.wordWrapEnabled ? "on" : "off",
+    bracketPairColorization: { enabled: props.rainbowBracketsEnabled, independentColorPoolPerBracketType: false },
+    guides: { bracketPairs: false },
     scrollBeyondLastLine: false,
     smoothScrolling: true,
     fixedOverflowWidgets: true,
@@ -362,6 +368,13 @@ watch(() => props.appearance, (scheme) => {
 }, { deep: true });
 watch(() => props.minimapEnabled, (enabled) => instance.value?.updateOptions({ minimap: { enabled } }));
 watch(() => props.wordWrapEnabled, (enabled) => instance.value?.updateOptions({ wordWrap: enabled ? "on" : "off" }));
+watch(() => props.rainbowBracketsEnabled, (enabled) => {
+  instance.value?.updateOptions({ bracketPairColorization: { enabled, independentColorPoolPerBracketType: false } });
+  // Explicitly created models keep their own colorization options.
+  models.forEach((model) => model.updateOptions({
+    bracketColorizationOptions: { enabled, independentColorPoolPerBracketType: false },
+  }));
+});
 watch(() => [props.completionKey, props.providerId, props.completionRevision, props.completionMetadataReady], () => {
   const model = instance.value?.getModel();
   const key = model && modelKeys.get(model);
@@ -471,6 +484,9 @@ function switchModel(key: string, value: string): void {
     modelKeys.set(model, key);
     registerMirrorListener(key, model);
   }
+  model.updateOptions({
+    bracketColorizationOptions: { enabled: props.rainbowBracketsEnabled, independentColorPoolPerBracketType: false },
+  });
   instance.value.setModel(model);
   const viewState = viewStates.get(key);
   if (viewState) instance.value.restoreViewState(viewState);

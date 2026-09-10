@@ -239,6 +239,7 @@ class LocalServerSecurityTest {
         assertTrue(defaults.getBody().contains("\"editor.completionSnippets\":\"[]\""));
         assertTrue(defaults.getBody().contains("\"editor.minimapEnabled\":\"true\""));
         assertTrue(defaults.getBody().contains("\"editor.wordWrapEnabled\":\"false\""));
+        assertTrue(defaults.getBody().contains("\"editor.rainbowBracketsEnabled\":\"false\""));
         assertTrue(defaults.getBody().contains("\"editor.sqlDiagnosticsEnabled\":\"true\""));
         assertTrue(defaults.getBody().contains("\"editor.continueOnError\":\"false\""));
         assertTrue(defaults.getBody().contains("\"editor.executionWarningMinutes\":\"[1,5]\""));
@@ -285,7 +286,7 @@ class LocalServerSecurityTest {
 
         for (String key : Arrays.asList("result.headerSortingEnabled", "result.headerFilteringEnabled",
                 "result.showColumnRemarksInHeader", "result.zebraStripesEnabled", "result.compareCaseSensitive",
-                "statusBar.showSelectedColumnRemarks", "editor.minimapEnabled", "editor.wordWrapEnabled",
+                "statusBar.showSelectedColumnRemarks", "editor.minimapEnabled", "editor.wordWrapEnabled", "editor.rainbowBracketsEnabled",
                 "editor.sqlDiagnosticsEnabled", "editor.dangerousStatementWarningEnabled", "editor.continueOnError")) {
             setting.put("key", key);
             setting.put("value", "false");
@@ -297,6 +298,13 @@ class LocalServerSecurityTest {
             assertEquals(HttpStatus.BAD_REQUEST, invalidToggle.getStatusCode());
             assertTrue(invalidToggle.getBody().contains("INVALID_SETTING"));
         }
+        setting.put("key", "editor.rainbowBracketsEnabled");
+        setting.put("value", "true");
+        assertEquals(HttpStatus.OK, http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
+                new HttpEntity<Map<String, String>>(setting, headers), String.class).getStatusCode());
+        assertTrue(http.exchange(url("/api/v1/settings"), HttpMethod.GET,
+                new HttpEntity<String>(headers), String.class).getBody()
+                .contains("\"editor.rainbowBracketsEnabled\":\"true\""));
         setting.put("key", "editor.continueOnError");
         setting.put("value", "true");
         ResponseEntity<String> enabledContinue = http.exchange(url("/api/v1/settings"), HttpMethod.PUT,
