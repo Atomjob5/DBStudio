@@ -177,10 +177,10 @@ describe("ReleaseNotesDialog", () => {
     expect(cards[0].textContent).toContain("更新日志");
     expect(cards.at(-1)?.textContent).toContain("继续下滑开始使用");
     expect(cards.slice(1, -1).map((card) => card.querySelector(".release-notes-card-category")?.textContent)).toEqual([
-      "v1.2.0 · 执行控制",
-      "v1.2.0 · 对象浏览",
-      "v1.3.0 · 交互细节",
-      "v1.3.0 · 结果操作"
+      "v1.2.0 · 执行计划",
+      "v1.2.0 · 结果筛选",
+      "v1.3.0 · 编辑器",
+      "v1.3.0 · 查询性能"
     ]);
   });
 

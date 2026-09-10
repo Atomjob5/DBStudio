@@ -83,6 +83,61 @@ export const RELEASE_NOTES_RELEASES: ReleaseNotesRelease[] = [{
       icon: "timeline"
     }
   ]
+}, {
+  version: "1.1.1",
+  title: "修复了一些已知的体验问题",
+  publishedAt: "2026 年 9 月",
+  summary: "新增执行计划、结果筛选和彩虹括号，优化查询性能，并修复 SQL 实时诊断中的识别问题。",
+  items: [
+    {
+      id: "execution-plan",
+      category: "执行计划",
+      title: "查看 SQL 如何执行",
+      description: "新增执行计划查看功能，支持 MySQL、Oracle 和 OceanBase Oracle 模式。通过树形或文本视图查看计划和算子详情，帮助分析查询。",
+      tone: "blue",
+      icon: "structure"
+    },
+    {
+      id: "result-filter",
+      category: "结果筛选",
+      title: "从表头快速筛选数据",
+      description: "结果集表头菜单新增筛选操作，可仅保留或排除选中的值，更方便地定位需要查看的数据。",
+      tone: "purple",
+      icon: "copy"
+    },
+    {
+      id: "rainbow-brackets",
+      category: "编辑器",
+      title: "用颜色区分括号层级",
+      description: "新增彩虹括号功能，可在设置中开启，让嵌套 SQL 的括号层级更容易辨认。",
+      tone: "amber",
+      icon: "editor"
+    },
+    {
+      id: "result-performance",
+      category: "查询性能",
+      title: "结果加载更流畅",
+      description: "优化结果集文本排序、流式数据推送和下一页加载性能，改善处理大量查询结果时的操作体验。",
+      tone: "cyan",
+      icon: "timeline"
+    },
+    {
+      id: "task-history",
+      category: "执行记录",
+      title: "任务和历史更清楚",
+      description: "优化任务管理器与查询历史的展示，查询历史时间统一按北京时间显示。",
+      tone: "emerald",
+      icon: "tooltip"
+    },
+    {
+      id: "sql-diagnostics",
+      category: "SQL 诊断",
+      title: "减少对象识别误报",
+      description: "修复 SQL 实时诊断对原生表和同义词的识别问题，减少对象存在却被提示无法识别的情况。",
+      tone: "rose",
+      icon: "continue"
+    }
+  ]
 }];
 
 export const CURRENT_RELEASE: ReleaseNotesRelease = RELEASE_NOTES_RELEASES[RELEASE_NOTES_RELEASES.length - 1];
