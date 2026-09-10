@@ -4,6 +4,7 @@ import com.dbstudio.spi.ColumnInfo;
 import com.dbstudio.spi.CompletionColumnComments;
 import com.dbstudio.spi.CompletionMetadataListener;
 import com.dbstudio.spi.CompletionObjectInfo;
+import com.dbstudio.spi.CompletionSynonymInfo;
 import com.dbstudio.spi.DatabaseNamespace;
 import com.dbstudio.spi.DatabaseObject;
 import com.dbstudio.spi.DatabaseObjectType;
@@ -167,6 +168,7 @@ public class OracleMetadataAdapter implements MetadataAdapter {
             }
             @Override public void warning(String phase, String message) {
                 LOG.warn("Oracle兼容数据库补全元数据补充阶段失败 phase={} message={}", phase, message);
+                listener.compatibilityFallback("completion-metadata:" + phase + ":" + message);
             }
         });
         List<CompletionObjectInfo> result = new ArrayList<CompletionObjectInfo>(objects.size());
@@ -182,20 +184,89 @@ public class OracleMetadataAdapter implements MetadataAdapter {
         return true;
     }
 
+    @Override public List<CompletionSynonymInfo> listCompletionSynonyms(DatabaseSession session,
+                                                                          List<DatabaseNamespace> namespaces)
+            throws SQLException {
+        List<String> owners = completionSchemas(namespaces);
+        if (owners.isEmpty()) return Collections.emptyList();
+        Map<String, CompletionSynonymInfo> result = new LinkedHashMap<String, CompletionSynonymInfo>();
+        for (int start = 0; start < owners.size(); start += COMPLETION_CHUNK_SIZE) {
+            List<String> chunk = new ArrayList<String>(owners.subList(start,
+                    Math.min(owners.size(), start + COMPLETION_CHUNK_SIZE)));
+            // PUBLIC is intentionally queried together with selected private owners. A
+            // public synonym may point at SYS or another unselected owner; the client
+            // will keep it as "unconfirmed" unless the target is loaded.
+            if (!chunk.contains("PUBLIC")) chunk.add("PUBLIC");
+            String sql = "SELECT OWNER,SYNONYM_NAME,TABLE_OWNER,TABLE_NAME,DB_LINK FROM ALL_SYNONYMS WHERE OWNER IN ("
+                    + placeholders(chunk.size()) + ") ORDER BY OWNER,SYNONYM_NAME";
+            try (PreparedStatement statement = session.jdbcConnection().prepareStatement(sql)) {
+                bindSchemas(statement, chunk);
+                try (ResultSet rows = statement.executeQuery()) {
+                    while (rows.next()) {
+                        String owner = upper(rows.getString(1));
+                        String name = value(rows.getString(2));
+                        String targetOwner = upper(rows.getString(3));
+                        String targetName = value(rows.getString(4));
+                        if (name.isEmpty() || targetName.isEmpty()) continue;
+                        CompletionSynonymInfo synonym = new CompletionSynonymInfo(owner, name, targetOwner,
+                                targetName, value(rows.getString(5)), "PUBLIC".equals(owner));
+                        result.put(owner + "\u0000" + name, synonym);
+                    }
+                }
+            }
+        }
+        return Collections.unmodifiableList(new ArrayList<CompletionSynonymInfo>(result.values()));
+    }
+
     @Override public void streamCompletionMetadata(DatabaseSession session,
                                                      List<DatabaseNamespace> namespaces,
                                                      Set<DatabaseObjectType> types,
                                                      CompletionMetadataListener listener) throws SQLException {
         List<String> schemas = completionSchemas(namespaces);
         Set<String> knownObjects = new LinkedHashSet<String>();
-        streamCommentObjects(session, schemas, types, knownObjects, listener);
+        try {
+            streamCommentObjects(session, schemas, types, knownObjects, listener);
+        } catch (SQLException objectFailure) {
+            LOG.warn("Oracle兼容数据库对象备注目录不可用 reason={}", objectFailure.getMessage());
+            listener.warning("objects", "对象目录不可用，未知对象诊断已跳过：" + value(objectFailure.getMessage()));
+        } catch (RuntimeException compatibilityFailure) {
+            LOG.debug("Oracle兼容数据库对象备注目录不可用", compatibilityFailure);
+            listener.warning("objects", "对象目录不可用，未知对象诊断已跳过：" + value(compatibilityFailure.getMessage()));
+        }
         try {
             streamSupplementalTables(session, schemas, types, knownObjects, listener);
         } catch (SQLException supplementalFailure) {
             LOG.warn("Oracle兼容数据库ALL_TABLES补充失败 reason={}", supplementalFailure.getMessage());
             listener.warning("tables", "ALL_TABLES补充表信息失败：" + value(supplementalFailure.getMessage()));
+        } catch (RuntimeException compatibilityFailure) {
+            LOG.debug("Oracle兼容数据库ALL_TABLES补充不可用", compatibilityFailure);
+            listener.warning("tables", "ALL_TABLES补充表信息失败：" + value(compatibilityFailure.getMessage()));
         }
-        streamColumnComments(session, schemas, knownObjects, listener);
+        try {
+            streamColumnComments(session, schemas, knownObjects, listener);
+        } catch (SQLException columnFailure) {
+            LOG.warn("Oracle兼容数据库字段备注补充失败 reason={}", columnFailure.getMessage());
+            listener.warning("columns", "字段目录不可用，字段诊断已跳过：" + value(columnFailure.getMessage()));
+        } catch (RuntimeException compatibilityFailure) {
+            LOG.debug("Oracle兼容数据库字段备注目录不可用", compatibilityFailure);
+            listener.warning("columns", "字段目录不可用，字段诊断已跳过：" + value(compatibilityFailure.getMessage()));
+        }
+        List<CompletionSynonymInfo> synonyms;
+        try {
+            synonyms = listCompletionSynonyms(session, namespacesFromSchemas(schemas));
+        } catch (SQLException optionalFailure) {
+            // Synonyms improve semantic confidence but are not required for completion.
+            // Report the reduced confidence without aborting the object/column stream.
+            listener.warning("synonyms", "同义词目录不可用，相关对象诊断已跳过：" + value(optionalFailure.getMessage()));
+            synonyms = Collections.emptyList();
+        } catch (RuntimeException compatibilityFailure) {
+            // A compatibility driver may reject ALL_SYNONYMS with an unchecked
+            // exception. This optional dictionary must never abort completion.
+            LOG.debug("Oracle兼容数据库同义词目录不可用", compatibilityFailure);
+            listener.warning("synonyms", "同义词目录不可用，相关对象诊断已跳过：" + value(compatibilityFailure.getMessage()));
+            synonyms = Collections.emptyList();
+        }
+        if (!synonyms.isEmpty()) listener.synonyms(synonyms);
     }
 
     @Override public List<ColumnInfo> listColumns(DatabaseSession session, String catalog, String schema,
@@ -630,6 +701,12 @@ public class OracleMetadataAdapter implements MetadataAdapter {
             }
         }
         flushColumns(grouped, listener);
+    }
+
+    private List<DatabaseNamespace> namespacesFromSchemas(List<String> schemas) {
+        List<DatabaseNamespace> result = new ArrayList<DatabaseNamespace>(schemas.size());
+        for (String schema : schemas) result.add(DatabaseNamespace.schema(schema, false, isSystemSchema(schema)));
+        return result;
     }
 
     private String completionCommentObjectNameColumn(DatabaseSession session) throws SQLException {

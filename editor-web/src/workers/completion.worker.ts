@@ -11,14 +11,18 @@ import {
   resolveCompletion,
   resolveResultColumnRemarks,
   resolveSinglePhysicalTable,
+  setCompletionCoverage,
+  upsertCompletionSynonyms,
   upsertCompletionObjects
 } from "../sqlCompletion";
 import type { CompletionIndex, CompletionObjectDelta } from "../sqlCompletion";
 import type {
   CompletionCacheStats,
   CompletionCacheSummary,
+  CompletionCoverage,
   CompletionManifest,
   CompletionSnapshot,
+  CompletionSynonymSnapshot,
   QueryColumn
 } from "../types";
 import type { CompletionWorkerRequest, CompletionWorkerResponse } from "../completion/workerProtocol";
@@ -68,11 +72,13 @@ interface StreamMetadata {
   defaultNamespaceKey: string;
   selectedNamespaceKeys: string[];
   namespaces: Array<{ key: string; catalog: string; schema: string; label: string }>;
+  coverage?: CompletionCoverage;
 }
 
 type StreamRecord =
   | { type: "begin"; generation: string; metadata: StreamMetadata }
   | { type: "objects" | "tables"; values: CompletionObjectDelta[] }
+  | { type: "synonyms"; values: CompletionSynonymSnapshot[] }
   | { type: "columns"; values: Array<{ namespaceKey: string; objectName: string;
       columns: Array<[string, string]> }> }
   | { type: "warning"; phase: string; message: string }
@@ -86,6 +92,7 @@ const OBJECT_STORE = "completionObjects";
 const STRUCTURE_STORE = "completionStructures";
 const DATABASE_VERSION = 2;
 const LEGACY_FORMAT_VERSION = 1;
+const UNKNOWN_COVERAGE: CompletionCoverage = { objects: "unknown", columns: "unknown", synonyms: "unknown" };
 const MAX_MEMORY_INDEXES = 2;
 const MAX_MEMORY_BYTES = 128 * 1024 * 1024;
 const indexes = new Map<string, MemoryIndex>();
@@ -197,7 +204,9 @@ async function inspectCache(cacheKey: string, providerId: string): Promise<Compl
   }
   const stored = await loadValidLegacy(cacheKey, providerId);
   if (!stored) return undefined;
-  remember(cacheKey, { index: buildCompletionIndex(stored.snapshot), providerId,
+  remember(cacheKey, { index: buildCompletionIndex(stored.snapshot, {
+    coverage: stored.summary.coverage ?? UNKNOWN_COVERAGE
+  }), providerId,
     estimatedBytes: stored.summary.estimatedBytes });
   return stored.summary;
 }
@@ -218,7 +227,7 @@ async function refreshLegacy(cacheKey: string, providerId: string, url: string, 
   const summary = summarizeLegacy(snapshot);
   await idbPut(LEGACY_STORE, { cacheKey, snapshot, summary } satisfies LegacyStoredSnapshot);
   ensureCurrentEpoch(epoch);
-  remember(cacheKey, { index: buildCompletionIndex(snapshot), providerId,
+  remember(cacheKey, { index: buildCompletionIndex(snapshot, { coverage: summary.coverage }), providerId,
     estimatedBytes: summary.estimatedBytes });
   return summary;
 }
@@ -258,7 +267,10 @@ async function refreshStreaming(cacheKey: string, providerId: string, url: strin
           ...record.metadata, cacheKey, activeGeneration: generation,
           objectCount: 0, columnCount: 0, estimatedBytes: 0
         };
-        index = createCompletionIndex(record.metadata.defaultNamespaceKey, record.metadata.namespaces);
+        index = createCompletionIndex(record.metadata.defaultNamespaceKey, record.metadata.namespaces, {
+          coverage: { objects: "partial", columns: "partial", synonyms: "partial" }
+        });
+        manifest.synonyms = [];
         remember(cacheKey, { index, providerId, estimatedBytes: 0 });
         completionDiagnostic("refresh-begin", {
           cacheKey, namespaceCount: record.metadata.namespaces.length
@@ -303,6 +315,12 @@ async function refreshStreaming(cacheKey: string, providerId: string, url: strin
           total: streamedColumnCount });
         return;
       }
+      if (record.type === "synonyms") {
+        validateSynonyms(record.values);
+        upsertCompletionSynonyms(index, record.values);
+        manifest.synonyms = [...(manifest.synonyms ?? []), ...record.values];
+        return;
+      }
       if (record.type === "warning") {
         manifest.warning = record.message;
         return;
@@ -312,7 +330,12 @@ async function refreshStreaming(cacheKey: string, providerId: string, url: strin
       const summary = validateStreamSummary(record.summary, providerId);
       manifest = { ...manifest, ...summary, cacheKey, activeGeneration: generation, formatVersion: 2,
         defaultNamespaceKey: manifest.defaultNamespaceKey, namespaces: manifest.namespaces,
-        warning: summary.warning ?? manifest.warning };
+        warning: summary.warning ?? manifest.warning,
+        synonyms: manifest.synonyms ?? [], coverage: summary.coverage ?? UNKNOWN_COVERAGE };
+      // A stream produced by an older server may omit coverage. Keep that
+      // cache useful for completion, but never turn missing evidence into a
+      // claim that the metadata directory is exhaustive.
+      setCompletionCoverage(index, summary.coverage ?? UNKNOWN_COVERAGE);
       await commitManifest(manifest);
       ensureCurrentEpoch(epoch);
       loadedStructures.set(cacheKey, new Set());
@@ -433,14 +456,19 @@ async function completionIndex(cacheKey: string, providerId: string): Promise<Me
   }
   const stored = await loadValidLegacy(cacheKey, providerId);
   if (!stored) return undefined;
-  const entry = { index: buildCompletionIndex(stored.snapshot), providerId,
+  const entry = { index: buildCompletionIndex(stored.snapshot, {
+    coverage: stored.summary.coverage ?? UNKNOWN_COVERAGE
+  }), providerId,
     estimatedBytes: stored.summary.estimatedBytes };
   remember(cacheKey, entry);
   return entry;
 }
 
 async function loadStreamingIndex(manifest: CompletionManifest): Promise<MemoryIndex> {
-  const index = createCompletionIndex(manifest.defaultNamespaceKey, manifest.namespaces);
+  const index = createCompletionIndex(manifest.defaultNamespaceKey, manifest.namespaces, {
+    coverage: manifest.coverage ?? UNKNOWN_COVERAGE,
+    synonyms: manifest.synonyms
+  });
   const objects = await idbGetAllByIndex<StoredCompletionObject>(
     OBJECT_STORE, "generationKey", generationKey(manifest.cacheKey, manifest.activeGeneration));
   for (const object of objects) {
@@ -498,19 +526,37 @@ function validateStreamMetadata(value: StreamMetadata, providerId: string): void
       throw new Error("流式补全命名空间数据损坏");
     }
   }
+  validateCoverage(value.coverage);
 }
 
 function validateStreamSummary(value: CompletionCacheSummary, providerId: string): CompletionCacheSummary {
   if (!value || value.providerId !== providerId || !Array.isArray(value.selectedNamespaceKeys)
     || !Number.isFinite(value.objectCount) || !Number.isFinite(value.columnCount)
     || !Number.isFinite(value.estimatedBytes)) throw new Error("流式补全统计格式无效");
+  validateCoverage(value.coverage);
   return value;
 }
 
+function validateCoverage(value: CompletionCoverage | undefined): void {
+  if (value === undefined) return;
+  if (!value || typeof value !== "object") throw new Error("补全元数据覆盖状态无效");
+  const valid = new Set(["complete", "partial", "unknown"]);
+  if (!valid.has(value.objects) || !valid.has(value.columns) || !valid.has(value.synonyms)) {
+    throw new Error("补全元数据覆盖状态无效");
+  }
+}
+
 function validManifest(value: CompletionManifest | undefined, providerId: string): value is CompletionManifest {
-  return Boolean(value && value.formatVersion === 2 && value.providerId === providerId
-    && value.cacheKey && value.activeGeneration && Array.isArray(value.namespaces)
-    && Array.isArray(value.selectedNamespaceKeys));
+  if (!value || value.formatVersion !== 2 || value.providerId !== providerId
+      || !value.cacheKey || !value.activeGeneration || !Array.isArray(value.namespaces)
+      || !Array.isArray(value.selectedNamespaceKeys)) return false;
+  try {
+    validateCoverage(value.coverage);
+    validateSynonyms(value.synonyms);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function manifestSummary(manifest: CompletionManifest): CompletionCacheSummary {
@@ -518,7 +564,8 @@ function manifestSummary(manifest: CompletionManifest): CompletionCacheSummary {
     providerId: manifest.providerId, sourceProfileId: manifest.sourceProfileId,
     generatedAt: manifest.generatedAt, selectedNamespaceKeys: [...manifest.selectedNamespaceKeys],
     objectCount: manifest.objectCount, columnCount: manifest.columnCount,
-    estimatedBytes: manifest.estimatedBytes, warning: manifest.warning
+    estimatedBytes: manifest.estimatedBytes, warning: manifest.warning,
+    coverage: manifest.coverage ?? UNKNOWN_COVERAGE
   };
 }
 
@@ -529,6 +576,8 @@ function validateLegacySnapshot(value: unknown, providerId: string): CompletionS
     || !Array.isArray(snapshot.selectedNamespaceKeys) || !Array.isArray(snapshot.namespaces)) {
     throw new Error("补全缓存版本或数据库类型不匹配");
   }
+  validateCoverage(snapshot.coverage);
+  validateSynonyms(snapshot.synonyms);
   for (const namespace of snapshot.namespaces) {
     if (!namespace || typeof namespace.key !== "string" || !Array.isArray(namespace.objects)) {
       throw new Error("补全命名空间数据损坏");
@@ -545,6 +594,20 @@ function validateLegacySnapshot(value: unknown, providerId: string): CompletionS
   return snapshot;
 }
 
+function validateSynonyms(values: CompletionSynonymSnapshot[] | undefined): void {
+  if (values !== undefined && !Array.isArray(values)) throw new Error("补全同义词数据损坏");
+  for (const synonym of values ?? []) {
+    if (!synonym || typeof synonym.name !== "string" || typeof synonym.targetName !== "string"
+        || typeof synonym.namespaceKey !== "string"
+        || synonym.targetNamespaceKey !== undefined && typeof synonym.targetNamespaceKey !== "string"
+        || synonym.targetSchema !== undefined && typeof synonym.targetSchema !== "string"
+        || synonym.databaseLink !== undefined && typeof synonym.databaseLink !== "string"
+        || synonym.isPublic !== undefined && typeof synonym.isPublic !== "boolean") {
+      throw new Error("补全同义词数据损坏");
+    }
+  }
+}
+
 function summarizeLegacy(snapshot: CompletionSnapshot): CompletionCacheSummary {
   let objectCount = 0;
   let columnCount = 0;
@@ -555,7 +618,10 @@ function summarizeLegacy(snapshot: CompletionSnapshot): CompletionCacheSummary {
   return {
     providerId: snapshot.providerId, sourceProfileId: snapshot.sourceProfileId,
     generatedAt: snapshot.generatedAt, selectedNamespaceKeys: [...snapshot.selectedNamespaceKeys],
-    objectCount, columnCount, estimatedBytes: new Blob([JSON.stringify(snapshot)]).size
+    objectCount, columnCount, estimatedBytes: new Blob([JSON.stringify(snapshot)]).size,
+    // A pre-coverage cache cannot prove that an absent object is absent from
+    // the database. Fresh snapshots may explicitly opt into complete coverage.
+    coverage: snapshot.coverage ?? { objects: "unknown", columns: "unknown", synonyms: "unknown" }
   };
 }
 
@@ -565,6 +631,7 @@ async function loadValidLegacy(cacheKey: string, providerId: string): Promise<Le
   try {
     validateLegacySnapshot(stored.snapshot, providerId);
     if (!stored.summary || stored.summary.providerId !== providerId) throw new Error("补全缓存统计损坏");
+    validateCoverage(stored.summary.coverage);
     return stored;
   } catch {
     await idbDelete(LEGACY_STORE, cacheKey);
@@ -586,6 +653,7 @@ async function cacheStats(): Promise<Omit<CompletionCacheStats, "loadingCount">>
   for (const record of legacy) {
     try {
       validateLegacySnapshot(record.snapshot, record.snapshot.providerId);
+      validateCoverage(record.summary?.coverage);
       if (isOracleCompatible(record.snapshot.providerId)) {
         await idbDelete(LEGACY_STORE, record.cacheKey);
         continue;

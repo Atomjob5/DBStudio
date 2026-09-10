@@ -33,6 +33,7 @@ public final class SqlSyntaxDiagnosticSupport {
             try {
                 parser.parse(statement.text());
             } catch (RuntimeException exception) {
+                if (!isSyntaxFailure(exception)) continue;
                 int localOffset = diagnosticOffset(statement.text(), exception.getMessage());
                 int start = Math.max(statement.startOffset(), Math.min(statement.endOffset(),
                         statement.startOffset() + localOffset));
@@ -46,6 +47,26 @@ public final class SqlSyntaxDiagnosticSupport {
             }
         }
         return Collections.unmodifiableList(result);
+    }
+
+    /**
+     * Parser wrappers occasionally throw an unchecked exception for an unavailable
+     * dialect feature or an internal parser bug. Those failures must not become a
+     * red syntax marker in the editor. Keep the compatibility heuristic narrow:
+     * known parser exception types or messages that explicitly describe syntax.
+     */
+    private static boolean isSyntaxFailure(Throwable failure) {
+        for (Throwable current = failure; current != null; current = current.getCause()) {
+            String type = current.getClass().getName().toLowerCase(Locale.ROOT);
+            if (type.contains("parserexception") || type.contains("parseexception")
+                    || type.contains("syntaxerror")) return true;
+            String message = current.getMessage();
+            if (message != null && message.toLowerCase(Locale.ROOT).matches(
+                    "(?s).*\\b(?:syntax\\s+(?:error|exception|near|at|invalid)|parse\\s+(?:error|failure|failed|unexpected)|unexpected(?: token)?|invalid token|unclosed|eof|parenthes|line\\s+\\d+|pos\\s+\\d+).*")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static int diagnosticOffset(String sql, String message) {

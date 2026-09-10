@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SqlSyntaxDiagnosticSupportTest {
     @Test
@@ -39,5 +40,16 @@ class SqlSyntaxDiagnosticSupportTest {
                 });
 
         assertEquals(script.indexOf("broken"), diagnostics.get(0).startOffset());
+    }
+
+    @Test
+    void ignoresNonSyntaxParserFailures() {
+        String sql = "SELECT 1";
+        SqlStatement statement = new SqlStatement(sql, 0, sql.length(), StatementType.QUERY);
+        List<SqlDiagnostic> diagnostics = SqlSyntaxDiagnosticSupport.analyze(sql,
+                Collections.singletonList(statement), value -> {
+                    throw new IllegalStateException("metadata feature is unavailable");
+                });
+        assertTrue(diagnostics.isEmpty());
     }
 }

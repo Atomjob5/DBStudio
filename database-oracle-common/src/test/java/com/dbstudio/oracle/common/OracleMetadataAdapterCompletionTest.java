@@ -156,6 +156,20 @@ class OracleMetadataAdapterCompletionTest {
                 "SELECT OWNER,OBJECT_NAME,COLUMN_NAME,COMMENTS FROM ALL_COL_COMMENTS")));
     }
 
+    @Test void streamsPrivateAndPublicSynonymsWithoutRequiringTargetSchemas() throws Exception {
+        FakeJdbc jdbc = new FakeJdbc();
+        jdbc.synonymRows.add(Arrays.<Object>asList("CBSAC", "ORDERS_ALIAS", "CBSAC", "ORDERS", null));
+        jdbc.synonymRows.add(Arrays.<Object>asList("PUBLIC", "REMOTE_ORDERS", "REPORT", "ORDERS", "LINK1"));
+        List<com.dbstudio.spi.CompletionSynonymInfo> values = adapter.listCompletionSynonyms(
+                session(jdbc.connection()), Collections.singletonList(DatabaseNamespace.schema("CBSAC", true)));
+
+        assertEquals(2, values.size());
+        assertEquals("ORDERS_ALIAS", values.get(0).name());
+        assertFalse(values.get(0).publicSynonym());
+        assertTrue(values.get(1).publicSynonym());
+        assertEquals(Arrays.asList("CBSAC", "PUBLIC"), jdbc.parameters.get(jdbc.sql.get(jdbc.sql.size() - 1)));
+    }
+
     @Test void continuesWithColumnCommentsWhenAllTablesSupplementFails() throws Exception {
         FakeJdbc jdbc = new FakeJdbc();
         jdbc.failAllTables = true;
@@ -190,6 +204,7 @@ class OracleMetadataAdapterCompletionTest {
         private boolean failColumnComments;
         private String jdbcRemark = "";
         private String dictionaryComment = "";
+        private final List<List<Object>> synonymRows = new ArrayList<List<Object>>();
 
         private FakeJdbc() {
             this("TABLE_NAME");
@@ -285,6 +300,9 @@ class OracleMetadataAdapterCompletionTest {
                 rows.add(Arrays.<Object>asList("CBSAC", "CUSTOMERS", "ID", "客户编号"));
                 rows.add(Arrays.<Object>asList("CBSAC", "CUSTOMER_VIEW", "NAME", "客户名称"));
                 rows.add(Arrays.<Object>asList("CBSAC", "ORDERS", "ID", "订单编号"));
+            } else if (query.startsWith("SELECT OWNER,SYNONYM_NAME,TABLE_OWNER,TABLE_NAME,DB_LINK FROM ALL_SYNONYMS")) {
+                labels = Arrays.asList("OWNER", "SYNONYM_NAME", "TABLE_OWNER", "TABLE_NAME", "DB_LINK");
+                rows.addAll(synonymRows);
             } else if (query.contains("FROM ALL_TAB_COLUMNS WHERE OWNER=? AND TABLE_NAME=?")) {
                 labels = Arrays.asList("COLUMN_NAME", "DATA_TYPE", "DATA_LENGTH", "DATA_PRECISION",
                         "DATA_SCALE", "CHAR_LENGTH", "CHAR_USED", "COLUMN_ID");

@@ -393,6 +393,25 @@ export interface CompletionNamespaceSnapshot {
   objects: CompletionObjectSnapshot[];
 }
 
+export type CompletionMetadataCoverage = "complete" | "partial" | "unknown";
+
+/** Describes which parts of a completion snapshot are safe to use for semantic diagnostics. */
+export interface CompletionCoverage {
+  objects: CompletionMetadataCoverage;
+  columns: CompletionMetadataCoverage;
+  synonyms: CompletionMetadataCoverage;
+}
+
+export interface CompletionSynonymSnapshot {
+  namespaceKey: string;
+  name: string;
+  targetNamespaceKey?: string;
+  targetSchema?: string;
+  targetName: string;
+  databaseLink?: string;
+  isPublic?: boolean;
+}
+
 export type CompletionCacheState = "empty" | "loading" | "ready" | "error";
 export interface CompletionSnapshot {
   formatVersion: 1;
@@ -402,6 +421,8 @@ export interface CompletionSnapshot {
   defaultNamespaceKey: string;
   selectedNamespaceKeys: string[];
   namespaces: CompletionNamespaceSnapshot[];
+  synonyms?: CompletionSynonymSnapshot[];
+  coverage?: CompletionCoverage;
 }
 
 export interface CompletionCacheSummary {
@@ -413,6 +434,7 @@ export interface CompletionCacheSummary {
   columnCount: number;
   estimatedBytes: number;
   warning?: string;
+  coverage?: CompletionCoverage;
 }
 
 export interface CompletionManifest extends CompletionCacheSummary {
@@ -426,6 +448,7 @@ export interface CompletionManifest extends CompletionCacheSummary {
     schema: string;
     label: string;
   }>;
+  synonyms?: CompletionSynonymSnapshot[];
 }
 
 export interface CompletionCandidate {

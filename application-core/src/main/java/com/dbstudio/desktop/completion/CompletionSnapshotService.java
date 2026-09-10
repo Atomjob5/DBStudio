@@ -2,6 +2,7 @@ package com.dbstudio.desktop.completion;
 
 import com.dbstudio.spi.ColumnInfo;
 import com.dbstudio.spi.CompletionObjectInfo;
+import com.dbstudio.spi.CompletionSynonymInfo;
 import com.dbstudio.spi.DatabaseNamespace;
 import com.dbstudio.spi.DatabaseObject;
 import com.dbstudio.spi.DatabaseObjectType;
@@ -52,11 +53,23 @@ public final class CompletionSnapshotService {
         Set<DatabaseObjectType> types = new LinkedHashSet<DatabaseObjectType>();
         types.add(DatabaseObjectType.TABLE);
         types.add(DatabaseObjectType.VIEW);
+        final boolean[] objectsComplete = new boolean[] { true };
+        final boolean[] columnsComplete = new boolean[] { true };
         List<CompletionObjectInfo> values = new ArrayList<CompletionObjectInfo>(
                 provider.metadata().listCompletionObjects(session, selected, types,
                         new com.dbstudio.spi.MetadataAdapter.CompletionLoadListener() {
                             @Override public void compatibilityFallback(String message) {
                                 listener.progress("loading", 0, 0, message);
+                                String value = message == null ? "" : message;
+                                if (value.startsWith("completion-metadata:columns:")) columnsComplete[0] = false;
+                                else if (value.startsWith("completion-metadata:objects:")
+                                        || value.startsWith("completion-metadata:tables:")) objectsComplete[0] = false;
+                                else if (!value.startsWith("completion-metadata:synonyms:")) {
+                                    // Older providers can only report a generic fallback. Keep
+                                    // semantic diagnostics conservative for both domains.
+                                    objectsComplete[0] = false;
+                                    columnsComplete[0] = false;
+                                }
                             }
                         }));
         Collections.sort(values, new Comparator<CompletionObjectInfo>() {
@@ -69,6 +82,27 @@ public final class CompletionSnapshotService {
                 return type != 0 ? type : a.name().compareToIgnoreCase(b.name());
             }
         });
+
+        // Synonyms are optional metadata. A provider that cannot expose them
+        // still produces a useful completion snapshot; the editor will treat
+        // legacy/partial synonym coverage conservatively.
+        List<CompletionSynonymInfo> synonyms;
+        boolean synonymsComplete = true;
+        try {
+            synonyms = provider.metadata().listCompletionSynonyms(session, selected);
+            if (synonyms == null) {
+                synonyms = Collections.emptyList();
+                synonymsComplete = false;
+            }
+        } catch (SQLException optionalFailure) {
+            LOG.warn("SQL补全同义词目录不可用 provider={} reason={}", provider.id(), optionalFailure.getMessage());
+            synonyms = Collections.emptyList();
+            synonymsComplete = false;
+        } catch (RuntimeException optionalFailure) {
+            LOG.warn("SQL补全同义词目录不兼容 provider={} reason={}", provider.id(), optionalFailure.getMessage());
+            synonyms = Collections.emptyList();
+            synonymsComplete = false;
+        }
 
         int columnCount = 0;
         for (int index = 0; index < values.size(); index++) {
@@ -95,7 +129,8 @@ public final class CompletionSnapshotService {
         }
         listener.progress("loading", values.size(), values.size(), "补全缓存已生成");
         Snapshot snapshot = new Snapshot(FORMAT_VERSION, provider.id(), sourceProfileId,
-                Instant.now().toString(), defaultNamespaceKey, selectedKeys, namespaces);
+                Instant.now().toString(), defaultNamespaceKey, selectedKeys, namespaces, synonyms,
+                synonymsComplete, objectsComplete[0], columnsComplete[0]);
         LOG.info("SQL补全快照生成完成 provider={} sourceProfile={} namespaces={} objects={} columns={} durationMs={}",
                 provider.id(), sourceProfileId, namespaces.size(), values.size(), columnCount,
                 (System.nanoTime() - started) / 1_000_000L);
@@ -156,14 +191,38 @@ public final class CompletionSnapshotService {
         private final String defaultNamespaceKey;
         private final List<String> selectedNamespaceKeys;
         private final List<NamespaceSnapshot> namespaces;
+        private final List<CompletionSynonymInfo> synonyms;
+        private final boolean synonymsComplete;
+        private final boolean objectsComplete;
+        private final boolean columnsComplete;
         public Snapshot(int formatVersion, String providerId, String sourceProfileId, String generatedAt,
                         String defaultNamespaceKey, List<String> selectedNamespaceKeys,
                         List<NamespaceSnapshot> namespaces) {
+            this(formatVersion, providerId, sourceProfileId, generatedAt, defaultNamespaceKey,
+                    selectedNamespaceKeys, namespaces, Collections.<CompletionSynonymInfo>emptyList(), true,
+                    true, true);
+        }
+        public Snapshot(int formatVersion, String providerId, String sourceProfileId, String generatedAt,
+                        String defaultNamespaceKey, List<String> selectedNamespaceKeys,
+                        List<NamespaceSnapshot> namespaces, List<CompletionSynonymInfo> synonyms,
+                        boolean synonymsComplete) {
+            this(formatVersion, providerId, sourceProfileId, generatedAt, defaultNamespaceKey,
+                    selectedNamespaceKeys, namespaces, synonyms, synonymsComplete, true, true);
+        }
+        public Snapshot(int formatVersion, String providerId, String sourceProfileId, String generatedAt,
+                        String defaultNamespaceKey, List<String> selectedNamespaceKeys,
+                        List<NamespaceSnapshot> namespaces, List<CompletionSynonymInfo> synonyms,
+                        boolean synonymsComplete, boolean objectsComplete, boolean columnsComplete) {
             this.formatVersion = formatVersion; this.providerId = providerId;
             this.sourceProfileId = sourceProfileId; this.generatedAt = generatedAt;
             this.defaultNamespaceKey = value(defaultNamespaceKey);
             this.selectedNamespaceKeys = Collections.unmodifiableList(new ArrayList<String>(selectedNamespaceKeys));
             this.namespaces = Collections.unmodifiableList(new ArrayList<NamespaceSnapshot>(namespaces));
+            this.synonyms = Collections.unmodifiableList(new ArrayList<CompletionSynonymInfo>(
+                    synonyms == null ? Collections.<CompletionSynonymInfo>emptyList() : synonyms));
+            this.synonymsComplete = synonymsComplete;
+            this.objectsComplete = objectsComplete;
+            this.columnsComplete = columnsComplete;
         }
         public int formatVersion() { return formatVersion; }
         public String providerId() { return providerId; }
@@ -172,6 +231,10 @@ public final class CompletionSnapshotService {
         public String defaultNamespaceKey() { return defaultNamespaceKey; }
         public List<String> selectedNamespaceKeys() { return selectedNamespaceKeys; }
         public List<NamespaceSnapshot> namespaces() { return namespaces; }
+        public List<CompletionSynonymInfo> synonyms() { return synonyms; }
+        public boolean synonymsComplete() { return synonymsComplete; }
+        public boolean objectsComplete() { return objectsComplete; }
+        public boolean columnsComplete() { return columnsComplete; }
     }
 
     public static final class NamespaceSnapshot {

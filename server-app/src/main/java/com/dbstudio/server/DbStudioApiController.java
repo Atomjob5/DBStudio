@@ -32,6 +32,7 @@ import com.dbstudio.desktop.web.RpcException;
 import com.dbstudio.spi.ColumnInfo;
 import com.dbstudio.spi.CompletionColumnComments;
 import com.dbstudio.spi.CompletionMetadataListener;
+import com.dbstudio.spi.CompletionSynonymInfo;
 import com.dbstudio.spi.ConnectionField;
 import com.dbstudio.spi.ConnectionFieldOption;
 import com.dbstudio.spi.ConnectionProfile;
@@ -689,11 +690,14 @@ public final class DbStudioApiController {
                         "metadata", ApiPayloads.map("formatVersion", 2, "providerId", provider.id(),
                                 "sourceProfileId", sourceProfileId, "generatedAt", generatedAt,
                                 "defaultNamespaceKey", resolvedDefaultNamespaceKey,
-                                "selectedNamespaceKeys", selectedKeys, "namespaces", namespaceValues)));
+                                "selectedNamespaceKeys", selectedKeys, "namespaces", namespaceValues,
+                                "coverage", ApiPayloads.map("objects", "partial", "columns", "partial",
+                                        "synonyms", "partial"))));
                 began = true;
                 progress.emit("objects", 0, "正在读取表、视图和备注…");
                 final long[] counts = new long[] { 0L, 0L };
                 final String[] warning = new String[] { "" };
+                final Set<String> warningPhases = new LinkedHashSet<String>();
                 synchronized (session) {
                     provider.metadata().streamCompletionMetadata(session, selected,
                             new LinkedHashSet<DatabaseObjectType>(Arrays.asList(
@@ -731,17 +735,35 @@ public final class DbStudioApiController {
                                     progress.emit("columns", counts[1], "正在同步字段备注…");
                                 }
 
+                                @Override public void synonyms(List<CompletionSynonymInfo> synonyms)
+                                        throws SQLException {
+                                    List<Object> values = new ArrayList<Object>(synonyms.size());
+                                    for (CompletionSynonymInfo synonym : synonyms) {
+                                        values.add(completionSynonymMap(synonym));
+                                    }
+                                    writerLine(writer, ApiPayloads.map("type", "synonyms", "values", values));
+                                }
+
                                 @Override public void warning(String phase, String message) throws SQLException {
+                                    warningPhases.add(phase);
                                     warning[0] = message;
                                     writerLine(writer, ApiPayloads.map("type", "warning",
                                             "phase", phase, "message", message));
                                 }
                             });
                 }
+                Map<String, Object> coverage = ApiPayloads.map(
+                        "objects", warningPhases.contains("objects") || warningPhases.contains("tables")
+                                ? "partial" : "complete",
+                        // ALL_COL_COMMENTS has one row per visible column. The
+                        // names are complete for semantic checks when the query
+                        // succeeds; detailed types remain lazily loaded.
+                        "columns", warningPhases.contains("columns") ? "partial" : "complete",
+                        "synonyms", warningPhases.contains("synonyms") ? "partial" : "complete");
                 Map<String, Object> summary = ApiPayloads.map("providerId", provider.id(),
                         "sourceProfileId", sourceProfileId, "generatedAt", generatedAt,
                         "selectedNamespaceKeys", selectedKeys, "objectCount", counts[0],
-                        "columnCount", counts[1], "estimatedBytes", writer.bytes());
+                        "columnCount", counts[1], "estimatedBytes", writer.bytes(), "coverage", coverage);
                 if (!warning[0].isEmpty()) summary.put("warning", warning[0]);
                 writer.line(ApiPayloads.map("type", "complete", "summary", summary));
                 workspace.events().emit("metadata.completionProgress", ApiPayloads.map(
@@ -2940,10 +2962,28 @@ public final class DbStudioApiController {
             namespaces.add(ApiPayloads.map("key", namespace.key(), "catalog", namespace.catalog(),
                     "schema", namespace.schema(), "label", namespace.label(), "objects", objects));
         }
+        List<Object> synonyms = new ArrayList<Object>();
+        for (CompletionSynonymInfo synonym : snapshot.synonyms()) synonyms.add(completionSynonymMap(synonym));
+        Map<String, Object> coverage = ApiPayloads.map(
+                "objects", snapshot.objectsComplete() ? "complete" : "partial",
+                "columns", snapshot.columnsComplete() ? "complete" : "partial",
+                "synonyms", snapshot.synonymsComplete() ? "complete" : "partial");
         return ApiPayloads.map("formatVersion", snapshot.formatVersion(), "providerId", snapshot.providerId(),
                 "sourceProfileId", snapshot.sourceProfileId(), "generatedAt", snapshot.generatedAt(),
                 "defaultNamespaceKey", snapshot.defaultNamespaceKey(),
-                "selectedNamespaceKeys", snapshot.selectedNamespaceKeys(), "namespaces", namespaces);
+                "selectedNamespaceKeys", snapshot.selectedNamespaceKeys(), "namespaces", namespaces,
+                "synonyms", synonyms, "coverage", coverage);
+    }
+
+    private static Map<String, Object> completionSynonymMap(CompletionSynonymInfo value) {
+        String namespaceKey = value.publicSynonym() ? "public"
+                : CompletionSnapshotService.namespaceKey("", value.owner());
+        String targetNamespaceKey = value.targetOwner().isEmpty() ? ""
+                : CompletionSnapshotService.namespaceKey("", value.targetOwner());
+        return ApiPayloads.map("namespaceKey", namespaceKey, "name", value.name(),
+                "targetNamespaceKey", targetNamespaceKey, "targetSchema", value.targetOwner(),
+                "targetName", value.targetName(), "databaseLink", value.databaseLink(),
+                "isPublic", value.publicSynonym());
     }
 
     private static Map<String, Object> objectStreamRecord(String type, List<DatabaseObject> objects) {

@@ -903,12 +903,17 @@ const activeCompletionContext = computed(() => connections.completionContext(edi
 const activeCompletionKey = computed(() => activeCompletionContext.value?.key ?? "unbound");
 const activeCompletionRevision = computed(() => {
   const cache = metadata.completionFor(activeCompletionKey.value);
+  const coverage = cache?.summary?.coverage;
   return [cache?.state ?? "empty", cache?.generatedAt ?? "", cache?.summary?.objectCount ?? 0,
-    cache?.summary?.columnCount ?? 0, cache?.summary?.warning ?? ""].join(":");
+    cache?.summary?.columnCount ?? 0, cache?.summary?.warning ?? "", coverage?.objects ?? "unknown",
+    coverage?.columns ?? "unknown", coverage?.synonyms ?? "unknown"].join(":");
 });
 const activeCompletionMetadataReady = computed(() => {
   const cache = metadata.completionFor(activeCompletionKey.value);
-  return cache?.state === "ready" && !cache.summary?.warning;
+  // Semantic diagnostics inspect per-domain coverage on the worker index. A
+  // warning for one optional dictionary (for example synonyms) must not hide
+  // valid object and column diagnostics from a completed snapshot.
+  return cache?.state === "ready";
 });
 const activeObjectTreeKey = computed(() => {
   const environmentId = editors.active?.connection?.environmentId;

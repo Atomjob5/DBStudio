@@ -75,6 +75,13 @@ public interface MetadataAdapter {
         return listCompletionObjects(session, namespaces, types);
     }
 
+    /** Returns visible synonyms relevant to the selected completion namespaces. */
+    default List<CompletionSynonymInfo> listCompletionSynonyms(DatabaseSession session,
+                                                                 List<DatabaseNamespace> namespaces)
+            throws SQLException {
+        return Collections.emptyList();
+    }
+
     interface CompletionLoadListener {
         CompletionLoadListener NONE = new CompletionLoadListener() {
             @Override public void compatibilityFallback(String message) { }

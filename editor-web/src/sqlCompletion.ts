@@ -4,10 +4,12 @@ import { activeParenthesisDepth, lexStatementAt } from "./completion/sqlLexer";
 import type { SqlToken } from "./completion/sqlLexer";
 import type {
   CompletionCandidate,
+  CompletionCoverage,
   CompletionNamespaceSnapshot,
   CompletionObjectSnapshot,
   CompletionResult,
   CompletionSnapshot,
+  CompletionSynonymSnapshot,
   QueryColumn,
   ResolvedResultColumnRemark,
   ResultColumnRemarkLookup
@@ -24,6 +26,11 @@ export interface IndexedNamespace {
   sortedObjects: IndexedObject[];
 }
 
+interface ResolvedSynonymObject {
+  namespace: IndexedNamespace;
+  object: IndexedObject;
+}
+
 export interface CompletionSource {
   kind: "physical" | "cte" | "derived";
   name: string;
@@ -38,6 +45,9 @@ export interface CompletionSource {
   nameEnd?: number;
   objectStart?: number;
   objectEnd?: number;
+  resolution?: "resolved" | "unresolved" | "unconfirmed";
+  quoted?: boolean;
+  namespaceQuoted?: boolean;
 }
 
 interface CompletionScope {
@@ -67,6 +77,8 @@ export interface CompletionIndex {
   namespaces: Map<string, IndexedNamespace>;
   namespaceValues: IndexedNamespace[];
   defaultNamespace?: IndexedNamespace;
+  coverage: CompletionCoverage;
+  synonyms: CompletionSynonymSnapshot[];
 }
 
 export interface CompletionObjectDelta {
@@ -111,16 +123,26 @@ const SOURCE_TERMINATORS = new Set([
 
 const ALIAS_TERMINATORS = new Set([
   ...SOURCE_TERMINATORS, "from", "join", "left", "right", "full", "inner", "outer", "cross",
-  "straight_join", "as", "using", "and", "or", "then", "else", "end", "into", "update", "select"
+  "straight_join", "natural", "lateral", "as", "using", "and", "or", "then", "else", "end", "into", "update", "select"
 ]);
 
 const COLUMN_CLAUSES = new Set(["select", "where", "on", "group", "order", "having", "set", "returning"]);
 const SET_OPERATORS = new Set(["union", "minus", "except", "intersect"]);
 
-export function buildCompletionIndex(snapshot: CompletionSnapshot): CompletionIndex {
+export interface CompletionIndexOptions {
+  coverage?: Partial<CompletionCoverage>;
+  synonyms?: CompletionSynonymSnapshot[];
+}
+
+const COMPLETE_COVERAGE: CompletionCoverage = {
+  objects: "complete", columns: "complete", synonyms: "complete"
+};
+
+export function buildCompletionIndex(snapshot: CompletionSnapshot, options: CompletionIndexOptions = {}): CompletionIndex {
+  const coverage = { ...COMPLETE_COVERAGE, ...(snapshot.coverage ?? {}), ...(options.coverage ?? {}) };
   const index = createCompletionIndex(snapshot.defaultNamespaceKey, snapshot.namespaces.map((value) => ({
     key: value.key, catalog: value.catalog, schema: value.schema, label: value.label
-  })));
+  })), { coverage, synonyms: [...(snapshot.synonyms ?? []), ...(options.synonyms ?? [])] });
   const values: CompletionObjectDelta[] = [];
   for (const namespace of snapshot.namespaces) {
     for (const object of namespace.objects) {
@@ -143,7 +165,7 @@ export function createCompletionIndex(defaultNamespaceKey: string,
                                         catalog: string;
                                         schema: string;
                                         label: string;
-                                      }>): CompletionIndex {
+                                      }>, options: CompletionIndexOptions = {}): CompletionIndex {
   const namespaces = new Map<string, IndexedNamespace>();
   const namespaceValues: IndexedNamespace[] = [];
   let defaultNamespace: IndexedNamespace | undefined;
@@ -161,7 +183,25 @@ export function createCompletionIndex(defaultNamespaceKey: string,
     if (value.key === defaultNamespaceKey) defaultNamespace = indexed;
   }
   namespaceValues.sort((left, right) => compareName(left.snapshot.label, right.snapshot.label));
-  return { namespaces, namespaceValues, defaultNamespace };
+  return {
+    namespaces, namespaceValues, defaultNamespace,
+    coverage: { ...COMPLETE_COVERAGE, ...(options.coverage ?? {}) },
+    synonyms: [...(options.synonyms ?? [])]
+  };
+}
+
+export function setCompletionCoverage(index: CompletionIndex, coverage: Partial<CompletionCoverage>): void {
+  index.coverage = { ...index.coverage, ...coverage };
+}
+
+export function upsertCompletionSynonyms(index: CompletionIndex, values: CompletionSynonymSnapshot[]): void {
+  const byKey = new Map(index.synonyms.map((value) => [synonymKey(value), value]));
+  for (const value of values) {
+    if (!value || typeof value.namespaceKey !== "string" || typeof value.name !== "string"
+        || typeof value.targetName !== "string") continue;
+    byKey.set(synonymKey(value), { ...value });
+  }
+  index.synonyms = [...byKey.values()];
 }
 
 export function upsertCompletionObjects(index: CompletionIndex, values: CompletionObjectDelta[]): void {
@@ -269,7 +309,10 @@ export function resolveSinglePhysicalTable(index: CompletionIndex, providerId: s
     .map((token) => token.depth));
   for (const depth of queryDepths) {
     for (const source of parseSources(index, statement.tokens, 0, statement.tokens.length, depth, cteSources)) {
-      if (source.kind !== "physical") continue;
+      if (source.kind !== "physical") {
+        if (source.resolution === "unconfirmed") unresolved = true;
+        continue;
+      }
       if (!source.namespace || !source.object) {
         unresolved = true;
         continue;
@@ -623,6 +666,12 @@ export function parseCtes(index: CompletionIndex, tokens: SqlToken[], start: num
     if (tokens[open]?.value !== "(") break;
     const close = matchingClose(tokens, open);
     if (close < 0) break;
+    // Register the CTE before inspecting its body so a recursive self-reference
+    // is treated as a query source instead of an unknown physical table.
+    const placeholder: CompletionSource = { kind: "cte", name, alias: name,
+      columns: explicitColumns, start: nameToken.start, end: nameToken.end,
+      nameStart: nameToken.start, nameEnd: nameToken.end };
+    ctes.set(normalize(name), placeholder);
     const available = new Map([...inherited, ...ctes]);
     const columns = explicitColumns.length ? explicitColumns
       : projectedColumns(index, tokens, open + 1, close, depth + 1, available);
@@ -654,6 +703,7 @@ export function parseSources(index: CompletionIndex, tokens: SqlToken[], start: 
     }
     if (token.value === "," && sourceList) { expectSource = true; continue; }
     if (!expectSource) continue;
+    if (token.kind === "word" && !token.quoted && token.lower === "lateral") continue;
     if (token.value === "(") {
       const close = matchingClose(tokens, cursor);
       if (close < 0 || close >= end) break;
@@ -675,20 +725,48 @@ export function parseSources(index: CompletionIndex, tokens: SqlToken[], start: 
       names.push(tokens[next + 1].value);
       next += 2;
     }
+    const nameEndIndex = Math.max(cursor, next - 1);
     const name = names.at(-1) ?? token.value;
+    // TABLE(function(...)), JSON_TABLE(...), UNNEST(...) and vendor-specific
+    // table functions are valid row sources even though they are not objects
+    // in the selected schema. Keep them as opaque derived sources.
+    if (tokens[next]?.value === "(" && kind !== "insert" && kind !== "merge") {
+      const close = matchingClose(tokens, next);
+      const aliasResult = close >= 0 ? readAlias(tokens, close + 1, depth) : { nextIndex: next + 1 };
+      const alias = aliasResult.alias || name;
+      sources.push({ kind: "derived", name: alias, alias, columns: [], start: token.start,
+        end: tokens[Math.max(next, aliasResult.nextIndex - 1)]?.end ?? token.end,
+        nameStart: token.start, nameEnd: token.end, resolution: "unconfirmed" });
+      cursor = Math.max(next, aliasResult.nextIndex - 1);
+      expectSource = false;
+      continue;
+    }
+    // A database-link target is outside the local metadata snapshot. Consume
+    // the link qualifier as part of the source and leave the source
+    // unconfirmed, even when a local object happens to share the same name.
+    let remote = false;
+    if (tokens[next]?.value === "@") {
+      remote = true;
+      next += 1;
+      if (tokens[next]?.kind === "word" && tokens[next]?.depth === depth) next += 1;
+    }
     const aliasResult = readAlias(tokens, next, depth);
     const alias = aliasResult.alias || name;
     const cte = names.length === 1 ? ctes.get(normalize(name)) : undefined;
     const sourceEnd = tokens[Math.max(cursor, aliasResult.nextIndex - 1)]?.end ?? token.end;
+    const sourceNameEnd = tokens[nameEndIndex]?.end ?? token.end;
+    const sourceNameStart = tokens[nameEndIndex]?.start ?? token.start;
+    const sourceNameQuoted = tokens[nameEndIndex]?.quoted ?? token.quoted;
+    const sourceNamespaceQuoted = names.length > 1
+      ? tokens[nameEndIndex - 2]?.quoted ?? false : false;
     sources.push(cte
       ? { ...cte, alias, start: token.start, end: sourceEnd, nameStart: token.start,
-        nameEnd: tokens[Math.max(cursor, next - 1)]?.end ?? token.end,
-        objectStart: tokens[Math.max(cursor, next - 1)]?.start ?? token.start,
-        objectEnd: tokens[Math.max(cursor, next - 1)]?.end ?? token.end }
+        nameEnd: sourceNameEnd,
+        objectStart: sourceNameStart,
+        objectEnd: sourceNameEnd }
       : physicalSource(index, names, alias, token.start, sourceEnd,
-        token.start, tokens[Math.max(cursor, next - 1)]?.end ?? token.end,
-        tokens[Math.max(cursor, next - 1)]?.start ?? token.start,
-        tokens[Math.max(cursor, next - 1)]?.end ?? token.end));
+        token.start, sourceNameEnd, sourceNameStart, sourceNameEnd, sourceNameQuoted, remote,
+        sourceNamespaceQuoted));
     cursor = aliasResult.nextIndex - 1;
     expectSource = false;
   }
@@ -697,13 +775,92 @@ export function parseSources(index: CompletionIndex, tokens: SqlToken[], start: 
 
 function physicalSource(index: CompletionIndex, names: string[], alias: string, start?: number, end?: number,
                         nameStart?: number, nameEnd?: number, objectStart?: number,
-                        objectEnd?: number): CompletionSource {
+                        objectEnd?: number, quoted = false, remote = false, namespaceQuoted = false): CompletionSource {
   const name = names.at(-1) ?? "";
   const namespaceName = names.length > 1 ? names.at(-2) : undefined;
-  const namespace = namespaceName ? index.namespaces.get(normalize(namespaceName)) : index.defaultNamespace;
-  return { kind: "physical", name, alias, namespaceName, namespace, start, end, nameStart, nameEnd,
+  const namespace = namespaceName ? findNamespace(index, namespaceName, namespaceQuoted) : index.defaultNamespace;
+  let resolvedNamespace = namespace;
+  let object = namespace?.objects.get(normalize(name));
+  if (quoted && object && object.snapshot.name !== name) object = undefined;
+  let resolution: CompletionSource["resolution"] = object ? "resolved" : "unresolved";
+  if (!object) {
+    const synonym = names.length === 1 ? resolveSynonym(index, name, namespace, quoted)
+      : resolvePrivateSynonym(index, name, namespace, quoted);
+    if (synonym) {
+      const resolved = resolveSynonymObject(index, synonym, new Set<string>());
+      object = resolved?.object;
+      resolvedNamespace = resolved?.namespace ?? namespace;
+      resolution = object ? "resolved" : "unconfirmed";
+    }
+  }
+  if (!object && !namespace) resolution = "unconfirmed";
+  if (!object && index.coverage.objects !== "complete") resolution = "unconfirmed";
+  if (!object && index.coverage.synonyms !== "complete") resolution = "unconfirmed";
+  if (remote) { object = undefined; resolution = "unconfirmed"; }
+  return { kind: "physical", name, alias, namespaceName, namespace: resolvedNamespace, start, end, nameStart, nameEnd,
     objectStart, objectEnd,
-    object: namespace?.objects.get(normalize(name)) };
+    object, resolution, quoted, namespaceQuoted };
+}
+
+function findNamespace(index: CompletionIndex, value: string, quoted: boolean): IndexedNamespace | undefined {
+  if (!quoted) return index.namespaces.get(normalize(value));
+  return index.namespaceValues.find((namespace) => {
+    const snapshot = namespace.snapshot;
+    return snapshot.schema === value || snapshot.catalog === value || snapshot.label === value;
+  });
+}
+
+function synonymKey(value: CompletionSynonymSnapshot): string {
+  return `${normalize(value.namespaceKey)}\u0000${normalize(value.name)}\u0000${isPublicSynonym(value) ? "public" : "private"}`;
+}
+
+function isPublicSynonym(value: CompletionSynonymSnapshot): boolean {
+  return value.isPublic === true || normalize(value.namespaceKey) === "public";
+}
+
+function resolveSynonym(index: CompletionIndex, name: string, namespace?: IndexedNamespace,
+                        quoted = false): CompletionSynonymSnapshot | undefined {
+  const normalized = normalize(name);
+  const privateSynonym = resolvePrivateSynonym(index, name, namespace, quoted);
+  if (privateSynonym) return privateSynonym;
+  return index.synonyms.find((value) => isPublicSynonym(value)
+    && (quoted ? value.name === name : normalize(value.name) === normalized));
+}
+
+function resolvePrivateSynonym(index: CompletionIndex, name: string,
+                               namespace?: IndexedNamespace, quoted = false): CompletionSynonymSnapshot | undefined {
+  const normalized = normalize(name);
+  const currentKeys = namespace ? [namespace.snapshot.key, namespace.snapshot.schema,
+    namespace.snapshot.catalog, namespace.snapshot.label].filter(Boolean).map(normalize) : [];
+  return index.synonyms.find((value) => !isPublicSynonym(value)
+    && (quoted ? value.name === name : normalize(value.name) === normalized)
+    && currentKeys.includes(normalize(value.namespaceKey)));
+}
+
+function resolveSynonymObject(index: CompletionIndex, synonym: CompletionSynonymSnapshot,
+                              visited: Set<string>): ResolvedSynonymObject | undefined {
+  if (synonym.databaseLink) return undefined;
+  const key = `${normalize(synonym.namespaceKey)}\u0000${normalize(synonym.name)}`;
+  if (visited.has(key)) return undefined;
+  visited.add(key);
+  const explicitTargetNamespace = Boolean(synonym.targetNamespaceKey || synonym.targetSchema);
+  const ownerNamespace = !isPublicSynonym(synonym) && synonym.namespaceKey
+    ? index.namespaces.get(normalize(synonym.namespaceKey)) : undefined;
+  const targetNamespace = synonym.targetNamespaceKey
+    ? index.namespaces.get(normalize(synonym.targetNamespaceKey))
+    : synonym.targetSchema
+      ? index.namespaces.get(normalize(synonym.targetSchema))
+      : ownerNamespace ?? index.defaultNamespace;
+  // A schema-qualified synonym target cannot fall back to a public synonym
+  // when that target schema is not loaded. Treat the result as unconfirmed so
+  // an incomplete cache cannot turn an unrelated public name into a match.
+  if (explicitTargetNamespace && !targetNamespace) return undefined;
+  const object = targetNamespace?.objects.get(normalize(synonym.targetName));
+  if (object) return { namespace: targetNamespace!, object };
+  const nested = targetNamespace && explicitTargetNamespace
+    ? resolvePrivateSynonym(index, synonym.targetName, targetNamespace)
+    : resolveSynonym(index, synonym.targetName, targetNamespace);
+  return nested ? resolveSynonymObject(index, nested, visited) : undefined;
 }
 
 function readAlias(tokens: SqlToken[], start: number, depth: number): { alias?: string; nextIndex: number } {

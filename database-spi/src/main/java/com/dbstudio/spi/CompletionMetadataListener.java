@@ -17,5 +17,8 @@ public interface CompletionMetadataListener {
 
     void columns(List<CompletionColumnComments> groups) throws SQLException;
 
+    /** Receives visible private/public synonyms when the provider can enumerate them. */
+    default void synonyms(List<CompletionSynonymInfo> values) throws SQLException { }
+
     void warning(String phase, String message) throws SQLException;
 }
