@@ -1180,6 +1180,87 @@ describe("ResultPanel streaming rendering", () => {
     expect(clipboardWrite).toHaveBeenLastCalledWith("name");
   });
 
+  it("filters fields from the header menu for single and multiple selections", async () => {
+    const result = {
+      resultIndex: 0, sql: "select", type: "QUERY", columns: ["id", "name", "amount", "status"],
+      rows: [["1", "Apple", "12.30", "open"]], updateCount: -1, truncated: false, durationMs: 7, complete: true
+    };
+    const wrapper = mount(ResultPanel, {
+      props: {
+        activeResultIndex: 0,
+        execution: { executionId: "execution-field-filter", editorId: "editor-1", busy: false,
+          cancelled: false, failed: false, durationMs: 8, results: [result] }
+      },
+      global: { plugins: [ElementPlus] }
+    });
+    const table = () => wrapper.findComponent({ name: "ResultVirtualGrid" });
+    const columns = () => table().props("columns") as Column[];
+    const header = (index: number) => columns()[index].headerCellRenderer?.({} as never) as VNode;
+    const menu = () => wrapper.findComponent({ name: "ResultHeaderContextMenu" });
+    const selectHeaders = (indices: number[]) => {
+      indices.forEach((index, position) => header(index).props?.onClick({
+        ctrlKey: position > 0, metaKey: false, shiftKey: false
+      }));
+    };
+
+    selectHeaders([0, 2]);
+    header(0).props?.onContextmenu({ preventDefault: vi.fn(), clientX: 20, clientY: 30 });
+    menu().vm.$emit("command", "filter-only");
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ElSelect" }).props("modelValue")).toEqual([0, 2]);
+    expect(columns().map((column) => column.label)).toEqual(["id", "amount"]);
+
+    // Previously hidden fields stay hidden when excluding a visible field.
+    header(0).props?.onClick({ ctrlKey: false, metaKey: false, shiftKey: false });
+    header(0).props?.onContextmenu({ preventDefault: vi.fn(), clientX: 20, clientY: 30 });
+    menu().vm.$emit("command", "filter-exclude");
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ElSelect" }).props("modelValue")).toEqual([2]);
+    expect(columns().map((column) => column.label)).toEqual(["amount"]);
+
+    header(0).props?.onContextmenu({ preventDefault: vi.fn(), clientX: 20, clientY: 30 });
+    await nextTick();
+    expect(menu().props("canFilterExclude")).toBe(false);
+    menu().vm.$emit("command", "filter-exclude");
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ElSelect" }).props("modelValue")).toEqual([2]);
+    expect(columns().map((column) => column.label)).toEqual(["amount"]);
+
+    // With every result field selected, excluding the selection is unavailable.
+    // The hidden id field is made visible again for this assertion.
+    wrapper.findComponent({ name: "ElSelect" }).vm.$emit("update:modelValue", []);
+    await nextTick();
+    expect(columns().map((column) => column.label)).toEqual(["id", "name", "amount", "status"]);
+    selectHeaders([0, 1, 2, 3]);
+    header(0).props?.onContextmenu({ preventDefault: vi.fn(), clientX: 20, clientY: 30 });
+    await nextTick();
+    expect(menu().props("canFilterExclude")).toBe(false);
+
+    // Repeated exclusions narrow the current field set, including multi-selection.
+    selectHeaders([3]);
+    menu().vm.$emit("command", "filter-exclude");
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ElSelect" }).props("modelValue")).toEqual([0, 1, 2]);
+    expect(columns().map((column) => column.label)).toEqual(["id", "name", "amount"]);
+    selectHeaders([0, 1, 2]);
+    await nextTick();
+    expect(menu().props("canFilterExclude")).toBe(false);
+    selectHeaders([0, 1]);
+    menu().vm.$emit("command", "filter-exclude");
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ElSelect" }).props("modelValue")).toEqual([2]);
+    expect(columns().map((column) => column.label)).toEqual(["amount"]);
+
+    // Keeping a subset of an existing filter does not restore other fields.
+    wrapper.findComponent({ name: "ElSelect" }).vm.$emit("update:modelValue", [0, 1, 2]);
+    await nextTick();
+    selectHeaders([1, 2]);
+    menu().vm.$emit("command", "filter-only");
+    await nextTick();
+    expect(wrapper.findComponent({ name: "ElSelect" }).props("modelValue")).toEqual([1, 2]);
+    expect(columns().map((column) => column.label)).toEqual(["name", "amount"]);
+  });
+
   it("copies selected virtual-grid headers with remarks and the configured separator", async () => {
     const settings = useSettingsStore();
     settings.copySeparator = "pipe";

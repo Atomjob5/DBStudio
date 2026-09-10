@@ -247,7 +247,8 @@
                              :can-move-left="canMoveSelectionLeft"
                              :can-move-right="canMoveSelectionRight" :can-sum="canSumHeaderData"
                              :can-export-csv="canExportHeader" :can-export-excel="canExportHeader"
-                             :can-export-sql="canExportHeaderSql"
+                             :can-export-sql="canExportHeaderSql" :can-filter-only="canFilterOnly"
+                             :can-filter-exclude="canFilterExclude"
                              @close="closeHeaderMenu"
                              @command="headerMenuCommand" />
     <ResultDataContextMenu :visible="dataMenu.visible" :x="dataMenu.x" :y="dataMenu.y" :mode="dataMenu.mode"
@@ -1062,6 +1063,31 @@ function selectedOrderedColumns(): ColumnOption[] {
   return visibleColumnOptions.value.filter((column) => selected.has(currentIdentities.value[column.index]));
 }
 
+function selectedHeaderColumnIndices(): number[] {
+  return selectedOrderedColumns().map((column) => column.index);
+}
+
+const canFilterOnly = computed(() => selectedHeaderColumnIndices().length > 0);
+const canFilterExclude = computed(() => {
+  const selectedCount = selectedHeaderColumnIndices().length;
+  return selectedCount > 0 && selectedCount < visibleColumnOptions.value.length;
+});
+
+function filterSelectedColumns(mode: "only" | "exclude"): void {
+  const active = activeLayout.value;
+  if (!active) return;
+  const selected = selectedHeaderColumnIndices();
+  if (!selected.length) return;
+  const selectedSet = new Set(selected);
+  const visible = selectedVisibleColumnOptions.value
+    .filter((column) => mode === "only" ? selectedSet.has(column.index) : !selectedSet.has(column.index))
+    .map((column) => column.index);
+  if (!visible.length) return;
+  rememberFieldVisibility(visible);
+  detachCellRange();
+  sumSummary.value = undefined;
+}
+
 function canExportSqlColumns(indices: number[]): boolean {
   const target = activeResult.value?.mutationTarget;
   const reason = target?.reasonCode?.trim() ?? "";
@@ -1096,6 +1122,10 @@ function canMoveSelection(edge: ColumnEdge): boolean {
 }
 
 function headerMenuCommand(command: HeaderMenuCommand): void {
+  if (command === "filter-only" || command === "filter-exclude") {
+    filterSelectedColumns(command === "filter-only" ? "only" : "exclude");
+    return;
+  }
   if (command === "export-csv" || command === "export-excel" || command === "export-sql") {
     emitVisibleExport(command.replace("export-", "") as ResultExportFormat,
       displayRows.value.map((row) => row.sourceIndex), selectedOrderedColumns().map((column) => column.index));

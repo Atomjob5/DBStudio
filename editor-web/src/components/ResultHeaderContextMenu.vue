@@ -12,6 +12,12 @@
           <el-menu-item index="copy-all">复制列名和数据</el-menu-item>
           <el-menu-item index="copy-in" :disabled="!canIn">复制为 IN 语句</el-menu-item>
         </el-sub-menu>
+        <el-sub-menu v-if="showFilter" index="filter" popper-class="result-header-context-submenu"
+                     :teleported="true" :show-timeout="100" :hide-timeout="220">
+          <template #title>筛选</template>
+          <el-menu-item index="filter-only" :disabled="!canFilterOnly">只展示选中字段</el-menu-item>
+          <el-menu-item index="filter-exclude" :disabled="!canFilterExclude">不展示选中字段</el-menu-item>
+        </el-sub-menu>
         <el-sub-menu index="export" popper-class="result-header-context-submenu" :teleported="true"
                      :show-timeout="100" :hide-timeout="220">
           <template #title>导出为</template>
@@ -32,11 +38,14 @@ import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 
 export type HeaderMenuCommand = "copy-headers" | "copy-headers-with-remarks" | "copy-data"
   | "copy-all" | "copy-in" | "export-csv" | "export-excel" | "export-sql"
-  | "sum" | "move-left" | "move-right";
+  | "sum" | "move-left" | "move-right" | "filter-only" | "filter-exclude";
 
-const props = defineProps<{ visible: boolean; x: number; y: number; canCopyData: boolean;
+const props = withDefaults(defineProps<{ visible: boolean; x: number; y: number; canCopyData: boolean;
   canIn?: boolean; canMoveLeft: boolean; canMoveRight: boolean; canSum: boolean;
-  canExportCsv?: boolean; canExportExcel?: boolean; canExportSql?: boolean }>();
+  canExportCsv?: boolean; canExportExcel?: boolean; canExportSql?: boolean;
+  showFilter?: boolean; canFilterOnly?: boolean; canFilterExclude?: boolean }>(), {
+  showFilter: true, canFilterOnly: true, canFilterExclude: true
+});
 const emit = defineEmits<{ close: []; command: [command: HeaderMenuCommand] }>();
 const menuHost = ref<HTMLElement>();
 
@@ -49,7 +58,8 @@ watch(() => props.visible, async (visible) => {
 
 function selectCommand(index: string): void {
   if (["copy-headers", "copy-headers-with-remarks", "copy-data", "copy-all", "copy-in",
-    "export-csv", "export-excel", "export-sql", "sum", "move-left", "move-right"].includes(index)) {
+    "export-csv", "export-excel", "export-sql", "sum", "move-left", "move-right",
+    "filter-only", "filter-exclude"].includes(index)) {
     emit("command", index as HeaderMenuCommand);
     emit("close");
   }

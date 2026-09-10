@@ -33,7 +33,7 @@
     <ResultHeaderContextMenu :visible="headerMenu.visible" :x="headerMenu.x" :y="headerMenu.y"
                              :can-copy-data="canCopyHeaderData" :can-in="canCopyHeaderIn"
                              :can-move-left="canMoveLeft" :can-move-right="canMoveRight"
-                             :can-sum="canSumHeaderData" @close="closeHeaderMenu"
+                             :can-sum="canSumHeaderData" :show-filter="false" @close="closeHeaderMenu"
                              @command="handleHeaderCommand" />
   </div>
 </template>
